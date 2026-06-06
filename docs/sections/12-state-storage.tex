@@ -1,0 +1,114 @@
+\section{Guarded State Model and Storage Kernel}
+
+Contract state \MUST{} use canonical storage records, not loose contradictory facts.
+
+\subsection{State schema examples}
+
+A token contract might declare:
+
+\begin{lstlisting}
+(state-schema TokenA
+  (Balance Account Asset UInt)
+  (Allowance Account Spender Asset UInt)
+  (TotalSupply Asset UInt)
+  (Paused Bool)
+  (Nonce Account UInt))
+\end{lstlisting}
+
+An AMM might declare:
+
+\begin{lstlisting}
+(state-schema PoolA
+  (Reserve Asset UInt)
+  (LiquidityPosition Account UInt)
+  (FeeBps UInt)
+  (Paused Bool))
+\end{lstlisting}
+
+\subsection{Canonical keys}
+
+Balances \SHOULD{} be stored by canonical key:
+
+\begin{lstlisting}
+key   = (BalanceKey TokenA Alice USDC)
+value = 100
+\end{lstlisting}
+
+not as loose duplicate atoms:
+
+\begin{lstlisting}
+(Balance Alice USDC 100)
+(Balance Alice USDC 999)
+\end{lstlisting}
+
+\subsection{State requirements}
+
+\req{SCS-STATE-001 --- Canonical records}{State records representing unique entities \MUST{} have canonical keys.}
+
+\req{SCS-STATE-002 --- No duplicate balances}{The storage layer \MUST{} prevent multiple canonical balances for the same \code{(contract, account, asset)} key.}
+
+\req{SCS-STATE-003 --- Integer amounts}{Token amounts \MUST{} be represented as integers, not floating-point numbers.}
+
+\req{SCS-STATE-004 --- Nonnegative UInt fields}{Fields declared as \code{UInt} \MUST{} reject negative values.}
+
+\req{SCS-STATE-005 --- Schema validation}{State writes \SHOULD{} be validated against the declared schema.}
+
+\req{SCS-STATE-006 --- Keyed replacement}{State updates \SHOULD{} use keyed replacement semantics.}
+
+Preferred:
+
+\begin{lstlisting}
+(state-set! (BalanceKey TokenA Alice USDC) 90)
+\end{lstlisting}
+
+Avoid:
+
+\begin{lstlisting}
+(remove-atom &state (Balance Alice USDC 100))
+(add-atom &state (Balance Alice USDC 90))
+\end{lstlisting}
+
+\req{SCS-STATE-007 --- No raw state enumeration}{Raw private-state enumeration \MUST{} be forbidden unless the caller has an explicit auditor policy.}
+
+\req{SCS-STATE-008 --- State root}{The runtime \SHOULD{} compute a deterministic state root after each committed transition.}
+
+\subsection{Guarded storage kernel}
+
+The storage kernel is the last line of defense. Even if a method implementation is buggy, the kernel \MUST{} enforce:
+
+\begin{itemize}
+  \item active authorized method;
+  \item active execution frame;
+  \item active write scope;
+  \item valid state schema;
+  \item canonical key constraints;
+  \item numeric constraints;
+  \item contract instance isolation.
+\end{itemize}
+
+\subsection{Conceptual kernel API}
+
+\begin{lstlisting}
+(state-get ctx key)
+(state-set! ctx key value)
+(state-delete! ctx key)
+(state-exists? ctx key)
+\end{lstlisting}
+
+The context argument is not a user-supplied value. It is the runtime execution context.
+
+\subsection{Storage requirements}
+
+\req{SCS-STOR-001 --- Active frame required}{State writes \MUST{} fail unless an authorized contract execution frame is active.}
+
+\req{SCS-STOR-002 --- Contract match}{A method executing in \code{TokenA} \MUSTNOT{} write \code{TokenB} state unless a declared cross-contract protocol explicitly authorizes it.}
+
+\req{SCS-STOR-003 --- Write-scope check}{Each write \MUST{} match the active method's authorized write set.}
+
+\req{SCS-STOR-004 --- Registry-state separation}{Registry mutation \MUST{} be handled as registry delta, not arbitrary state mutation.}
+
+\req{SCS-STOR-005 --- No bypass primitives}{Raw \code{add-atom}, \code{remove-atom}, \code{get-atoms}, raw \code{match}, Prolog assertion/retraction, Python calls, filesystem access, process execution, and network access \MUSTNOT{} bypass guarded storage.}
+
+\req{SCS-STOR-006 --- Kernel-enforced schema}{The kernel \SHOULD{} enforce state schema constraints that are cheap and deterministic.}
+
+\req{SCS-STOR-007 --- Audit hooks}{The kernel \SHOULD{} expose auditable read/write sets without leaking unauthorized private state.}

@@ -1,0 +1,72 @@
+% Shared packages and macros for the SCS specification.
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{longtable}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{listings}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{url}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!50!black,
+  citecolor=blue!50!black,
+  urlcolor=blue!50!black,
+  pdftitle={Secured Contract Spaces for MeTTa/PeTTa DeFi},
+  pdfauthor={Draft specification}
+}
+
+\setlength{\headheight}{14pt}
+\emergencystretch=2em
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{Secured Contract Spaces}
+\rhead{Draft v0.3}
+\cfoot{\thepage}
+
+\titleformat{\section}{\Large\bfseries}{\thesection}{1em}{}
+\titleformat{\subsection}{\large\bfseries}{\thesubsection}{1em}{}
+\titleformat{\subsubsection}{\normalsize\bfseries}{\thesubsubsection}{1em}{}
+
+\setlist[itemize]{topsep=3pt,itemsep=2pt,parsep=0pt}
+\setlist[enumerate]{topsep=3pt,itemsep=2pt,parsep=0pt}
+
+\lstdefinestyle{scscode}{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  breakatwhitespace=false,
+  columns=fullflexible,
+  keepspaces=true,
+  frame=single,
+  framerule=0.3pt,
+  rulecolor=\color{black!25},
+  xleftmargin=0.5em,
+  xrightmargin=0.5em,
+  aboveskip=0.8em,
+  belowskip=0.8em,
+  showstringspaces=false
+}
+\lstset{style=scscode}
+
+\newcommand{\SCS}{\textsc{SCS}}
+\newcommand{\MeTTa}{MeTTa}
+\newcommand{\PeTTa}{PeTTa}
+\newcommand{\HyperClaw}{HyperClaw}
+\newcommand{\MUST}{\textbf{MUST}}
+\newcommand{\MUSTNOT}{\textbf{MUST NOT}}
+\newcommand{\SHOULD}{\textbf{SHOULD}}
+\newcommand{\SHOULDNOT}{\textbf{SHOULD NOT}}
+\newcommand{\MAY}{\textbf{MAY}}
+\newcommand{\req}[2]{\paragraph{#1}#2\par}
+\newcommand{\code}[1]{\texttt{#1}}

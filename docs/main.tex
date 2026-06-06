@@ -1,0 +1,43 @@
+\documentclass[11pt]{article}
+\input{macros}
+
+\title{Secured Contract Spaces for MeTTa/PeTTa DeFi\\\large Draft Specification v0.3}
+\author{Specification draft}
+\date{June 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This document specifies Secured Contract Spaces (\SCS{}), a DeFi-safe contract execution model for \MeTTa{}/\PeTTa{}-like runtimes. A smart contract is modeled as a secured Module Space with private state, public methods, registry-first functional access control, guarded storage, atomic commit/revert, invariant enforcement, and restricted evaluation. The default authorization mechanism is live lookup in a capability registry; signed certificates are exceptional adapters for permits, orders, bridge attestations, oracle attestations, and similar edge cases.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+\input{sections/00-status-scope}
+\input{sections/01-executive-summary}
+\input{sections/02-normative-goals}
+\input{sections/03-threat-model}
+\input{sections/04-core-architecture}
+\input{sections/05-component-model}
+\input{sections/06-contract-isolation}
+\input{sections/07-transaction-context}
+\input{sections/08-functional-access-control}
+\input{sections/09-capability-registry}
+\input{sections/10-signed-certificates}
+\input{sections/11-abi-visibility}
+\input{sections/12-state-storage}
+\input{sections/13-atomicity}
+\input{sections/14-invariants}
+\input{sections/15-defi-methods}
+\input{sections/16-cross-contract-events}
+\input{sections/17-petta-evaluator}
+\input{sections/18-deployment-determinism-errors}
+\input{sections/19-acceptance-tests}
+\input{sections/20-implementation-reference}
+\input{sections/21-final-principle}
+
+\input{sections/99-references}
+
+\end{document}

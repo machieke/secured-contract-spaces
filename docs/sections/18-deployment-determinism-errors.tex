@@ -1,0 +1,79 @@
+\section{Deployment, Governance, Determinism, and Errors}
+
+\subsection{Deployment}
+
+Deployment \MUST{} register:
+
+\begin{itemize}
+  \item contract identifier;
+  \item code hash;
+  \item initial state schema;
+  \item public ABI;
+  \item method policies;
+  \item initial capability registry;
+  \item invariant set;
+  \item upgrade policy;
+  \item admin policy.
+\end{itemize}
+
+\req{SCS-GOV-001 --- Guarded deployment}{Deployment \MUST{} initialize method policies and registry state atomically with contract creation.}
+
+\req{SCS-GOV-002 --- Guarded policy updates}{Method policy updates \MUST{} require governance or authorized admin authority.}
+
+\req{SCS-GOV-003 --- Timelocks for critical changes}{Critical changes \SHOULD{} be timelocked. Examples include implementation upgrades, method policy changes, fee changes, oracle-source changes, loan-to-value changes, minter grants, and bridge validator-set changes.}
+
+\req{SCS-GOV-004 --- Pause authority}{Emergency pause \MAY{} exist, but pause authority \MUSTNOT{} automatically imply mint, upgrade, withdraw, or registry-admin authority.}
+
+\req{SCS-GOV-005 --- Least privilege}{Roles \SHOULD{} be narrow and composable.}
+
+\subsection{Determinism and resource bounds}
+
+\req{SCS-DET-001 --- Deterministic execution}{Given the same initial state and transaction, validators \MUST{} compute the same result, events, registry state, and state root.}
+
+\req{SCS-DET-002 --- Bounded execution}{Each call \MUST{} have bounded computation, memory, recursion depth, event output, and cross-contract call depth.}
+
+\req{SCS-DET-003 --- No nondeterministic host calls}{Contract code \MUSTNOT{} call nondeterministic host functions unless the result is provided by consensus context.}
+
+\req{SCS-DET-004 --- Metering}{The evaluator \MUST{} meter execution steps or gas.}
+
+\req{SCS-DET-005 --- Canonical serialization}{State roots, event roots, signed payloads, and audit traces \SHOULD{} use canonical serialization.}
+
+\subsection{Error semantics}
+
+\SCS{} errors \SHOULD{} be structured.
+
+Example:
+
+\begin{lstlisting}
+(Error
+  (code InsufficientBalance)
+  (contract TokenA)
+  (method transfer)
+  (tx Tx-123))
+\end{lstlisting}
+
+Required error classes include:
+
+\begin{lstlisting}
+Unauthorized
+MethodNotExported
+PolicyMissing
+PolicyRejected
+RegistryGrantMissing
+RegistryGrantExpired
+RegistryGrantRevoked
+AllowanceExceeded
+NonceInvalid
+InsufficientBalance
+InvalidAmount
+WriteScopeViolation
+ForbiddenPrimitive
+InvariantViolation
+ReentrancyViolation
+OutOfGas
+TypeError
+ArithmeticOverflow
+ContractPaused
+\end{lstlisting}
+
+Errors \MUSTNOT{} leak private state beyond the caller's authorized view.

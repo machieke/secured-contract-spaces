@@ -1,0 +1,51 @@
+\section{Normative Language and Goals}
+
+The keywords \MUST{}, \MUSTNOT{}, \SHOULD{}, \SHOULDNOT{}, and \MAY{} are normative.
+
+This specification distinguishes between:
+
+\begin{lstlisting}
+contract-level convention:
+    a pattern written in MeTTa source code
+
+runtime enforcement:
+    a check that cannot be bypassed by malicious MeTTa code
+\end{lstlisting}
+
+For DeFi safety, all critical protections \MUST{} be runtime-enforced.
+
+\subsection{Goals}
+
+\SCS{} \MUST{} provide:
+
+\begin{enumerate}
+  \item one secured state space per deployed contract instance;
+  \item public method calls through a contract dispatcher;
+  \item deny-by-default method authorization;
+  \item functional access control based on method policy;
+  \item live capability-registry lookup as the default authority check;
+  \item no routine capability-token passing by callers;
+  \item guarded grant, revoke, update, and consume operations for registry capabilities;
+  \item runtime-derived caller identity;
+  \item method-scoped write authority;
+  \item storage-level rejection of unauthorized writes;
+  \item atomic commit/revert for state, registry, and events;
+  \item invariant enforcement before commit;
+  \item deterministic execution;
+  \item restricted \PeTTa{} evaluator mode for contract code;
+  \item auditable authorization decisions and state transitions.
+\end{enumerate}
+
+\subsection{Design bias}
+
+The design deliberately prefers simple, live authorization over portable bearer authority:
+
+\begin{lstlisting}
+Default:
+    method policy + current caller + live registry lookup
+
+Exception:
+    signed certificate adapter at protocol edges
+\end{lstlisting}
+
+This keeps ordinary contract calls simple and makes revocation, spend tracking, roles, and governance easier to reason about.

@@ -1,0 +1,36 @@
+\section{Threat Model}
+
+\SCS{} assumes adversaries may:
+
+\begin{enumerate}
+  \item submit arbitrary external transactions;
+  \item deploy malicious contracts;
+  \item call public methods in unexpected orders;
+  \item trigger cross-contract calls;
+  \item attempt reentrancy;
+  \item attempt raw Atomspace mutation;
+  \item attempt raw Atomspace enumeration;
+  \item attempt to forge caller identity;
+  \item attempt to bypass method policies;
+  \item attempt to mutate capability registry records;
+  \item attempt to exploit nondeterminism;
+  \item attempt to leak private state through errors, events, traces, or logs;
+  \item attempt to call \PeTTa{}, Prolog, Python, filesystem, process, or network escape hatches;
+  \item attempt replay attacks using nonces or signed certificates;
+  \item attempt to create duplicate or contradictory balance facts.
+\end{enumerate}
+
+\SCS{} assumes the following components are part of the trusted computing base:
+
+\begin{itemize}
+  \item contract dispatcher;
+  \item method policy registry;
+  \item enforcement module;
+  \item live capability registry;
+  \item guarded storage kernel;
+  \item atomic transaction engine;
+  \item restricted evaluator implementation;
+  \item deterministic serialization and hashing machinery.
+\end{itemize}
+
+\SCS{} does not trust ordinary contract code to enforce its own security by convention.

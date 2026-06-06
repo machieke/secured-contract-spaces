@@ -1,0 +1,61 @@
+\section{Cross-Contract Calls, Reentrancy, and Events}
+
+\subsection{Cross-contract call stack}
+
+\SCS{} \MUST{} support composability while controlling reentrancy.
+
+Example call stack:
+
+\begin{lstlisting}
+call_stack = [
+  Frame(tx_sender=Alice, msg_sender=Alice, current_contract=Dex, method=swap),
+  Frame(tx_sender=Alice, msg_sender=Dex, current_contract=TokenA, method=transferFrom)
+]
+\end{lstlisting}
+
+\subsection{Cross-contract requirements}
+
+\req{SCS-CALL-001 --- Explicit call stack}{The runtime \MUST{} maintain an explicit call stack.}
+
+\req{SCS-CALL-002 --- Correct sender semantics}{Nested calls \MUST{} update \code{msg\_sender} to the immediate caller while preserving \code{tx\_sender}.}
+
+\req{SCS-CALL-003 --- Reentrancy policy}{Each state-changing method \MUST{} have a reentrancy policy. The default \SHOULD{} be \code{nonreentrant}.}
+
+\req{SCS-CALL-004 --- Checks-effects-interactions}{Where external calls are necessary, contract code \SHOULD{} follow checks-effects-interactions: complete checks, apply local state effects, and only then interact externally. Solidity's security guidance recommends this ordering to reduce reentrancy risk \cite{solidity-security}.}
+
+\req{SCS-CALL-005 --- No caller write-scope leakage}{A caller's write scope \MUSTNOT{} be passed to a callee.}
+
+\req{SCS-CALL-006 --- Callee-owned authorization}{A callee \MUST{} authorize its own method based on its own policy and registry.}
+
+\req{SCS-CALL-007 --- Revalidate after external calls}{A contract \MUSTNOT{} rely on assumptions about another contract's state after an external call unless those assumptions are revalidated.}
+
+\req{SCS-CALL-008 --- Cross-contract subtransactions}{Cross-contract calls \MUST{} compose through nested subtransactions with deterministic merge or revert semantics.}
+
+\subsection{Events and audit log}
+
+Each contract \SHOULD{} have an append-only event space.
+
+Example event:
+
+\begin{lstlisting}
+(Event
+  (contract TokenA)
+  (tx Tx-123)
+  (index 0)
+  (type Transfer)
+  (args Alice Bob USDC 10))
+\end{lstlisting}
+
+\subsection{Event requirements}
+
+\req{SCS-EVT-001 --- Append-only committed events}{Committed events \MUST{} be append-only.}
+
+\req{SCS-EVT-002 --- Event rollback}{Events from reverted calls \MUSTNOT{} be committed.}
+
+\req{SCS-EVT-003 --- Event authority}{Only the currently executing contract frame \MAY{} emit events for that contract.}
+
+\req{SCS-EVT-004 --- No secret leakage}{Events \MUSTNOT{} contain private runtime context, hidden storage handles, internal kernel authority, or sensitive debug data.}
+
+\req{SCS-EVT-005 --- Deterministic order}{Event ordering within a transaction \MUST{} be deterministic.}
+
+\req{SCS-EVT-006 --- Authorization audit}{The runtime \SHOULD{} produce an audit trail for policy checks and registry consumption.}

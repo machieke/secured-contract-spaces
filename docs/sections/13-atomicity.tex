@@ -1,0 +1,51 @@
+\section{Atomic Commit and Revert}
+
+All state-changing calls execute as staged transitions.
+
+\subsection{Staged transition components}
+
+\begin{lstlisting}
+contract_state_delta
+capability_registry_delta
+nonce_delta
+event_buffer
+cross_contract_subcall_deltas
+invariant_check_results
+\end{lstlisting}
+
+\subsection{Commit algorithm}
+
+\begin{enumerate}
+  \item Validate transaction.
+  \item Resolve contract and method.
+  \item Bind runtime context.
+  \item Look up method policy.
+  \item Authorize via enforcement module.
+  \item Stage registry consumption effects.
+  \item Execute private implementation.
+  \item Stage state writes.
+  \item Stage events.
+  \item Run invariant checks.
+  \item If all checks pass, commit registry delta, state delta, events, nonce update, and state root.
+  \item Otherwise, discard all staged effects.
+  \item Revoke the execution frame.
+  \item Return result or error.
+\end{enumerate}
+
+\subsection{Atomicity requirements}
+
+\req{SCS-ATOMIC-001 --- All-or-nothing}{A state-changing method \MUST{} commit all effects or none.}
+
+\req{SCS-ATOMIC-002 --- No partial transfer}{A transfer \MUSTNOT{} commit a debit without the corresponding credit.}
+
+\req{SCS-ATOMIC-003 --- Registry and state atomicity}{Authorization-consumption effects, such as allowance usage, \MUST{} commit atomically with balance changes.}
+
+\req{SCS-ATOMIC-004 --- Event rollback}{Events emitted by reverted calls \MUST{} be discarded.}
+
+\req{SCS-ATOMIC-005 --- Revert conditions}{The runtime \MUST{} revert on authorization failure, policy failure, forbidden operation, type error, arithmetic overflow, insufficient balance, nonce failure, capability registry failure, invariant violation, out-of-gas or out-of-steps, unhandled exception, reentrancy violation, and storage-scope violation.}
+
+\req{SCS-ATOMIC-006 --- Nested subtransactions}{Nested contract calls \MUST{} execute in subtransactions. Child effects merge into the parent only if the child succeeds.}
+
+\req{SCS-ATOMIC-007 --- Read-your-writes}{A contract \SHOULD{} read its own staged writes within the same transition.}
+
+\req{SCS-ATOMIC-008 --- Deterministic rollback}{Rollback semantics \MUST{} be deterministic and independent of host-language side effects.}

@@ -1,0 +1,26 @@
+\section{Contract-Space Isolation Requirements}
+
+\req{SCS-ISO-001 --- Per-instance state}{Each deployed contract instance \MUST{} own a distinct guarded state subspace.}
+
+\req{SCS-ISO-002 --- No ordinary public state space}{Contract state \MUSTNOT{} be represented as an ordinary user-addressable \PeTTa{} \code{\&space}.}
+
+\req{SCS-ISO-003 --- No raw state handles}{The runtime \MUSTNOT{} expose raw state-space handles to external callers or other contracts.}
+
+\req{SCS-ISO-004 --- Shared code, separate state}{Multiple contract instances \MAY{} share code, but their state and authorization registries \MUST{} remain separate unless an explicit shared-state contract is deployed.}
+
+Example:
+
+\begin{lstlisting}
+ERC20 code
+    TokenA.state
+    TokenB.state
+    TokenC.state
+\end{lstlisting}
+
+\code{TokenA.transfer} \MUSTNOT{} be able to write \code{TokenB.state}.
+
+\req{SCS-ISO-005 --- Private implementation namespace}{Internal functions such as \code{\_setBalance!}, \code{\_debit!}, \code{\_credit!}, \code{\_setReserve!}, \code{\_setDebt!}, and \code{\_consumeAllowance!} \MUSTNOT{} be externally callable.}
+
+\req{SCS-ISO-006 --- No namespace guessing}{Security \MUSTNOT{} depend on contract-state names being secret. Even if an attacker guesses a contract's internal state identifier, raw access \MUST{} fail.}
+
+\req{SCS-ISO-007 --- Explicit shared state}{If multiple contracts intentionally share state, the shared state \MUST{} be modeled as its own secured contract or secured shared resource with explicit policies and invariants.}

@@ -1,0 +1,2091 @@
+\documentclass[11pt]{article}
+% Shared packages and macros for the SCS specification.
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{longtable}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{listings}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{url}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!50!black,
+  citecolor=blue!50!black,
+  urlcolor=blue!50!black,
+  pdftitle={Secured Contract Spaces for MeTTa/PeTTa DeFi},
+  pdfauthor={Draft specification}
+}
+
+\setlength{\headheight}{14pt}
+\emergencystretch=2em
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{Secured Contract Spaces}
+\rhead{Draft v0.3}
+\cfoot{\thepage}
+
+\titleformat{\section}{\Large\bfseries}{\thesection}{1em}{}
+\titleformat{\subsection}{\large\bfseries}{\thesubsection}{1em}{}
+\titleformat{\subsubsection}{\normalsize\bfseries}{\thesubsubsection}{1em}{}
+
+\setlist[itemize]{topsep=3pt,itemsep=2pt,parsep=0pt}
+\setlist[enumerate]{topsep=3pt,itemsep=2pt,parsep=0pt}
+
+\lstdefinestyle{scscode}{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  breakatwhitespace=false,
+  columns=fullflexible,
+  keepspaces=true,
+  frame=single,
+  framerule=0.3pt,
+  rulecolor=\color{black!25},
+  xleftmargin=0.5em,
+  xrightmargin=0.5em,
+  aboveskip=0.8em,
+  belowskip=0.8em,
+  showstringspaces=false
+}
+\lstset{style=scscode}
+
+\newcommand{\SCS}{\textsc{SCS}}
+\newcommand{\MeTTa}{MeTTa}
+\newcommand{\PeTTa}{PeTTa}
+\newcommand{\HyperClaw}{HyperClaw}
+\newcommand{\MUST}{\textbf{MUST}}
+\newcommand{\MUSTNOT}{\textbf{MUST NOT}}
+\newcommand{\SHOULD}{\textbf{SHOULD}}
+\newcommand{\SHOULDNOT}{\textbf{SHOULD NOT}}
+\newcommand{\MAY}{\textbf{MAY}}
+\newcommand{\req}[2]{\paragraph{#1}#2\par}
+\newcommand{\code}[1]{\texttt{#1}}
+
+
+\title{Secured Contract Spaces for MeTTa/PeTTa DeFi\\\large Draft Specification v0.3}
+\author{Specification draft}
+\date{June 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This document specifies Secured Contract Spaces (\SCS{}), a DeFi-safe contract execution model for \MeTTa{}/\PeTTa{}-like runtimes. A smart contract is modeled as a secured Module Space with private state, public methods, registry-first functional access control, guarded storage, atomic commit/revert, invariant enforcement, and restricted evaluation. The default authorization mechanism is live lookup in a capability registry; signed certificates are exceptional adapters for permits, orders, bridge attestations, oracle attestations, and similar edge cases.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+
+% ----- 00-status-scope.tex -----
+\section{Status and Scope}
+
+\subsection{Status}
+
+This document is a draft target-runtime specification. It describes the desired security architecture for DeFi contracts implemented in \MeTTa{}/\PeTTa{}-like systems. It is not a statement that current \PeTTa{} already implements these controls.
+
+Current ordinary \PeTTa{} spaces are not sufficient as a DeFi security boundary. In the normal space implementation, adding an atom ultimately asserts into a Prolog predicate, removing retracts, and matching or enumeration queries the backing predicate directly \cite{petta-spaces}. Current \PeTTa{} also exposes powerful mutation and interoperation primitives, including Python and Prolog escape hatches, which must not be exposed directly to adversarial contract code \cite{petta-metta}.
+
+\subsection{Scope}
+
+\SCS{} defines a secured contract execution model for:
+
+\begin{itemize}
+  \item token contracts;
+  \item automated market makers;
+  \item lending vaults;
+  \item staking systems;
+  \item bridges;
+  \item oracle adapters;
+  \item governance-controlled DeFi contracts.
+\end{itemize}
+
+A deployed contract instance is modeled as a secured Module Space: a uniform space-like object with private storage, public methods, a guarded authorization surface, and deterministic state transition semantics. The Module Space framing is inspired by \HyperClaw{}, which treats modules as uniform spaces behind a common orchestration interface \cite{hyperclaw}.
+
+\subsection{Out of scope}
+
+\SCS{} does not define:
+
+\begin{itemize}
+  \item a blockchain consensus protocol;
+  \item a final ASI:Chain, Hyperon, \MeTTa{}, or \PeTTa{} syntax;
+  \item hidden-balance cryptography;
+  \item zero-knowledge proof systems;
+  \item a general-purpose operating-system sandbox;
+  \item retroactive safety for ordinary public \PeTTa{} spaces.
+\end{itemize}
+
+Transparent balances are allowed. Private balances require additional mechanisms such as commitments, nullifiers, encrypted state, or zero-knowledge transition proofs.
+
+\subsection{Existing \PeTTa{} \code{sealed} is not security sealing}
+
+\SCS{} uses ``secured'' and ``guarded'' in a security sense. Current \PeTTa{} has a form named \code{sealed}, but it is not a sealed storage or authorization primitive. The current translator handles it through Prolog term copying/scoping mechanics, not through access-control enforcement \cite{petta-translator}. Therefore, \SCS{} \MUSTNOT{} rely on existing \code{sealed} syntax as a DeFi storage boundary.
+
+
+
+% ----- 01-executive-summary.tex -----
+\section{Executive Summary}
+
+A Secured Contract Space is a runtime-owned object representing one deployed smart-contract instance. It contains:
+
+\begin{lstlisting}
+SecuredContractSpace
+    contract_id
+    code_hash
+    public ABI / exported methods
+    private state subspace
+    public view interface
+    append-only event space
+    method policy registry
+    live capability registry
+    enforcement module
+    guarded storage kernel
+    invariant set
+    transaction engine hooks
+\end{lstlisting}
+
+The central rule is:
+
+\begin{lstlisting}
+External callers do not mutate state.
+External callers invoke methods.
+Methods are authorized by functional access-control policy.
+Authority is checked by live registry lookup.
+State writes are allowed only inside the method's authorized write scope.
+All state and registry effects commit or revert atomically.
+\end{lstlisting}
+
+The default authorization path is not ``pass a capability token into every method.'' Instead:
+
+\begin{lstlisting}
+call method
+    -> runtime derives current caller from transaction context
+    -> enforcement module looks up method policy
+    -> enforcement module derives required grants from method + args + caller
+    -> capability registry is queried live
+    -> authorization succeeds or fails
+    -> private implementation runs only if authorized
+\end{lstlisting}
+
+Signed capability certificates are allowed only as exceptions, usually through adapter methods such as \code{permit}, \code{executeSignedOrder}, \code{submitOracleAttestation}, or \code{redeemBridgeMessage}.
+
+\subsection{Primary safety invariant}
+
+The primary safety invariant is:
+
+\begin{lstlisting}
+No balance changes merely because code can mention a balance atom.
+No balance changes merely because code can mention a capability-shaped term.
+Balances change only through an authorized method whose policy passes live registry enforcement and whose transition satisfies storage and protocol invariants.
+\end{lstlisting}
+
+
+
+% ----- 02-normative-goals.tex -----
+\section{Normative Language and Goals}
+
+The keywords \MUST{}, \MUSTNOT{}, \SHOULD{}, \SHOULDNOT{}, and \MAY{} are normative.
+
+This specification distinguishes between:
+
+\begin{lstlisting}
+contract-level convention:
+    a pattern written in MeTTa source code
+
+runtime enforcement:
+    a check that cannot be bypassed by malicious MeTTa code
+\end{lstlisting}
+
+For DeFi safety, all critical protections \MUST{} be runtime-enforced.
+
+\subsection{Goals}
+
+\SCS{} \MUST{} provide:
+
+\begin{enumerate}
+  \item one secured state space per deployed contract instance;
+  \item public method calls through a contract dispatcher;
+  \item deny-by-default method authorization;
+  \item functional access control based on method policy;
+  \item live capability-registry lookup as the default authority check;
+  \item no routine capability-token passing by callers;
+  \item guarded grant, revoke, update, and consume operations for registry capabilities;
+  \item runtime-derived caller identity;
+  \item method-scoped write authority;
+  \item storage-level rejection of unauthorized writes;
+  \item atomic commit/revert for state, registry, and events;
+  \item invariant enforcement before commit;
+  \item deterministic execution;
+  \item restricted \PeTTa{} evaluator mode for contract code;
+  \item auditable authorization decisions and state transitions.
+\end{enumerate}
+
+\subsection{Design bias}
+
+The design deliberately prefers simple, live authorization over portable bearer authority:
+
+\begin{lstlisting}
+Default:
+    method policy + current caller + live registry lookup
+
+Exception:
+    signed certificate adapter at protocol edges
+\end{lstlisting}
+
+This keeps ordinary contract calls simple and makes revocation, spend tracking, roles, and governance easier to reason about.
+
+
+
+% ----- 03-threat-model.tex -----
+\section{Threat Model}
+
+\SCS{} assumes adversaries may:
+
+\begin{enumerate}
+  \item submit arbitrary external transactions;
+  \item deploy malicious contracts;
+  \item call public methods in unexpected orders;
+  \item trigger cross-contract calls;
+  \item attempt reentrancy;
+  \item attempt raw Atomspace mutation;
+  \item attempt raw Atomspace enumeration;
+  \item attempt to forge caller identity;
+  \item attempt to bypass method policies;
+  \item attempt to mutate capability registry records;
+  \item attempt to exploit nondeterminism;
+  \item attempt to leak private state through errors, events, traces, or logs;
+  \item attempt to call \PeTTa{}, Prolog, Python, filesystem, process, or network escape hatches;
+  \item attempt replay attacks using nonces or signed certificates;
+  \item attempt to create duplicate or contradictory balance facts.
+\end{enumerate}
+
+\SCS{} assumes the following components are part of the trusted computing base:
+
+\begin{itemize}
+  \item contract dispatcher;
+  \item method policy registry;
+  \item enforcement module;
+  \item live capability registry;
+  \item guarded storage kernel;
+  \item atomic transaction engine;
+  \item restricted evaluator implementation;
+  \item deterministic serialization and hashing machinery.
+\end{itemize}
+
+\SCS{} does not trust ordinary contract code to enforce its own security by convention.
+
+
+
+% ----- 04-core-architecture.tex -----
+\section{Core Architecture}
+
+\SCS{} uses a layered enforcement architecture.
+
+\begin{lstlisting}
+External transaction
+    |
+    v
+Contract Dispatcher
+    |
+    v
+Method Policy Registry
+    |
+    v
+Enforcement Module
+    |
+    v
+Live Capability Registry
+    |
+    v
+Authorized Execution Frame
+    |
+    v
+Private Method Implementation
+    |
+    v
+Guarded Storage Kernel
+    |
+    v
+Atomic Transaction Engine
+    |
+    v
+Committed State + Events
+\end{lstlisting}
+
+The runtime has five main enforcement layers:
+
+\begin{description}[leftmargin=2.8cm]
+  \item[Dispatcher] controls which methods are callable.
+  \item[Method policy registry] declares required authority and allowed effects.
+  \item[Enforcement module] checks current caller against live registry state.
+  \item[Guarded storage kernel] rejects raw mutation and writes outside method scope.
+  \item[Atomic transaction engine] commits all registry, state, and event effects together.
+\end{description}
+
+\subsection{Ordinary call flow}
+
+A normal method call follows this shape:
+
+\begin{lstlisting}
+(call-contract! tx TokenA transferFrom Alice Bob USDC 10)
+\end{lstlisting}
+
+The caller does not pass a capability token. Instead, the runtime binds the transaction context, finds the method policy for \code{TokenA.transferFrom}, derives the required allowance from the method arguments, and checks the live capability registry.
+
+\subsection{State transition boundary}
+
+The private implementation may request state reads and writes through runtime primitives. The storage kernel accepts a write only if:
+
+\begin{itemize}
+  \item an authorized execution frame is active;
+  \item the write targets the current contract instance;
+  \item the key matches the active method's write scope;
+  \item the value satisfies schema and kernel invariants;
+  \item the transaction engine can stage the write deterministically.
+\end{itemize}
+
+
+
+% ----- 05-component-model.tex -----
+\section{Component Model}
+
+\subsection{Secured Contract Space}
+
+A deployed contract instance \MUST{} be represented by a \SCS{} object.
+
+Conceptual structure:
+
+\begin{lstlisting}
+(SecuredContractSpace
+  (contract-id TokenA)
+  (code-hash Hash-abc)
+  (state-space TokenA.state)
+  (view-space TokenA.views)
+  (event-space TokenA.events)
+  (method-policy-registry TokenA.method-policies)
+  (capability-registry TokenA.capabilities)
+  (invariants TokenA.invariants)
+  (dispatcher TokenA.dispatcher))
+\end{lstlisting}
+
+The implementation \MAY{} store this as Prolog facts, Rust structs, database records, or another runtime representation. It \MUSTNOT{} expose the raw state handle to untrusted \MeTTa{} code.
+
+\subsection{Contract Dispatcher}
+
+The dispatcher is the only external entrypoint into a contract. It handles:
+
+\begin{itemize}
+  \item method resolution;
+  \item ABI checking;
+  \item caller-context binding;
+  \item policy lookup;
+  \item authorization callout;
+  \item private implementation invocation;
+  \item result formatting;
+  \item error handling.
+\end{itemize}
+
+External calls \MUST{} use dispatcher-mediated forms such as:
+
+\begin{lstlisting}
+(call-contract! tx TokenA transfer Bob USDC 10)
+\end{lstlisting}
+
+External callers \MUSTNOT{} call implementation internals such as:
+
+\begin{lstlisting}
+(TokenA._transferImpl Bob USDC 10)
+\end{lstlisting}
+
+\subsection{Method Policy Registry}
+
+The method policy registry maps:
+
+\begin{lstlisting}
+(contract_id, method_name, optional argument pattern)
+\end{lstlisting}
+
+to:
+
+\begin{itemize}
+  \item authorization requirements;
+  \item read effects;
+  \item write effects;
+  \item registry consumption effects;
+  \item event effects;
+  \item invariant requirements;
+  \item reentrancy policy.
+\end{itemize}
+
+\subsection{Capability Registry}
+
+The capability registry is the default source of durable authority. It stores live grants such as roles, allowances, spend limits, oracle updater permissions, bridge validator permissions, governance rights, and session limits.
+
+\subsection{Enforcement Module}
+
+The enforcement module evaluates method policies against:
+
+\begin{itemize}
+  \item current transaction context;
+  \item method arguments;
+  \item live capability registry;
+  \item contract state;
+  \item system state;
+  \item pause state;
+  \item governance state.
+\end{itemize}
+
+\subsection{Guarded Storage Kernel}
+
+The guarded storage kernel owns contract state mutation. It \MUST{} reject raw state mutation, unauthorized writes, duplicate canonical keys, schema violations, and numeric-domain violations.
+
+\subsection{Atomic Transaction Engine}
+
+The transaction engine stages contract-state writes, registry updates, nonce consumption, event emissions, and cross-contract subcall effects. It commits them together or discards them together.
+
+\subsection{Certificate Adapter}
+
+Signed certificates are exceptional adapters into the registry-first model. Examples include \code{permit}, \code{executeSignedOrder}, \code{submitOracleAttestation}, \code{redeemBridgeMessage}, and \code{openSession}.
+
+
+
+% ----- 06-contract-isolation.tex -----
+\section{Contract-Space Isolation Requirements}
+
+\req{SCS-ISO-001 --- Per-instance state}{Each deployed contract instance \MUST{} own a distinct guarded state subspace.}
+
+\req{SCS-ISO-002 --- No ordinary public state space}{Contract state \MUSTNOT{} be represented as an ordinary user-addressable \PeTTa{} \code{\&space}.}
+
+\req{SCS-ISO-003 --- No raw state handles}{The runtime \MUSTNOT{} expose raw state-space handles to external callers or other contracts.}
+
+\req{SCS-ISO-004 --- Shared code, separate state}{Multiple contract instances \MAY{} share code, but their state and authorization registries \MUST{} remain separate unless an explicit shared-state contract is deployed.}
+
+Example:
+
+\begin{lstlisting}
+ERC20 code
+    TokenA.state
+    TokenB.state
+    TokenC.state
+\end{lstlisting}
+
+\code{TokenA.transfer} \MUSTNOT{} be able to write \code{TokenB.state}.
+
+\req{SCS-ISO-005 --- Private implementation namespace}{Internal functions such as \code{\_setBalance!}, \code{\_debit!}, \code{\_credit!}, \code{\_setReserve!}, \code{\_setDebt!}, and \code{\_consumeAllowance!} \MUSTNOT{} be externally callable.}
+
+\req{SCS-ISO-006 --- No namespace guessing}{Security \MUSTNOT{} depend on contract-state names being secret. Even if an attacker guesses a contract's internal state identifier, raw access \MUST{} fail.}
+
+\req{SCS-ISO-007 --- Explicit shared state}{If multiple contracts intentionally share state, the shared state \MUST{} be modeled as its own secured contract or secured shared resource with explicit policies and invariants.}
+
+
+
+% ----- 07-transaction-context.tex -----
+\section{Transaction Context}
+
+Every call executes with a runtime-created context. Required fields are:
+
+\begin{lstlisting}
+chain_id
+block_height or slot
+block_timestamp or logical time
+tx_hash
+tx_sender
+msg_sender
+current_contract
+current_method
+call_depth
+call_stack
+nonce
+gas_or_step_budget
+read_set
+write_set
+registry_delta
+event_buffer
+reentrancy_locks
+authorization_result
+\end{lstlisting}
+
+\subsection{Caller identity}
+
+The runtime \MUST{} distinguish:
+
+\begin{description}[leftmargin=3.3cm]
+  \item[\code{tx\_sender}] original external transaction signer;
+  \item[\code{msg\_sender}] immediate caller of the current contract;
+  \item[\code{current\_contract}] contract currently executing.
+\end{description}
+
+Example:
+
+\begin{lstlisting}
+Alice calls Dex.swap
+Dex calls TokenA.transferFrom
+
+Inside TokenA:
+    tx_sender        = Alice
+    msg_sender       = Dex
+    current_contract = TokenA
+\end{lstlisting}
+
+\code{transferFrom} should check whether \code{Dex} has authority to spend Alice's funds.
+
+\subsection{Context requirements}
+
+\req{SCS-TX-001 --- Authenticated sender}{Every state-changing external call \MUST{} have an authenticated origin.}
+
+\req{SCS-TX-002 --- Runtime-created context}{The transaction context \MUST{} be created by the runtime, not by user code.}
+
+\req{SCS-TX-003 --- Sender distinction}{The runtime \MUST{} distinguish \code{tx\_sender}, \code{msg\_sender}, and \code{current\_contract}.}
+
+\req{SCS-TX-004 --- Replay protection}{State-changing calls \MUST{} consume a valid nonce or equivalent replay-prevention mechanism.}
+
+\req{SCS-TX-005 --- Context integrity}{User code \MUSTNOT{} be able to forge or mutate \code{tx\_sender}, \code{msg\_sender}, \code{current\_contract}, \code{current\_method}, \code{call\_depth}, nonce, block context, authorization result, or write scope.}
+
+\req{SCS-TX-006 --- Consensus determinism}{All context values used by contracts \MUST{} be deterministic under consensus execution.}
+
+\req{SCS-TX-007 --- Resource budget}{The context \MUST{} include a gas, step, or resource budget.}
+
+
+
+% ----- 08-functional-access-control.tex -----
+\section{Functional Access Control}
+
+Functional access control is the core \SCS{} authorization model. Callers normally do not pass capability tokens. Methods declare required authority. The enforcement module derives the required authority from:
+
+\begin{lstlisting}
+contract_id
+method_name
+method_arguments
+msg_sender
+tx_sender
+current state
+current registry
+\end{lstlisting}
+
+\subsection{Default call shape}
+
+Preferred:
+
+\begin{lstlisting}
+(call-contract! tx TokenA transferFrom Alice Bob USDC 10)
+\end{lstlisting}
+
+Avoid by default:
+
+\begin{lstlisting}
+(call-contract! tx TokenA transferFrom (CapRef Cap-123) Alice Bob USDC 10)
+\end{lstlisting}
+
+Capability references \MAY{} appear in specialized methods, but they are not the ordinary programming model.
+
+\subsection{Method policy structure}
+
+Conceptual policy form:
+
+\begin{lstlisting}
+(method-policy TokenA transferFrom
+  (principal msg_sender)
+
+  (requires
+    AuthenticatedCaller
+    ContractNotPaused
+    (RegistryGrant
+      (registry TokenA.capabilities)
+      (holder msg_sender)
+      (resource (Allowance TokenA $from $asset))
+      (right transfer-from)
+      (amount $amount)
+      (consume $amount)))
+
+  (reads
+    (Balance TokenA $from $asset)
+    (Balance TokenA $to $asset)
+    (Allowance TokenA $from msg_sender $asset))
+
+  (writes
+    (Balance TokenA $from $asset)
+    (Balance TokenA $to $asset)
+    (Allowance TokenA $from msg_sender $asset))
+
+  (emits Transfer)
+
+  (invariants
+    NoNegativeBalances
+    TotalSupplyConserved)
+
+  (reentrancy nonreentrant))
+\end{lstlisting}
+
+\subsection{Functional access-control requirements}
+
+\req{SCS-FAC-001 --- Policy per public method}{Every public state-changing method \MUST{} have a registered method policy.}
+
+\req{SCS-FAC-002 --- Deny by default}{A method with no registered policy \MUST{} be unavailable to external callers.}
+
+\req{SCS-FAC-003 --- Runtime-derived principal}{The authorization principal \MUST{} be derived from transaction context, not from a user-provided method argument.}
+
+\req{SCS-FAC-004 --- Default principal}{The default authorization principal \SHOULD{} be \code{msg\_sender}.}
+
+\req{SCS-FAC-005 --- Live registry lookup}{The enforcement module \MUST{} check required durable authority through live capability-registry lookup.}
+
+\req{SCS-FAC-006 --- No routine capability arguments}{Normal methods \SHOULDNOT{} require callers to pass capability tokens or capability references.}
+
+\req{SCS-FAC-007 --- Argument-dependent policies}{Method policies \MAY{} bind requirements to method arguments. For example, \code{transferFrom(from, to, asset, amount)} requires an allowance grant from \code{from} to \code{msg\_sender} for \code{asset} and at least \code{amount}.}
+
+\req{SCS-FAC-008 --- Guarded policy registration}{Only deployment, governance, or authorized admin mechanisms \MAY{} register or update method policies.}
+
+\req{SCS-FAC-009 --- Dispatcher enforcement}{The dispatcher \MUST{} enforce method policy before private implementation execution.}
+
+\req{SCS-FAC-010 --- Private implementation protection}{The private implementation behind a public method \MUSTNOT{} be externally callable.}
+
+\req{SCS-FAC-011 --- Atomic authorization effects}{Any registry effects caused by authorization, such as allowance consumption or nonce consumption, \MUST{} commit or revert atomically with the contract call.}
+
+\req{SCS-FAC-012 --- Method-scoped write set}{A method policy \SHOULD{} declare the state classes or keys the method may write.}
+
+\req{SCS-FAC-013 --- Storage-level write-scope enforcement}{The storage kernel \MUST{} reject writes outside the active method's authorized write scope.}
+
+\req{SCS-FAC-014 --- View policies}{Read-only methods \SHOULD{} have policies too, even if the policy is simply \code{PublicRead}.}
+
+\req{SCS-FAC-015 --- Auditability}{Authorization success, authorization failure, and registry consumption \SHOULD{} be auditable.}
+
+\subsection{Two-layer authorization}
+
+\SCS{} separates method access from state effect control:
+
+\begin{lstlisting}
+method access control:
+    who may call this method?
+
+effect control:
+    what may this method mutate?
+\end{lstlisting}
+
+Both layers are required. A caller may be authorized to call \code{transferFrom}, but the implementation must still be prevented from mutating unrelated state such as minter roles, upgrade admin records, or total supply unless the policy explicitly permits those writes.
+
+
+
+% ----- 09-capability-registry.tex -----
+\section{Capability Registry}
+
+The capability registry is the default authority substrate. A capability is normally a live grant in registry state, not a token passed into every method.
+
+\subsection{Registry grants}
+
+Example registry records:
+
+\begin{lstlisting}
+(RoleGrant
+  (contract TokenA)
+  (role Minter)
+  (holder BridgeA)
+  (admin Governance)
+  (active True))
+
+(AllowanceGrant
+  (token TokenA)
+  (owner Alice)
+  (spender Dex)
+  (asset USDC)
+  (limit 1000)
+  (spent 250)
+  (expiry Block-900000)
+  (revoked False))
+
+(OracleGrant
+  (oracle PriceOracleA)
+  (feed ETH-USD)
+  (holder OracleBot7)
+  (right update-price)
+  (active True))
+\end{lstlisting}
+
+\subsection{Registry-first authority}
+
+The normal authorization path is:
+
+\begin{lstlisting}
+method call
+  -> policy lookup
+  -> derive grant key from method arguments and caller
+  -> live registry lookup
+  -> authorize or reject
+\end{lstlisting}
+
+For example, \code{transferFrom(Alice, Bob, USDC, 10)} called by \code{Dex} derives the canonical lookup:
+
+\begin{lstlisting}
+AllowanceGrant(TokenA, owner=Alice, spender=Dex, asset=USDC)
+\end{lstlisting}
+
+The method succeeds only if that grant exists, is active, is not expired or revoked, and has sufficient remaining amount.
+
+\subsection{Registry requirements}
+
+\req{SCS-REG-001 --- Registry-first authority}{The default capability certification mechanism \MUST{} be live lookup in an authoritative capability registry.}
+
+\req{SCS-REG-002 --- Contract-scoped registries}{Each contract \MAY{} own its own capability registry. A runtime \MAY{} also provide a global registry, but authority records \MUST{} be explicitly scoped by contract and resource.}
+
+\req{SCS-REG-003 --- Guarded registry mutation}{Only authorized methods \MAY{} create, update, consume, revoke, or delete registry grants.}
+
+\req{SCS-REG-004 --- Use-time lookup}{Protected operations \MUST{} check the registry at use time.}
+
+\req{SCS-REG-005 --- No authority from syntax}{A \MeTTa{} term that merely resembles a grant \MUSTNOT{} authorize anything unless it exists in the authoritative registry or is accepted by an approved certificate adapter.}
+
+\req{SCS-REG-006 --- Canonical lookup keys}{Registries \SHOULD{} use canonical keys.}
+
+Examples:
+
+\begin{lstlisting}
+Role:
+    (contract, role, holder)
+
+Allowance:
+    (token, owner, spender, asset)
+
+Oracle:
+    (oracle, feed, updater)
+
+Governance:
+    (contract, action, holder)
+\end{lstlisting}
+
+\req{SCS-REG-007 --- Atomic consumption}{If a grant use consumes allowance, quota, nonce, or spend limit, that consumption \MUST{} be staged and committed atomically with the protected operation.}
+
+\req{SCS-REG-008 --- Revocation visibility}{A revoked grant \MUST{} fail once the revocation is visible in the current execution state.}
+
+\req{SCS-REG-009 --- No stale authorization cache}{A cached authorization result \MUSTNOT{} authorize a later operation after the underlying grant has changed, unless snapshot semantics explicitly permit it.}
+
+\req{SCS-REG-010 --- Deterministic lookup}{Registry lookup \MUST{} be deterministic under consensus execution.}
+
+\req{SCS-REG-011 --- Registry schema}{Capability registries \SHOULD{} define schemas for each grant class.}
+
+\req{SCS-REG-012 --- Registry invariants}{The registry \MUST{} enforce grant-class invariants such as nonnegative limits, valid expiry domains, valid holder identifiers, valid resource identifiers, and valid right names.}
+
+\subsection{Registry consumption}
+
+For spend-like grants, authorization has a side effect. For \code{transferFrom}, the runtime must stage:
+
+\begin{lstlisting}
+AllowanceGrant.spent := AllowanceGrant.spent + amount
+\end{lstlisting}
+
+That staged update \MUST{} commit only if the corresponding balance transfer also commits.
+
+
+
+% ----- 10-signed-certificates.tex -----
+\section{Signed Certificate Exceptions}
+
+Signed capability certificates are allowed, but they are not the default authority mechanism. They are adapters at the edges of the registry-first model.
+
+\subsection{Appropriate uses}
+
+Signed certificates \SHOULD{} be limited to:
+
+\begin{itemize}
+  \item permit-style approvals;
+  \item off-chain orders;
+  \item relayed transactions;
+  \item cross-chain attestations;
+  \item oracle signatures;
+  \item temporary sessions;
+  \item batch authorization.
+\end{itemize}
+
+\subsection{Certificate adapter pattern}
+
+A certificate adapter takes a signed object and turns it into registry state or consumes registry state.
+
+Example:
+
+\begin{lstlisting}
+(call-contract! tx TokenA permit Alice Dex USDC 1000 signedPermit)
+\end{lstlisting}
+
+\code{permit} does:
+
+\begin{enumerate}
+  \item verify signature;
+  \item verify domain separation;
+  \item verify nonce;
+  \item create or update registry allowance;
+  \item consume nonce;
+  \item emit \code{Approval}.
+\end{enumerate}
+
+Then future calls use the normal registry path:
+
+\begin{lstlisting}
+(call-contract! tx TokenA transferFrom Alice Bob USDC 10)
+\end{lstlisting}
+
+\subsection{Certificate requirements}
+
+\req{SCS-CERT-001 --- Exceptional use}{Signed certificates \MAY{} be supported but \SHOULDNOT{} be the normal authorization mechanism.}
+
+\req{SCS-CERT-002 --- Canonical payload}{A signed certificate \MUST{} have a canonical serialization.}
+
+\req{SCS-CERT-003 --- Domain separation}{A certificate \MUST{} bind the signature to chain, runtime, contract, resource, operation class, and relevant nonce domain.}
+
+\req{SCS-CERT-004 --- Issuer authority}{The verifier \MUST{} check that the signer is authorized to issue the certified authority.}
+
+\req{SCS-CERT-005 --- Non-malleability}{Changing holder, resource, rights, limit, expiry, nonce, or delegation policy \MUST{} invalidate the certificate.}
+
+\req{SCS-CERT-006 --- Replay protection}{A state-changing certificate \MUST{} consume a nonce, certificate identifier, sequence number, or equivalent registry record.}
+
+\req{SCS-CERT-007 --- Registry integration}{Where practical, successful certificate verification \SHOULD{} create, update, or consume registry authority.}
+
+\req{SCS-CERT-008 --- Short validity}{Certificate-only authority \SHOULD{} be short-lived.}
+
+\req{SCS-CERT-009 --- No direct state authority}{A signed certificate \MUSTNOT{} by itself bypass method-policy enforcement or guarded storage.}
+
+\subsection{Hybrid mode}
+
+If a signed certificate requires revocation, spend tracking, or nonce tracking, it becomes hybrid:
+
+\begin{lstlisting}
+signature proves issuance
+registry proves freshness / non-revocation / unused nonce / remaining spend
+\end{lstlisting}
+
+This hybrid mode is preferred for most DeFi certificate flows.
+
+
+
+% ----- 11-abi-visibility.tex -----
+\section{Public ABI and Method Visibility}
+
+\subsection{ABI declaration}
+
+A contract \MUST{} declare its public methods.
+
+Example:
+
+\begin{lstlisting}
+(contract TokenA
+  (exports
+    balanceOf
+    allowance
+    transfer
+    approve
+    transferFrom
+    permit))
+\end{lstlisting}
+
+\subsection{Visibility classes}
+
+\SCS{} \SHOULD{} support at least:
+
+\begin{description}[leftmargin=2.8cm]
+  \item[public] callable externally through dispatcher;
+  \item[view] externally callable and read-only;
+  \item[internal] callable only by same contract implementation;
+  \item[private] callable only by implementation frame, not cross-contract;
+  \item[kernel] callable only by runtime or storage kernel.
+\end{description}
+
+\subsection{ABI requirements}
+
+\req{SCS-ABI-001 --- Exported methods only}{External callers \MUST{} interact with contracts only through exported public or view methods.}
+
+\req{SCS-ABI-002 --- No direct private calls}{External callers \MUSTNOT{} invoke private/internal implementation methods.}
+
+\req{SCS-ABI-003 --- Type checking}{The dispatcher \SHOULD{} type-check method arguments before authorization and execution.}
+
+\req{SCS-ABI-004 --- View read-only guarantee}{View methods \MUSTNOT{} receive write authority and \MUSTNOT{} mutate state, registry, or event logs.}
+
+\req{SCS-ABI-005 --- Raw match forbidden}{Public reads \MUST{} go through view methods, not raw pattern matching over private state.}
+
+\req{SCS-ABI-006 --- ABI stability}{Public ABI changes \SHOULD{} require governance or deployment-time authority.}
+
+\req{SCS-ABI-007 --- Method selector determinism}{Method resolution \MUST{} be deterministic and unambiguous.}
+
+
+
+% ----- 12-state-storage.tex -----
+\section{Guarded State Model and Storage Kernel}
+
+Contract state \MUST{} use canonical storage records, not loose contradictory facts.
+
+\subsection{State schema examples}
+
+A token contract might declare:
+
+\begin{lstlisting}
+(state-schema TokenA
+  (Balance Account Asset UInt)
+  (Allowance Account Spender Asset UInt)
+  (TotalSupply Asset UInt)
+  (Paused Bool)
+  (Nonce Account UInt))
+\end{lstlisting}
+
+An AMM might declare:
+
+\begin{lstlisting}
+(state-schema PoolA
+  (Reserve Asset UInt)
+  (LiquidityPosition Account UInt)
+  (FeeBps UInt)
+  (Paused Bool))
+\end{lstlisting}
+
+\subsection{Canonical keys}
+
+Balances \SHOULD{} be stored by canonical key:
+
+\begin{lstlisting}
+key   = (BalanceKey TokenA Alice USDC)
+value = 100
+\end{lstlisting}
+
+not as loose duplicate atoms:
+
+\begin{lstlisting}
+(Balance Alice USDC 100)
+(Balance Alice USDC 999)
+\end{lstlisting}
+
+\subsection{State requirements}
+
+\req{SCS-STATE-001 --- Canonical records}{State records representing unique entities \MUST{} have canonical keys.}
+
+\req{SCS-STATE-002 --- No duplicate balances}{The storage layer \MUST{} prevent multiple canonical balances for the same \code{(contract, account, asset)} key.}
+
+\req{SCS-STATE-003 --- Integer amounts}{Token amounts \MUST{} be represented as integers, not floating-point numbers.}
+
+\req{SCS-STATE-004 --- Nonnegative UInt fields}{Fields declared as \code{UInt} \MUST{} reject negative values.}
+
+\req{SCS-STATE-005 --- Schema validation}{State writes \SHOULD{} be validated against the declared schema.}
+
+\req{SCS-STATE-006 --- Keyed replacement}{State updates \SHOULD{} use keyed replacement semantics.}
+
+Preferred:
+
+\begin{lstlisting}
+(state-set! (BalanceKey TokenA Alice USDC) 90)
+\end{lstlisting}
+
+Avoid:
+
+\begin{lstlisting}
+(remove-atom &state (Balance Alice USDC 100))
+(add-atom &state (Balance Alice USDC 90))
+\end{lstlisting}
+
+\req{SCS-STATE-007 --- No raw state enumeration}{Raw private-state enumeration \MUST{} be forbidden unless the caller has an explicit auditor policy.}
+
+\req{SCS-STATE-008 --- State root}{The runtime \SHOULD{} compute a deterministic state root after each committed transition.}
+
+\subsection{Guarded storage kernel}
+
+The storage kernel is the last line of defense. Even if a method implementation is buggy, the kernel \MUST{} enforce:
+
+\begin{itemize}
+  \item active authorized method;
+  \item active execution frame;
+  \item active write scope;
+  \item valid state schema;
+  \item canonical key constraints;
+  \item numeric constraints;
+  \item contract instance isolation.
+\end{itemize}
+
+\subsection{Conceptual kernel API}
+
+\begin{lstlisting}
+(state-get ctx key)
+(state-set! ctx key value)
+(state-delete! ctx key)
+(state-exists? ctx key)
+\end{lstlisting}
+
+The context argument is not a user-supplied value. It is the runtime execution context.
+
+\subsection{Storage requirements}
+
+\req{SCS-STOR-001 --- Active frame required}{State writes \MUST{} fail unless an authorized contract execution frame is active.}
+
+\req{SCS-STOR-002 --- Contract match}{A method executing in \code{TokenA} \MUSTNOT{} write \code{TokenB} state unless a declared cross-contract protocol explicitly authorizes it.}
+
+\req{SCS-STOR-003 --- Write-scope check}{Each write \MUST{} match the active method's authorized write set.}
+
+\req{SCS-STOR-004 --- Registry-state separation}{Registry mutation \MUST{} be handled as registry delta, not arbitrary state mutation.}
+
+\req{SCS-STOR-005 --- No bypass primitives}{Raw \code{add-atom}, \code{remove-atom}, \code{get-atoms}, raw \code{match}, Prolog assertion/retraction, Python calls, filesystem access, process execution, and network access \MUSTNOT{} bypass guarded storage.}
+
+\req{SCS-STOR-006 --- Kernel-enforced schema}{The kernel \SHOULD{} enforce state schema constraints that are cheap and deterministic.}
+
+\req{SCS-STOR-007 --- Audit hooks}{The kernel \SHOULD{} expose auditable read/write sets without leaking unauthorized private state.}
+
+
+
+% ----- 13-atomicity.tex -----
+\section{Atomic Commit and Revert}
+
+All state-changing calls execute as staged transitions.
+
+\subsection{Staged transition components}
+
+\begin{lstlisting}
+contract_state_delta
+capability_registry_delta
+nonce_delta
+event_buffer
+cross_contract_subcall_deltas
+invariant_check_results
+\end{lstlisting}
+
+\subsection{Commit algorithm}
+
+\begin{enumerate}
+  \item Validate transaction.
+  \item Resolve contract and method.
+  \item Bind runtime context.
+  \item Look up method policy.
+  \item Authorize via enforcement module.
+  \item Stage registry consumption effects.
+  \item Execute private implementation.
+  \item Stage state writes.
+  \item Stage events.
+  \item Run invariant checks.
+  \item If all checks pass, commit registry delta, state delta, events, nonce update, and state root.
+  \item Otherwise, discard all staged effects.
+  \item Revoke the execution frame.
+  \item Return result or error.
+\end{enumerate}
+
+\subsection{Atomicity requirements}
+
+\req{SCS-ATOMIC-001 --- All-or-nothing}{A state-changing method \MUST{} commit all effects or none.}
+
+\req{SCS-ATOMIC-002 --- No partial transfer}{A transfer \MUSTNOT{} commit a debit without the corresponding credit.}
+
+\req{SCS-ATOMIC-003 --- Registry and state atomicity}{Authorization-consumption effects, such as allowance usage, \MUST{} commit atomically with balance changes.}
+
+\req{SCS-ATOMIC-004 --- Event rollback}{Events emitted by reverted calls \MUST{} be discarded.}
+
+\req{SCS-ATOMIC-005 --- Revert conditions}{The runtime \MUST{} revert on authorization failure, policy failure, forbidden operation, type error, arithmetic overflow, insufficient balance, nonce failure, capability registry failure, invariant violation, out-of-gas or out-of-steps, unhandled exception, reentrancy violation, and storage-scope violation.}
+
+\req{SCS-ATOMIC-006 --- Nested subtransactions}{Nested contract calls \MUST{} execute in subtransactions. Child effects merge into the parent only if the child succeeds.}
+
+\req{SCS-ATOMIC-007 --- Read-your-writes}{A contract \SHOULD{} read its own staged writes within the same transition.}
+
+\req{SCS-ATOMIC-008 --- Deterministic rollback}{Rollback semantics \MUST{} be deterministic and independent of host-language side effects.}
+
+
+
+% ----- 14-invariants.tex -----
+\section{Invariant Enforcement}
+
+\SCS{} \MUST{} enforce DeFi-critical invariants before commit.
+
+\subsection{Generic invariants}
+
+\begin{itemize}
+  \item no negative balances;
+  \item one canonical balance per account and asset;
+  \item total supply matches the sum of balances;
+  \item allowance cannot be overspent;
+  \item nonce cannot be replayed;
+  \item registry grants cannot be mutated without authority;
+  \item events correspond to committed state changes;
+  \item state schema is respected.
+\end{itemize}
+
+\subsection{Token invariants}
+
+\begin{description}[leftmargin=2.8cm]
+  \item[Transfer] total supply is conserved.
+  \item[Mint] minter authority is required, total supply increases by minted amount, and recipient balance increases by minted amount.
+  \item[Burn] burn authority is required, total supply decreases by burned amount, and owner balance decreases by burned amount.
+  \item[transferFrom] allowance is consumed atomically and spender is \code{msg\_sender}.
+\end{description}
+
+\subsection{AMM invariants}
+
+\begin{itemize}
+  \item reserves are nonnegative;
+  \item swap respects pricing formula;
+  \item slippage bound is enforced;
+  \item fees are accounted for;
+  \item pool accounting matches token transfers;
+  \item LP shares match pool ownership model.
+\end{itemize}
+
+\subsection{Lending invariants}
+
+\begin{itemize}
+  \item debt is nonnegative;
+  \item collateral is nonnegative;
+  \item borrow respects loan-to-value limits;
+  \item oracle price is fresh;
+  \item liquidation improves or preserves solvency;
+  \item protocol reserves remain nonnegative.
+\end{itemize}
+
+\subsection{Oracle invariants}
+
+\begin{itemize}
+  \item price update comes from authorized updater;
+  \item timestamp is fresh;
+  \item deviation bounds are enforced where applicable;
+  \item quorum rules are satisfied where applicable.
+\end{itemize}
+
+\subsection{Invariant requirements}
+
+\req{SCS-INV-001 --- Declared invariants}{Each contract \MUST{} declare critical invariants.}
+
+\req{SCS-INV-002 --- Runtime enforcement}{Mandatory invariants \MUST{} be checked by runtime or trusted kernel code before commit.}
+
+\req{SCS-INV-003 --- Pure invariant functions}{Invariant functions \MUST{} be deterministic and side-effect-free.}
+
+\req{SCS-INV-004 --- Storage-level invariants}{Basic invariants such as canonical key uniqueness and \code{UInt} nonnegativity \SHOULD{} be enforced by the storage kernel, not only by contract code.}
+
+\req{SCS-INV-005 --- Failure reverts}{Invariant failure \MUST{} revert the full transition.}
+
+\req{SCS-INV-006 --- Invariant coverage}{Invariant declarations \SHOULD{} identify which methods can affect each invariant.}
+
+
+
+% ----- 15-defi-methods.tex -----
+\section{DeFi Method Examples}
+
+This section gives illustrative method policies. The exact syntax is not normative; the security obligations are normative.
+
+\subsection{Token transfer}
+
+Call:
+
+\begin{lstlisting}
+(call-contract! tx TokenA transfer Bob USDC 10)
+\end{lstlisting}
+
+Policy:
+
+\begin{lstlisting}
+(method-policy TokenA transfer
+  (principal msg_sender)
+
+  (requires
+    AuthenticatedCaller
+    ContractNotPaused
+    (> $amount 0)
+    (BalanceAtLeast TokenA msg_sender $asset $amount))
+
+  (writes
+    (Balance TokenA msg_sender $asset)
+    (Balance TokenA $to $asset))
+
+  (emits Transfer)
+
+  (invariants
+    NoNegativeBalances
+    TotalSupplyConserved)
+
+  (reentrancy nonreentrant))
+\end{lstlisting}
+
+Implementation effect:
+
+\begin{lstlisting}
+debit msg_sender
+credit recipient
+emit Transfer
+\end{lstlisting}
+
+No allowance registry lookup is needed because the caller spends its own balance.
+
+\subsection{Approve}
+
+Call:
+
+\begin{lstlisting}
+(call-contract! tx TokenA approve Dex USDC 1000)
+\end{lstlisting}
+
+Policy:
+
+\begin{lstlisting}
+(method-policy TokenA approve
+  (principal msg_sender)
+
+  (requires
+    AuthenticatedCaller
+    ContractNotPaused)
+
+  (registry-writes
+    (AllowanceGrant TokenA msg_sender $spender $asset))
+
+  (emits Approval)
+
+  (reentrancy nonreentrant))
+\end{lstlisting}
+
+Effect:
+
+\begin{lstlisting}
+set AllowanceGrant(TokenA, owner=msg_sender, spender=Dex, asset=USDC, limit=1000)
+emit Approval
+\end{lstlisting}
+
+\subsection{transferFrom}
+
+Call:
+
+\begin{lstlisting}
+(call-contract! tx TokenA transferFrom Alice Bob USDC 10)
+\end{lstlisting}
+
+Policy:
+
+\begin{lstlisting}
+(method-policy TokenA transferFrom
+  (principal msg_sender)
+
+  (requires
+    AuthenticatedCaller
+    ContractNotPaused
+    (RegistryGrant
+      (kind AllowanceGrant)
+      (token TokenA)
+      (owner $from)
+      (spender msg_sender)
+      (asset $asset)
+      (right transfer-from)
+      (amount $amount)
+      (consume $amount))
+    (BalanceAtLeast TokenA $from $asset $amount))
+
+  (registry-consumes
+    (AllowanceGrant TokenA $from msg_sender $asset $amount))
+
+  (writes
+    (Balance TokenA $from $asset)
+    (Balance TokenA $to $asset))
+
+  (emits Transfer)
+
+  (invariants
+    NoNegativeBalances
+    TotalSupplyConserved)
+
+  (reentrancy nonreentrant))
+\end{lstlisting}
+
+Effects:
+
+\begin{lstlisting}
+consume allowance
+debit Alice
+credit Bob
+emit Transfer
+\end{lstlisting}
+
+\subsection{Mint}
+
+Call:
+
+\begin{lstlisting}
+(call-contract! tx TokenA mint Bob USDC 1000)
+\end{lstlisting}
+
+Policy:
+
+\begin{lstlisting}
+(method-policy TokenA mint
+  (principal msg_sender)
+
+  (requires
+    AuthenticatedCaller
+    (RegistryGrant
+      (kind RoleGrant)
+      (contract TokenA)
+      (role Minter)
+      (holder msg_sender)
+      (right use-role)))
+
+  (writes
+    (Balance TokenA $to $asset)
+    (TotalSupply TokenA $asset))
+
+  (emits Mint Transfer)
+
+  (invariants
+    NoNegativeBalances
+    TotalSupplyEqualsSumBalances)
+
+  (reentrancy nonreentrant))
+\end{lstlisting}
+
+Access-control libraries for smart contracts commonly frame privileged actions, such as minting or pausing, as explicit role-governed permissions \cite{openzeppelin-access}.
+
+\subsection{Permit}
+
+Call:
+
+\begin{lstlisting}
+(call-contract! tx TokenA permit Alice Dex USDC 1000 signedPermit)
+\end{lstlisting}
+
+Policy:
+
+\begin{lstlisting}
+(method-policy TokenA permit
+  (principal tx_sender)
+
+  (requires
+    ValidSignedPermit
+    NonceUnused)
+
+  (registry-writes
+    (AllowanceGrant TokenA Alice Dex USDC)
+    (Nonce TokenA Alice $nonce))
+
+  (emits Approval)
+
+  (reentrancy nonreentrant))
+\end{lstlisting}
+
+Effect:
+
+\begin{lstlisting}
+verify signature
+consume nonce
+create/update registry allowance
+emit Approval
+\end{lstlisting}
+
+Future \code{transferFrom} calls use live registry lookup, not the certificate argument.
+
+
+
+% ----- 16-cross-contract-events.tex -----
+\section{Cross-Contract Calls, Reentrancy, and Events}
+
+\subsection{Cross-contract call stack}
+
+\SCS{} \MUST{} support composability while controlling reentrancy.
+
+Example call stack:
+
+\begin{lstlisting}
+call_stack = [
+  Frame(tx_sender=Alice, msg_sender=Alice, current_contract=Dex, method=swap),
+  Frame(tx_sender=Alice, msg_sender=Dex, current_contract=TokenA, method=transferFrom)
+]
+\end{lstlisting}
+
+\subsection{Cross-contract requirements}
+
+\req{SCS-CALL-001 --- Explicit call stack}{The runtime \MUST{} maintain an explicit call stack.}
+
+\req{SCS-CALL-002 --- Correct sender semantics}{Nested calls \MUST{} update \code{msg\_sender} to the immediate caller while preserving \code{tx\_sender}.}
+
+\req{SCS-CALL-003 --- Reentrancy policy}{Each state-changing method \MUST{} have a reentrancy policy. The default \SHOULD{} be \code{nonreentrant}.}
+
+\req{SCS-CALL-004 --- Checks-effects-interactions}{Where external calls are necessary, contract code \SHOULD{} follow checks-effects-interactions: complete checks, apply local state effects, and only then interact externally. Solidity's security guidance recommends this ordering to reduce reentrancy risk \cite{solidity-security}.}
+
+\req{SCS-CALL-005 --- No caller write-scope leakage}{A caller's write scope \MUSTNOT{} be passed to a callee.}
+
+\req{SCS-CALL-006 --- Callee-owned authorization}{A callee \MUST{} authorize its own method based on its own policy and registry.}
+
+\req{SCS-CALL-007 --- Revalidate after external calls}{A contract \MUSTNOT{} rely on assumptions about another contract's state after an external call unless those assumptions are revalidated.}
+
+\req{SCS-CALL-008 --- Cross-contract subtransactions}{Cross-contract calls \MUST{} compose through nested subtransactions with deterministic merge or revert semantics.}
+
+\subsection{Events and audit log}
+
+Each contract \SHOULD{} have an append-only event space.
+
+Example event:
+
+\begin{lstlisting}
+(Event
+  (contract TokenA)
+  (tx Tx-123)
+  (index 0)
+  (type Transfer)
+  (args Alice Bob USDC 10))
+\end{lstlisting}
+
+\subsection{Event requirements}
+
+\req{SCS-EVT-001 --- Append-only committed events}{Committed events \MUST{} be append-only.}
+
+\req{SCS-EVT-002 --- Event rollback}{Events from reverted calls \MUSTNOT{} be committed.}
+
+\req{SCS-EVT-003 --- Event authority}{Only the currently executing contract frame \MAY{} emit events for that contract.}
+
+\req{SCS-EVT-004 --- No secret leakage}{Events \MUSTNOT{} contain private runtime context, hidden storage handles, internal kernel authority, or sensitive debug data.}
+
+\req{SCS-EVT-005 --- Deterministic order}{Event ordering within a transaction \MUST{} be deterministic.}
+
+\req{SCS-EVT-006 --- Authorization audit}{The runtime \SHOULD{} produce an audit trail for policy checks and registry consumption.}
+
+
+
+% ----- 17-petta-evaluator.tex -----
+\section{Restricted PeTTa Contract Evaluator}
+
+A \PeTTa{} DeFi runtime \MUST{} run contract code in a restricted evaluator mode. \MeTTa{} is designed for reflective and self-modifying computation; the Hyperon paper describes Atomspace add/remove operations and notes that \MeTTa{} programs can rewrite their own code \cite{hyperon-paper}. That is valuable for AGI experimentation, but adversarial DeFi contract execution needs a stricter sandbox.
+
+\subsection{Forbidden by default}
+
+The restricted evaluator \MUSTNOT{} expose these to contract code unless explicitly wrapped by trusted, runtime-checked primitives:
+
+\begin{lstlisting}
+add-atom
+remove-atom
+get-atoms
+raw match over guarded state
+import!
+py-call
+callPredicate
+assertzPredicate
+assertaPredicate
+retractPredicate
+translatePredicate
+add-translator-rule!
+remove-translator-rule!
+host filesystem access
+process execution
+network access
+unmetered randomness
+unmetered current time
+debug traces containing private state
+\end{lstlisting}
+
+\subsection{Allowed safe primitives}
+
+The restricted evaluator \MAY{} expose:
+
+\begin{lstlisting}
+require
+assert-eq
+safe-add
+safe-sub
+safe-mul
+safe-div
+state-get
+state-set!
+registry-get
+registry-set!
+registry-consume!
+emit!
+call-contract!
+view-contract
+tx-sender
+msg-sender
+current-contract
+block-height
+block-timestamp
+\end{lstlisting}
+
+All mutation primitives in this list \MUST{} be runtime-guarded.
+
+\subsection{PeTTa storage recommendation}
+
+For \PeTTa{}, guarded contract state \SHOULD{} be stored outside ordinary user-addressable spaces. One possible representation is:
+
+\begin{lstlisting}
+contract_state(ContractId, Key, Value).
+contract_registry(ContractId, GrantKey, GrantValue).
+contract_event(ContractId, EventIndex, Event).
+\end{lstlisting}
+
+These predicates \MUSTNOT{} be exposed through raw \PeTTa{} \code{match}, \code{get-atoms}, \code{assertzPredicate}, or \code{retractPredicate}.
+
+\subsection{Evaluator requirements}
+
+\req{SCS-SBX-001 --- Restricted evaluator}{Untrusted contract code \MUST{} run under a restricted evaluator.}
+
+\req{SCS-SBX-002 --- Dangerous primitives forbidden}{Raw mutation, host interop, and nondeterministic primitives \MUST{} be forbidden by default.}
+
+\req{SCS-SBX-003 --- Guarded replacements}{Any exposed replacement for mutation or interop \MUST{} enforce method policy, runtime context, and storage scope.}
+
+\req{SCS-SBX-004 --- No arbitrary imports}{Contracts \MUSTNOT{} import arbitrary local files, Python modules, Prolog predicates, or remote resources at execution time.}
+
+\req{SCS-SBX-005 --- Trace filtering}{Debug traces \MUSTNOT{} reveal private state, registry internals, or sensitive runtime context to unauthorized users.}
+
+
+
+% ----- 18-deployment-determinism-errors.tex -----
+\section{Deployment, Governance, Determinism, and Errors}
+
+\subsection{Deployment}
+
+Deployment \MUST{} register:
+
+\begin{itemize}
+  \item contract identifier;
+  \item code hash;
+  \item initial state schema;
+  \item public ABI;
+  \item method policies;
+  \item initial capability registry;
+  \item invariant set;
+  \item upgrade policy;
+  \item admin policy.
+\end{itemize}
+
+\req{SCS-GOV-001 --- Guarded deployment}{Deployment \MUST{} initialize method policies and registry state atomically with contract creation.}
+
+\req{SCS-GOV-002 --- Guarded policy updates}{Method policy updates \MUST{} require governance or authorized admin authority.}
+
+\req{SCS-GOV-003 --- Timelocks for critical changes}{Critical changes \SHOULD{} be timelocked. Examples include implementation upgrades, method policy changes, fee changes, oracle-source changes, loan-to-value changes, minter grants, and bridge validator-set changes.}
+
+\req{SCS-GOV-004 --- Pause authority}{Emergency pause \MAY{} exist, but pause authority \MUSTNOT{} automatically imply mint, upgrade, withdraw, or registry-admin authority.}
+
+\req{SCS-GOV-005 --- Least privilege}{Roles \SHOULD{} be narrow and composable.}
+
+\subsection{Determinism and resource bounds}
+
+\req{SCS-DET-001 --- Deterministic execution}{Given the same initial state and transaction, validators \MUST{} compute the same result, events, registry state, and state root.}
+
+\req{SCS-DET-002 --- Bounded execution}{Each call \MUST{} have bounded computation, memory, recursion depth, event output, and cross-contract call depth.}
+
+\req{SCS-DET-003 --- No nondeterministic host calls}{Contract code \MUSTNOT{} call nondeterministic host functions unless the result is provided by consensus context.}
+
+\req{SCS-DET-004 --- Metering}{The evaluator \MUST{} meter execution steps or gas.}
+
+\req{SCS-DET-005 --- Canonical serialization}{State roots, event roots, signed payloads, and audit traces \SHOULD{} use canonical serialization.}
+
+\subsection{Error semantics}
+
+\SCS{} errors \SHOULD{} be structured.
+
+Example:
+
+\begin{lstlisting}
+(Error
+  (code InsufficientBalance)
+  (contract TokenA)
+  (method transfer)
+  (tx Tx-123))
+\end{lstlisting}
+
+Required error classes include:
+
+\begin{lstlisting}
+Unauthorized
+MethodNotExported
+PolicyMissing
+PolicyRejected
+RegistryGrantMissing
+RegistryGrantExpired
+RegistryGrantRevoked
+AllowanceExceeded
+NonceInvalid
+InsufficientBalance
+InvalidAmount
+WriteScopeViolation
+ForbiddenPrimitive
+InvariantViolation
+ReentrancyViolation
+OutOfGas
+TypeError
+ArithmeticOverflow
+ContractPaused
+\end{lstlisting}
+
+Errors \MUSTNOT{} leak private state beyond the caller's authorized view.
+
+
+
+% ----- 19-acceptance-tests.tex -----
+\section{Minimal Acceptance Tests}
+
+A conforming \SCS{} implementation \MUST{} pass at least these tests.
+
+\subsection{Raw state mutation blocked}
+
+Attempt:
+
+\begin{lstlisting}
+(add-atom &TokenA.state (Balance Attacker USDC 1000000000))
+\end{lstlisting}
+
+Expected:
+
+\begin{lstlisting}
+failure: ForbiddenPrimitive or InaccessibleState
+state unchanged
+no events
+\end{lstlisting}
+
+\subsection{Raw state match blocked}
+
+Attempt:
+
+\begin{lstlisting}
+(match &TokenA.state (Balance $who USDC $amount) ($who $amount))
+\end{lstlisting}
+
+Expected:
+
+\begin{lstlisting}
+failure or empty result unless an auditor view policy authorizes it
+\end{lstlisting}
+
+\subsection{Missing method policy denied}
+
+Attempt:
+
+\begin{lstlisting}
+(call-contract! tx TokenA undocumentedMethod ...)
+\end{lstlisting}
+
+Expected:
+
+\begin{lstlisting}
+failure: PolicyMissing or MethodNotExported
+\end{lstlisting}
+
+\subsection{Caller cannot forge identity}
+
+Attempt:
+
+\begin{lstlisting}
+(call-contract! tx TokenA transferFrom ClaimedCaller Alice Bob USDC 10)
+\end{lstlisting}
+
+Expected:
+
+\begin{lstlisting}
+runtime ignores claimed caller unless it is a normal method argument
+authorization uses msg_sender from context
+\end{lstlisting}
+
+\subsection{Transfer preserves supply}
+
+Initial state:
+
+\begin{lstlisting}
+Alice: 100
+Bob: 50
+TotalSupply: 150
+\end{lstlisting}
+
+Call:
+
+\begin{lstlisting}
+(call-contract! tx TokenA transfer Bob USDC 10)
+\end{lstlisting}
+
+Expected:
+
+\begin{lstlisting}
+Alice: 90
+Bob: 60
+TotalSupply: 150
+Transfer event committed
+\end{lstlisting}
+
+\subsection{Insufficient balance reverts}
+
+Initial:
+
+\begin{lstlisting}
+Alice: 5
+Bob: 0
+\end{lstlisting}
+
+Call:
+
+\begin{lstlisting}
+(call-contract! tx TokenA transfer Bob USDC 10)
+\end{lstlisting}
+
+Expected:
+
+\begin{lstlisting}
+failure: InsufficientBalance
+Alice remains 5
+Bob remains 0
+no Transfer event
+\end{lstlisting}
+
+\subsection{transferFrom requires live registry allowance}
+
+Initial registry:
+
+\begin{lstlisting}
+AllowanceGrant(TokenA, Alice, Dex, USDC) = 100
+\end{lstlisting}
+
+Call from Dex:
+
+\begin{lstlisting}
+(call-contract! tx TokenA transferFrom Alice Bob USDC 10)
+\end{lstlisting}
+
+Expected:
+
+\begin{lstlisting}
+allowance remaining or spent updated by 10
+Alice debited 10
+Bob credited 10
+all effects atomic
+\end{lstlisting}
+
+Call from Mallory:
+
+\begin{lstlisting}
+(call-contract! tx TokenA transferFrom Alice Bob USDC 10)
+\end{lstlisting}
+
+Expected:
+
+\begin{lstlisting}
+failure: RegistryGrantMissing
+state unchanged
+\end{lstlisting}
+
+\subsection{Allowance consumption reverts with failed transfer}
+
+If allowance is consumed but the transfer later fails, expected:
+
+\begin{lstlisting}
+allowance unchanged
+balances unchanged
+events discarded
+\end{lstlisting}
+
+\subsection{Method write-scope enforced}
+
+\code{transferFrom} attempts to write:
+
+\begin{lstlisting}
+RoleGrant(TokenA, Minter, Attacker)
+\end{lstlisting}
+
+Expected:
+
+\begin{lstlisting}
+failure: WriteScopeViolation
+full transition reverted
+\end{lstlisting}
+
+\subsection{Reentrancy blocked}
+
+Malicious callee reenters \code{TokenA.transferFrom} during active execution.
+
+Expected:
+
+\begin{lstlisting}
+failure: ReentrancyViolation
+or allowed only if method has explicit safe reentrancy policy
+\end{lstlisting}
+
+\subsection{Signed permit is only adapter}
+
+Call:
+
+\begin{lstlisting}
+(call-contract! tx TokenA permit Alice Dex USDC 1000 signedPermit)
+\end{lstlisting}
+
+Expected:
+
+\begin{lstlisting}
+signature verified
+nonce consumed
+registry allowance created
+Approval event emitted
+\end{lstlisting}
+
+Later:
+
+\begin{lstlisting}
+(call-contract! tx TokenA transferFrom Alice Bob USDC 10)
+\end{lstlisting}
+
+Expected:
+
+\begin{lstlisting}
+uses live registry lookup, not certificate argument
+\end{lstlisting}
+
+\subsection{Forbidden PeTTa escape hatch blocked}
+
+Attempt:
+
+\begin{lstlisting}
+(py-call ...)
+(assertzPredicate ...)
+(import! ...)
+\end{lstlisting}
+
+Expected:
+
+\begin{lstlisting}
+failure: ForbiddenPrimitive
+state unchanged
+\end{lstlisting}
+
+\subsection{Determinism}
+
+Same initial state and same transaction run on two replicas.
+
+Expected:
+
+\begin{lstlisting}
+same result
+same final state root
+same event sequence
+same registry state
+\end{lstlisting}
+
+
+
+% ----- 20-implementation-reference.tex -----
+\section{Recommended Implementation Phases and Reference Algorithms}
+
+\subsection{Implementation phases}
+
+\subsubsection{Phase 1 --- Minimal secured token}
+
+Implement:
+
+\begin{itemize}
+  \item secured contract dispatcher;
+  \item private state storage;
+  \item method policy registry;
+  \item capability registry;
+  \item live registry enforcement;
+  \item \code{transfer};
+  \item \code{approve};
+  \item \code{transferFrom};
+  \item atomic commit/revert;
+  \item event log;
+  \item restricted \PeTTa{} evaluator;
+  \item basic invariants.
+\end{itemize}
+
+\subsubsection{Phase 2 --- Method-scoped storage enforcement}
+
+Add:
+
+\begin{itemize}
+  \item write-scope derivation;
+  \item storage-level write rejection;
+  \item read/write sets;
+  \item state schema validation;
+  \item canonical state roots.
+\end{itemize}
+
+\subsubsection{Phase 3 --- Cross-contract DeFi}
+
+Add:
+
+\begin{itemize}
+  \item call stack;
+  \item \code{tx\_sender} / \code{msg\_sender} semantics;
+  \item nested subtransactions;
+  \item reentrancy guards;
+  \item AMM pool contract;
+  \item lending vault contract;
+  \item oracle adapter contract.
+\end{itemize}
+
+\subsubsection{Phase 4 --- Governance and upgrades}
+
+Add:
+
+\begin{itemize}
+  \item role registry;
+  \item timelocks;
+  \item pause mechanism;
+  \item policy updates;
+  \item upgrade control;
+  \item audit trail.
+\end{itemize}
+
+\subsubsection{Phase 5 --- Signed certificate adapters}
+
+Add:
+
+\begin{itemize}
+  \item permit;
+  \item signed orders;
+  \item oracle attestations;
+  \item bridge messages;
+  \item session grants;
+  \item certificate nonce registry.
+\end{itemize}
+
+\subsubsection{Phase 6 --- Verification tooling}
+
+Add:
+
+\begin{itemize}
+  \item property tests;
+  \item symbolic execution;
+  \item invariant checking;
+  \item policy linting;
+  \item write-scope analysis;
+  \item state-root proof generation;
+  \item event-root proof generation.
+\end{itemize}
+
+\subsection{Reference dispatcher}
+
+\begin{lstlisting}
+call_contract(tx, contract_id, method, args):
+    ctx = authenticate_and_build_context(tx, contract_id, method)
+
+    contract = resolve_contract(contract_id)
+    abi_entry = contract.abi.lookup(method)
+    require abi_entry.exported
+
+    policy = method_policy_registry.lookup(contract_id, method, args)
+    require policy.exists
+
+    begin_subtransaction(ctx)
+
+    auth_result = enforcement.authorize(ctx, policy, args)
+    require auth_result.allowed
+
+    ctx.write_scope = auth_result.write_scope
+    ctx.registry_delta = auth_result.registry_delta
+
+    result = execute_private_impl(ctx, contract, method, args)
+
+    require invariants_hold(ctx, contract, policy)
+
+    commit_subtransaction(ctx)
+    return result
+\end{lstlisting}
+
+\subsection{Reference enforcement module}
+
+\begin{lstlisting}
+authorize(ctx, policy, args):
+    principal = derive_principal(ctx, policy.principal)
+
+    for requirement in policy.requires:
+        evaluate_static_requirement(requirement, ctx, args)
+
+    for grant_req in policy.registry_requirements:
+        grant = registry.lookup(grant_req.key(ctx, args, principal))
+        require grant.active
+        require grant.rights include grant_req.right
+        require grant.scope matches ctx
+        require grant.remaining >= grant_req.amount
+
+        if grant_req.consume:
+            stage_registry_consumption(grant, grant_req.amount)
+
+    write_scope = derive_write_scope(policy.writes, ctx, args)
+    return Authorized(write_scope, staged_registry_delta)
+\end{lstlisting}
+
+\subsection{Reference storage kernel}
+
+\begin{lstlisting}
+state_set(ctx, key, value):
+    require ctx.active_authorized_frame
+    require key.contract_id == ctx.current_contract
+    require key in ctx.write_scope
+    require schema_accepts(key, value)
+    require kernel_invariants_accept(key, value)
+    stage_state_write(key, value)
+\end{lstlisting}
+
+\subsection{Reference registry consumption}
+
+\begin{lstlisting}
+consume_allowance(ctx, token, owner, spender, asset, amount):
+    key = AllowanceGrantKey(token, owner, spender, asset)
+    grant = registry.lookup(key)
+
+    require grant.active
+    require not grant.revoked
+    require grant.expiry >= ctx.block_height
+    require grant.limit - grant.spent >= amount
+
+    stage_registry_write(key, grant.spent := grant.spent + amount)
+\end{lstlisting}
+
+
+
+% ----- 21-final-principle.tex -----
+\section{Final Design Principle}
+
+The final \SCS{} model is:
+
+\begin{lstlisting}
+A smart contract is a secured Module Space.
+
+Its public surface is a method ABI.
+Its authority model is functional access control.
+Its durable permissions live in a live capability registry.
+Its state is private guarded storage.
+Its methods receive no routine capability arguments.
+Its dispatcher enforces method policy before implementation execution.
+Its storage kernel enforces method-scoped writes during execution.
+Its registry, state, and events commit or revert atomically.
+\end{lstlisting}
+
+The most important security invariant is:
+
+\begin{lstlisting}
+No balance changes merely because code can mention a balance atom.
+No balance changes merely because code can mention a capability-shaped term.
+Balances change only through an authorized method whose policy passes live registry enforcement and whose transition satisfies storage and protocol invariants.
+\end{lstlisting}
+
+For \PeTTa{}, this requires an added contract runtime, guarded storage backend, and restricted evaluator. Ordinary \PeTTa{} spaces and ordinary reflective mutation primitives are too open for adversarial DeFi balances.
+
+
+
+
+% ----- 99-references.tex -----
+\begin{thebibliography}{9}
+
+\bibitem{petta-spaces}
+PeTTa \code{spaces.pl} source.\newline
+\url{https://raw.githubusercontent.com/trueagi-io/PeTTa/main/src/spaces.pl}
+
+\bibitem{petta-metta}
+PeTTa \code{metta.pl} source.\newline
+\url{https://raw.githubusercontent.com/trueagi-io/PeTTa/main/src/metta.pl}
+
+\bibitem{petta-translator}
+PeTTa \code{translator.pl} source.\newline
+\url{https://raw.githubusercontent.com/trueagi-io/PeTTa/main/src/translator.pl}
+
+\bibitem{hyperclaw}
+HyperClaw: A Cognitive Orchestration Layer for the Road to AGI.\newline
+\url{https://singularitynet.io/hyperclaw-a-cognitive-orchestration-layer-for-the-road-to-agi/}
+
+\bibitem{hyperon-paper}
+Hyperon: A framework for AGI at the human level and beyond.\newline
+\url{https://ar5iv.labs.arxiv.org/html/2310.18318}
+
+\bibitem{openzeppelin-access}
+OpenZeppelin Contracts: Access Control.\newline
+\url{https://docs.openzeppelin.com/contracts/5.x/access-control}
+
+\bibitem{solidity-security}
+Solidity Documentation: Security Considerations.\newline
+\url{https://docs.soliditylang.org/en/latest/security-considerations.html}
+
+\end{thebibliography}
+
+
+
+\end{document}

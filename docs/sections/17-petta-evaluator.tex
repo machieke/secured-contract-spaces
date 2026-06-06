@@ -1,0 +1,81 @@
+\section{Restricted PeTTa Contract Evaluator}
+
+A \PeTTa{} DeFi runtime \MUST{} run contract code in a restricted evaluator mode. \MeTTa{} is designed for reflective and self-modifying computation; the Hyperon paper describes Atomspace add/remove operations and notes that \MeTTa{} programs can rewrite their own code \cite{hyperon-paper}. That is valuable for AGI experimentation, but adversarial DeFi contract execution needs a stricter sandbox.
+
+\subsection{Forbidden by default}
+
+The restricted evaluator \MUSTNOT{} expose these to contract code unless explicitly wrapped by trusted, runtime-checked primitives:
+
+\begin{lstlisting}
+add-atom
+remove-atom
+get-atoms
+raw match over guarded state
+import!
+py-call
+callPredicate
+assertzPredicate
+assertaPredicate
+retractPredicate
+translatePredicate
+add-translator-rule!
+remove-translator-rule!
+host filesystem access
+process execution
+network access
+unmetered randomness
+unmetered current time
+debug traces containing private state
+\end{lstlisting}
+
+\subsection{Allowed safe primitives}
+
+The restricted evaluator \MAY{} expose:
+
+\begin{lstlisting}
+require
+assert-eq
+safe-add
+safe-sub
+safe-mul
+safe-div
+state-get
+state-set!
+registry-get
+registry-set!
+registry-consume!
+emit!
+call-contract!
+view-contract
+tx-sender
+msg-sender
+current-contract
+block-height
+block-timestamp
+\end{lstlisting}
+
+All mutation primitives in this list \MUST{} be runtime-guarded.
+
+\subsection{PeTTa storage recommendation}
+
+For \PeTTa{}, guarded contract state \SHOULD{} be stored outside ordinary user-addressable spaces. One possible representation is:
+
+\begin{lstlisting}
+contract_state(ContractId, Key, Value).
+contract_registry(ContractId, GrantKey, GrantValue).
+contract_event(ContractId, EventIndex, Event).
+\end{lstlisting}
+
+These predicates \MUSTNOT{} be exposed through raw \PeTTa{} \code{match}, \code{get-atoms}, \code{assertzPredicate}, or \code{retractPredicate}.
+
+\subsection{Evaluator requirements}
+
+\req{SCS-SBX-001 --- Restricted evaluator}{Untrusted contract code \MUST{} run under a restricted evaluator.}
+
+\req{SCS-SBX-002 --- Dangerous primitives forbidden}{Raw mutation, host interop, and nondeterministic primitives \MUST{} be forbidden by default.}
+
+\req{SCS-SBX-003 --- Guarded replacements}{Any exposed replacement for mutation or interop \MUST{} enforce method policy, runtime context, and storage scope.}
+
+\req{SCS-SBX-004 --- No arbitrary imports}{Contracts \MUSTNOT{} import arbitrary local files, Python modules, Prolog predicates, or remote resources at execution time.}
+
+\req{SCS-SBX-005 --- Trace filtering}{Debug traces \MUSTNOT{} reveal private state, registry internals, or sensitive runtime context to unauthorized users.}

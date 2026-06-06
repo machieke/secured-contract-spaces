@@ -1,0 +1,242 @@
+\section{Minimal Acceptance Tests}
+
+A conforming \SCS{} implementation \MUST{} pass at least these tests.
+
+\subsection{Raw state mutation blocked}
+
+Attempt:
+
+\begin{lstlisting}
+(add-atom &TokenA.state (Balance Attacker USDC 1000000000))
+\end{lstlisting}
+
+Expected:
+
+\begin{lstlisting}
+failure: ForbiddenPrimitive or InaccessibleState
+state unchanged
+no events
+\end{lstlisting}
+
+\subsection{Raw state match blocked}
+
+Attempt:
+
+\begin{lstlisting}
+(match &TokenA.state (Balance $who USDC $amount) ($who $amount))
+\end{lstlisting}
+
+Expected:
+
+\begin{lstlisting}
+failure or empty result unless an auditor view policy authorizes it
+\end{lstlisting}
+
+\subsection{Missing method policy denied}
+
+Attempt:
+
+\begin{lstlisting}
+(call-contract! tx TokenA undocumentedMethod ...)
+\end{lstlisting}
+
+Expected:
+
+\begin{lstlisting}
+failure: PolicyMissing or MethodNotExported
+\end{lstlisting}
+
+\subsection{Caller cannot forge identity}
+
+Attempt:
+
+\begin{lstlisting}
+(call-contract! tx TokenA transferFrom ClaimedCaller Alice Bob USDC 10)
+\end{lstlisting}
+
+Expected:
+
+\begin{lstlisting}
+runtime ignores claimed caller unless it is a normal method argument
+authorization uses msg_sender from context
+\end{lstlisting}
+
+\subsection{Transfer preserves supply}
+
+Initial state:
+
+\begin{lstlisting}
+Alice: 100
+Bob: 50
+TotalSupply: 150
+\end{lstlisting}
+
+Call:
+
+\begin{lstlisting}
+(call-contract! tx TokenA transfer Bob USDC 10)
+\end{lstlisting}
+
+Expected:
+
+\begin{lstlisting}
+Alice: 90
+Bob: 60
+TotalSupply: 150
+Transfer event committed
+\end{lstlisting}
+
+\subsection{Insufficient balance reverts}
+
+Initial:
+
+\begin{lstlisting}
+Alice: 5
+Bob: 0
+\end{lstlisting}
+
+Call:
+
+\begin{lstlisting}
+(call-contract! tx TokenA transfer Bob USDC 10)
+\end{lstlisting}
+
+Expected:
+
+\begin{lstlisting}
+failure: InsufficientBalance
+Alice remains 5
+Bob remains 0
+no Transfer event
+\end{lstlisting}
+
+\subsection{transferFrom requires live registry allowance}
+
+Initial registry:
+
+\begin{lstlisting}
+AllowanceGrant(TokenA, Alice, Dex, USDC) = 100
+\end{lstlisting}
+
+Call from Dex:
+
+\begin{lstlisting}
+(call-contract! tx TokenA transferFrom Alice Bob USDC 10)
+\end{lstlisting}
+
+Expected:
+
+\begin{lstlisting}
+allowance remaining or spent updated by 10
+Alice debited 10
+Bob credited 10
+all effects atomic
+\end{lstlisting}
+
+Call from Mallory:
+
+\begin{lstlisting}
+(call-contract! tx TokenA transferFrom Alice Bob USDC 10)
+\end{lstlisting}
+
+Expected:
+
+\begin{lstlisting}
+failure: RegistryGrantMissing
+state unchanged
+\end{lstlisting}
+
+\subsection{Allowance consumption reverts with failed transfer}
+
+If allowance is consumed but the transfer later fails, expected:
+
+\begin{lstlisting}
+allowance unchanged
+balances unchanged
+events discarded
+\end{lstlisting}
+
+\subsection{Method write-scope enforced}
+
+\code{transferFrom} attempts to write:
+
+\begin{lstlisting}
+RoleGrant(TokenA, Minter, Attacker)
+\end{lstlisting}
+
+Expected:
+
+\begin{lstlisting}
+failure: WriteScopeViolation
+full transition reverted
+\end{lstlisting}
+
+\subsection{Reentrancy blocked}
+
+Malicious callee reenters \code{TokenA.transferFrom} during active execution.
+
+Expected:
+
+\begin{lstlisting}
+failure: ReentrancyViolation
+or allowed only if method has explicit safe reentrancy policy
+\end{lstlisting}
+
+\subsection{Signed permit is only adapter}
+
+Call:
+
+\begin{lstlisting}
+(call-contract! tx TokenA permit Alice Dex USDC 1000 signedPermit)
+\end{lstlisting}
+
+Expected:
+
+\begin{lstlisting}
+signature verified
+nonce consumed
+registry allowance created
+Approval event emitted
+\end{lstlisting}
+
+Later:
+
+\begin{lstlisting}
+(call-contract! tx TokenA transferFrom Alice Bob USDC 10)
+\end{lstlisting}
+
+Expected:
+
+\begin{lstlisting}
+uses live registry lookup, not certificate argument
+\end{lstlisting}
+
+\subsection{Forbidden PeTTa escape hatch blocked}
+
+Attempt:
+
+\begin{lstlisting}
+(py-call ...)
+(assertzPredicate ...)
+(import! ...)
+\end{lstlisting}
+
+Expected:
+
+\begin{lstlisting}
+failure: ForbiddenPrimitive
+state unchanged
+\end{lstlisting}
+
+\subsection{Determinism}
+
+Same initial state and same transaction run on two replicas.
+
+Expected:
+
+\begin{lstlisting}
+same result
+same final state root
+same event sequence
+same registry state
+\end{lstlisting}

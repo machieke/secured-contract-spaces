@@ -1,0 +1,46 @@
+\section{Public ABI and Method Visibility}
+
+\subsection{ABI declaration}
+
+A contract \MUST{} declare its public methods.
+
+Example:
+
+\begin{lstlisting}
+(contract TokenA
+  (exports
+    balanceOf
+    allowance
+    transfer
+    approve
+    transferFrom
+    permit))
+\end{lstlisting}
+
+\subsection{Visibility classes}
+
+\SCS{} \SHOULD{} support at least:
+
+\begin{description}[leftmargin=2.8cm]
+  \item[public] callable externally through dispatcher;
+  \item[view] externally callable and read-only;
+  \item[internal] callable only by same contract implementation;
+  \item[private] callable only by implementation frame, not cross-contract;
+  \item[kernel] callable only by runtime or storage kernel.
+\end{description}
+
+\subsection{ABI requirements}
+
+\req{SCS-ABI-001 --- Exported methods only}{External callers \MUST{} interact with contracts only through exported public or view methods.}
+
+\req{SCS-ABI-002 --- No direct private calls}{External callers \MUSTNOT{} invoke private/internal implementation methods.}
+
+\req{SCS-ABI-003 --- Type checking}{The dispatcher \SHOULD{} type-check method arguments before authorization and execution.}
+
+\req{SCS-ABI-004 --- View read-only guarantee}{View methods \MUSTNOT{} receive write authority and \MUSTNOT{} mutate state, registry, or event logs.}
+
+\req{SCS-ABI-005 --- Raw match forbidden}{Public reads \MUST{} go through view methods, not raw pattern matching over private state.}
+
+\req{SCS-ABI-006 --- ABI stability}{Public ABI changes \SHOULD{} require governance or deployment-time authority.}
+
+\req{SCS-ABI-007 --- Method selector determinism}{Method resolution \MUST{} be deterministic and unambiguous.}

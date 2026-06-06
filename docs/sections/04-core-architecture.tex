@@ -1,0 +1,66 @@
+\section{Core Architecture}
+
+\SCS{} uses a layered enforcement architecture.
+
+\begin{lstlisting}
+External transaction
+    |
+    v
+Contract Dispatcher
+    |
+    v
+Method Policy Registry
+    |
+    v
+Enforcement Module
+    |
+    v
+Live Capability Registry
+    |
+    v
+Authorized Execution Frame
+    |
+    v
+Private Method Implementation
+    |
+    v
+Guarded Storage Kernel
+    |
+    v
+Atomic Transaction Engine
+    |
+    v
+Committed State + Events
+\end{lstlisting}
+
+The runtime has five main enforcement layers:
+
+\begin{description}[leftmargin=2.8cm]
+  \item[Dispatcher] controls which methods are callable.
+  \item[Method policy registry] declares required authority and allowed effects.
+  \item[Enforcement module] checks current caller against live registry state.
+  \item[Guarded storage kernel] rejects raw mutation and writes outside method scope.
+  \item[Atomic transaction engine] commits all registry, state, and event effects together.
+\end{description}
+
+\subsection{Ordinary call flow}
+
+A normal method call follows this shape:
+
+\begin{lstlisting}
+(call-contract! tx TokenA transferFrom Alice Bob USDC 10)
+\end{lstlisting}
+
+The caller does not pass a capability token. Instead, the runtime binds the transaction context, finds the method policy for \code{TokenA.transferFrom}, derives the required allowance from the method arguments, and checks the live capability registry.
+
+\subsection{State transition boundary}
+
+The private implementation may request state reads and writes through runtime primitives. The storage kernel accepts a write only if:
+
+\begin{itemize}
+  \item an authorized execution frame is active;
+  \item the write targets the current contract instance;
+  \item the key matches the active method's write scope;
+  \item the value satisfies schema and kernel invariants;
+  \item the transaction engine can stage the write deterministically.
+\end{itemize}

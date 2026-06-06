@@ -1,0 +1,42 @@
+\section{Status and Scope}
+
+\subsection{Status}
+
+This document is a draft target-runtime specification. It describes the desired security architecture for DeFi contracts implemented in \MeTTa{}/\PeTTa{}-like systems. It is not a statement that current \PeTTa{} already implements these controls.
+
+Current ordinary \PeTTa{} spaces are not sufficient as a DeFi security boundary. In the normal space implementation, adding an atom ultimately asserts into a Prolog predicate, removing retracts, and matching or enumeration queries the backing predicate directly \cite{petta-spaces}. Current \PeTTa{} also exposes powerful mutation and interoperation primitives, including Python and Prolog escape hatches, which must not be exposed directly to adversarial contract code \cite{petta-metta}.
+
+\subsection{Scope}
+
+\SCS{} defines a secured contract execution model for:
+
+\begin{itemize}
+  \item token contracts;
+  \item automated market makers;
+  \item lending vaults;
+  \item staking systems;
+  \item bridges;
+  \item oracle adapters;
+  \item governance-controlled DeFi contracts.
+\end{itemize}
+
+A deployed contract instance is modeled as a secured Module Space: a uniform space-like object with private storage, public methods, a guarded authorization surface, and deterministic state transition semantics. The Module Space framing is inspired by \HyperClaw{}, which treats modules as uniform spaces behind a common orchestration interface \cite{hyperclaw}.
+
+\subsection{Out of scope}
+
+\SCS{} does not define:
+
+\begin{itemize}
+  \item a blockchain consensus protocol;
+  \item a final ASI:Chain, Hyperon, \MeTTa{}, or \PeTTa{} syntax;
+  \item hidden-balance cryptography;
+  \item zero-knowledge proof systems;
+  \item a general-purpose operating-system sandbox;
+  \item retroactive safety for ordinary public \PeTTa{} spaces.
+\end{itemize}
+
+Transparent balances are allowed. Private balances require additional mechanisms such as commitments, nullifiers, encrypted state, or zero-knowledge transition proofs.
+
+\subsection{Existing \PeTTa{} \code{sealed} is not security sealing}
+
+\SCS{} uses ``secured'' and ``guarded'' in a security sense. Current \PeTTa{} has a form named \code{sealed}, but it is not a sealed storage or authorization primitive. The current translator handles it through Prolog term copying/scoping mechanics, not through access-control enforcement \cite{petta-translator}. Therefore, \SCS{} \MUSTNOT{} rely on existing \code{sealed} syntax as a DeFi storage boundary.

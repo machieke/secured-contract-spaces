@@ -1,0 +1,208 @@
+\section{DeFi Method Examples}
+
+This section gives illustrative method policies. The exact syntax is not normative; the security obligations are normative.
+
+\subsection{Token transfer}
+
+Call:
+
+\begin{lstlisting}
+(call-contract! tx TokenA transfer Bob USDC 10)
+\end{lstlisting}
+
+Policy:
+
+\begin{lstlisting}
+(method-policy TokenA transfer
+  (principal msg_sender)
+
+  (requires
+    AuthenticatedCaller
+    ContractNotPaused
+    (> $amount 0)
+    (BalanceAtLeast TokenA msg_sender $asset $amount))
+
+  (writes
+    (Balance TokenA msg_sender $asset)
+    (Balance TokenA $to $asset))
+
+  (emits Transfer)
+
+  (invariants
+    NoNegativeBalances
+    TotalSupplyConserved)
+
+  (reentrancy nonreentrant))
+\end{lstlisting}
+
+Implementation effect:
+
+\begin{lstlisting}
+debit msg_sender
+credit recipient
+emit Transfer
+\end{lstlisting}
+
+No allowance registry lookup is needed because the caller spends its own balance.
+
+\subsection{Approve}
+
+Call:
+
+\begin{lstlisting}
+(call-contract! tx TokenA approve Dex USDC 1000)
+\end{lstlisting}
+
+Policy:
+
+\begin{lstlisting}
+(method-policy TokenA approve
+  (principal msg_sender)
+
+  (requires
+    AuthenticatedCaller
+    ContractNotPaused)
+
+  (registry-writes
+    (AllowanceGrant TokenA msg_sender $spender $asset))
+
+  (emits Approval)
+
+  (reentrancy nonreentrant))
+\end{lstlisting}
+
+Effect:
+
+\begin{lstlisting}
+set AllowanceGrant(TokenA, owner=msg_sender, spender=Dex, asset=USDC, limit=1000)
+emit Approval
+\end{lstlisting}
+
+\subsection{transferFrom}
+
+Call:
+
+\begin{lstlisting}
+(call-contract! tx TokenA transferFrom Alice Bob USDC 10)
+\end{lstlisting}
+
+Policy:
+
+\begin{lstlisting}
+(method-policy TokenA transferFrom
+  (principal msg_sender)
+
+  (requires
+    AuthenticatedCaller
+    ContractNotPaused
+    (RegistryGrant
+      (kind AllowanceGrant)
+      (token TokenA)
+      (owner $from)
+      (spender msg_sender)
+      (asset $asset)
+      (right transfer-from)
+      (amount $amount)
+      (consume $amount))
+    (BalanceAtLeast TokenA $from $asset $amount))
+
+  (registry-consumes
+    (AllowanceGrant TokenA $from msg_sender $asset $amount))
+
+  (writes
+    (Balance TokenA $from $asset)
+    (Balance TokenA $to $asset))
+
+  (emits Transfer)
+
+  (invariants
+    NoNegativeBalances
+    TotalSupplyConserved)
+
+  (reentrancy nonreentrant))
+\end{lstlisting}
+
+Effects:
+
+\begin{lstlisting}
+consume allowance
+debit Alice
+credit Bob
+emit Transfer
+\end{lstlisting}
+
+\subsection{Mint}
+
+Call:
+
+\begin{lstlisting}
+(call-contract! tx TokenA mint Bob USDC 1000)
+\end{lstlisting}
+
+Policy:
+
+\begin{lstlisting}
+(method-policy TokenA mint
+  (principal msg_sender)
+
+  (requires
+    AuthenticatedCaller
+    (RegistryGrant
+      (kind RoleGrant)
+      (contract TokenA)
+      (role Minter)
+      (holder msg_sender)
+      (right use-role)))
+
+  (writes
+    (Balance TokenA $to $asset)
+    (TotalSupply TokenA $asset))
+
+  (emits Mint Transfer)
+
+  (invariants
+    NoNegativeBalances
+    TotalSupplyEqualsSumBalances)
+
+  (reentrancy nonreentrant))
+\end{lstlisting}
+
+Access-control libraries for smart contracts commonly frame privileged actions, such as minting or pausing, as explicit role-governed permissions \cite{openzeppelin-access}.
+
+\subsection{Permit}
+
+Call:
+
+\begin{lstlisting}
+(call-contract! tx TokenA permit Alice Dex USDC 1000 signedPermit)
+\end{lstlisting}
+
+Policy:
+
+\begin{lstlisting}
+(method-policy TokenA permit
+  (principal tx_sender)
+
+  (requires
+    ValidSignedPermit
+    NonceUnused)
+
+  (registry-writes
+    (AllowanceGrant TokenA Alice Dex USDC)
+    (Nonce TokenA Alice $nonce))
+
+  (emits Approval)
+
+  (reentrancy nonreentrant))
+\end{lstlisting}
+
+Effect:
+
+\begin{lstlisting}
+verify signature
+consume nonce
+create/update registry allowance
+emit Approval
+\end{lstlisting}
+
+Future \code{transferFrom} calls use live registry lookup, not the certificate argument.

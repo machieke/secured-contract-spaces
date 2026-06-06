@@ -1,0 +1,64 @@
+\section{Transaction Context}
+
+Every call executes with a runtime-created context. Required fields are:
+
+\begin{lstlisting}
+chain_id
+block_height or slot
+block_timestamp or logical time
+tx_hash
+tx_sender
+msg_sender
+current_contract
+current_method
+call_depth
+call_stack
+nonce
+gas_or_step_budget
+read_set
+write_set
+registry_delta
+event_buffer
+reentrancy_locks
+authorization_result
+\end{lstlisting}
+
+\subsection{Caller identity}
+
+The runtime \MUST{} distinguish:
+
+\begin{description}[leftmargin=3.3cm]
+  \item[\code{tx\_sender}] original external transaction signer;
+  \item[\code{msg\_sender}] immediate caller of the current contract;
+  \item[\code{current\_contract}] contract currently executing.
+\end{description}
+
+Example:
+
+\begin{lstlisting}
+Alice calls Dex.swap
+Dex calls TokenA.transferFrom
+
+Inside TokenA:
+    tx_sender        = Alice
+    msg_sender       = Dex
+    current_contract = TokenA
+\end{lstlisting}
+
+\code{transferFrom} should check whether \code{Dex} has authority to spend Alice's funds.
+
+\subsection{Context requirements}
+
+\req{SCS-TX-001 --- Authenticated sender}{Every state-changing external call \MUST{} have an authenticated origin.}
+
+\req{SCS-TX-002 --- Runtime-created context}{The transaction context \MUST{} be created by the runtime, not by user code.}
+
+\req{SCS-TX-003 --- Sender distinction}{The runtime \MUST{} distinguish \code{tx\_sender}, \code{msg\_sender}, and \code{current\_contract}.}
+
+\req{SCS-TX-004 --- Replay protection}{State-changing calls \MUST{} consume a valid nonce or equivalent replay-prevention mechanism.}
+
+\req{SCS-TX-005 --- Context integrity}{User code \MUSTNOT{} be able to forge or mutate \code{tx\_sender}, \code{msg\_sender}, \code{current\_contract}, \code{current\_method}, \code{call\_depth}, nonce, block context, authorization result, or write scope.}
+
+\req{SCS-TX-006 --- Consensus determinism}{All context values used by contracts \MUST{} be deterministic under consensus execution.}
+
+\req{SCS-TX-007 --- Resource budget}{The context \MUST{} include a gas, step, or resource budget.}

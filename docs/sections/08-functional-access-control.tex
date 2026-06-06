@@ -1,0 +1,113 @@
+\section{Functional Access Control}
+
+Functional access control is the core \SCS{} authorization model. Callers normally do not pass capability tokens. Methods declare required authority. The enforcement module derives the required authority from:
+
+\begin{lstlisting}
+contract_id
+method_name
+method_arguments
+msg_sender
+tx_sender
+current state
+current registry
+\end{lstlisting}
+
+\subsection{Default call shape}
+
+Preferred:
+
+\begin{lstlisting}
+(call-contract! tx TokenA transferFrom Alice Bob USDC 10)
+\end{lstlisting}
+
+Avoid by default:
+
+\begin{lstlisting}
+(call-contract! tx TokenA transferFrom (CapRef Cap-123) Alice Bob USDC 10)
+\end{lstlisting}
+
+Capability references \MAY{} appear in specialized methods, but they are not the ordinary programming model.
+
+\subsection{Method policy structure}
+
+Conceptual policy form:
+
+\begin{lstlisting}
+(method-policy TokenA transferFrom
+  (principal msg_sender)
+
+  (requires
+    AuthenticatedCaller
+    ContractNotPaused
+    (RegistryGrant
+      (registry TokenA.capabilities)
+      (holder msg_sender)
+      (resource (Allowance TokenA $from $asset))
+      (right transfer-from)
+      (amount $amount)
+      (consume $amount)))
+
+  (reads
+    (Balance TokenA $from $asset)
+    (Balance TokenA $to $asset)
+    (Allowance TokenA $from msg_sender $asset))
+
+  (writes
+    (Balance TokenA $from $asset)
+    (Balance TokenA $to $asset)
+    (Allowance TokenA $from msg_sender $asset))
+
+  (emits Transfer)
+
+  (invariants
+    NoNegativeBalances
+    TotalSupplyConserved)
+
+  (reentrancy nonreentrant))
+\end{lstlisting}
+
+\subsection{Functional access-control requirements}
+
+\req{SCS-FAC-001 --- Policy per public method}{Every public state-changing method \MUST{} have a registered method policy.}
+
+\req{SCS-FAC-002 --- Deny by default}{A method with no registered policy \MUST{} be unavailable to external callers.}
+
+\req{SCS-FAC-003 --- Runtime-derived principal}{The authorization principal \MUST{} be derived from transaction context, not from a user-provided method argument.}
+
+\req{SCS-FAC-004 --- Default principal}{The default authorization principal \SHOULD{} be \code{msg\_sender}.}
+
+\req{SCS-FAC-005 --- Live registry lookup}{The enforcement module \MUST{} check required durable authority through live capability-registry lookup.}
+
+\req{SCS-FAC-006 --- No routine capability arguments}{Normal methods \SHOULDNOT{} require callers to pass capability tokens or capability references.}
+
+\req{SCS-FAC-007 --- Argument-dependent policies}{Method policies \MAY{} bind requirements to method arguments. For example, \code{transferFrom(from, to, asset, amount)} requires an allowance grant from \code{from} to \code{msg\_sender} for \code{asset} and at least \code{amount}.}
+
+\req{SCS-FAC-008 --- Guarded policy registration}{Only deployment, governance, or authorized admin mechanisms \MAY{} register or update method policies.}
+
+\req{SCS-FAC-009 --- Dispatcher enforcement}{The dispatcher \MUST{} enforce method policy before private implementation execution.}
+
+\req{SCS-FAC-010 --- Private implementation protection}{The private implementation behind a public method \MUSTNOT{} be externally callable.}
+
+\req{SCS-FAC-011 --- Atomic authorization effects}{Any registry effects caused by authorization, such as allowance consumption or nonce consumption, \MUST{} commit or revert atomically with the contract call.}
+
+\req{SCS-FAC-012 --- Method-scoped write set}{A method policy \SHOULD{} declare the state classes or keys the method may write.}
+
+\req{SCS-FAC-013 --- Storage-level write-scope enforcement}{The storage kernel \MUST{} reject writes outside the active method's authorized write scope.}
+
+\req{SCS-FAC-014 --- View policies}{Read-only methods \SHOULD{} have policies too, even if the policy is simply \code{PublicRead}.}
+
+\req{SCS-FAC-015 --- Auditability}{Authorization success, authorization failure, and registry consumption \SHOULD{} be auditable.}
+
+\subsection{Two-layer authorization}
+
+\SCS{} separates method access from state effect control:
+
+\begin{lstlisting}
+method access control:
+    who may call this method?
+
+effect control:
+    what may this method mutate?
+\end{lstlisting}
+
+Both layers are required. A caller may be authorized to call \code{transferFrom}, but the implementation must still be prevented from mutating unrelated state such as minter roles, upgrade admin records, or total supply unless the policy explicitly permits those writes.

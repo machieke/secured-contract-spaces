@@ -1,0 +1,70 @@
+\section{Invariant Enforcement}
+
+\SCS{} \MUST{} enforce DeFi-critical invariants before commit.
+
+\subsection{Generic invariants}
+
+\begin{itemize}
+  \item no negative balances;
+  \item one canonical balance per account and asset;
+  \item total supply matches the sum of balances;
+  \item allowance cannot be overspent;
+  \item nonce cannot be replayed;
+  \item registry grants cannot be mutated without authority;
+  \item events correspond to committed state changes;
+  \item state schema is respected.
+\end{itemize}
+
+\subsection{Token invariants}
+
+\begin{description}[leftmargin=2.8cm]
+  \item[Transfer] total supply is conserved.
+  \item[Mint] minter authority is required, total supply increases by minted amount, and recipient balance increases by minted amount.
+  \item[Burn] burn authority is required, total supply decreases by burned amount, and owner balance decreases by burned amount.
+  \item[transferFrom] allowance is consumed atomically and spender is \code{msg\_sender}.
+\end{description}
+
+\subsection{AMM invariants}
+
+\begin{itemize}
+  \item reserves are nonnegative;
+  \item swap respects pricing formula;
+  \item slippage bound is enforced;
+  \item fees are accounted for;
+  \item pool accounting matches token transfers;
+  \item LP shares match pool ownership model.
+\end{itemize}
+
+\subsection{Lending invariants}
+
+\begin{itemize}
+  \item debt is nonnegative;
+  \item collateral is nonnegative;
+  \item borrow respects loan-to-value limits;
+  \item oracle price is fresh;
+  \item liquidation improves or preserves solvency;
+  \item protocol reserves remain nonnegative.
+\end{itemize}
+
+\subsection{Oracle invariants}
+
+\begin{itemize}
+  \item price update comes from authorized updater;
+  \item timestamp is fresh;
+  \item deviation bounds are enforced where applicable;
+  \item quorum rules are satisfied where applicable.
+\end{itemize}
+
+\subsection{Invariant requirements}
+
+\req{SCS-INV-001 --- Declared invariants}{Each contract \MUST{} declare critical invariants.}
+
+\req{SCS-INV-002 --- Runtime enforcement}{Mandatory invariants \MUST{} be checked by runtime or trusted kernel code before commit.}
+
+\req{SCS-INV-003 --- Pure invariant functions}{Invariant functions \MUST{} be deterministic and side-effect-free.}
+
+\req{SCS-INV-004 --- Storage-level invariants}{Basic invariants such as canonical key uniqueness and \code{UInt} nonnegativity \SHOULD{} be enforced by the storage kernel, not only by contract code.}
+
+\req{SCS-INV-005 --- Failure reverts}{Invariant failure \MUST{} revert the full transition.}
+
+\req{SCS-INV-006 --- Invariant coverage}{Invariant declarations \SHOULD{} identify which methods can affect each invariant.}

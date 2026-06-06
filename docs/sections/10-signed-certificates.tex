@@ -1,0 +1,75 @@
+\section{Signed Certificate Exceptions}
+
+Signed capability certificates are allowed, but they are not the default authority mechanism. They are adapters at the edges of the registry-first model.
+
+\subsection{Appropriate uses}
+
+Signed certificates \SHOULD{} be limited to:
+
+\begin{itemize}
+  \item permit-style approvals;
+  \item off-chain orders;
+  \item relayed transactions;
+  \item cross-chain attestations;
+  \item oracle signatures;
+  \item temporary sessions;
+  \item batch authorization.
+\end{itemize}
+
+\subsection{Certificate adapter pattern}
+
+A certificate adapter takes a signed object and turns it into registry state or consumes registry state.
+
+Example:
+
+\begin{lstlisting}
+(call-contract! tx TokenA permit Alice Dex USDC 1000 signedPermit)
+\end{lstlisting}
+
+\code{permit} does:
+
+\begin{enumerate}
+  \item verify signature;
+  \item verify domain separation;
+  \item verify nonce;
+  \item create or update registry allowance;
+  \item consume nonce;
+  \item emit \code{Approval}.
+\end{enumerate}
+
+Then future calls use the normal registry path:
+
+\begin{lstlisting}
+(call-contract! tx TokenA transferFrom Alice Bob USDC 10)
+\end{lstlisting}
+
+\subsection{Certificate requirements}
+
+\req{SCS-CERT-001 --- Exceptional use}{Signed certificates \MAY{} be supported but \SHOULDNOT{} be the normal authorization mechanism.}
+
+\req{SCS-CERT-002 --- Canonical payload}{A signed certificate \MUST{} have a canonical serialization.}
+
+\req{SCS-CERT-003 --- Domain separation}{A certificate \MUST{} bind the signature to chain, runtime, contract, resource, operation class, and relevant nonce domain.}
+
+\req{SCS-CERT-004 --- Issuer authority}{The verifier \MUST{} check that the signer is authorized to issue the certified authority.}
+
+\req{SCS-CERT-005 --- Non-malleability}{Changing holder, resource, rights, limit, expiry, nonce, or delegation policy \MUST{} invalidate the certificate.}
+
+\req{SCS-CERT-006 --- Replay protection}{A state-changing certificate \MUST{} consume a nonce, certificate identifier, sequence number, or equivalent registry record.}
+
+\req{SCS-CERT-007 --- Registry integration}{Where practical, successful certificate verification \SHOULD{} create, update, or consume registry authority.}
+
+\req{SCS-CERT-008 --- Short validity}{Certificate-only authority \SHOULD{} be short-lived.}
+
+\req{SCS-CERT-009 --- No direct state authority}{A signed certificate \MUSTNOT{} by itself bypass method-policy enforcement or guarded storage.}
+
+\subsection{Hybrid mode}
+
+If a signed certificate requires revocation, spend tracking, or nonce tracking, it becomes hybrid:
+
+\begin{lstlisting}
+signature proves issuance
+registry proves freshness / non-revocation / unused nonce / remaining spend
+\end{lstlisting}
+
+This hybrid mode is preferred for most DeFi certificate flows.

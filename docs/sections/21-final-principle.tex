@@ -1,0 +1,26 @@
+\section{Final Design Principle}
+
+The final \SCS{} model is:
+
+\begin{lstlisting}
+A smart contract is a secured Module Space.
+
+Its public surface is a method ABI.
+Its authority model is functional access control.
+Its durable permissions live in a live capability registry.
+Its state is private guarded storage.
+Its methods receive no routine capability arguments.
+Its dispatcher enforces method policy before implementation execution.
+Its storage kernel enforces method-scoped writes during execution.
+Its registry, state, and events commit or revert atomically.
+\end{lstlisting}
+
+The most important security invariant is:
+
+\begin{lstlisting}
+No balance changes merely because code can mention a balance atom.
+No balance changes merely because code can mention a capability-shaped term.
+Balances change only through an authorized method whose policy passes live registry enforcement and whose transition satisfies storage and protocol invariants.
+\end{lstlisting}
+
+For \PeTTa{}, this requires an added contract runtime, guarded storage backend, and restricted evaluator. Ordinary \PeTTa{} spaces and ordinary reflective mutation primitives are too open for adversarial DeFi balances.

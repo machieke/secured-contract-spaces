@@ -1,0 +1,167 @@
+\section{Recommended Implementation Phases and Reference Algorithms}
+
+\subsection{Implementation phases}
+
+\subsubsection{Phase 1 --- Minimal secured token}
+
+Implement:
+
+\begin{itemize}
+  \item secured contract dispatcher;
+  \item private state storage;
+  \item method policy registry;
+  \item capability registry;
+  \item live registry enforcement;
+  \item \code{transfer};
+  \item \code{approve};
+  \item \code{transferFrom};
+  \item atomic commit/revert;
+  \item event log;
+  \item restricted \PeTTa{} evaluator;
+  \item basic invariants.
+\end{itemize}
+
+\subsubsection{Phase 2 --- Method-scoped storage enforcement}
+
+Add:
+
+\begin{itemize}
+  \item write-scope derivation;
+  \item storage-level write rejection;
+  \item read/write sets;
+  \item state schema validation;
+  \item canonical state roots.
+\end{itemize}
+
+\subsubsection{Phase 3 --- Cross-contract DeFi}
+
+Add:
+
+\begin{itemize}
+  \item call stack;
+  \item \code{tx\_sender} / \code{msg\_sender} semantics;
+  \item nested subtransactions;
+  \item reentrancy guards;
+  \item AMM pool contract;
+  \item lending vault contract;
+  \item oracle adapter contract.
+\end{itemize}
+
+\subsubsection{Phase 4 --- Governance and upgrades}
+
+Add:
+
+\begin{itemize}
+  \item role registry;
+  \item timelocks;
+  \item pause mechanism;
+  \item policy updates;
+  \item upgrade control;
+  \item audit trail.
+\end{itemize}
+
+\subsubsection{Phase 5 --- Signed certificate adapters}
+
+Add:
+
+\begin{itemize}
+  \item permit;
+  \item signed orders;
+  \item oracle attestations;
+  \item bridge messages;
+  \item session grants;
+  \item certificate nonce registry.
+\end{itemize}
+
+\subsubsection{Phase 6 --- Verification tooling}
+
+Add:
+
+\begin{itemize}
+  \item property tests;
+  \item symbolic execution;
+  \item invariant checking;
+  \item policy linting;
+  \item write-scope analysis;
+  \item state-root proof generation;
+  \item event-root proof generation.
+\end{itemize}
+
+\subsection{Reference dispatcher}
+
+\begin{lstlisting}
+call_contract(tx, contract_id, method, args):
+    ctx = authenticate_and_build_context(tx, contract_id, method)
+
+    contract = resolve_contract(contract_id)
+    abi_entry = contract.abi.lookup(method)
+    require abi_entry.exported
+
+    policy = method_policy_registry.lookup(contract_id, method, args)
+    require policy.exists
+
+    begin_subtransaction(ctx)
+
+    auth_result = enforcement.authorize(ctx, policy, args)
+    require auth_result.allowed
+
+    ctx.write_scope = auth_result.write_scope
+    ctx.registry_delta = auth_result.registry_delta
+
+    result = execute_private_impl(ctx, contract, method, args)
+
+    require invariants_hold(ctx, contract, policy)
+
+    commit_subtransaction(ctx)
+    return result
+\end{lstlisting}
+
+\subsection{Reference enforcement module}
+
+\begin{lstlisting}
+authorize(ctx, policy, args):
+    principal = derive_principal(ctx, policy.principal)
+
+    for requirement in policy.requires:
+        evaluate_static_requirement(requirement, ctx, args)
+
+    for grant_req in policy.registry_requirements:
+        grant = registry.lookup(grant_req.key(ctx, args, principal))
+        require grant.active
+        require grant.rights include grant_req.right
+        require grant.scope matches ctx
+        require grant.remaining >= grant_req.amount
+
+        if grant_req.consume:
+            stage_registry_consumption(grant, grant_req.amount)
+
+    write_scope = derive_write_scope(policy.writes, ctx, args)
+    return Authorized(write_scope, staged_registry_delta)
+\end{lstlisting}
+
+\subsection{Reference storage kernel}
+
+\begin{lstlisting}
+state_set(ctx, key, value):
+    require ctx.active_authorized_frame
+    require key.contract_id == ctx.current_contract
+    require key in ctx.write_scope
+    require schema_accepts(key, value)
+    require kernel_invariants_accept(key, value)
+    stage_state_write(key, value)
+\end{lstlisting}
+
+\subsection{Reference registry consumption}
+
+\begin{lstlisting}
+consume_allowance(ctx, token, owner, spender, asset, amount):
+    key = AllowanceGrantKey(token, owner, spender, asset)
+    grant = registry.lookup(key)
+
+    require grant.active
+    require not grant.revoked
+    require grant.expiry >= ctx.block_height
+    require grant.limit - grant.spent >= amount
+
+    stage_registry_write(key, grant.spent := grant.spent + amount)
+\end{lstlisting}

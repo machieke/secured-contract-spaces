@@ -1,0 +1,105 @@
+\section{Capability Registry}
+
+The capability registry is the default authority substrate. A capability is normally a live grant in registry state, not a token passed into every method.
+
+\subsection{Registry grants}
+
+Example registry records:
+
+\begin{lstlisting}
+(RoleGrant
+  (contract TokenA)
+  (role Minter)
+  (holder BridgeA)
+  (admin Governance)
+  (active True))
+
+(AllowanceGrant
+  (token TokenA)
+  (owner Alice)
+  (spender Dex)
+  (asset USDC)
+  (limit 1000)
+  (spent 250)
+  (expiry Block-900000)
+  (revoked False))
+
+(OracleGrant
+  (oracle PriceOracleA)
+  (feed ETH-USD)
+  (holder OracleBot7)
+  (right update-price)
+  (active True))
+\end{lstlisting}
+
+\subsection{Registry-first authority}
+
+The normal authorization path is:
+
+\begin{lstlisting}
+method call
+  -> policy lookup
+  -> derive grant key from method arguments and caller
+  -> live registry lookup
+  -> authorize or reject
+\end{lstlisting}
+
+For example, \code{transferFrom(Alice, Bob, USDC, 10)} called by \code{Dex} derives the canonical lookup:
+
+\begin{lstlisting}
+AllowanceGrant(TokenA, owner=Alice, spender=Dex, asset=USDC)
+\end{lstlisting}
+
+The method succeeds only if that grant exists, is active, is not expired or revoked, and has sufficient remaining amount.
+
+\subsection{Registry requirements}
+
+\req{SCS-REG-001 --- Registry-first authority}{The default capability certification mechanism \MUST{} be live lookup in an authoritative capability registry.}
+
+\req{SCS-REG-002 --- Contract-scoped registries}{Each contract \MAY{} own its own capability registry. A runtime \MAY{} also provide a global registry, but authority records \MUST{} be explicitly scoped by contract and resource.}
+
+\req{SCS-REG-003 --- Guarded registry mutation}{Only authorized methods \MAY{} create, update, consume, revoke, or delete registry grants.}
+
+\req{SCS-REG-004 --- Use-time lookup}{Protected operations \MUST{} check the registry at use time.}
+
+\req{SCS-REG-005 --- No authority from syntax}{A \MeTTa{} term that merely resembles a grant \MUSTNOT{} authorize anything unless it exists in the authoritative registry or is accepted by an approved certificate adapter.}
+
+\req{SCS-REG-006 --- Canonical lookup keys}{Registries \SHOULD{} use canonical keys.}
+
+Examples:
+
+\begin{lstlisting}
+Role:
+    (contract, role, holder)
+
+Allowance:
+    (token, owner, spender, asset)
+
+Oracle:
+    (oracle, feed, updater)
+
+Governance:
+    (contract, action, holder)
+\end{lstlisting}
+
+\req{SCS-REG-007 --- Atomic consumption}{If a grant use consumes allowance, quota, nonce, or spend limit, that consumption \MUST{} be staged and committed atomically with the protected operation.}
+
+\req{SCS-REG-008 --- Revocation visibility}{A revoked grant \MUST{} fail once the revocation is visible in the current execution state.}
+
+\req{SCS-REG-009 --- No stale authorization cache}{A cached authorization result \MUSTNOT{} authorize a later operation after the underlying grant has changed, unless snapshot semantics explicitly permit it.}
+
+\req{SCS-REG-010 --- Deterministic lookup}{Registry lookup \MUST{} be deterministic under consensus execution.}
+
+\req{SCS-REG-011 --- Registry schema}{Capability registries \SHOULD{} define schemas for each grant class.}
+
+\req{SCS-REG-012 --- Registry invariants}{The registry \MUST{} enforce grant-class invariants such as nonnegative limits, valid expiry domains, valid holder identifiers, valid resource identifiers, and valid right names.}
+
+\subsection{Registry consumption}
+
+For spend-like grants, authorization has a side effect. For \code{transferFrom}, the runtime must stage:
+
+\begin{lstlisting}
+AllowanceGrant.spent := AllowanceGrant.spent + amount
+\end{lstlisting}
+
+That staged update \MUST{} commit only if the corresponding balance transfer also commits.

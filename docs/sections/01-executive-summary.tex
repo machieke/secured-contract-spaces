@@ -1,0 +1,54 @@
+\section{Executive Summary}
+
+A Secured Contract Space is a runtime-owned object representing one deployed smart-contract instance. It contains:
+
+\begin{lstlisting}
+SecuredContractSpace
+    contract_id
+    code_hash
+    public ABI / exported methods
+    private state subspace
+    public view interface
+    append-only event space
+    method policy registry
+    live capability registry
+    enforcement module
+    guarded storage kernel
+    invariant set
+    transaction engine hooks
+\end{lstlisting}
+
+The central rule is:
+
+\begin{lstlisting}
+External callers do not mutate state.
+External callers invoke methods.
+Methods are authorized by functional access-control policy.
+Authority is checked by live registry lookup.
+State writes are allowed only inside the method's authorized write scope.
+All state and registry effects commit or revert atomically.
+\end{lstlisting}
+
+The default authorization path is not ``pass a capability token into every method.'' Instead:
+
+\begin{lstlisting}
+call method
+    -> runtime derives current caller from transaction context
+    -> enforcement module looks up method policy
+    -> enforcement module derives required grants from method + args + caller
+    -> capability registry is queried live
+    -> authorization succeeds or fails
+    -> private implementation runs only if authorized
+\end{lstlisting}
+
+Signed capability certificates are allowed only as exceptions, usually through adapter methods such as \code{permit}, \code{executeSignedOrder}, \code{submitOracleAttestation}, or \code{redeemBridgeMessage}.
+
+\subsection{Primary safety invariant}
+
+The primary safety invariant is:
+
+\begin{lstlisting}
+No balance changes merely because code can mention a balance atom.
+No balance changes merely because code can mention a capability-shaped term.
+Balances change only through an authorized method whose policy passes live registry enforcement and whose transition satisfies storage and protocol invariants.
+\end{lstlisting}

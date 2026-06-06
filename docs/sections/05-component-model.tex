@@ -1,0 +1,99 @@
+\section{Component Model}
+
+\subsection{Secured Contract Space}
+
+A deployed contract instance \MUST{} be represented by a \SCS{} object.
+
+Conceptual structure:
+
+\begin{lstlisting}
+(SecuredContractSpace
+  (contract-id TokenA)
+  (code-hash Hash-abc)
+  (state-space TokenA.state)
+  (view-space TokenA.views)
+  (event-space TokenA.events)
+  (method-policy-registry TokenA.method-policies)
+  (capability-registry TokenA.capabilities)
+  (invariants TokenA.invariants)
+  (dispatcher TokenA.dispatcher))
+\end{lstlisting}
+
+The implementation \MAY{} store this as Prolog facts, Rust structs, database records, or another runtime representation. It \MUSTNOT{} expose the raw state handle to untrusted \MeTTa{} code.
+
+\subsection{Contract Dispatcher}
+
+The dispatcher is the only external entrypoint into a contract. It handles:
+
+\begin{itemize}
+  \item method resolution;
+  \item ABI checking;
+  \item caller-context binding;
+  \item policy lookup;
+  \item authorization callout;
+  \item private implementation invocation;
+  \item result formatting;
+  \item error handling.
+\end{itemize}
+
+External calls \MUST{} use dispatcher-mediated forms such as:
+
+\begin{lstlisting}
+(call-contract! tx TokenA transfer Bob USDC 10)
+\end{lstlisting}
+
+External callers \MUSTNOT{} call implementation internals such as:
+
+\begin{lstlisting}
+(TokenA._transferImpl Bob USDC 10)
+\end{lstlisting}
+
+\subsection{Method Policy Registry}
+
+The method policy registry maps:
+
+\begin{lstlisting}
+(contract_id, method_name, optional argument pattern)
+\end{lstlisting}
+
+to:
+
+\begin{itemize}
+  \item authorization requirements;
+  \item read effects;
+  \item write effects;
+  \item registry consumption effects;
+  \item event effects;
+  \item invariant requirements;
+  \item reentrancy policy.
+\end{itemize}
+
+\subsection{Capability Registry}
+
+The capability registry is the default source of durable authority. It stores live grants such as roles, allowances, spend limits, oracle updater permissions, bridge validator permissions, governance rights, and session limits.
+
+\subsection{Enforcement Module}
+
+The enforcement module evaluates method policies against:
+
+\begin{itemize}
+  \item current transaction context;
+  \item method arguments;
+  \item live capability registry;
+  \item contract state;
+  \item system state;
+  \item pause state;
+  \item governance state.
+\end{itemize}
+
+\subsection{Guarded Storage Kernel}
+
+The guarded storage kernel owns contract state mutation. It \MUST{} reject raw state mutation, unauthorized writes, duplicate canonical keys, schema violations, and numeric-domain violations.
+
+\subsection{Atomic Transaction Engine}
+
+The transaction engine stages contract-state writes, registry updates, nonce consumption, event emissions, and cross-contract subcall effects. It commits them together or discards them together.
+
+\subsection{Certificate Adapter}
+
+Signed certificates are exceptional adapters into the registry-first model. Examples include \code{permit}, \code{executeSignedOrder}, \code{submitOracleAttestation}, \code{redeemBridgeMessage}, and \code{openSession}.
