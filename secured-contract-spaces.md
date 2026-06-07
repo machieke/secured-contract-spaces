@@ -1966,6 +1966,9 @@ Add:
 
 - event-root proof generation.
 
+Formalization note: a companion abstract transition model and proof-obligation
+outline is maintained in [scs-formal.md](scs-formal.md).
+
 ## Reference dispatcher
 
     call_contract(tx, contract_id, method, args):
