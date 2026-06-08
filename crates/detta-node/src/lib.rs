@@ -4031,7 +4031,7 @@ mod tests {
                 &SnapshotChunkRequest {
                     snapshot_root: snapshot_root.clone(),
                     start_index: 0,
-                    max_chunks: 1,
+                    max_chunks: 1024,
                 },
                 64,
             )
@@ -4059,6 +4059,57 @@ mod tests {
             }
             message => panic!("expected snapshot manifest, got {message:?}"),
         }
+        let mut response_iter = response.into_iter();
+        let downstream_manifest = match response_iter.next().unwrap() {
+            NetworkMessage::SnapshotChunkManifest(manifest) => manifest,
+            message => panic!("expected snapshot manifest, got {message:?}"),
+        };
+        let downstream_chunks = response_iter
+            .map(|message| match message {
+                NetworkMessage::SnapshotChunk(chunk) => chunk,
+                message => panic!("expected snapshot chunk, got {message:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            downstream_chunks.len(),
+            downstream_manifest.chunk_count as usize
+        );
+        let downstream_chunk_set = SnapshotChunkSet {
+            manifest: downstream_manifest,
+            chunks: downstream_chunks,
+        };
+        let mut downstream_required_metadata_roots = BTreeMap::new();
+        downstream_required_metadata_roots.insert(
+            SNAPSHOT_METADATA_SNAPSHOT_IMPORT_AUDIT_ROOT.into(),
+            snapshot_import_audit_root.clone(),
+        );
+        let downstream_dir = temp_dir("state-sync-downstream-import-audit");
+        let downstream = PersistentValidatorNode::bootstrap(
+            "validator-3",
+            DeTTaState::new("detta-local"),
+            &downstream_dir,
+        )
+        .unwrap();
+        let downstream_import = downstream
+            .import_snapshot_chunk_set(&downstream_chunk_set, &downstream_required_metadata_roots)
+            .unwrap();
+        assert_eq!(downstream_import.global_state_root, snapshot_root);
+        let mut wrong_downstream_roots = downstream_required_metadata_roots;
+        wrong_downstream_roots.insert(
+            SNAPSHOT_METADATA_SNAPSHOT_IMPORT_AUDIT_ROOT.into(),
+            "wrong-import-audit-root".into(),
+        );
+        assert_eq!(
+            downstream
+                .import_snapshot_chunk_set(&downstream_chunk_set, &wrong_downstream_roots)
+                .unwrap_err(),
+            NodeError::SnapshotSync(SnapshotSyncError::MetadataRootMismatch {
+                key: SNAPSHOT_METADATA_SNAPSHOT_IMPORT_AUDIT_ROOT.into(),
+                expected: "wrong-import-audit-root".into(),
+                actual: Some(snapshot_import_audit_root.clone()),
+            })
+        );
+        fs::remove_dir_all(downstream_dir).unwrap();
 
         let mut restarted_sink =
             PersistentValidatorNode::restart("validator-2", &sink_dir).unwrap();

@@ -130,10 +130,12 @@ Completed production-plan slices:
   responses for consolidated audit discovery.
 - [x] Snapshot manifests bind snapshot import audit roots when import audit
   records exist.
+- [x] Downstream verified imports can require snapshot import audit roots and
+  reject mismatched import-audit roots before commit.
 
 Next implementation slices:
 
-- [ ] Require snapshot import audit roots during downstream verified imports.
+- [ ] Add retention and pagination limits for snapshot import audit records.
 
 # 1. Production Objective
 
