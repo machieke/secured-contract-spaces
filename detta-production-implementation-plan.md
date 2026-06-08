@@ -118,11 +118,13 @@ Completed production-plan slices:
   through dedicated RPC reports and persistent snapshot root responses.
 - [x] State-sync client diagnostics record the stable root of the required
   metadata-root set verified by successful sync attempts.
+- [x] Snapshot manifests bind persisted required metadata-root requirement roots
+  for downstream state-sync audit proofs.
 
 Next implementation slices:
 
-- [ ] Bind state-sync diagnostics requirement roots into snapshot metadata for
-  downstream audit proofs.
+- [ ] Add explicit import-time audit records for required metadata-root set
+  verification.
 
 # 1. Production Objective
 
