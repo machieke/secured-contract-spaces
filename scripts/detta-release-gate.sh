@@ -8,6 +8,7 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 cargo test -p detta-verify
+cargo build --locked --release
 
 (
   cd models

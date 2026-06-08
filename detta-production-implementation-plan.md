@@ -361,6 +361,8 @@ Completed production-plan slices:
 - [x] CI workflow runs the local release gate on pull requests and master
   pushes.
 - [x] CI dependency audit checks RustSec advisories through cargo-deny.
+- [x] Local release gate performs a locked release build reproducibility smoke
+  check.
 
 Next implementation slices:
 
