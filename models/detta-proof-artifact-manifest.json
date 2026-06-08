@@ -5,7 +5,7 @@
   "model_artifacts": [
     {
       "path": "models/DeTTaBlockExecution.tla",
-      "sha256": "169537a4ee52399bdce2c057c9f81d683d72e46354a872c3aa1800587efb93ba"
+      "sha256": "b1ad4c2b5bed6d8efd44451ef1a69665fe62ff234b8aa49ee8bfc0d10a8a6fc9"
     }
   ],
   "theorem_count": 15,
@@ -20,7 +20,7 @@
         },
         {
           "kind": "Model",
-          "reference": "models/DeTTaBlockExecution.tla::AuthorizationSafety"
+          "reference": "models/DeTTaBlockExecution.tla::DispatcherOnlyMutation"
         }
       ]
     },
@@ -82,7 +82,7 @@
         },
         {
           "kind": "Model",
-          "reference": "models/DeTTaBlockExecution.tla::Atomicity"
+          "reference": "models/DeTTaBlockExecution.tla::AtomicRevert"
         }
       ]
     },
@@ -96,7 +96,7 @@
         },
         {
           "kind": "Model",
-          "reference": "models/DeTTaBlockExecution.tla::Atomicity"
+          "reference": "models/DeTTaBlockExecution.tla::AtomicRevert"
         }
       ]
     },
@@ -162,7 +162,7 @@
         },
         {
           "kind": "Model",
-          "reference": "models/DeTTaBlockExecution.tla::NoWriteScopeLeakageAcrossCalls"
+          "reference": "models/DeTTaBlockExecution.tla::WriteScopeSafety"
         }
       ]
     },
@@ -197,10 +197,6 @@
         {
           "kind": "RuntimeTest",
           "reference": "detta_evaluator::tests::evaluator_rejects_forbidden_primitive"
-        },
-        {
-          "kind": "Model",
-          "reference": "models/DeTTaBlockExecution.tla::RawPrimitiveExclusion"
         }
       ]
     }

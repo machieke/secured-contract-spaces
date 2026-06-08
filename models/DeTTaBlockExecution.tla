@@ -42,6 +42,19 @@ vars ==
        height,
        finalizedHash >>
 
+TypeOK ==
+    /\ storage \in [Keys -> Values \cup {NoValue}]
+    /\ registry \subseteq (Principals \X Principals)
+    /\ policies \subseteq (Contracts \X Methods)
+    /\ usedNonces \subseteq (Principals \X Nat)
+    /\ events \in Seq(EventType)
+    /\ activeLocks \subseteq Contracts
+    /\ receipts \in Seq([tx_hash : TxIds,
+                         status  : {"Committed", "Reverted", "Rejected"},
+                         error   : Errors \cup {NoValue}])
+    /\ height \in Nat
+    /\ finalizedHash \in Values \cup {GenesisHash}
+
 TxType ==
     [ tx_hash : TxIds,
       sender  : Principals,

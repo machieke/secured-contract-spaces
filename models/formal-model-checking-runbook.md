@@ -26,6 +26,7 @@ sha256sum models/DeTTaBlockExecution.tla
 operators currently intended for model-checking or theorem mapping are:
 
 - `Spec`
+- `TypeOK`
 - `DispatcherOnlyMutation`
 - `WriteScopeSafety`
 - `AtomicRevert`

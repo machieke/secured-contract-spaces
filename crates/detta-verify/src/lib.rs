@@ -273,7 +273,7 @@ pub fn scs_theorem_coverage() -> Vec<SafetyTheoremCoverage> {
                 },
                 TheoremEvidence {
                     kind: Model,
-                    reference: "models/DeTTaBlockExecution.tla::AuthorizationSafety",
+                    reference: "models/DeTTaBlockExecution.tla::DispatcherOnlyMutation",
                 },
             ],
         },
@@ -331,7 +331,7 @@ pub fn scs_theorem_coverage() -> Vec<SafetyTheoremCoverage> {
                 },
                 TheoremEvidence {
                     kind: Model,
-                    reference: "models/DeTTaBlockExecution.tla::Atomicity",
+                    reference: "models/DeTTaBlockExecution.tla::AtomicRevert",
                 },
             ],
         },
@@ -345,7 +345,7 @@ pub fn scs_theorem_coverage() -> Vec<SafetyTheoremCoverage> {
                 },
                 TheoremEvidence {
                     kind: Model,
-                    reference: "models/DeTTaBlockExecution.tla::Atomicity",
+                    reference: "models/DeTTaBlockExecution.tla::AtomicRevert",
                 },
             ],
         },
@@ -409,7 +409,7 @@ pub fn scs_theorem_coverage() -> Vec<SafetyTheoremCoverage> {
                 },
                 TheoremEvidence {
                     kind: Model,
-                    reference: "models/DeTTaBlockExecution.tla::NoWriteScopeLeakageAcrossCalls",
+                    reference: "models/DeTTaBlockExecution.tla::WriteScopeSafety",
                 },
             ],
         },
@@ -438,16 +438,10 @@ pub fn scs_theorem_coverage() -> Vec<SafetyTheoremCoverage> {
         SafetyTheoremCoverage {
             id: "THM-015",
             name: "Raw Primitive Exclusion",
-            evidence: vec![
-                TheoremEvidence {
-                    kind: RuntimeTest,
-                    reference: "detta_evaluator::tests::evaluator_rejects_forbidden_primitive",
-                },
-                TheoremEvidence {
-                    kind: Model,
-                    reference: "models/DeTTaBlockExecution.tla::RawPrimitiveExclusion",
-                },
-            ],
+            evidence: vec![TheoremEvidence {
+                kind: RuntimeTest,
+                reference: "detta_evaluator::tests::evaluator_rejects_forbidden_primitive",
+            }],
         },
     ]
 }
@@ -678,9 +672,54 @@ mod tests {
             proof_model_artifacts(),
             vec![ModelArtifactRoot {
                 path: "models/DeTTaBlockExecution.tla",
-                sha256: "169537a4ee52399bdce2c057c9f81d683d72e46354a872c3aa1800587efb93ba".into(),
+                sha256: "b1ad4c2b5bed6d8efd44451ef1a69665fe62ff234b8aa49ee8bfc0d10a8a6fc9".into(),
             }]
         );
+    }
+
+    #[test]
+    fn theorem_model_evidence_references_existing_tla_operators() {
+        let operators = tla_operator_names(include_str!("../../../models/DeTTaBlockExecution.tla"));
+
+        for theorem in scs_theorem_coverage() {
+            for evidence in theorem.evidence {
+                if let Some(operator) = evidence
+                    .reference
+                    .strip_prefix("models/DeTTaBlockExecution.tla::")
+                {
+                    assert!(
+                        operators.contains(operator),
+                        "{} references missing TLA operator {operator}",
+                        theorem.id
+                    );
+                }
+            }
+        }
+    }
+
+    fn tla_operator_names(source: &str) -> BTreeSet<String> {
+        source
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim_start();
+                if line.starts_with("\\*") {
+                    return None;
+                }
+                let (candidate, _) = line.split_once("==")?;
+                let name = candidate
+                    .trim()
+                    .split(|character: char| character == '(' || character.is_whitespace())
+                    .next()?;
+                if name.is_empty()
+                    || !name
+                        .chars()
+                        .all(|character| character.is_ascii_alphanumeric() || character == '_')
+                {
+                    return None;
+                }
+                Some(name.to_string())
+            })
+            .collect()
     }
 
     #[test]

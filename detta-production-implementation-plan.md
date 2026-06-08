@@ -172,10 +172,12 @@ Completed production-plan slices:
   manifest.
 - [x] Formal model checking runbook documents proof-artifact checks and refresh
   workflow.
+- [x] Theorem evidence references are checked against concrete TLA model
+  operators.
 
 Next implementation slices:
 
-- [ ] Align theorem evidence references with concrete TLA model operators.
+- [ ] Add a bounded TLC config artifact to the proof manifest.
 
 # 1. Production Objective
 
