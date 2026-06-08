@@ -1,0 +1,12 @@
+[package]
+name = "detta-protocol"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+detta-consensus = { path = "../detta-consensus" }
+detta-core = { path = "../detta-core" }
+postcard = { version = "1.1", features = ["alloc"] }
+serde = { version = "1.0", features = ["derive"] }
+sha2 = "0.10"
