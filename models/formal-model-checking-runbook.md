@@ -55,6 +55,7 @@ cargo test -p detta-verify
   evaluator fixture inventory, except the inventory JSON itself.
 - the evaluator fixture inventory schema, version, and evaluator identifier are
   explicit and stable.
+- evaluator fixture inventory entry names are non-empty and unique.
 
 The evaluator `sha256sum -c` commands verify fixture-file attestations. The
 final `sha256sum` command reports the file root of the compact-trace-root
@@ -118,6 +119,7 @@ Before accepting a release proof bundle, verify:
 - the evaluator fixture inventory reports
   `detta.restricted-evaluator-fixture-inventory.v1`, `schema_version: 1`, and
   `detta.restricted-script-evaluator`;
+- every evaluator fixture inventory entry name is non-empty and unique;
 - every root listed inside the evaluator fixture inventory matches the
   corresponding `runtime_artifacts` entry;
 - `detta-restricted-evaluator-fixture-inventory.sha256` verifies against the

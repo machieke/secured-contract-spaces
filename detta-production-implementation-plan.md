@@ -237,10 +237,12 @@ Completed production-plan slices:
   coverage.
 - [x] Evaluator fixture inventory schema, version, and evaluator identifiers are
   checked in verify.
+- [x] Evaluator fixture inventory entry names are checked for uniqueness in
+  verify.
 
 Next implementation slices:
 
-- [ ] Add evaluator fixture inventory entry name uniqueness checks in verify.
+- [ ] Add evaluator fixture inventory entry path uniqueness checks in verify.
 
 # 1. Production Objective
 
