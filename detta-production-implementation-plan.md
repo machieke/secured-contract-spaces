@@ -241,10 +241,12 @@ Completed production-plan slices:
   verify.
 - [x] Evaluator fixture inventory entry paths are checked for uniqueness in
   verify.
+- [x] Evaluator fixture inventory roots are checked for lowercase SHA-256
+  format in verify.
 
 Next implementation slices:
 
-- [ ] Add evaluator fixture inventory root format checks in verify.
+- [ ] Add evaluator fixture inventory trace-root consistency checks in verify.
 
 # 1. Production Objective
 

@@ -1294,6 +1294,7 @@ mod tests {
         fixture_sha256: String,
         attestation_path: String,
         attestation_sha256: String,
+        trace_root: Option<String>,
         trace_root_attestation_path: Option<String>,
         trace_root_attestation_sha256: Option<String>,
     }
@@ -1355,6 +1356,28 @@ mod tests {
                     paths.insert(path.as_str()),
                     "{path} is duplicated in the evaluator fixture inventory"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn proof_runtime_evaluator_fixture_inventory_roots_are_lowercase_sha256_hex() {
+        let inventory: EvaluatorFixtureInventoryForTest = serde_json::from_str(include_str!(
+            "../../../models/detta-restricted-evaluator-fixture-inventory.json"
+        ))
+        .unwrap();
+
+        for entry in inventory.fixtures {
+            assert_lowercase_sha256_hex(&entry.fixture_sha256, &entry.fixture_path);
+            assert_lowercase_sha256_hex(&entry.attestation_sha256, &entry.attestation_path);
+            if let Some(root) = &entry.trace_root {
+                assert_lowercase_sha256_hex(root, &entry.name);
+            }
+            if let (Some(path), Some(root)) = (
+                &entry.trace_root_attestation_path,
+                &entry.trace_root_attestation_sha256,
+            ) {
+                assert_lowercase_sha256_hex(root, path);
             }
         }
     }
