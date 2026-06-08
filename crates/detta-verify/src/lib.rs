@@ -1178,6 +1178,33 @@ mod tests {
     }
 
     #[test]
+    fn proof_runtime_evaluator_fixture_json_are_covered_by_inventory() {
+        let inventory: EvaluatorFixtureInventoryForTest = serde_json::from_str(include_str!(
+            "../../../models/detta-restricted-evaluator-fixture-inventory.json"
+        ))
+        .unwrap();
+        let inventory_fixture_paths: BTreeSet<_> = inventory
+            .fixtures
+            .into_iter()
+            .map(|entry| entry.fixture_path)
+            .collect();
+
+        for artifact in proof_runtime_artifacts().into_iter().filter(|artifact| {
+            artifact
+                .path
+                .starts_with("models/detta-restricted-evaluator-")
+                && artifact.path.ends_with(".json")
+        }) {
+            assert!(
+                artifact.path == "models/detta-restricted-evaluator-fixture-inventory.json"
+                    || inventory_fixture_paths.contains(artifact.path),
+                "{} is not covered by the evaluator fixture inventory",
+                artifact.path
+            );
+        }
+    }
+
+    #[test]
     fn proof_runtime_artifacts_bind_all_evaluator_fixture_json() {
         let runtime_paths: BTreeSet<_> = proof_runtime_artifacts()
             .into_iter()

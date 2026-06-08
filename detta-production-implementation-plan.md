@@ -233,10 +233,12 @@ Completed production-plan slices:
   bytes.
 - [x] Proof manifest evaluator release attestations are checked against
   inventory coverage.
+- [x] Proof manifest evaluator fixture JSON paths are checked against inventory
+  coverage.
 
 Next implementation slices:
 
-- [ ] Add proof manifest evaluator fixture inventory path coverage checks.
+- [ ] Add evaluator fixture inventory schema and version checks in verify.
 
 # 1. Production Objective
 
