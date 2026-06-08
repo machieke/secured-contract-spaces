@@ -150,7 +150,7 @@ impl RpcService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use detta_core::{Argument, DeTTaState, Method, TxStatus};
+    use detta_core::{Argument, ContractInvariant, DeTTaState, Method, TxStatus};
 
     fn seeded_rpc() -> RpcService {
         let mut state = DeTTaState::new("detta-local");
@@ -215,6 +215,9 @@ mod tests {
         assert!(proof.verify());
         assert_eq!(proof.proof.root, block.header.storage_root);
         assert_eq!(contract.contract_id, "TokenA");
+        assert!(contract
+            .declared_invariants()
+            .contains(&ContractInvariant::TokenSupplyMatchesBalances));
         assert_eq!(rpc.get_state_root(), block.header.global_state_root);
     }
 }

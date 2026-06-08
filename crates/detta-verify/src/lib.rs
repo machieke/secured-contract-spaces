@@ -7,6 +7,9 @@ pub enum LintError {
     ContractHasNoExports {
         contract: String,
     },
+    ContractHasNoDeclaredInvariants {
+        contract: String,
+    },
     GovernanceTargetMissing {
         governance: String,
         target: String,
@@ -38,6 +41,11 @@ pub fn lint_state(state: &DeTTaState) -> Vec<LintError> {
     for contract in state.contract_records() {
         if contract.exported_methods().is_empty() {
             errors.push(LintError::ContractHasNoExports {
+                contract: contract.contract_id.clone(),
+            });
+        }
+        if contract.declared_invariants().is_empty() {
+            errors.push(LintError::ContractHasNoDeclaredInvariants {
                 contract: contract.contract_id.clone(),
             });
         }
@@ -186,6 +194,24 @@ mod tests {
     #[test]
     fn linter_accepts_valid_token_state() {
         let state = seeded_state();
+
+        assert_eq!(lint_state(&state), vec![]);
+    }
+
+    #[test]
+    fn linter_accepts_deployed_defi_contracts_with_invariant_manifests() {
+        let mut state = seeded_state();
+        state.deploy_amm_pool("PoolA", "USDC", "ETH").unwrap();
+        state
+            .deploy_oracle("OracleA", "USDC", "Reporter", 10)
+            .unwrap();
+        state.deploy_bridge("BridgeA", "SourceChain").unwrap();
+        state.deploy_governance("GovA", "TokenA", "Admin").unwrap();
+        state
+            .deploy_lending_vault("VaultA", "USDC", "dUSD", "OracleA", 5_000, 10)
+            .unwrap();
+        state.deploy_staking("StakeA", "USDC").unwrap();
+        state.deploy_router("RouterA", "TokenA").unwrap();
 
         assert_eq!(lint_state(&state), vec![]);
     }

@@ -215,6 +215,7 @@ pub struct ContractRecord {
     pub code_hash: String,
     pub kind: ContractKind,
     exported_methods: BTreeSet<Method>,
+    declared_invariants: BTreeSet<ContractInvariant>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -273,9 +274,29 @@ pub enum ContractKind {
     },
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+pub enum ContractInvariant {
+    TokenSupplyMatchesBalances,
+    AmmPoolAssetsDistinct,
+    AmmLpSupplyMatchesBalances,
+    OracleUpdatesRequireLiveGrant,
+    OracleFreshnessCheckedByConsumers,
+    BridgeInboundMessagesConsumedOnce,
+    BridgeOutboundMessageIdsUnique,
+    GovernanceChangesRequireAdminGrant,
+    GovernanceUpgradesRespectTimelock,
+    LendingBorrowWithinCollateralLimit,
+    StakingTotalMatchesBalances,
+    RouterDoesNotInheritCallerWriteScope,
+}
+
 impl ContractRecord {
     pub fn exported_methods(&self) -> &BTreeSet<Method> {
         &self.exported_methods
+    }
+
+    pub fn declared_invariants(&self) -> &BTreeSet<ContractInvariant> {
+        &self.declared_invariants
     }
 
     fn token(contract_id: ContractId, code_hash: String) -> Self {
@@ -289,6 +310,7 @@ impl ContractRecord {
                 Method::TransferFrom,
                 Method::Permit,
             ]),
+            declared_invariants: BTreeSet::from([ContractInvariant::TokenSupplyMatchesBalances]),
         }
     }
 
@@ -303,6 +325,10 @@ impl ContractRecord {
             code_hash,
             kind: ContractKind::AmmPool { asset_a, asset_b },
             exported_methods: BTreeSet::from([Method::AddLiquidity, Method::Swap]),
+            declared_invariants: BTreeSet::from([
+                ContractInvariant::AmmPoolAssetsDistinct,
+                ContractInvariant::AmmLpSupplyMatchesBalances,
+            ]),
         }
     }
 
@@ -312,6 +338,10 @@ impl ContractRecord {
             code_hash,
             kind: ContractKind::Oracle { asset, max_age },
             exported_methods: BTreeSet::from([Method::SubmitPrice]),
+            declared_invariants: BTreeSet::from([
+                ContractInvariant::OracleUpdatesRequireLiveGrant,
+                ContractInvariant::OracleFreshnessCheckedByConsumers,
+            ]),
         }
     }
 
@@ -323,6 +353,10 @@ impl ContractRecord {
             exported_methods: BTreeSet::from([
                 Method::QueueBridgeMessage,
                 Method::RedeemBridgeMessage,
+            ]),
+            declared_invariants: BTreeSet::from([
+                ContractInvariant::BridgeInboundMessagesConsumedOnce,
+                ContractInvariant::BridgeOutboundMessageIdsUnique,
             ]),
         }
     }
@@ -345,6 +379,10 @@ impl ContractRecord {
                 Method::UnpauseContract,
                 Method::ScheduleUpgrade,
                 Method::ExecuteUpgrade,
+            ]),
+            declared_invariants: BTreeSet::from([
+                ContractInvariant::GovernanceChangesRequireAdminGrant,
+                ContractInvariant::GovernanceUpgradesRespectTimelock,
             ]),
         }
     }
@@ -369,6 +407,9 @@ impl ContractRecord {
                 max_oracle_age,
             },
             exported_methods: BTreeSet::from([Method::DepositCollateral, Method::Borrow]),
+            declared_invariants: BTreeSet::from([
+                ContractInvariant::LendingBorrowWithinCollateralLimit,
+            ]),
         }
     }
 
@@ -378,6 +419,7 @@ impl ContractRecord {
             code_hash,
             kind: ContractKind::Staking { asset },
             exported_methods: BTreeSet::from([Method::Stake, Method::Unstake]),
+            declared_invariants: BTreeSet::from([ContractInvariant::StakingTotalMatchesBalances]),
         }
     }
 
@@ -387,6 +429,9 @@ impl ContractRecord {
             code_hash,
             kind: ContractKind::Router { token_contract },
             exported_methods: BTreeSet::from([Method::RouteTransferFrom]),
+            declared_invariants: BTreeSet::from([
+                ContractInvariant::RouterDoesNotInheritCallerWriteScope,
+            ]),
         }
     }
 }
@@ -3471,6 +3516,39 @@ mod tests {
 
     fn text(value: &str) -> Argument {
         Argument::Text(value.into())
+    }
+
+    #[test]
+    fn deployed_defi_contracts_declare_invariants() {
+        let mut state = seeded_state();
+        state.deploy_amm_pool("PoolA", "USDC", "ETH").unwrap();
+        state
+            .deploy_oracle("OracleA", "USDC", "Reporter", 10)
+            .unwrap();
+        state.deploy_bridge("BridgeA", "SourceChain").unwrap();
+        state.deploy_governance("GovA", "TokenA", "Admin").unwrap();
+        state
+            .deploy_lending_vault("VaultA", "USDC", "dUSD", "OracleA", 5_000, 10)
+            .unwrap();
+        state.deploy_staking("StakeA", "USDC").unwrap();
+        state.deploy_router("RouterA", "TokenA").unwrap();
+
+        let declared: BTreeSet<_> = state
+            .contract_records()
+            .flat_map(|record| record.declared_invariants().iter().cloned())
+            .collect();
+
+        assert!(state
+            .contract_records()
+            .all(|record| !record.declared_invariants().is_empty()));
+        assert!(declared.contains(&ContractInvariant::TokenSupplyMatchesBalances));
+        assert!(declared.contains(&ContractInvariant::AmmLpSupplyMatchesBalances));
+        assert!(declared.contains(&ContractInvariant::OracleFreshnessCheckedByConsumers));
+        assert!(declared.contains(&ContractInvariant::BridgeInboundMessagesConsumedOnce));
+        assert!(declared.contains(&ContractInvariant::GovernanceUpgradesRespectTimelock));
+        assert!(declared.contains(&ContractInvariant::LendingBorrowWithinCollateralLimit));
+        assert!(declared.contains(&ContractInvariant::StakingTotalMatchesBalances));
+        assert!(declared.contains(&ContractInvariant::RouterDoesNotInheritCallerWriteScope));
     }
 
     #[test]
