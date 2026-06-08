@@ -263,10 +263,12 @@ Completed production-plan slices:
   all-or-none proof-trace-only optionality in verify.
 - [x] Evaluator fixture inventory fixture order is checked for deterministic
   stability in verify.
+- [x] Proof manifest model artifact order is checked for deterministic
+  stability in verify.
 
 Next implementation slices:
 
-- [ ] Add proof manifest model artifact order stability checks in verify.
+- [ ] Add proof manifest runtime artifact order stability checks in verify.
 
 # 1. Production Objective
 

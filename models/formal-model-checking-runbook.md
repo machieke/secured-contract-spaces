@@ -42,6 +42,7 @@ cargo test -p detta-verify
 - every model and runtime artifact path uses an allowed proof artifact suffix:
   `.tla`, `.cfg`, `.json`, or `.sha256`.
 - model artifact paths are unique.
+- model artifact order is stable: TLA+ module, then TLC config.
 - model and runtime artifact path sets are disjoint.
 - every release attestation file uses single-line `sha256sum` format with a
   lowercase SHA-256 root and expected basename.
@@ -124,6 +125,7 @@ Before accepting a release proof bundle, verify:
   `runtime_artifacts`;
 - every `runtime_artifacts` path is unique;
 - every `model_artifacts` path is unique;
+- model artifact order is stable: TLA+ module, then TLC config;
 - every model and runtime artifact root is lowercase SHA-256 hex;
 - every model and runtime artifact path stays under `models/`;
 - every model and runtime artifact path uses an allowed suffix;

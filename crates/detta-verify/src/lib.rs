@@ -960,6 +960,22 @@ mod tests {
     }
 
     #[test]
+    fn proof_model_artifact_order_is_stable() {
+        let artifact_paths: Vec<_> = proof_model_artifacts()
+            .iter()
+            .map(|artifact| artifact.path)
+            .collect();
+
+        assert_eq!(
+            artifact_paths,
+            vec![
+                "models/DeTTaBlockExecution.tla",
+                "models/DeTTaBlockExecution.cfg",
+            ]
+        );
+    }
+
+    #[test]
     fn proof_runtime_artifacts_include_evaluator_fixture_roots() {
         assert_eq!(
             proof_runtime_artifacts(),
