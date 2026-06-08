@@ -7,6 +7,9 @@ use std::collections::BTreeSet;
 pub const RESTRICTED_EVALUATOR_PROOF_TRACE_SCHEMA: &str =
     "detta.restricted-evaluator-proof-trace.v1";
 pub const RESTRICTED_EVALUATOR_PROOF_TRACE_SCHEMA_VERSION: u32 = 1;
+pub const RESTRICTED_EVALUATOR_FORBIDDEN_PRIMITIVE_SCHEMA: &str =
+    "detta.restricted-evaluator-forbidden-primitive.v1";
+pub const RESTRICTED_EVALUATOR_FORBIDDEN_PRIMITIVE_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Instruction {
@@ -50,12 +53,29 @@ pub struct RestrictedEvaluatorProofTraceFixture {
     pub symbolic_verifier: SymbolicVerifierReport,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum EvaluatorError {
     ForbiddenPrimitive,
     StepBudgetExceeded,
     ArithmeticOverflow,
     Aborted,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ForbiddenPrimitiveCase {
+    pub primitive: EvaluatorPrimitive,
+    pub script: Vec<Instruction>,
+    pub expected_error: EvaluatorError,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RestrictedEvaluatorForbiddenPrimitiveFixture {
+    pub schema: String,
+    pub schema_version: u32,
+    pub evaluator: String,
+    pub max_steps: u64,
+    pub allowed_primitives: Vec<EvaluatorPrimitive>,
+    pub forbidden_cases: Vec<ForbiddenPrimitiveCase>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -182,6 +202,67 @@ pub fn restricted_evaluator_proof_trace_fixture() -> RestrictedEvaluatorProofTra
             errors,
         },
     }
+}
+
+pub fn restricted_evaluator_forbidden_primitive_fixture(
+) -> RestrictedEvaluatorForbiddenPrimitiveFixture {
+    let max_steps = 1;
+    let evaluator = RestrictedScriptEvaluator::new(max_steps);
+    let forbidden_cases = forbidden_contract_primitives()
+        .into_iter()
+        .map(|primitive| {
+            let script = vec![Instruction::UsePrimitive(primitive.clone())];
+            let expected_error = evaluator
+                .execute(&script)
+                .expect_err("golden forbidden primitive script should fail");
+            ForbiddenPrimitiveCase {
+                primitive,
+                script,
+                expected_error,
+            }
+        })
+        .collect();
+
+    RestrictedEvaluatorForbiddenPrimitiveFixture {
+        schema: RESTRICTED_EVALUATOR_FORBIDDEN_PRIMITIVE_SCHEMA.to_string(),
+        schema_version: RESTRICTED_EVALUATOR_FORBIDDEN_PRIMITIVE_SCHEMA_VERSION,
+        evaluator: "detta.restricted-script-evaluator".into(),
+        max_steps,
+        allowed_primitives: allowed_contract_primitives(),
+        forbidden_cases,
+    }
+}
+
+fn allowed_contract_primitives() -> Vec<EvaluatorPrimitive> {
+    vec![
+        EvaluatorPrimitive::StateGet,
+        EvaluatorPrimitive::StateSet,
+        EvaluatorPrimitive::RegistryGet,
+        EvaluatorPrimitive::RegistrySetGuarded,
+        EvaluatorPrimitive::EmitEvent,
+        EvaluatorPrimitive::CallContract,
+        EvaluatorPrimitive::Abort,
+        EvaluatorPrimitive::PureArithmetic,
+        EvaluatorPrimitive::PureComparison,
+        EvaluatorPrimitive::PureData,
+    ]
+}
+
+fn forbidden_contract_primitives() -> Vec<EvaluatorPrimitive> {
+    vec![
+        EvaluatorPrimitive::RawAddAtom,
+        EvaluatorPrimitive::RawRemoveAtom,
+        EvaluatorPrimitive::RawPrivateMatch,
+        EvaluatorPrimitive::PrologAssert,
+        EvaluatorPrimitive::PrologRetract,
+        EvaluatorPrimitive::PythonCall,
+        EvaluatorPrimitive::FileSystemAccess,
+        EvaluatorPrimitive::ProcessExecution,
+        EvaluatorPrimitive::NetworkAccess,
+        EvaluatorPrimitive::WallClockAccess,
+        EvaluatorPrimitive::Randomness,
+        EvaluatorPrimitive::ArbitraryImport,
+    ]
 }
 
 fn map_execution_error(error: ExecutionError) -> EvaluatorError {
@@ -362,5 +443,51 @@ mod tests {
             "a90c256f6a8f5f16dcf5bc3cc063aca87f8cfaff4c17196f0d9fcebac70c4947"
         );
         assert!(fixture.symbolic_verifier.errors.is_empty());
+    }
+
+    #[test]
+    fn restricted_evaluator_forbidden_primitive_fixture_matches_checked_in_json() {
+        let expected: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../models/detta-restricted-evaluator-forbidden-primitives.json"
+        ))
+        .unwrap();
+        let actual =
+            serde_json::to_value(restricted_evaluator_forbidden_primitive_fixture()).unwrap();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn restricted_evaluator_forbidden_primitive_fixture_json_is_stable() {
+        let actual = format!(
+            "{}\n",
+            serde_json::to_string_pretty(&restricted_evaluator_forbidden_primitive_fixture())
+                .unwrap()
+        );
+
+        assert_eq!(
+            actual,
+            include_str!("../../../models/detta-restricted-evaluator-forbidden-primitives.json")
+        );
+    }
+
+    #[test]
+    fn restricted_evaluator_forbidden_primitive_fixture_covers_escape_hatches() {
+        let fixture = restricted_evaluator_forbidden_primitive_fixture();
+
+        assert_eq!(
+            fixture.schema,
+            RESTRICTED_EVALUATOR_FORBIDDEN_PRIMITIVE_SCHEMA
+        );
+        assert_eq!(
+            fixture.schema_version,
+            RESTRICTED_EVALUATOR_FORBIDDEN_PRIMITIVE_SCHEMA_VERSION
+        );
+        assert_eq!(fixture.allowed_primitives, allowed_contract_primitives());
+        assert_eq!(fixture.forbidden_cases.len(), 12);
+        for case in fixture.forbidden_cases {
+            assert_eq!(case.expected_error, EvaluatorError::ForbiddenPrimitive);
+            assert_eq!(case.script, vec![Instruction::UsePrimitive(case.primitive)]);
+        }
     }
 }

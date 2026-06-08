@@ -178,10 +178,11 @@ Completed production-plan slices:
 - [x] Proof-artifact manifest JSON serialization has a stable schema fixture.
 - [x] Proof-artifact manifest schema and version are explicit constants.
 - [x] Restricted evaluator proof traces have stable golden fixtures.
+- [x] Restricted evaluator forbidden primitives have stable golden fixtures.
 
 Next implementation slices:
 
-- [ ] Add restricted evaluator forbidden-primitive golden fixtures.
+- [ ] Document the restricted evaluator subset and fixture schemas.
 
 # 1. Production Objective
 

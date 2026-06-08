@@ -17,6 +17,9 @@ This directory contains formal-model artifacts for the DeTTa runtime.
 - `detta-restricted-evaluator-proof-trace.json` is a golden fixture for the
   restricted evaluator. It binds a representative script, emitted kernel trace,
   trace root, and symbolic verifier result.
+- `detta-restricted-evaluator-forbidden-primitives.json` is a golden fixture
+  for the restricted evaluator's primitive boundary. It lists all allowed
+  contract primitives and every forbidden escape hatch with the expected trap.
 - `formal-model-checking-runbook.md` describes the repository checks, external
   model-checker preparation, and manifest refresh procedure.
 

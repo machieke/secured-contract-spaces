@@ -1,0 +1,128 @@
+{
+  "schema": "detta.restricted-evaluator-forbidden-primitive.v1",
+  "schema_version": 1,
+  "evaluator": "detta.restricted-script-evaluator",
+  "max_steps": 1,
+  "allowed_primitives": [
+    "StateGet",
+    "StateSet",
+    "RegistryGet",
+    "RegistrySetGuarded",
+    "EmitEvent",
+    "CallContract",
+    "Abort",
+    "PureArithmetic",
+    "PureComparison",
+    "PureData"
+  ],
+  "forbidden_cases": [
+    {
+      "primitive": "RawAddAtom",
+      "script": [
+        {
+          "UsePrimitive": "RawAddAtom"
+        }
+      ],
+      "expected_error": "ForbiddenPrimitive"
+    },
+    {
+      "primitive": "RawRemoveAtom",
+      "script": [
+        {
+          "UsePrimitive": "RawRemoveAtom"
+        }
+      ],
+      "expected_error": "ForbiddenPrimitive"
+    },
+    {
+      "primitive": "RawPrivateMatch",
+      "script": [
+        {
+          "UsePrimitive": "RawPrivateMatch"
+        }
+      ],
+      "expected_error": "ForbiddenPrimitive"
+    },
+    {
+      "primitive": "PrologAssert",
+      "script": [
+        {
+          "UsePrimitive": "PrologAssert"
+        }
+      ],
+      "expected_error": "ForbiddenPrimitive"
+    },
+    {
+      "primitive": "PrologRetract",
+      "script": [
+        {
+          "UsePrimitive": "PrologRetract"
+        }
+      ],
+      "expected_error": "ForbiddenPrimitive"
+    },
+    {
+      "primitive": "PythonCall",
+      "script": [
+        {
+          "UsePrimitive": "PythonCall"
+        }
+      ],
+      "expected_error": "ForbiddenPrimitive"
+    },
+    {
+      "primitive": "FileSystemAccess",
+      "script": [
+        {
+          "UsePrimitive": "FileSystemAccess"
+        }
+      ],
+      "expected_error": "ForbiddenPrimitive"
+    },
+    {
+      "primitive": "ProcessExecution",
+      "script": [
+        {
+          "UsePrimitive": "ProcessExecution"
+        }
+      ],
+      "expected_error": "ForbiddenPrimitive"
+    },
+    {
+      "primitive": "NetworkAccess",
+      "script": [
+        {
+          "UsePrimitive": "NetworkAccess"
+        }
+      ],
+      "expected_error": "ForbiddenPrimitive"
+    },
+    {
+      "primitive": "WallClockAccess",
+      "script": [
+        {
+          "UsePrimitive": "WallClockAccess"
+        }
+      ],
+      "expected_error": "ForbiddenPrimitive"
+    },
+    {
+      "primitive": "Randomness",
+      "script": [
+        {
+          "UsePrimitive": "Randomness"
+        }
+      ],
+      "expected_error": "ForbiddenPrimitive"
+    },
+    {
+      "primitive": "ArbitraryImport",
+      "script": [
+        {
+          "UsePrimitive": "ArbitraryImport"
+        }
+      ],
+      "expected_error": "ForbiddenPrimitive"
+    }
+  ]
+}
