@@ -100,10 +100,12 @@ Completed production-plan slices:
   including the empty-before-sync state.
 - [x] Persisted TCP state-sync diagnostics are served over the shared TCP JSON
   RPC path.
+- [x] Persistent node snapshot root responses include persisted state-sync
+  diagnostics when available.
 
 Next implementation slices:
 
-- [ ] Include state-sync diagnostics in persistent node snapshot root responses.
+- [ ] Bind state-sync diagnostics into snapshot metadata roots for audit proofs.
 
 # 1. Production Objective
 

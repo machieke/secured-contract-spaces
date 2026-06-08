@@ -425,6 +425,9 @@ impl PersistentValidatorNode {
 
     pub fn node_snapshot_roots(&self) -> Result<PersistentNodeSnapshotRoots, NodeError> {
         let snapshot = self.node_snapshot()?;
+        let snapshot_sync_client_metrics = self
+            .load_snapshot_sync_client_metrics()?
+            .map(snapshot_sync_client_metrics_report);
         Ok(PersistentNodeSnapshotRoots {
             storage_root: snapshot.state_snapshot.storage_root,
             registry_root: snapshot.state_snapshot.registry_root,
@@ -434,6 +437,7 @@ impl PersistentValidatorNode {
             outbox_root: snapshot.state_snapshot.outbox_root,
             global_state_root: snapshot.state_snapshot.global_state_root,
             validator_set_metadata_audit_root: snapshot.validator_set_metadata_audit_root,
+            snapshot_sync_client_metrics,
         })
     }
 
@@ -1563,6 +1567,7 @@ mod tests {
             outbox_root: snapshot.state_snapshot.outbox_root.clone(),
             global_state_root: snapshot.state_snapshot.global_state_root.clone(),
             validator_set_metadata_audit_root: snapshot.validator_set_metadata_audit_root.clone(),
+            snapshot_sync_client_metrics: None,
         }
     }
 
@@ -3684,11 +3689,14 @@ mod tests {
                 expected_metrics_report.clone()
             )))
         );
+        let sink_roots = sink.node_snapshot_roots().unwrap();
         assert_eq!(
-            sink.node_snapshot_roots()
-                .unwrap()
-                .validator_set_metadata_audit_root,
+            sink_roots.validator_set_metadata_audit_root,
             status.validator_set_metadata_audit_root
+        );
+        assert_eq!(
+            sink_roots.snapshot_sync_client_metrics,
+            Some(expected_metrics_report.clone())
         );
 
         let mut restarted_sink =
@@ -3700,8 +3708,15 @@ mod tests {
         assert_eq!(
             restarted_sink.handle_rpc_request(RpcRequest::GetSnapshotSyncClientMetrics),
             RpcResponse::Ok(RpcResult::SnapshotSyncClientMetrics(Some(
-                expected_metrics_report
+                expected_metrics_report.clone()
             )))
+        );
+        assert_eq!(
+            restarted_sink
+                .node_snapshot_roots()
+                .unwrap()
+                .snapshot_sync_client_metrics,
+            Some(expected_metrics_report)
         );
 
         drop(client);
