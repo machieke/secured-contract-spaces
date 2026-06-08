@@ -56,10 +56,12 @@ Completed production-plan slices:
   replay-protected node keyrings.
 - [x] Validator-set metadata updates require quorum authorization from
   independently verified current validators before mutating durable keyrings.
+- [x] Quorum-authorized validator-set metadata update authorizations gossip over
+  in-memory and TCP validator transports before durable application.
 
 Next implementation slices:
 
-- [ ] Gossip quorum-authorized validator-set metadata updates over TCP.
+- [ ] Persist pending validator-set metadata authorizations for restart-safe quorum assembly.
 
 # 1. Production Objective
 

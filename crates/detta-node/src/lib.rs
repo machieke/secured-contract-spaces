@@ -431,6 +431,29 @@ impl PersistentValidatorNode {
             .map_err(NodeError::Network)
     }
 
+    pub fn sign_validator_set_metadata_update_authorization(
+        &self,
+        update: ValidatorSetMetadataUpdate,
+        signing_key: &ValidatorSigningKey,
+    ) -> Result<NetworkMessage, NodeError> {
+        self.sign_validator_message(
+            signing_key,
+            NetworkMessage::ValidatorSetMetadataUpdate(update),
+        )
+    }
+
+    pub fn gossip_signed_validator_set_metadata_update_authorization(
+        &self,
+        update: ValidatorSetMetadataUpdate,
+        signing_key: &ValidatorSigningKey,
+        transport: &mut InMemoryTransport,
+    ) -> Result<usize, NodeError> {
+        let signed = self.sign_validator_set_metadata_update_authorization(update, signing_key)?;
+        transport
+            .broadcast(self.validator_id.clone(), signed)
+            .map_err(NodeError::Network)
+    }
+
     pub fn sign_validator_message(
         &self,
         signing_key: &ValidatorSigningKey,
@@ -906,6 +929,61 @@ mod tests {
     }
 
     #[test]
+    fn persistent_node_gossips_signed_validator_set_metadata_update_authorization() {
+        let validator_dir = temp_dir("gossip-validator-set-update-validator");
+        let peer_dir = temp_dir("gossip-validator-set-update-peer");
+        let validator_signing_key = validator_key("validator-1", 7);
+        let peer_key = validator_key("validator-2", 8);
+        let added_key = validator_key("validator-3", 9);
+        let validator = PersistentValidatorNode::bootstrap_with_validator_set(
+            "validator-1",
+            seeded_state(),
+            &validator_dir,
+            "detta-testnet",
+            vec![validator_signing_key.public_key(), peer_key.public_key()],
+        )
+        .unwrap();
+        let peer = PersistentValidatorNode::bootstrap_with_validator_set(
+            "validator-2",
+            seeded_state(),
+            &peer_dir,
+            "detta-testnet",
+            vec![validator_signing_key.public_key(), peer_key.public_key()],
+        )
+        .unwrap();
+        let mut transport =
+            InMemoryTransport::new(["validator-1".into(), "validator-2".into()]).unwrap();
+        let update = ValidatorSetMetadataUpdate {
+            update_id: "validator-set-update-1".into(),
+            add_validators: vec![added_key.public_key()],
+            remove_validators: vec![],
+        };
+
+        assert_eq!(
+            validator
+                .gossip_signed_validator_set_metadata_update_authorization(
+                    update.clone(),
+                    &validator_signing_key,
+                    &mut transport,
+                )
+                .unwrap(),
+            1
+        );
+
+        let envelope = transport.drain_peer("validator-2").unwrap().pop().unwrap();
+        let NetworkMessage::SignedValidator(signed) = &envelope.message else {
+            panic!("expected signed validator metadata update authorization");
+        };
+        assert_eq!(
+            peer.verified_validator_set_metadata_update(signed).unwrap(),
+            update
+        );
+
+        fs::remove_dir_all(validator_dir).unwrap();
+        fs::remove_dir_all(peer_dir).unwrap();
+    }
+
+    #[test]
     fn persistent_node_gossips_signed_block_proposal_to_peer() {
         let proposer_dir = temp_dir("signed-proposal");
         let peer_dir = temp_dir("signed-proposal-peer");
@@ -1121,6 +1199,95 @@ mod tests {
         );
 
         fs::remove_dir_all(proposer_dir).unwrap();
+    }
+
+    #[test]
+    fn tcp_validator_set_metadata_update_authorizations_apply_at_quorum() {
+        let coordinator_dir = temp_dir("tcp-validator-set-update-coordinator");
+        let coordinator_key = validator_key("validator-1", 7);
+        let peer2_key = validator_key("validator-2", 8);
+        let peer3_key = validator_key("validator-3", 9);
+        let added_key = validator_key("validator-4", 10);
+        let current_validator_keys = vec![
+            coordinator_key.public_key(),
+            peer2_key.public_key(),
+            peer3_key.public_key(),
+        ];
+        let mut coordinator = PersistentValidatorNode::bootstrap_with_validator_set(
+            "validator-1",
+            seeded_state(),
+            &coordinator_dir,
+            "detta-testnet",
+            current_validator_keys.clone(),
+        )
+        .unwrap();
+        let update = ValidatorSetMetadataUpdate {
+            update_id: "validator-set-update-1".into(),
+            add_validators: vec![added_key.public_key()],
+            remove_validators: vec![],
+        };
+        let coordinator_authorization = coordinator
+            .sign_validator_set_metadata_update_authorization(update.clone(), &coordinator_key)
+            .unwrap();
+
+        let mut peers = Vec::new();
+        for (peer_id, peer_key) in [
+            ("validator-2".to_string(), peer2_key),
+            ("validator-3".to_string(), peer3_key),
+        ] {
+            let peer_dir = temp_dir(&format!("tcp-validator-set-update-{peer_id}"));
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let trusted_validator_keys = current_validator_keys.clone();
+            let expected_update = update.clone();
+            let handle = thread::spawn(move || {
+                let peer = PersistentValidatorNode::bootstrap_with_validator_set(
+                    &peer_id,
+                    seeded_state(),
+                    &peer_dir,
+                    "detta-testnet",
+                    trusted_validator_keys,
+                )
+                .unwrap();
+
+                let (stream, _) = listener.accept().unwrap();
+                let mut tcp = TcpProtocolStream::from_stream(stream);
+                let message = tcp.receive().unwrap();
+                let NetworkMessage::SignedValidator(signed) = &message else {
+                    panic!("expected signed validator metadata update authorization");
+                };
+                let received_update = peer.verified_validator_set_metadata_update(signed).unwrap();
+                assert_eq!(received_update, expected_update);
+
+                let signed_response = peer
+                    .sign_validator_set_metadata_update_authorization(received_update, &peer_key)
+                    .unwrap();
+                tcp.send(&signed_response).unwrap();
+                fs::remove_dir_all(peer_dir).unwrap();
+            });
+            peers.push((addr, handle));
+        }
+
+        let mut signed_updates = vec![coordinator_authorization.clone()];
+        for (addr, handle) in peers {
+            let mut tcp = TcpProtocolStream::connect(addr).unwrap();
+            tcp.send(&coordinator_authorization).unwrap();
+            signed_updates.push(tcp.receive().unwrap());
+            handle.join().unwrap();
+        }
+
+        assert_eq!(coordinator.validator_set_metadata_quorum(), 3);
+        coordinator
+            .apply_quorum_authorized_validator_set_metadata_update(&signed_updates)
+            .unwrap();
+        assert!(coordinator.has_applied_validator_set_update("validator-set-update-1"));
+        assert!(coordinator.trusted_validator_key("validator-4").is_some());
+
+        let restarted = PersistentValidatorNode::restart("validator-1", &coordinator_dir).unwrap();
+        assert!(restarted.has_applied_validator_set_update("validator-set-update-1"));
+        assert!(restarted.trusted_validator_key("validator-4").is_some());
+
+        fs::remove_dir_all(coordinator_dir).unwrap();
     }
 
     #[test]
