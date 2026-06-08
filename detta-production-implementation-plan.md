@@ -189,10 +189,12 @@ Completed production-plan slices:
   attestation.
 - [x] Restricted evaluator resource exhaustion fixture root is bound into the
   proof-artifact manifest.
+- [x] Restricted evaluator resource exhaustion fixture is referenced by theorem
+  evidence.
 
 Next implementation slices:
 
-- [ ] Reference the restricted evaluator resource fixture in theorem evidence.
+- [ ] Add restricted evaluator arithmetic-overflow golden fixture.
 
 # 1. Production Objective
 

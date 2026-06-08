@@ -148,6 +148,10 @@
         {
           "kind": "RuntimeTest",
           "reference": "detta_core::tests::deterministic_replay_produces_identical_roots"
+        },
+        {
+          "kind": "Fixture",
+          "reference": "models/detta-restricted-evaluator-resource-exhaustion.json"
         }
       ]
     },

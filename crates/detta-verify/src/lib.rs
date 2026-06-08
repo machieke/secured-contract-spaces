@@ -418,6 +418,10 @@ pub fn scs_theorem_coverage() -> Vec<SafetyTheoremCoverage> {
                     kind: RuntimeTest,
                     reference: "detta_core::tests::deterministic_replay_produces_identical_roots",
                 },
+                TheoremEvidence {
+                    kind: Fixture,
+                    reference: "models/detta-restricted-evaluator-resource-exhaustion.json",
+                },
             ],
         },
         SafetyTheoremCoverage {
@@ -801,6 +805,7 @@ mod tests {
             BTreeSet::from([
                 "models/detta-restricted-evaluator-proof-trace.json",
                 "models/detta-restricted-evaluator-forbidden-primitives.json",
+                "models/detta-restricted-evaluator-resource-exhaustion.json",
             ])
         );
         for reference in fixture_references {
