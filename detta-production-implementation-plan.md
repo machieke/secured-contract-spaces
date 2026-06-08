@@ -323,11 +323,12 @@ Completed production-plan slices:
   verify.
 - [x] Proof release attestation target filenames are checked for consistency in
   verify.
+- [x] Proof release attestation target extensions are checked for consistency
+  in verify.
 
 Next implementation slices:
 
-- [ ] Add proof release attestation target extension consistency checks in
-  verify.
+- [ ] Add proof release attestation target path depth checks in verify.
 
 # 1. Production Objective
 

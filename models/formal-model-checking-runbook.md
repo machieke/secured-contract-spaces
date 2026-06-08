@@ -123,6 +123,7 @@ cargo test -p detta-verify
 - proof release attestation target paths are unique.
 - proof release attestation target filenames match their paths and attestation
   lines.
+- proof release attestation target extensions are consistent and allowed.
 
 The evaluator `sha256sum -c` commands verify fixture-file attestations. The
 final `sha256sum` command reports the file root of the compact-trace-root
@@ -262,6 +263,7 @@ Before accepting a release proof bundle, verify:
 - proof release attestation target paths are unique;
 - proof release attestation target filenames match their paths and attestation
   lines;
+- proof release attestation target extensions are consistent and allowed;
 - `detta-restricted-evaluator-proof-trace-root.sha256` matches both the
   fixture `trace_root` field and the recomputed root of `report.trace`;
 - `models/detta-proof-artifact-manifest.sha256` verifies after all fixture,

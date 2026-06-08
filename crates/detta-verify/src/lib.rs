@@ -1554,6 +1554,17 @@ mod tests {
     }
 
     #[test]
+    fn proof_release_attestation_target_extensions_are_consistent() {
+        for fixture in proof_release_attestations_for_test() {
+            let target_extension = fixture.target_path.rsplit('.').next().unwrap();
+            let file_extension = fixture.file_name.rsplit('.').next().unwrap();
+
+            assert_eq!(target_extension, file_extension);
+            assert!(matches!(target_extension, "json" | "trace"));
+        }
+    }
+
+    #[test]
     fn proof_release_attestation_target_paths_use_models_namespace() {
         for fixture in proof_release_attestations_for_test() {
             assert!(
