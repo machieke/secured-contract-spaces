@@ -1377,6 +1377,38 @@ mod tests {
     }
 
     #[test]
+    fn proof_runtime_evaluator_fixture_inventory_names_map_to_expected_schemas() {
+        let inventory: EvaluatorFixtureInventoryForTest = serde_json::from_str(include_str!(
+            "../../../models/detta-restricted-evaluator-fixture-inventory.json"
+        ))
+        .unwrap();
+        let name_to_schema: BTreeMap<_, _> = inventory
+            .fixtures
+            .iter()
+            .map(|entry| (entry.name.as_str(), entry.fixture_schema.as_str()))
+            .collect();
+
+        assert_eq!(
+            name_to_schema,
+            BTreeMap::from([
+                ("proof-trace", "detta.restricted-evaluator-proof-trace.v1"),
+                (
+                    "forbidden-primitives",
+                    "detta.restricted-evaluator-forbidden-primitive.v1"
+                ),
+                (
+                    "resource-exhaustion",
+                    "detta.restricted-evaluator-resource-exhaustion.v1"
+                ),
+                (
+                    "arithmetic-overflow",
+                    "detta.restricted-evaluator-arithmetic-overflow.v1"
+                ),
+            ])
+        );
+    }
+
+    #[test]
     fn proof_runtime_evaluator_fixture_inventory_paths_are_unique() {
         let inventory: EvaluatorFixtureInventoryForTest = serde_json::from_str(include_str!(
             "../../../models/detta-restricted-evaluator-fixture-inventory.json"

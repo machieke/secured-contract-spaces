@@ -59,6 +59,7 @@ cargo test -p detta-verify
 - evaluator fixture inventory fixture schemas are namespaced and unique.
 - evaluator fixture inventory fixture schemas cover proof trace, forbidden
   primitive, resource exhaustion, and arithmetic overflow fixtures.
+- evaluator fixture inventory entry names map to the expected fixture schemas.
 - evaluator fixture inventory fixture, attestation, and trace-root attestation
   paths are unique.
 - evaluator fixture inventory roots are lowercase SHA-256 hex.
@@ -131,6 +132,8 @@ Before accepting a release proof bundle, verify:
 - every evaluator fixture inventory fixture schema is namespaced and unique;
 - evaluator fixture inventory fixture schemas cover all four expected evaluator
   fixture families;
+- every evaluator fixture inventory entry name maps to its expected fixture
+  schema;
 - every evaluator fixture inventory path is unique across fixture,
   attestation, and trace-root attestation fields;
 - every evaluator fixture inventory root uses lowercase SHA-256 hex;
