@@ -1,5 +1,5 @@
 use bincode::Options;
-use detta_consensus::FinalityCertificate;
+use detta_consensus::{FinalityCertificate, SlashingRecord};
 use detta_core::{Block, DeTTaState, SnapshotError, StateSnapshot, Transaction};
 use serde::{de::DeserializeOwned, Serialize};
 use std::fs::{self, File};
@@ -25,6 +25,7 @@ impl FileStorage {
         let root = root.into();
         fs::create_dir_all(root.join("blocks")).map_err(io_error)?;
         fs::create_dir_all(root.join("certificates")).map_err(io_error)?;
+        fs::create_dir_all(root.join("slashings")).map_err(io_error)?;
         Ok(Self { root })
     }
 
@@ -65,6 +66,14 @@ impl FileStorage {
         read_json(&self.certificate_path(height))
     }
 
+    pub fn commit_slashing_record(&self, record: &SlashingRecord) -> Result<(), StorageError> {
+        write_json_atomic(&self.slashing_path(&record.validator_id), record)
+    }
+
+    pub fn load_slashing_record(&self, validator_id: &str) -> Result<SlashingRecord, StorageError> {
+        read_json(&self.slashing_path(validator_id))
+    }
+
     pub fn commit_mempool(&self, transactions: &[Transaction]) -> Result<(), StorageError> {
         write_json_atomic(&self.mempool_path(), &transactions)
     }
@@ -87,6 +96,12 @@ impl FileStorage {
 
     fn certificate_path(&self, height: u64) -> PathBuf {
         self.root.join("certificates").join(format!("{height}.bin"))
+    }
+
+    fn slashing_path(&self, validator_id: &str) -> PathBuf {
+        self.root
+            .join("slashings")
+            .join(format!("{}.bin", file_safe_id(validator_id)))
     }
 
     fn mempool_path(&self) -> PathBuf {
@@ -137,9 +152,20 @@ fn bincode_options() -> impl Options {
     bincode::DefaultOptions::new().with_limit(MAX_ENCODED_BYTES)
 }
 
+fn file_safe_id(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(value.len() * 2);
+    for byte in value.as_bytes() {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use detta_consensus::EquivocationEvidence;
     use detta_core::{Argument, Method, Transaction, ValidatorNode};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -242,6 +268,28 @@ mod tests {
         let loaded = storage.load_finality_certificate(7).unwrap();
 
         assert_eq!(loaded, certificate);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn persists_and_loads_slashing_record() {
+        let dir = temp_dir("slashing");
+        let storage = FileStorage::open(&dir).unwrap();
+        let record = SlashingRecord {
+            validator_id: "validator/1".into(),
+            slashed_at_height: 9,
+            evidence: EquivocationEvidence {
+                validator_id: "validator/1".into(),
+                height: 9,
+                first_block_hash: "block-a".into(),
+                second_block_hash: "block-b".into(),
+            },
+        };
+
+        storage.commit_slashing_record(&record).unwrap();
+        let loaded = storage.load_slashing_record("validator/1").unwrap();
+
+        assert_eq!(loaded, record);
         fs::remove_dir_all(dir).unwrap();
     }
 

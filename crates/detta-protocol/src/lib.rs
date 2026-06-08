@@ -339,9 +339,9 @@ fn claimed_message_signer(message: &ProtocolMessage) -> Option<&str> {
     match message {
         ProtocolMessage::Block(block) => Some(&block.header.proposer),
         ProtocolMessage::Vote(vote) => Some(&vote.validator_id),
-        ProtocolMessage::EquivocationEvidence(evidence) => Some(&evidence.validator_id),
         ProtocolMessage::FinalityCertificate(_)
         | ProtocolMessage::ValidatorSetUpdate(_)
+        | ProtocolMessage::EquivocationEvidence(_)
         | ProtocolMessage::Transaction(_)
         | ProtocolMessage::StateSnapshot(_)
         | ProtocolMessage::PeerHello(_)
@@ -877,6 +877,23 @@ mod tests {
                 actual: "validator-1".into(),
             })
         );
+
+        let reporter_key = validator_key("validator-2", 8);
+        let reported_evidence = reporter_key
+            .sign_message(
+                "detta-testnet",
+                "detta-local",
+                ProtocolMessage::EquivocationEvidence(EquivocationEvidence {
+                    validator_id: "validator-1".into(),
+                    height: 12,
+                    first_block_hash: "block-hash-12-a".into(),
+                    second_block_hash: "block-hash-12-b".into(),
+                }),
+            )
+            .unwrap();
+        reported_evidence
+            .verify("detta-testnet", "detta-local", &reporter_key.public_key())
+            .unwrap();
 
         assert_eq!(
             key.sign_message(

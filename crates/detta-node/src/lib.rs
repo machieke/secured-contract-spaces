@@ -1,4 +1,7 @@
-use detta_consensus::{ConsensusCluster, ConsensusError, FinalityCertificate, Vote};
+use detta_consensus::{
+    ConsensusCluster, ConsensusError, EquivocationEvidence, FinalityCertificate, SlashingRecord,
+    Vote,
+};
 use detta_core::{
     Block, BlockError, ChainId, DeTTaState, MempoolError, Transaction, ValidatorNode,
 };
@@ -49,6 +52,7 @@ pub enum NetworkIngestOutcome {
     BlockImported,
     VoteReceived,
     FinalityCertificateReceived,
+    EquivocationEvidencePersisted,
     IgnoredControlMessage,
 }
 
@@ -208,6 +212,41 @@ impl PersistentValidatorNode {
             .map_err(NodeError::Network)
     }
 
+    pub fn persist_equivocation_evidence(
+        &self,
+        evidence: EquivocationEvidence,
+    ) -> Result<SlashingRecord, NodeError> {
+        let record = SlashingRecord {
+            validator_id: evidence.validator_id.clone(),
+            slashed_at_height: evidence.height,
+            evidence,
+        };
+        self.storage
+            .commit_slashing_record(&record)
+            .map_err(NodeError::Storage)?;
+        Ok(record)
+    }
+
+    pub fn load_slashing_record(&self, validator_id: &str) -> Result<SlashingRecord, NodeError> {
+        self.storage
+            .load_slashing_record(validator_id)
+            .map_err(NodeError::Storage)
+    }
+
+    pub fn persist_and_gossip_signed_equivocation_evidence(
+        &self,
+        evidence: EquivocationEvidence,
+        signing_key: &ValidatorSigningKey,
+        transport: &mut InMemoryTransport,
+    ) -> Result<usize, NodeError> {
+        self.persist_equivocation_evidence(evidence.clone())?;
+        let signed = self
+            .sign_validator_message(signing_key, NetworkMessage::EquivocationEvidence(evidence))?;
+        transport
+            .broadcast(self.validator_id.clone(), signed)
+            .map_err(NodeError::Network)
+    }
+
     pub fn sign_validator_message(
         &self,
         signing_key: &ValidatorSigningKey,
@@ -275,6 +314,10 @@ impl PersistentValidatorNode {
             NetworkMessage::FinalityCertificate(_) => {
                 Ok(NetworkIngestOutcome::FinalityCertificateReceived)
             }
+            NetworkMessage::EquivocationEvidence(evidence) => {
+                self.persist_equivocation_evidence(evidence.clone())?;
+                Ok(NetworkIngestOutcome::EquivocationEvidencePersisted)
+            }
             NetworkMessage::SignedValidator(signed) => {
                 let message = self.verified_signed_validator_message(signed)?;
                 let signed_envelope = Envelope {
@@ -285,7 +328,6 @@ impl PersistentValidatorNode {
                 self.ingest_network_envelope(&signed_envelope)
             }
             NetworkMessage::ValidatorSetUpdate(_)
-            | NetworkMessage::EquivocationEvidence(_)
             | NetworkMessage::StateSnapshot(_)
             | NetworkMessage::PeerHello(_)
             | NetworkMessage::SnapshotChunkRequest(_)
@@ -911,6 +953,78 @@ mod tests {
         );
 
         fs::remove_dir_all(proposer_dir).unwrap();
+        fs::remove_dir_all(peer_dir).unwrap();
+    }
+
+    #[test]
+    fn node_persists_and_gossips_signed_equivocation_evidence() {
+        let reporter_dir = temp_dir("signed-evidence-reporter");
+        let peer_dir = temp_dir("signed-evidence-peer");
+        let reporter_key = validator_key("validator-2", 8);
+        let mut reporter =
+            PersistentValidatorNode::bootstrap("validator-2", seeded_state(), &reporter_dir)
+                .unwrap();
+        reporter.set_network_id("detta-testnet");
+        let mut peer =
+            PersistentValidatorNode::bootstrap("validator-3", seeded_state(), &peer_dir).unwrap();
+        peer.set_network_id("detta-testnet");
+        peer.trust_validator_key(reporter_key.public_key());
+        let mut transport =
+            InMemoryTransport::new(["validator-2".into(), "validator-3".into()]).unwrap();
+        let evidence = EquivocationEvidence {
+            validator_id: "validator-1".into(),
+            height: 11,
+            first_block_hash: "block-a".into(),
+            second_block_hash: "block-b".into(),
+        };
+
+        assert_eq!(
+            reporter
+                .persist_and_gossip_signed_equivocation_evidence(
+                    evidence.clone(),
+                    &reporter_key,
+                    &mut transport,
+                )
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            reporter
+                .load_slashing_record("validator-1")
+                .unwrap()
+                .evidence,
+            evidence
+        );
+
+        let envelope = transport.drain_peer("validator-3").unwrap().pop().unwrap();
+        assert_eq!(
+            peer.ingest_network_envelope(&envelope).unwrap(),
+            NetworkIngestOutcome::EquivocationEvidencePersisted
+        );
+        assert_eq!(
+            peer.load_slashing_record("validator-1").unwrap(),
+            SlashingRecord {
+                validator_id: "validator-1".into(),
+                slashed_at_height: 11,
+                evidence: EquivocationEvidence {
+                    validator_id: "validator-1".into(),
+                    height: 11,
+                    first_block_hash: "block-a".into(),
+                    second_block_hash: "block-b".into(),
+                },
+            }
+        );
+
+        let reloaded_peer = PersistentValidatorNode::restart("validator-3", &peer_dir).unwrap();
+        assert_eq!(
+            reloaded_peer
+                .load_slashing_record("validator-1")
+                .unwrap()
+                .slashed_at_height,
+            11
+        );
+
+        fs::remove_dir_all(reporter_dir).unwrap();
         fs::remove_dir_all(peer_dir).unwrap();
     }
 

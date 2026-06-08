@@ -48,10 +48,12 @@ Completed production-plan slices:
   exhausted-budget coverage.
 - [x] Network layer exposes retry metrics and a peer-scored reconnect queue for
   long-running validator processes.
+- [x] Signed equivocation evidence can be gossiped by trusted reporters and
+  persisted as durable slashing records.
 
 Next implementation slices:
 
-- [ ] Add signed equivocation evidence propagation and slashing persistence.
+- [ ] Add durable validator-set metadata and keyring reload on node restart.
 
 # 1. Production Objective
 
