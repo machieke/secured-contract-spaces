@@ -108,10 +108,13 @@ Completed production-plan slices:
   reject mismatched diagnostics roots before commit.
 - [x] Verified snapshot imports persist the exact required metadata-root set
   used for the import and reload it after restart.
+- [x] Required snapshot metadata-root sets are exposed through node-aware RPC
+  after verified import and after restart.
 
 Next implementation slices:
 
-- [ ] Expose required snapshot metadata-root sets over node-aware RPC.
+- [ ] Serve required snapshot metadata-root sets over the shared TCP JSON RPC
+  path.
 
 # 1. Production Objective
 

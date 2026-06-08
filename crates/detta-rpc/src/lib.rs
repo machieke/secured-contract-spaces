@@ -6,6 +6,7 @@ use detta_core::{
 use detta_protocol::SignedValidatorMessage;
 use detta_storage::ValidatorSetMetadataAuditRecord;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::io::{self, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, ToSocketAddrs};
 
@@ -50,6 +51,7 @@ pub enum RpcRequest {
     GetPersistentNodeSnapshotRoots,
     GetSnapshotMetadataRootStatus,
     GetSnapshotSyncClientMetrics,
+    GetRequiredSnapshotMetadataRoots,
     GetBalance {
         contract: ContractId,
         owner: Principal,
@@ -144,6 +146,7 @@ pub enum RpcResult {
     PersistentNodeSnapshotRoots(Box<PersistentNodeSnapshotRoots>),
     SnapshotMetadataRootStatus(SnapshotMetadataRootStatus),
     SnapshotSyncClientMetrics(Option<SnapshotSyncClientMetricsReport>),
+    RequiredSnapshotMetadataRoots(BTreeMap<String, String>),
     Amount(Amount),
     StorageProof(Box<StorageProof>),
     StorageNonInclusionProof(Box<StorageNonInclusionProof>),
@@ -425,7 +428,8 @@ impl RpcService {
             | RpcRequest::GetValidatorSetMetadataAuditRecords { .. }
             | RpcRequest::GetPersistentNodeSnapshotRoots
             | RpcRequest::GetSnapshotMetadataRootStatus
-            | RpcRequest::GetSnapshotSyncClientMetrics => {
+            | RpcRequest::GetSnapshotSyncClientMetrics
+            | RpcRequest::GetRequiredSnapshotMetadataRoots => {
                 Err(RpcError::UnsupportedNodeMethod).into()
             }
         }
@@ -759,6 +763,13 @@ mod tests {
         );
         assert_eq!(
             rpc.handle_request(RpcRequest::GetSnapshotSyncClientMetrics),
+            RpcResponse::Error(RpcErrorBody {
+                code: "rpc.unsupported_node_method".into(),
+                message: "method must be handled by a persistent validator node".into(),
+            })
+        );
+        assert_eq!(
+            rpc.handle_request(RpcRequest::GetRequiredSnapshotMetadataRoots),
             RpcResponse::Error(RpcErrorBody {
                 code: "rpc.unsupported_node_method".into(),
                 message: "method must be handled by a persistent validator node".into(),

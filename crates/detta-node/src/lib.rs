@@ -581,6 +581,11 @@ impl PersistentValidatorNode {
                 })
                 .map(RpcResponse::Ok)
                 .unwrap_or_else(node_rpc_error_response),
+            RpcRequest::GetRequiredSnapshotMetadataRoots => self
+                .load_required_snapshot_metadata_roots()
+                .map(RpcResult::RequiredSnapshotMetadataRoots)
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(node_rpc_error_response),
             request => self.rpc.handle_request(request),
         }
     }
@@ -3722,6 +3727,12 @@ mod tests {
             sink.load_required_snapshot_metadata_roots().unwrap(),
             required_metadata_roots
         );
+        assert_eq!(
+            sink.handle_rpc_request(RpcRequest::GetRequiredSnapshotMetadataRoots),
+            RpcResponse::Ok(RpcResult::RequiredSnapshotMetadataRoots(
+                required_metadata_roots.clone()
+            ))
+        );
         let mut wrong_diagnostics_roots = required_metadata_roots.clone();
         wrong_diagnostics_roots.insert(
             SNAPSHOT_METADATA_STATE_SYNC_CLIENT_METRICS_ROOT.into(),
@@ -3799,6 +3810,12 @@ mod tests {
                 .load_required_snapshot_metadata_roots()
                 .unwrap(),
             required_metadata_roots
+        );
+        assert_eq!(
+            restarted_sink.handle_rpc_request(RpcRequest::GetRequiredSnapshotMetadataRoots),
+            RpcResponse::Ok(RpcResult::RequiredSnapshotMetadataRoots(
+                required_metadata_roots.clone()
+            ))
         );
         assert_eq!(
             restarted_sink.handle_rpc_request(RpcRequest::GetSnapshotSyncClientMetrics),
