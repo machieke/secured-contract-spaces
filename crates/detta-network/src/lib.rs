@@ -1,19 +1,9 @@
-use detta_consensus::{EquivocationEvidence, FinalityCertificate, ValidatorSetUpdate, Vote};
-use detta_core::{Block, Transaction};
+use detta_protocol::{decode_message, encode_message, ProtocolError, ProtocolMessage};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub type PeerId = String;
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub enum NetworkMessage {
-    Transaction(Transaction),
-    Block(Box<Block>),
-    Vote(Vote),
-    FinalityCertificate(FinalityCertificate),
-    ValidatorSetUpdate(ValidatorSetUpdate),
-    EquivocationEvidence(EquivocationEvidence),
-}
+pub type NetworkMessage = ProtocolMessage;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Envelope {
@@ -23,14 +13,22 @@ pub struct Envelope {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+struct WireEnvelope {
+    from: PeerId,
+    to: PeerId,
+    payload: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NetworkError {
     DuplicatePeer(PeerId),
     UnknownPeer(PeerId),
+    Protocol(ProtocolError),
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct InMemoryTransport {
-    inboxes: BTreeMap<PeerId, Vec<Envelope>>,
+    inboxes: BTreeMap<PeerId, Vec<WireEnvelope>>,
 }
 
 impl InMemoryTransport {
@@ -67,7 +65,25 @@ impl InMemoryTransport {
             .inboxes
             .get_mut(&to)
             .ok_or_else(|| NetworkError::UnknownPeer(to.clone()))?;
-        inbox.push(Envelope { from, to, message });
+        let payload = encode_message(&message).map_err(NetworkError::Protocol)?;
+        inbox.push(WireEnvelope { from, to, payload });
+        Ok(())
+    }
+
+    pub fn inject_raw(
+        &mut self,
+        from: impl Into<PeerId>,
+        to: impl Into<PeerId>,
+        payload: Vec<u8>,
+    ) -> Result<(), NetworkError> {
+        let from = from.into();
+        let to = to.into();
+        self.require_peer(&from)?;
+        let inbox = self
+            .inboxes
+            .get_mut(&to)
+            .ok_or_else(|| NetworkError::UnknownPeer(to.clone()))?;
+        inbox.push(WireEnvelope { from, to, payload });
         Ok(())
     }
 
@@ -97,7 +113,17 @@ impl InMemoryTransport {
             .inboxes
             .get_mut(peer)
             .ok_or_else(|| NetworkError::UnknownPeer(peer.to_string()))?;
-        Ok(std::mem::take(inbox))
+        std::mem::take(inbox)
+            .into_iter()
+            .map(|wire| {
+                let message = decode_message(&wire.payload).map_err(NetworkError::Protocol)?;
+                Ok(Envelope {
+                    from: wire.from,
+                    to: wire.to,
+                    message,
+                })
+            })
+            .collect()
     }
 
     pub fn pending_len(&self, peer: &str) -> Result<usize, NetworkError> {
@@ -119,7 +145,9 @@ impl InMemoryTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use detta_core::{Argument, DeTTaState, Method, ValidatorNode};
+    use detta_consensus::{EquivocationEvidence, Vote};
+    use detta_core::{Argument, DeTTaState, Method, Transaction, ValidatorNode};
+    use detta_protocol::{encode_message, ProtocolError, PROTOCOL_MAGIC};
 
     fn seeded_state() -> DeTTaState {
         let mut state = DeTTaState::new("detta-local");
@@ -210,6 +238,27 @@ mod tests {
         assert_eq!(
             transport.broadcast("missing", NetworkMessage::Transaction(transfer_tx()),),
             Err(NetworkError::UnknownPeer("missing".into()))
+        );
+    }
+
+    #[test]
+    fn transport_rejects_corrupt_protocol_envelope() {
+        let mut transport = InMemoryTransport::new(["v1".into(), "v2".into()]).unwrap();
+        let mut payload = encode_message(&NetworkMessage::Transaction(transfer_tx())).unwrap();
+        payload[0] = b'X';
+
+        transport.inject_raw("v1", "v2", payload).unwrap();
+
+        assert_eq!(
+            transport.drain_peer("v2"),
+            Err(NetworkError::Protocol(ProtocolError::BadMagic {
+                actual: [
+                    b'X',
+                    PROTOCOL_MAGIC[1],
+                    PROTOCOL_MAGIC[2],
+                    PROTOCOL_MAGIC[3]
+                ]
+            }))
         );
     }
 
