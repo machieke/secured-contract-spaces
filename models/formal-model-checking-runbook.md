@@ -21,6 +21,7 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 cargo test -p detta-verify
+cargo test -p detta-verify tests::differential_replay_accepts_generated_transfer_corpus -- --exact
 cargo build --locked --release
 ```
 

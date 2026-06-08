@@ -363,6 +363,8 @@ Completed production-plan slices:
 - [x] CI dependency audit checks RustSec advisories through cargo-deny.
 - [x] Local release gate performs a locked release build reproducibility smoke
   check.
+- [x] Local release gate runs the deterministic generated-corpus fuzz smoke
+  test explicitly.
 
 Next implementation slices:
 
