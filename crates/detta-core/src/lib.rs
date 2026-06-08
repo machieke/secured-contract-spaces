@@ -592,6 +592,7 @@ pub enum ExecutionError {
     ArithmeticOverflow,
     WriteScopeViolation,
     ContractIsolationViolation,
+    ReentrancyViolation,
     InvariantViolation,
     InvalidCertificate,
     CertificateReplay,
@@ -1069,6 +1070,57 @@ struct AuthorizedFrame {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+struct CallFrame {
+    tx_sender: Principal,
+    msg_sender: Principal,
+    contract: ContractId,
+    method: Method,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CallContext {
+    tx_sender: Principal,
+    stack: Vec<CallFrame>,
+    active_nonreentrant_contracts: BTreeSet<ContractId>,
+}
+
+impl CallContext {
+    fn new(tx_sender: Principal) -> Self {
+        Self {
+            tx_sender,
+            stack: Vec::new(),
+            active_nonreentrant_contracts: BTreeSet::new(),
+        }
+    }
+
+    fn enter(
+        &mut self,
+        contract: &ContractId,
+        method: &Method,
+        msg_sender: &Principal,
+    ) -> Result<(), ExecutionError> {
+        if self.active_nonreentrant_contracts.contains(contract) {
+            return Err(ExecutionError::ReentrancyViolation);
+        }
+
+        self.active_nonreentrant_contracts.insert(contract.clone());
+        self.stack.push(CallFrame {
+            tx_sender: self.tx_sender.clone(),
+            msg_sender: msg_sender.clone(),
+            contract: contract.clone(),
+            method: method.clone(),
+        });
+        Ok(())
+    }
+
+    fn exit(&mut self) {
+        if let Some(frame) = self.stack.pop() {
+            self.active_nonreentrant_contracts.remove(&frame.contract);
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct LendingConfig {
     collateral_asset: AssetId,
     debt_asset: AssetId,
@@ -1441,7 +1493,8 @@ impl DeTTaState {
         let checkpoint_cross_shard_outbox = self.cross_shard_outbox.clone();
 
         let msg_sender = tx.sender.clone();
-        match self.execute_call(&tx, msg_sender) {
+        let mut call_context = CallContext::new(tx.sender.clone());
+        match self.execute_call(&tx, msg_sender, &mut call_context) {
             Ok(return_value) => self.committed_receipt(tx.tx_hash, return_value),
             Err(error) => {
                 self.contracts = checkpoint_contracts;
@@ -1922,90 +1975,100 @@ impl DeTTaState {
         &mut self,
         tx: &Transaction,
         msg_sender: Principal,
+        call_context: &mut CallContext,
     ) -> Result<ReturnValue, ExecutionError> {
-        let contract = self
-            .contracts
-            .get(&tx.target)
-            .cloned()
-            .ok_or(ExecutionError::ContractNotFound)?;
+        call_context.enter(&tx.target, &tx.method, &msg_sender)?;
+        let result = (|| {
+            let contract = self
+                .contracts
+                .get(&tx.target)
+                .cloned()
+                .ok_or(ExecutionError::ContractNotFound)?;
 
-        if !contract.exported_methods.contains(&tx.method) {
-            return Err(ExecutionError::MethodNotExported);
-        }
+            if !contract.exported_methods.contains(&tx.method) {
+                return Err(ExecutionError::MethodNotExported);
+            }
 
-        if self.paused_contracts.contains(&tx.target) {
-            return Err(ExecutionError::ContractPaused);
-        }
+            if self.paused_contracts.contains(&tx.target) {
+                return Err(ExecutionError::ContractPaused);
+            }
 
-        match contract.kind {
-            ContractKind::Token => match tx.method {
-                Method::Transfer => self.transfer(tx, msg_sender),
-                Method::Approve => self.approve(tx, msg_sender),
-                Method::TransferFrom => self.transfer_from(tx, msg_sender),
-                Method::Permit => self.permit(tx),
-                _ => Err(ExecutionError::PolicyMissing),
-            },
-            ContractKind::AmmPool { asset_a, asset_b } => match tx.method {
-                Method::AddLiquidity => self.add_liquidity(tx, msg_sender, asset_a, asset_b),
-                Method::Swap => self.swap(tx, msg_sender, asset_a, asset_b),
-                _ => Err(ExecutionError::PolicyMissing),
-            },
-            ContractKind::Oracle { asset, max_age } => match tx.method {
-                Method::SubmitPrice => self.submit_price(tx, msg_sender, asset, max_age),
-                _ => Err(ExecutionError::PolicyMissing),
-            },
-            ContractKind::Bridge { source_chain } => match tx.method {
-                Method::QueueBridgeMessage => self.queue_bridge_message(tx, msg_sender),
-                Method::RedeemBridgeMessage => {
-                    self.redeem_bridge_message(tx, msg_sender, source_chain)
-                }
-                _ => Err(ExecutionError::PolicyMissing),
-            },
-            ContractKind::Governance {
-                governed_contract,
-                timelock_delay,
-            } => match tx.method {
-                Method::PauseContract => self.pause_contract(tx, msg_sender, governed_contract),
-                Method::UnpauseContract => self.unpause_contract(tx, msg_sender, governed_contract),
-                Method::ScheduleUpgrade => {
-                    self.schedule_upgrade(tx, msg_sender, governed_contract, timelock_delay)
-                }
-                Method::ExecuteUpgrade => self.execute_upgrade(tx, msg_sender, governed_contract),
-                _ => Err(ExecutionError::PolicyMissing),
-            },
-            ContractKind::LendingVault {
-                collateral_asset,
-                debt_asset,
-                oracle_contract,
-                ltv_bps,
-                max_oracle_age,
-            } => match tx.method {
-                Method::DepositCollateral => self.deposit_collateral(tx, collateral_asset),
-                Method::Borrow => self.borrow(
-                    tx,
-                    msg_sender,
-                    LendingConfig {
-                        collateral_asset,
-                        debt_asset,
-                        oracle_contract,
-                        ltv_bps,
-                        max_oracle_age,
-                    },
-                ),
-                _ => Err(ExecutionError::PolicyMissing),
-            },
-            ContractKind::Staking { asset } => match tx.method {
-                Method::Stake => self.stake(tx, msg_sender, asset),
-                Method::Unstake => self.unstake(tx, msg_sender, asset),
-                _ => Err(ExecutionError::PolicyMissing),
-            },
-            ContractKind::Router { token_contract } => match tx.method {
-                Method::RouteTransferFrom => {
-                    self.route_transfer_from(tx, msg_sender, token_contract)
-                }
-                _ => Err(ExecutionError::PolicyMissing),
-            },
-        }
+            match contract.kind {
+                ContractKind::Token => match tx.method {
+                    Method::Transfer => self.transfer(tx, msg_sender),
+                    Method::Approve => self.approve(tx, msg_sender),
+                    Method::TransferFrom => self.transfer_from(tx, msg_sender),
+                    Method::Permit => self.permit(tx),
+                    _ => Err(ExecutionError::PolicyMissing),
+                },
+                ContractKind::AmmPool { asset_a, asset_b } => match tx.method {
+                    Method::AddLiquidity => self.add_liquidity(tx, msg_sender, asset_a, asset_b),
+                    Method::Swap => self.swap(tx, msg_sender, asset_a, asset_b),
+                    _ => Err(ExecutionError::PolicyMissing),
+                },
+                ContractKind::Oracle { asset, max_age } => match tx.method {
+                    Method::SubmitPrice => self.submit_price(tx, msg_sender, asset, max_age),
+                    _ => Err(ExecutionError::PolicyMissing),
+                },
+                ContractKind::Bridge { source_chain } => match tx.method {
+                    Method::QueueBridgeMessage => self.queue_bridge_message(tx, msg_sender),
+                    Method::RedeemBridgeMessage => {
+                        self.redeem_bridge_message(tx, msg_sender, source_chain)
+                    }
+                    _ => Err(ExecutionError::PolicyMissing),
+                },
+                ContractKind::Governance {
+                    governed_contract,
+                    timelock_delay,
+                } => match tx.method {
+                    Method::PauseContract => self.pause_contract(tx, msg_sender, governed_contract),
+                    Method::UnpauseContract => {
+                        self.unpause_contract(tx, msg_sender, governed_contract)
+                    }
+                    Method::ScheduleUpgrade => {
+                        self.schedule_upgrade(tx, msg_sender, governed_contract, timelock_delay)
+                    }
+                    Method::ExecuteUpgrade => {
+                        self.execute_upgrade(tx, msg_sender, governed_contract)
+                    }
+                    _ => Err(ExecutionError::PolicyMissing),
+                },
+                ContractKind::LendingVault {
+                    collateral_asset,
+                    debt_asset,
+                    oracle_contract,
+                    ltv_bps,
+                    max_oracle_age,
+                } => match tx.method {
+                    Method::DepositCollateral => self.deposit_collateral(tx, collateral_asset),
+                    Method::Borrow => self.borrow(
+                        tx,
+                        msg_sender,
+                        LendingConfig {
+                            collateral_asset,
+                            debt_asset,
+                            oracle_contract,
+                            ltv_bps,
+                            max_oracle_age,
+                        },
+                    ),
+                    _ => Err(ExecutionError::PolicyMissing),
+                },
+                ContractKind::Staking { asset } => match tx.method {
+                    Method::Stake => self.stake(tx, msg_sender, asset),
+                    Method::Unstake => self.unstake(tx, msg_sender, asset),
+                    _ => Err(ExecutionError::PolicyMissing),
+                },
+                ContractKind::Router { token_contract } => match tx.method {
+                    Method::RouteTransferFrom => {
+                        self.route_transfer_from(tx, msg_sender, token_contract, call_context)
+                    }
+                    _ => Err(ExecutionError::PolicyMissing),
+                },
+            }
+        })();
+        call_context.exit();
+        result
     }
 
     fn transfer(
@@ -2867,6 +2930,7 @@ impl DeTTaState {
         tx: &Transaction,
         _msg_sender: Principal,
         token_contract: ContractId,
+        call_context: &mut CallContext,
     ) -> Result<ReturnValue, ExecutionError> {
         let [owner, to, asset, amount] = expect_args(&tx.args)?;
         let child_tx = Transaction {
@@ -2881,7 +2945,7 @@ impl DeTTaState {
             budget: tx.budget,
         };
 
-        self.execute_call(&child_tx, tx.target.clone())
+        self.execute_call(&child_tx, tx.target.clone(), call_context)
     }
 
     fn consume_allowance(
@@ -3714,6 +3778,35 @@ mod tests {
             state.allowance_remaining("TokenA", "Alice", "Dex", "USDC"),
             Some(100)
         );
+    }
+
+    #[test]
+    fn reentrant_same_contract_call_is_blocked() {
+        let mut state = seeded_state();
+        state.deploy_router("RouterA", "RouterA").unwrap();
+        let storage_before = state.storage_root();
+        let registry_before = state.registry_root();
+        let event_root_before = state.event_root();
+
+        let receipt = state.apply_transaction(tx_to(
+            "RouterA",
+            "tx1",
+            "Alice",
+            1,
+            Method::RouteTransferFrom,
+            vec![
+                principal("Alice"),
+                principal("Bob"),
+                asset("USDC"),
+                amount(10),
+            ],
+        ));
+
+        assert_eq!(receipt.status, TxStatus::Reverted);
+        assert_eq!(receipt.error, Some(ExecutionError::ReentrancyViolation));
+        assert_eq!(state.storage_root(), storage_before);
+        assert_eq!(state.registry_root(), registry_before);
+        assert_eq!(state.event_root(), event_root_before);
     }
 
     #[test]
