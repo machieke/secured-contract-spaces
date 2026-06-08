@@ -1,6 +1,6 @@
 use detta_core::{
-    Block, ContractKind, DeTTaState, ExecutionError, InvariantFailure, Method, StateKey,
-    Transaction,
+    Argument, Block, ChainId, ContractId, ContractKind, DeTTaState, ExecutionError,
+    InvariantFailure, Method, StateKey, Transaction,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -142,6 +142,19 @@ pub enum TraceError {
     ContractIsolationViolation { key: StateKey, contract: String },
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum DifferentialReplayError {
+    NotEnoughReplicas,
+    ReplicaMismatch {
+        replica: usize,
+        expected_root: String,
+        actual_root: String,
+    },
+    BlockMismatch {
+        replica: usize,
+    },
+}
+
 pub fn verify_kernel_trace(
     contract: &str,
     write_scope: &BTreeSet<StateKey>,
@@ -171,21 +184,91 @@ pub fn verify_deterministic_replay(
     transactions: Vec<Transaction>,
     height: u64,
 ) -> Result<Block, ExecutionError> {
-    let (left_block, left_state) =
-        initial.build_block(height, transactions.clone(), 1_000, "verifier-a", "cert-a");
-    let (right_block, right_state) =
-        initial.build_block(height, transactions, 1_000, "verifier-a", "cert-a");
+    verify_differential_replay(initial, transactions, height, 2)
+        .map_err(|_| ExecutionError::InvariantViolation)
+}
 
-    if left_block != right_block
-        || left_state.storage_root() != right_state.storage_root()
-        || left_state.registry_root() != right_state.registry_root()
-        || left_state.event_root() != right_state.event_root()
-        || left_state.global_state_root() != right_state.global_state_root()
-    {
-        return Err(ExecutionError::InvariantViolation);
+pub fn verify_differential_replay(
+    initial: &DeTTaState,
+    transactions: Vec<Transaction>,
+    height: u64,
+    replicas: usize,
+) -> Result<Block, DifferentialReplayError> {
+    if replicas < 2 {
+        return Err(DifferentialReplayError::NotEnoughReplicas);
     }
 
-    Ok(left_block)
+    let (expected_block, expected_state) =
+        initial.build_block(height, transactions.clone(), 1_000, "verifier", "cert");
+    let expected_root = expected_state.global_state_root();
+
+    for replica in 1..replicas {
+        let (block, state) =
+            initial.build_block(height, transactions.clone(), 1_000, "verifier", "cert");
+        let actual_root = state.global_state_root();
+        if actual_root != expected_root {
+            return Err(DifferentialReplayError::ReplicaMismatch {
+                replica,
+                expected_root,
+                actual_root,
+            });
+        }
+        if block != expected_block {
+            return Err(DifferentialReplayError::BlockMismatch { replica });
+        }
+    }
+
+    Ok(expected_block)
+}
+
+pub fn deterministic_transfer_corpus(
+    chain_id: ChainId,
+    target: ContractId,
+    asset: String,
+    seed: u64,
+    count: usize,
+) -> Vec<Transaction> {
+    let principals = ["Alice", "Bob", "Carol"];
+    let mut nonces = [0u64; 3];
+    let mut rng = seed;
+    let mut transactions = Vec::with_capacity(count);
+
+    for index in 0..count {
+        rng = lcg_next(rng);
+        let sender_index = (rng as usize) % principals.len();
+        rng = lcg_next(rng);
+        let mut recipient_index = (rng as usize) % principals.len();
+        if recipient_index == sender_index {
+            recipient_index = (recipient_index + 1) % principals.len();
+        }
+        rng = lcg_next(rng);
+        let amount = (rng as u128 % 17) + 1;
+        nonces[sender_index] += 1;
+
+        transactions.push(Transaction {
+            chain_id: chain_id.clone(),
+            tx_hash: format!("fuzz-tx-{seed}-{index}"),
+            sender: principals[sender_index].to_string(),
+            nonce: nonces[sender_index],
+            target: target.clone(),
+            method: Method::Transfer,
+            args: vec![
+                Argument::Principal(principals[recipient_index].to_string()),
+                Argument::Asset(asset.clone()),
+                Argument::Amount(amount),
+            ],
+            signature_ok: true,
+            budget: 1_000_000,
+        });
+    }
+
+    transactions
+}
+
+fn lcg_next(value: u64) -> u64 {
+    value
+        .wrapping_mul(6_364_136_223_846_793_005)
+        .wrapping_add(1)
 }
 
 fn owner_of_key(key: &StateKey) -> &str {
@@ -314,5 +397,32 @@ mod tests {
 
         assert_eq!(block.header.height, 1);
         assert_eq!(block.transactions.len(), 1);
+    }
+
+    #[test]
+    fn differential_replay_accepts_generated_transfer_corpus() {
+        let state = seeded_state();
+        let transactions = deterministic_transfer_corpus(
+            "detta-local".into(),
+            "TokenA".into(),
+            "USDC".into(),
+            7,
+            32,
+        );
+
+        let block = verify_differential_replay(&state, transactions, 1, 4).unwrap();
+
+        assert_eq!(block.transactions.len(), 32);
+        assert_eq!(block.header.height, 1);
+    }
+
+    #[test]
+    fn differential_replay_requires_multiple_replicas() {
+        let state = seeded_state();
+
+        assert_eq!(
+            verify_differential_replay(&state, Vec::new(), 1, 1),
+            Err(DifferentialReplayError::NotEnoughReplicas)
+        );
     }
 }
