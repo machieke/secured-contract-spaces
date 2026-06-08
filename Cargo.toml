@@ -1,3 +1,8 @@
 [workspace]
-members = ["crates/detta-core", "crates/detta-rpc", "crates/detta-verify"]
+members = [
+    "crates/detta-core",
+    "crates/detta-rpc",
+    "crates/detta-verify",
+    "crates/detta-consensus",
+]
 resolver = "2"

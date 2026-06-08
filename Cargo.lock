@@ -37,6 +37,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "detta-consensus"
+version = "0.1.0"
+dependencies = [
+ "detta-core",
+ "serde",
+]
+
+[[package]]
 name = "detta-core"
 version = "0.1.0"
 dependencies = [
