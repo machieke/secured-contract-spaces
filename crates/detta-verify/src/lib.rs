@@ -1011,6 +1011,24 @@ mod tests {
     }
 
     #[test]
+    fn theorem_verifier_evidence_uses_expected_namespace() {
+        for entry in scs_theorem_coverage() {
+            for evidence in entry
+                .evidence
+                .iter()
+                .filter(|evidence| matches!(evidence.kind, TheoremEvidenceKind::Verifier))
+            {
+                assert!(
+                    evidence.reference.starts_with("detta_verify::verify_"),
+                    "{} verifier evidence uses an unexpected namespace: {}",
+                    entry.id,
+                    evidence.reference
+                );
+            }
+        }
+    }
+
+    #[test]
     fn proof_artifact_manifest_matches_checked_in_json() {
         let expected: serde_json::Value = serde_json::from_str(include_str!(
             "../../../models/detta-proof-artifact-manifest.json"

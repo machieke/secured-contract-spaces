@@ -87,6 +87,8 @@ cargo test -p detta-verify
   at least one runtime test anchor.
 - theorem runtime-test evidence references use expected `detta_core`,
   `detta_evaluator`, or `detta_verify` test namespaces.
+- theorem verifier evidence references use the expected
+  `detta_verify::verify_*` namespace.
 
 The evaluator `sha256sum -c` commands verify fixture-file attestations. The
 final `sha256sum` command reports the file root of the compact-trace-root
@@ -190,6 +192,8 @@ Before accepting a release proof bundle, verify:
   at least one runtime test anchor;
 - theorem runtime-test evidence references use expected `detta_core`,
   `detta_evaluator`, or `detta_verify` test namespaces;
+- theorem verifier evidence references use the expected
+  `detta_verify::verify_*` namespace;
 - `detta-restricted-evaluator-proof-trace-root.sha256` matches both the
   fixture `trace_root` field and the recomputed root of `report.trace`;
 - `models/detta-proof-artifact-manifest.sha256` verifies after all fixture,
