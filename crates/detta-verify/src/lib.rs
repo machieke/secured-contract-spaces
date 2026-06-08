@@ -1562,6 +1562,56 @@ mod tests {
     }
 
     #[test]
+    fn proof_runtime_evaluator_fixture_inventory_paths_use_models_namespace_and_expected_suffixes()
+    {
+        let inventory: EvaluatorFixtureInventoryForTest = serde_json::from_str(include_str!(
+            "../../../models/detta-restricted-evaluator-fixture-inventory.json"
+        ))
+        .unwrap();
+
+        for entry in &inventory.fixtures {
+            assert_inventory_path_is_models_relative(&entry.fixture_path);
+            assert!(
+                entry.fixture_path.ends_with(".json"),
+                "{} must point at a JSON evaluator fixture",
+                entry.fixture_path
+            );
+
+            assert_inventory_path_is_models_relative(&entry.attestation_path);
+            assert!(
+                entry.attestation_path.ends_with(".sha256"),
+                "{} must point at a SHA-256 attestation",
+                entry.attestation_path
+            );
+
+            if let Some(path) = &entry.trace_root_attestation_path {
+                assert_inventory_path_is_models_relative(path);
+                assert!(
+                    path.ends_with(".sha256"),
+                    "{path} must point at a SHA-256 trace-root attestation"
+                );
+            }
+        }
+    }
+
+    fn assert_inventory_path_is_models_relative(path: &str) {
+        assert!(
+            path.starts_with("models/"),
+            "{path} must stay under models/"
+        );
+        assert!(!path.starts_with('/'), "{path} must not be absolute");
+        assert!(!path.contains(".."), "{path} must not use parent traversal");
+        assert!(
+            !path.contains('\\'),
+            "{path} must use forward slash separators"
+        );
+        assert!(
+            !path.contains("//"),
+            "{path} must not contain empty path segments"
+        );
+    }
+
+    #[test]
     fn proof_runtime_evaluator_fixture_inventory_roots_are_lowercase_sha256_hex() {
         let inventory: EvaluatorFixtureInventoryForTest = serde_json::from_str(include_str!(
             "../../../models/detta-restricted-evaluator-fixture-inventory.json"
