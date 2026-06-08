@@ -360,6 +360,7 @@ Completed production-plan slices:
   proof artifact attestation checks.
 - [x] CI workflow runs the local release gate on pull requests and master
   pushes.
+- [x] CI dependency audit checks RustSec advisories through cargo-deny.
 
 Next implementation slices:
 

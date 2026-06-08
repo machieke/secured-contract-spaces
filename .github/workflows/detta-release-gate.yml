@@ -18,5 +18,10 @@ jobs:
         with:
           components: clippy, rustfmt
 
+      - name: Audit dependencies
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories
+
       - name: Run release gate
         run: scripts/detta-release-gate.sh

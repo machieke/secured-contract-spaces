@@ -11,7 +11,8 @@ scripts/detta-release-gate.sh
 ```
 
 The CI workflow in `.github/workflows/detta-release-gate.yml` runs the same
-gate for pull requests and `master` pushes.
+gate for pull requests and `master` pushes, plus a cargo-deny dependency
+advisory audit.
 
 The release gate script runs:
 
