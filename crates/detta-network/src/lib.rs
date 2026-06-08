@@ -51,6 +51,90 @@ impl RetryPolicy {
     }
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct RetryMetrics {
+    pub attempts: usize,
+    pub successes: usize,
+    pub failures: usize,
+    pub exhausted: usize,
+    pub last_error: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PeerReconnectState {
+    pub peer_id: PeerId,
+    pub score: i64,
+    pub failures: usize,
+    pub next_retry_tick: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PeerReconnectQueue {
+    base_delay_ticks: u64,
+    peers: BTreeMap<PeerId, PeerReconnectState>,
+}
+
+impl PeerReconnectQueue {
+    pub fn new(base_delay_ticks: u64) -> Self {
+        Self {
+            base_delay_ticks,
+            peers: BTreeMap::new(),
+        }
+    }
+
+    pub fn track_peer(&mut self, peer_id: impl Into<PeerId>) {
+        let peer_id = peer_id.into();
+        self.peers
+            .entry(peer_id.clone())
+            .or_insert(PeerReconnectState {
+                peer_id,
+                score: 0,
+                failures: 0,
+                next_retry_tick: 0,
+            });
+    }
+
+    pub fn record_success(&mut self, peer_id: &str) {
+        self.track_peer(peer_id.to_string());
+        let peer = self.peers.get_mut(peer_id).expect("peer inserted above");
+        peer.failures = 0;
+        peer.score += 1;
+        peer.next_retry_tick = 0;
+    }
+
+    pub fn record_failure(&mut self, peer_id: &str, now_tick: u64) {
+        self.track_peer(peer_id.to_string());
+        let peer = self.peers.get_mut(peer_id).expect("peer inserted above");
+        peer.failures += 1;
+        peer.score -= 1;
+        peer.next_retry_tick =
+            now_tick + self.base_delay_ticks.saturating_mul(peer.failures as u64);
+    }
+
+    pub fn ready_peers(&self, now_tick: u64, limit: usize) -> Vec<PeerId> {
+        let mut ready: Vec<_> = self
+            .peers
+            .values()
+            .filter(|peer| peer.next_retry_tick <= now_tick)
+            .collect();
+        ready.sort_by(|left, right| {
+            right
+                .score
+                .cmp(&left.score)
+                .then_with(|| left.peer_id.cmp(&right.peer_id))
+        });
+        ready
+            .into_iter()
+            .take(limit)
+            .map(|peer| peer.peer_id.clone())
+            .collect()
+    }
+
+    pub fn peer(&self, peer_id: &str) -> Option<&PeerReconnectState> {
+        self.peers.get(peer_id)
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PeerConnection {
     pub hello: PeerHello,
@@ -136,7 +220,23 @@ impl TcpProtocolStream {
         addr: impl ToSocketAddrs,
         policy: RetryPolicy,
     ) -> Result<Self, NetworkError> {
-        let addrs: Vec<_> = addr.to_socket_addrs().map_err(io_error)?.collect();
+        let (result, _) = Self::connect_with_retry_report(addr, policy);
+        result
+    }
+
+    pub fn connect_with_retry_report(
+        addr: impl ToSocketAddrs,
+        policy: RetryPolicy,
+    ) -> (Result<Self, NetworkError>, RetryMetrics) {
+        let mut metrics = RetryMetrics::default();
+        let addrs: Vec<_> = match addr.to_socket_addrs() {
+            Ok(addrs) => addrs.collect(),
+            Err(error) => {
+                metrics.failures += 1;
+                metrics.last_error = Some(error.to_string());
+                return (Err(io_error(error)), metrics);
+            }
+        };
         let mut last_error = if addrs.is_empty() {
             "no resolved socket addresses".to_string()
         } else {
@@ -145,9 +245,17 @@ impl TcpProtocolStream {
 
         for attempt in 0..policy.max_attempts {
             for addr in &addrs {
+                metrics.attempts += 1;
                 match TcpStream::connect(addr) {
-                    Ok(stream) => return Ok(Self { stream }),
-                    Err(error) => last_error = error.to_string(),
+                    Ok(stream) => {
+                        metrics.successes += 1;
+                        return (Ok(Self { stream }), metrics);
+                    }
+                    Err(error) => {
+                        metrics.failures += 1;
+                        last_error = error.to_string();
+                        metrics.last_error = Some(last_error.clone());
+                    }
                 }
             }
 
@@ -156,10 +264,14 @@ impl TcpProtocolStream {
             }
         }
 
-        Err(NetworkError::RetryExhausted {
-            attempts: policy.max_attempts,
-            last_error,
-        })
+        metrics.exhausted += 1;
+        (
+            Err(NetworkError::RetryExhausted {
+                attempts: policy.max_attempts,
+                last_error,
+            }),
+            metrics,
+        )
     }
 
     pub fn from_stream(stream: TcpStream) -> Self {
@@ -677,6 +789,64 @@ mod tests {
             error,
             NetworkError::RetryExhausted { attempts: 2, .. }
         ));
+    }
+
+    #[test]
+    fn tcp_retry_report_counts_attempts_failures_and_success() {
+        let reserved = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = reserved.local_addr().unwrap();
+        drop(reserved);
+
+        let (result, metrics) = TcpProtocolStream::connect_with_retry_report(
+            addr,
+            RetryPolicy::new(2, Duration::from_millis(1)),
+        );
+
+        assert!(matches!(
+            result,
+            Err(NetworkError::RetryExhausted { attempts: 2, .. })
+        ));
+        assert_eq!(metrics.attempts, 2);
+        assert_eq!(metrics.successes, 0);
+        assert_eq!(metrics.failures, 2);
+        assert_eq!(metrics.exhausted, 1);
+        assert!(metrics.last_error.is_some());
+    }
+
+    #[test]
+    fn peer_reconnect_queue_delays_failures_and_prioritizes_score() {
+        let mut queue = PeerReconnectQueue::new(10);
+        queue.track_peer("validator-1");
+        queue.track_peer("validator-2");
+        queue.track_peer("validator-3");
+        queue.record_success("validator-2");
+        queue.record_failure("validator-1", 5);
+
+        assert_eq!(
+            queue.ready_peers(5, 8),
+            vec!["validator-2".to_string(), "validator-3".to_string()]
+        );
+        assert_eq!(
+            queue.peer("validator-1").unwrap(),
+            &PeerReconnectState {
+                peer_id: "validator-1".into(),
+                score: -1,
+                failures: 1,
+                next_retry_tick: 15,
+            }
+        );
+        assert_eq!(
+            queue.ready_peers(15, 8),
+            vec![
+                "validator-2".to_string(),
+                "validator-3".to_string(),
+                "validator-1".to_string(),
+            ]
+        );
+
+        queue.record_failure("validator-1", 15);
+        assert_eq!(queue.peer("validator-1").unwrap().next_retry_tick, 35);
+        assert_eq!(queue.ready_peers(35, 1), vec!["validator-2".to_string()]);
     }
 
     #[test]

@@ -46,11 +46,12 @@ Completed production-plan slices:
   envelopes to validator peers.
 - [x] TCP validator connections support bounded retry with delayed-peer and
   exhausted-budget coverage.
+- [x] Network layer exposes retry metrics and a peer-scored reconnect queue for
+  long-running validator processes.
 
 Next implementation slices:
 
-- [ ] Add peer-scored reconnect queues and retry metrics for long-running
-  validator processes.
+- [ ] Add signed equivocation evidence propagation and slashing persistence.
 
 # 1. Production Objective
 
