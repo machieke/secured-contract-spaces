@@ -226,6 +226,7 @@ pub const PROOF_ARTIFACT_MANIFEST_SCOPE: &str =
     "Secured Contract Spaces runtime safety obligations";
 pub const PROOF_MODEL_ARTIFACT_COUNT: usize = 2;
 pub const PROOF_RUNTIME_ARTIFACT_COUNT: usize = 11;
+pub const SHA256_HEX_LENGTH: usize = 64;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ProofArtifactManifest {
@@ -1665,8 +1666,27 @@ mod tests {
         }
     }
 
+    #[test]
+    fn proof_artifact_roots_have_sha256_hex_length() {
+        for artifact in proof_model_artifacts()
+            .into_iter()
+            .chain(proof_runtime_artifacts())
+        {
+            assert_eq!(
+                artifact.sha256.len(),
+                SHA256_HEX_LENGTH,
+                "{} root must be a SHA-256 hex digest",
+                artifact.path
+            );
+        }
+    }
+
     fn assert_lowercase_sha256_hex(root: &str, path: &str) {
-        assert_eq!(root.len(), 64, "{path} root is not a SHA-256 hex digest");
+        assert_eq!(
+            root.len(),
+            SHA256_HEX_LENGTH,
+            "{path} root is not a SHA-256 hex digest"
+        );
         assert!(
             root.bytes()
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),

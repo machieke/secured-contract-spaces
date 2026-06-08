@@ -303,10 +303,12 @@ Completed production-plan slices:
 - [x] Proof manifest theorem count is checked against coverage in verify.
 - [x] Proof manifest project and scope metadata are checked in verify.
 - [x] Proof manifest model and runtime artifact counts are checked in verify.
+- [x] Proof manifest artifact roots are checked for SHA-256 hex length in
+  verify.
 
 Next implementation slices:
 
-- [ ] Add proof manifest artifact root length checks in verify.
+- [ ] Add proof release attestation root length checks in verify.
 
 # 1. Production Objective
 
