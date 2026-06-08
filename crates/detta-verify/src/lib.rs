@@ -1406,6 +1406,27 @@ mod tests {
     }
 
     #[test]
+    fn proof_release_attestation_roots_have_sha256_hex_length() {
+        for attestation in [
+            include_str!("../../../models/detta-proof-artifact-manifest.sha256"),
+            include_str!("../../../models/detta-restricted-evaluator-proof-trace.sha256"),
+            include_str!("../../../models/detta-restricted-evaluator-proof-trace-root.sha256"),
+            include_str!("../../../models/detta-restricted-evaluator-forbidden-primitives.sha256"),
+            include_str!("../../../models/detta-restricted-evaluator-resource-exhaustion.sha256"),
+            include_str!("../../../models/detta-restricted-evaluator-arithmetic-overflow.sha256"),
+            include_str!("../../../models/detta-restricted-evaluator-fixture-inventory.sha256"),
+        ] {
+            let (root, file_name) = sha256sum_attestation_parts(attestation);
+
+            assert_eq!(
+                root.len(),
+                SHA256_HEX_LENGTH,
+                "{file_name} attestation root must be a SHA-256 hex digest"
+            );
+        }
+    }
+
+    #[test]
     fn proof_release_attestation_filenames_bind_target_artifacts() {
         assert_sha256sum_attestation_filename_binds_artifact(
             include_str!("../../../models/detta-proof-artifact-manifest.sha256"),

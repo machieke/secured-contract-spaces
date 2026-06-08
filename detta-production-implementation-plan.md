@@ -305,10 +305,12 @@ Completed production-plan slices:
 - [x] Proof manifest model and runtime artifact counts are checked in verify.
 - [x] Proof manifest artifact roots are checked for SHA-256 hex length in
   verify.
+- [x] Proof release attestation roots are checked for SHA-256 hex length in
+  verify.
 
 Next implementation slices:
 
-- [ ] Add proof release attestation root length checks in verify.
+- [ ] Add proof release attestation count checks in verify.
 
 # 1. Production Objective
 
