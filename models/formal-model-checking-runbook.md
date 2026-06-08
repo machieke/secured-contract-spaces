@@ -106,6 +106,7 @@ cargo test -p detta-verify
 - theorem evidence entries are unique within each theorem.
 - theorem IDs map to the expected theorem names.
 - theorem names are unique.
+- theorem IDs use the fixed `THM-NNN` format and sequence.
 
 The evaluator `sha256sum -c` commands verify fixture-file attestations. The
 final `sha256sum` command reports the file root of the compact-trace-root
@@ -228,6 +229,7 @@ Before accepting a release proof bundle, verify:
 - theorem evidence entries are unique within each theorem;
 - theorem IDs map to the expected theorem names;
 - theorem names are unique;
+- theorem IDs use the fixed `THM-NNN` format and sequence;
 - `detta-restricted-evaluator-proof-trace-root.sha256` matches both the
   fixture `trace_root` field and the recomputed root of `report.trace`;
 - `models/detta-proof-artifact-manifest.sha256` verifies after all fixture,

@@ -770,6 +770,25 @@ mod tests {
     }
 
     #[test]
+    fn scs_theorem_ids_use_fixed_format() {
+        for (index, entry) in scs_theorem_coverage().iter().enumerate() {
+            let expected_id = format!("THM-{:03}", index + 1);
+            let suffix = entry
+                .id
+                .strip_prefix("THM-")
+                .expect("theorem ID must use THM- prefix");
+
+            assert_eq!(entry.id, expected_id.as_str());
+            assert_eq!(suffix.len(), 3, "{} must use three digits", entry.id);
+            assert!(
+                suffix.bytes().all(|byte| byte.is_ascii_digit()),
+                "{} must use an ASCII decimal suffix",
+                entry.id
+            );
+        }
+    }
+
+    #[test]
     fn scs_theorem_ids_map_to_expected_names() {
         let names_by_id: BTreeMap<_, _> = scs_theorem_coverage()
             .iter()
