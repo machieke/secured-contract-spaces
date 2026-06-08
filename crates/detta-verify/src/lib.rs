@@ -889,6 +889,25 @@ mod tests {
     }
 
     #[test]
+    fn proof_artifact_roots_are_lowercase_sha256_hex() {
+        for artifact in proof_model_artifacts()
+            .into_iter()
+            .chain(proof_runtime_artifacts())
+        {
+            assert_lowercase_sha256_hex(&artifact.sha256, artifact.path);
+        }
+    }
+
+    fn assert_lowercase_sha256_hex(root: &str, path: &str) {
+        assert_eq!(root.len(), 64, "{path} root is not a SHA-256 hex digest");
+        assert!(
+            root.bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+            "{path} root must use lowercase hex"
+        );
+    }
+
+    #[test]
     fn proof_runtime_artifacts_bind_all_evaluator_attestations() {
         let runtime_paths: BTreeSet<_> = proof_runtime_artifacts()
             .into_iter()

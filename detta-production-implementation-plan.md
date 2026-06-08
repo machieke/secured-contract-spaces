@@ -220,10 +220,11 @@ Completed production-plan slices:
 - [x] Evaluator fixture inventory entries are validated against proof manifest
   roots.
 - [x] Proof manifest runtime artifact paths are checked for uniqueness.
+- [x] Proof manifest artifact roots are checked for lowercase SHA-256 format.
 
 Next implementation slices:
 
-- [ ] Add proof manifest artifact SHA-256 format checks.
+- [ ] Add proof manifest artifact path namespace checks.
 
 # 1. Production Objective
 
