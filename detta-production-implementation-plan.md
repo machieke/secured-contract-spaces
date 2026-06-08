@@ -300,10 +300,11 @@ Completed production-plan slices:
 - [x] Proof manifest theorem names are checked for uniqueness in verify.
 - [x] Proof manifest theorem IDs are checked for fixed format and sequence in
   verify.
+- [x] Proof manifest theorem count is checked against coverage in verify.
 
 Next implementation slices:
 
-- [ ] Add proof manifest theorem count consistency checks in verify.
+- [ ] Add proof manifest project and scope metadata checks in verify.
 
 # 1. Production Objective
 

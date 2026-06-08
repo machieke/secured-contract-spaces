@@ -1319,6 +1319,14 @@ mod tests {
     }
 
     #[test]
+    fn proof_artifact_manifest_theorem_count_matches_coverage() {
+        let manifest = proof_artifact_manifest();
+
+        assert_eq!(manifest.theorem_count, manifest.coverage.len());
+        assert_eq!(manifest.theorem_count, scs_theorem_coverage().len());
+    }
+
+    #[test]
     fn proof_artifact_manifest_root_matches_checked_in_attestation() {
         let attestation = include_str!("../../../models/detta-proof-artifact-manifest.sha256");
         let (root, file_name) = attestation.trim().split_once("  ").unwrap();
