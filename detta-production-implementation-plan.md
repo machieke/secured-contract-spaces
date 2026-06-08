@@ -58,10 +58,12 @@ Completed production-plan slices:
   independently verified current validators before mutating durable keyrings.
 - [x] Quorum-authorized validator-set metadata update authorizations gossip over
   in-memory and TCP validator transports before durable application.
+- [x] Pending validator-set metadata authorizations persist across restarts and
+  resume quorum assembly before clearing after durable application.
 
 Next implementation slices:
 
-- [ ] Persist pending validator-set metadata authorizations for restart-safe quorum assembly.
+- [ ] Add RPC methods for validator-set metadata update proposal and quorum status.
 
 # 1. Production Objective
 

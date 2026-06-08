@@ -1,7 +1,7 @@
 use bincode::Options;
 use detta_consensus::{FinalityCertificate, SlashingRecord};
 use detta_core::{Block, DeTTaState, SnapshotError, StateSnapshot, Transaction};
-use detta_protocol::ValidatorSetMetadata;
+use detta_protocol::{SignedValidatorMessage, ValidatorSetMetadata};
 use serde::{de::DeserializeOwned, Serialize};
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter};
@@ -96,6 +96,26 @@ impl FileStorage {
         read_json(&path).map(Some)
     }
 
+    pub fn commit_pending_validator_set_metadata_authorizations(
+        &self,
+        authorizations: &[SignedValidatorMessage],
+    ) -> Result<(), StorageError> {
+        write_json_atomic(
+            &self.pending_validator_set_metadata_authorizations_path(),
+            &authorizations,
+        )
+    }
+
+    pub fn load_pending_validator_set_metadata_authorizations(
+        &self,
+    ) -> Result<Vec<SignedValidatorMessage>, StorageError> {
+        let path = self.pending_validator_set_metadata_authorizations_path();
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        read_json(&path)
+    }
+
     pub fn commit_mempool(&self, transactions: &[Transaction]) -> Result<(), StorageError> {
         write_json_atomic(&self.mempool_path(), &transactions)
     }
@@ -128,6 +148,11 @@ impl FileStorage {
 
     fn validator_set_path(&self) -> PathBuf {
         self.root.join("validator_set.bin")
+    }
+
+    fn pending_validator_set_metadata_authorizations_path(&self) -> PathBuf {
+        self.root
+            .join("pending_validator_set_metadata_authorizations.bin")
     }
 
     fn mempool_path(&self) -> PathBuf {
@@ -193,6 +218,9 @@ mod tests {
     use super::*;
     use detta_consensus::EquivocationEvidence;
     use detta_core::{Argument, Method, Transaction, ValidatorNode};
+    use detta_protocol::{
+        ProtocolMessage, ValidatorPublicKey, ValidatorSetMetadataUpdate, ValidatorSignatureDomain,
+    };
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_dir(name: &str) -> PathBuf {
@@ -327,12 +355,12 @@ mod tests {
             network_id: "detta-testnet".into(),
             chain_id: "detta-local".into(),
             validators: vec![
-                detta_protocol::ValidatorPublicKey {
+                ValidatorPublicKey {
                     validator_id: "validator-1".into(),
                     key_id: "consensus-key-1".into(),
                     public_key_hex: "aa".repeat(32),
                 },
-                detta_protocol::ValidatorPublicKey {
+                ValidatorPublicKey {
                     validator_id: "validator-2".into(),
                     key_id: "consensus-key-1".into(),
                     public_key_hex: "bb".repeat(32),
@@ -349,6 +377,50 @@ mod tests {
             .maybe_load_validator_set_metadata()
             .unwrap()
             .is_some());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn persists_pending_validator_set_metadata_authorizations() {
+        let dir = temp_dir("pending-validator-set-authorizations");
+        let storage = FileStorage::open(&dir).unwrap();
+        let update = ValidatorSetMetadataUpdate {
+            update_id: "validator-set-update-1".into(),
+            add_validators: vec![ValidatorPublicKey {
+                validator_id: "validator-3".into(),
+                key_id: "consensus-key-1".into(),
+                public_key_hex: "cc".repeat(32),
+            }],
+            remove_validators: vec![],
+        };
+        let authorization = SignedValidatorMessage {
+            signer: "validator-1".into(),
+            key_id: "consensus-key-1".into(),
+            network_id: "detta-testnet".into(),
+            chain_id: "detta-local".into(),
+            domain: ValidatorSignatureDomain::ValidatorSetMetadataUpdate,
+            message: Box::new(ProtocolMessage::ValidatorSetMetadataUpdate(update)),
+            signature_hex: "aa".repeat(64),
+        };
+
+        assert_eq!(
+            storage
+                .load_pending_validator_set_metadata_authorizations()
+                .unwrap(),
+            vec![]
+        );
+        storage
+            .commit_pending_validator_set_metadata_authorizations(std::slice::from_ref(
+                &authorization,
+            ))
+            .unwrap();
+
+        assert_eq!(
+            storage
+                .load_pending_validator_set_metadata_authorizations()
+                .unwrap(),
+            vec![authorization]
+        );
         fs::remove_dir_all(dir).unwrap();
     }
 

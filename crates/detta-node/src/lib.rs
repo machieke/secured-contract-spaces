@@ -49,6 +49,7 @@ pub enum NodeError {
     ValidatorMetadataKeyNotFound(String),
     ValidatorSetMetadataUpdateAlreadyApplied(String),
     ValidatorSetMetadataUpdateMismatch,
+    ValidatorSetMetadataUpdateNotFound(String),
     ValidatorSetChainMismatch {
         expected: String,
         actual: String,
@@ -64,6 +65,7 @@ pub enum NetworkIngestOutcome {
     FinalityCertificateReceived,
     EquivocationEvidencePersisted,
     ValidatorSetMetadataUpdated,
+    ValidatorSetMetadataAuthorizationStored,
     IgnoredControlMessage,
 }
 
@@ -73,6 +75,8 @@ pub struct PersistentValidatorNode {
     chain_id: ChainId,
     validator_keys: BTreeMap<String, ValidatorPublicKey>,
     applied_validator_set_updates: BTreeSet<String>,
+    pending_validator_set_metadata_authorizations:
+        BTreeMap<String, BTreeMap<String, SignedValidatorMessage>>,
     rpc: RpcService,
     storage: FileStorage,
 }
@@ -99,6 +103,7 @@ impl PersistentValidatorNode {
             chain_id,
             validator_keys: BTreeMap::new(),
             applied_validator_set_updates: BTreeSet::new(),
+            pending_validator_set_metadata_authorizations: BTreeMap::new(),
         })
     }
 
@@ -136,6 +141,7 @@ impl PersistentValidatorNode {
             chain_id,
             validator_keys: BTreeMap::new(),
             applied_validator_set_updates: BTreeSet::new(),
+            pending_validator_set_metadata_authorizations: BTreeMap::new(),
         };
         if let Some(metadata) = node
             .storage
@@ -144,6 +150,7 @@ impl PersistentValidatorNode {
         {
             node.apply_validator_set_metadata(metadata)?;
         }
+        node.load_pending_validator_set_metadata_authorizations()?;
         Ok(node)
     }
 
@@ -276,6 +283,106 @@ impl PersistentValidatorNode {
                 required: quorum,
             }))?;
         self.apply_validator_set_metadata_update(update)
+    }
+
+    pub fn record_pending_validator_set_metadata_authorization(
+        &mut self,
+        message: NetworkMessage,
+    ) -> Result<usize, NodeError> {
+        let signed = match message {
+            NetworkMessage::SignedValidator(signed) => signed,
+            other => {
+                return Err(NodeError::UnexpectedSignedMessage {
+                    expected: ProtocolMessageKind::ValidatorSetMetadataUpdate,
+                    actual: other.kind(),
+                });
+            }
+        };
+        let count = self.insert_pending_validator_set_metadata_authorization(*signed)?;
+        self.persist_pending_validator_set_metadata_authorizations()?;
+        Ok(count)
+    }
+
+    fn insert_pending_validator_set_metadata_authorization(
+        &mut self,
+        signed: SignedValidatorMessage,
+    ) -> Result<usize, NodeError> {
+        let update = self.verified_validator_set_metadata_update(&signed)?;
+        if self.has_applied_validator_set_update(&update.update_id) {
+            return Err(NodeError::ValidatorSetMetadataUpdateAlreadyApplied(
+                update.update_id,
+            ));
+        }
+        if let Some(existing_authorizations) = self
+            .pending_validator_set_metadata_authorizations
+            .get(&update.update_id)
+        {
+            if let Some(existing) = existing_authorizations.values().next() {
+                let existing_update = self.verified_validator_set_metadata_update(existing)?;
+                if existing_update != update {
+                    return Err(NodeError::ValidatorSetMetadataUpdateMismatch);
+                }
+            }
+        }
+
+        let entry = self
+            .pending_validator_set_metadata_authorizations
+            .entry(update.update_id)
+            .or_default();
+        entry.insert(signed.signer.clone(), signed);
+        Ok(entry.len())
+    }
+
+    fn persist_pending_validator_set_metadata_authorizations(&self) -> Result<(), NodeError> {
+        let authorizations = self
+            .pending_validator_set_metadata_authorizations
+            .values()
+            .flat_map(|authorizations| authorizations.values().cloned())
+            .collect::<Vec<_>>();
+        self.storage
+            .commit_pending_validator_set_metadata_authorizations(&authorizations)
+            .map_err(NodeError::Storage)
+    }
+
+    fn load_pending_validator_set_metadata_authorizations(&mut self) -> Result<(), NodeError> {
+        let authorizations = self
+            .storage
+            .load_pending_validator_set_metadata_authorizations()
+            .map_err(NodeError::Storage)?;
+        self.pending_validator_set_metadata_authorizations.clear();
+        for signed in authorizations {
+            let update = self.verified_validator_set_metadata_update(&signed)?;
+            if self.has_applied_validator_set_update(&update.update_id) {
+                continue;
+            }
+            self.insert_pending_validator_set_metadata_authorization(signed)?;
+        }
+        self.persist_pending_validator_set_metadata_authorizations()
+    }
+
+    pub fn pending_validator_set_metadata_authorization_count(&self, update_id: &str) -> usize {
+        self.pending_validator_set_metadata_authorizations
+            .get(update_id)
+            .map_or(0, BTreeMap::len)
+    }
+
+    pub fn apply_pending_validator_set_metadata_update(
+        &mut self,
+        update_id: &str,
+    ) -> Result<(), NodeError> {
+        let authorizations = self
+            .pending_validator_set_metadata_authorizations
+            .get(update_id)
+            .ok_or_else(|| NodeError::ValidatorSetMetadataUpdateNotFound(update_id.to_string()))?;
+        let messages = authorizations
+            .values()
+            .cloned()
+            .map(|signed| NetworkMessage::SignedValidator(Box::new(signed)))
+            .collect::<Vec<_>>();
+        self.apply_quorum_authorized_validator_set_metadata_update(&messages)?;
+        self.pending_validator_set_metadata_authorizations
+            .remove(update_id);
+        self.persist_pending_validator_set_metadata_authorizations()
     }
 
     fn apply_validator_set_metadata_update(
@@ -530,11 +637,17 @@ impl PersistentValidatorNode {
             }
             NetworkMessage::SignedValidator(signed) => {
                 let message = self.verified_signed_validator_message(signed)?;
-                if let NetworkMessage::ValidatorSetMetadataUpdate(_) = message {
-                    self.apply_quorum_authorized_validator_set_metadata_update(
-                        std::slice::from_ref(&envelope.message),
-                    )?;
-                    return Ok(NetworkIngestOutcome::ValidatorSetMetadataUpdated);
+                if let NetworkMessage::ValidatorSetMetadataUpdate(update) = message {
+                    let update_id = update.update_id;
+                    let authorization_count = self
+                        .record_pending_validator_set_metadata_authorization(
+                            envelope.message.clone(),
+                        )?;
+                    if authorization_count >= self.validator_set_metadata_quorum() {
+                        self.apply_pending_validator_set_metadata_update(&update_id)?;
+                        return Ok(NetworkIngestOutcome::ValidatorSetMetadataUpdated);
+                    }
+                    return Ok(NetworkIngestOutcome::ValidatorSetMetadataAuthorizationStored);
                 }
                 let signed_envelope = Envelope {
                     from: envelope.from.clone(),
@@ -1548,7 +1661,7 @@ mod tests {
     }
 
     #[test]
-    fn persistent_node_rejects_single_validator_set_metadata_update_without_quorum() {
+    fn persistent_node_stores_single_validator_set_metadata_update_without_quorum() {
         let dir = temp_dir("validator-set-single-update");
         let signer_key = validator_key("validator-1", 7);
         let peer_key = validator_key("validator-2", 8);
@@ -1579,14 +1692,94 @@ mod tests {
         };
 
         assert_eq!(
-            node.ingest_network_envelope(&envelope).unwrap_err(),
-            NodeError::Consensus(ConsensusError::QuorumNotReached {
-                accepted: 1,
-                required: 2,
-            })
+            node.ingest_network_envelope(&envelope).unwrap(),
+            NetworkIngestOutcome::ValidatorSetMetadataAuthorizationStored
+        );
+        assert_eq!(
+            node.pending_validator_set_metadata_authorization_count("validator-set-update-1"),
+            1
         );
         assert!(!node.has_applied_validator_set_update("validator-set-update-1"));
         assert!(node.trusted_validator_key("validator-3").is_none());
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn persistent_node_reloads_pending_validator_set_metadata_authorizations() {
+        let dir = temp_dir("validator-set-pending-reload");
+        let signer_key = validator_key("validator-1", 7);
+        let peer_key = validator_key("validator-2", 8);
+        let added_key = validator_key("validator-3", 9);
+        let mut node = PersistentValidatorNode::bootstrap_with_validator_set(
+            "validator-2",
+            seeded_state(),
+            &dir,
+            "detta-testnet",
+            vec![signer_key.public_key(), peer_key.public_key()],
+        )
+        .unwrap();
+        let update = ValidatorSetMetadataUpdate {
+            update_id: "validator-set-update-1".into(),
+            add_validators: vec![added_key.public_key()],
+            remove_validators: vec![],
+        };
+        let signer_authorization = signer_key
+            .sign_message(
+                "detta-testnet",
+                node.chain_id().clone(),
+                NetworkMessage::ValidatorSetMetadataUpdate(update.clone()),
+            )
+            .unwrap();
+        let signer_envelope = Envelope {
+            from: "validator-1".into(),
+            to: "validator-2".into(),
+            message: NetworkMessage::SignedValidator(Box::new(signer_authorization)),
+        };
+
+        assert_eq!(
+            node.ingest_network_envelope(&signer_envelope).unwrap(),
+            NetworkIngestOutcome::ValidatorSetMetadataAuthorizationStored
+        );
+
+        let mut restarted = PersistentValidatorNode::restart("validator-2", &dir).unwrap();
+        assert_eq!(
+            restarted.pending_validator_set_metadata_authorization_count("validator-set-update-1"),
+            1
+        );
+        assert!(restarted.trusted_validator_key("validator-3").is_none());
+
+        let peer_authorization = peer_key
+            .sign_message(
+                "detta-testnet",
+                restarted.chain_id().clone(),
+                NetworkMessage::ValidatorSetMetadataUpdate(update),
+            )
+            .unwrap();
+        let peer_envelope = Envelope {
+            from: "validator-2".into(),
+            to: "validator-2".into(),
+            message: NetworkMessage::SignedValidator(Box::new(peer_authorization)),
+        };
+
+        assert_eq!(
+            restarted.ingest_network_envelope(&peer_envelope).unwrap(),
+            NetworkIngestOutcome::ValidatorSetMetadataUpdated
+        );
+        assert_eq!(
+            restarted.pending_validator_set_metadata_authorization_count("validator-set-update-1"),
+            0
+        );
+        assert!(restarted.has_applied_validator_set_update("validator-set-update-1"));
+        assert!(restarted.trusted_validator_key("validator-3").is_some());
+
+        let reloaded = PersistentValidatorNode::restart("validator-2", &dir).unwrap();
+        assert_eq!(
+            reloaded.pending_validator_set_metadata_authorization_count("validator-set-update-1"),
+            0
+        );
+        assert!(reloaded.has_applied_validator_set_update("validator-set-update-1"));
+        assert!(reloaded.trusted_validator_key("validator-3").is_some());
 
         fs::remove_dir_all(dir).unwrap();
     }
