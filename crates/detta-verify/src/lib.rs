@@ -889,6 +889,14 @@ mod tests {
     }
 
     #[test]
+    fn proof_model_artifact_paths_are_unique() {
+        let artifacts = proof_model_artifacts();
+        let paths: BTreeSet<_> = artifacts.iter().map(|artifact| artifact.path).collect();
+
+        assert_eq!(paths.len(), artifacts.len());
+    }
+
+    #[test]
     fn proof_artifact_roots_are_lowercase_sha256_hex() {
         for artifact in proof_model_artifacts()
             .into_iter()

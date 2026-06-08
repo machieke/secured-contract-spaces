@@ -41,6 +41,7 @@ cargo test -p detta-verify
   `models/` without parent traversal or platform-specific separators.
 - every model and runtime artifact path uses an allowed proof artifact suffix:
   `.tla`, `.cfg`, `.json`, or `.sha256`.
+- model artifact paths are unique.
 - model and runtime artifact path sets are disjoint.
 
 The evaluator `sha256sum -c` commands verify fixture-file attestations. The
@@ -88,6 +89,7 @@ Before accepting a release proof bundle, verify:
 - the evaluator fixture inventory JSON and `.sha256` paths appear in
   `runtime_artifacts`;
 - every `runtime_artifacts` path is unique;
+- every `model_artifacts` path is unique;
 - every model and runtime artifact root is lowercase SHA-256 hex;
 - every model and runtime artifact path stays under `models/`;
 - every model and runtime artifact path uses an allowed suffix;

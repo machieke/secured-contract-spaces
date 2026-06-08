@@ -225,10 +225,11 @@ Completed production-plan slices:
 - [x] Proof manifest artifact paths are checked against an extension allow-list.
 - [x] Proof manifest model and runtime artifact paths are checked for
   disjointness.
+- [x] Proof manifest model artifact paths are checked for uniqueness.
 
 Next implementation slices:
 
-- [ ] Add proof manifest model artifact path uniqueness checks.
+- [ ] Add proof manifest release attestation format checks.
 
 # 1. Production Objective
 
