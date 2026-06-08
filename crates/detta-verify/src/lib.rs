@@ -218,9 +218,13 @@ pub struct ModelArtifactRoot {
     pub sha256: String,
 }
 
+pub const PROOF_ARTIFACT_MANIFEST_SCHEMA: &str = "detta.proof-artifact-manifest.v1";
+pub const PROOF_ARTIFACT_MANIFEST_SCHEMA_VERSION: u32 = 1;
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ProofArtifactManifest {
     pub schema: &'static str,
+    pub schema_version: u32,
     pub project: &'static str,
     pub scope: &'static str,
     pub model_artifacts: Vec<ModelArtifactRoot>,
@@ -231,7 +235,8 @@ pub struct ProofArtifactManifest {
 pub fn proof_artifact_manifest() -> ProofArtifactManifest {
     let coverage = scs_theorem_coverage();
     ProofArtifactManifest {
-        schema: "detta.proof-artifact-manifest.v1",
+        schema: PROOF_ARTIFACT_MANIFEST_SCHEMA,
+        schema_version: PROOF_ARTIFACT_MANIFEST_SCHEMA_VERSION,
         project: "DeTTa",
         scope: "Secured Contract Spaces runtime safety obligations",
         model_artifacts: proof_model_artifacts(),
@@ -676,6 +681,18 @@ mod tests {
             actual,
             include_str!("../../../models/detta-proof-artifact-manifest.json")
         );
+    }
+
+    #[test]
+    fn proof_artifact_manifest_schema_version_is_explicit() {
+        let manifest = proof_artifact_manifest();
+
+        assert_eq!(manifest.schema, PROOF_ARTIFACT_MANIFEST_SCHEMA);
+        assert_eq!(
+            manifest.schema_version,
+            PROOF_ARTIFACT_MANIFEST_SCHEMA_VERSION
+        );
+        assert_eq!(PROOF_ARTIFACT_MANIFEST_SCHEMA_VERSION, 1);
     }
 
     #[test]

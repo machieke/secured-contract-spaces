@@ -176,10 +176,11 @@ Completed production-plan slices:
   operators.
 - [x] A bounded TLC config artifact is included in the proof manifest.
 - [x] Proof-artifact manifest JSON serialization has a stable schema fixture.
+- [x] Proof-artifact manifest schema and version are explicit constants.
 
 Next implementation slices:
 
-- [ ] Add explicit proof-artifact manifest schema/version constants.
+- [ ] Add restricted evaluator golden fixtures for proof traces.
 
 # 1. Production Objective
 

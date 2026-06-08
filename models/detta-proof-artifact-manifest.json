@@ -1,5 +1,6 @@
 {
   "schema": "detta.proof-artifact-manifest.v1",
+  "schema_version": 1,
   "project": "DeTTa",
   "scope": "Secured Contract Spaces runtime safety obligations",
   "model_artifacts": [
