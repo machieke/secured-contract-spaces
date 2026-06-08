@@ -191,6 +191,219 @@ pub enum DifferentialReplayError {
     },
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum TheoremEvidenceKind {
+    RuntimeTest,
+    Model,
+    Verifier,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TheoremEvidence {
+    pub kind: TheoremEvidenceKind,
+    pub reference: &'static str,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SafetyTheoremCoverage {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub evidence: Vec<TheoremEvidence>,
+}
+
+pub fn scs_theorem_coverage() -> Vec<SafetyTheoremCoverage> {
+    use TheoremEvidenceKind::{Model, RuntimeTest, Verifier};
+
+    vec![
+        SafetyTheoremCoverage {
+            id: "THM-001",
+            name: "Dispatcher-Only External Mutation",
+            evidence: vec![
+                TheoremEvidence {
+                    kind: RuntimeTest,
+                    reference: "detta_core::tests::missing_method_policy_is_denied",
+                },
+                TheoremEvidence {
+                    kind: Model,
+                    reference: "models/DeTTaBlockExecution.tla::AuthorizationSafety",
+                },
+            ],
+        },
+        SafetyTheoremCoverage {
+            id: "THM-002",
+            name: "Contract Isolation",
+            evidence: vec![
+                TheoremEvidence {
+                    kind: Verifier,
+                    reference: "detta_verify::verify_kernel_trace",
+                },
+                TheoremEvidence {
+                    kind: RuntimeTest,
+                    reference: "detta_verify::tests::symbolic_trace_rejects_cross_contract_write",
+                },
+            ],
+        },
+        SafetyTheoremCoverage {
+            id: "THM-003",
+            name: "Method Write-Scope Safety",
+            evidence: vec![
+                TheoremEvidence {
+                    kind: Verifier,
+                    reference: "detta_verify::verify_kernel_trace",
+                },
+                TheoremEvidence {
+                    kind: RuntimeTest,
+                    reference: "detta_verify::tests::symbolic_trace_rejects_out_of_scope_write",
+                },
+            ],
+        },
+        SafetyTheoremCoverage {
+            id: "THM-004",
+            name: "No Authority From Syntax",
+            evidence: vec![TheoremEvidence {
+                kind: RuntimeTest,
+                reference: "detta_evaluator::tests::transfer_like_arguments_are_plain_data_not_authority",
+            }],
+        },
+        SafetyTheoremCoverage {
+            id: "THM-005",
+            name: "Live Registry Authorization",
+            evidence: vec![TheoremEvidence {
+                kind: RuntimeTest,
+                reference: "detta_core::tests::transfer_from_requires_live_registry_allowance",
+            }],
+        },
+        SafetyTheoremCoverage {
+            id: "THM-006",
+            name: "Registry Consumption Atomicity",
+            evidence: vec![
+                TheoremEvidence {
+                    kind: RuntimeTest,
+                    reference: "detta_core::tests::allowance_consumption_reverts_with_failed_transfer",
+                },
+                TheoremEvidence {
+                    kind: Model,
+                    reference: "models/DeTTaBlockExecution.tla::Atomicity",
+                },
+            ],
+        },
+        SafetyTheoremCoverage {
+            id: "THM-007",
+            name: "Event Atomicity",
+            evidence: vec![
+                TheoremEvidence {
+                    kind: RuntimeTest,
+                    reference: "detta_core::tests::insufficient_balance_reverts_storage_registry_and_events",
+                },
+                TheoremEvidence {
+                    kind: Model,
+                    reference: "models/DeTTaBlockExecution.tla::Atomicity",
+                },
+            ],
+        },
+        SafetyTheoremCoverage {
+            id: "THM-008",
+            name: "Invariant Preservation",
+            evidence: vec![
+                TheoremEvidence {
+                    kind: RuntimeTest,
+                    reference: "detta_core::tests::transfer_preserves_supply_and_commits_event",
+                },
+                TheoremEvidence {
+                    kind: RuntimeTest,
+                    reference: "detta_core::tests::invariant_failure_reverts_full_transition",
+                },
+            ],
+        },
+        SafetyTheoremCoverage {
+            id: "THM-009",
+            name: "Determinism",
+            evidence: vec![
+                TheoremEvidence {
+                    kind: Verifier,
+                    reference: "detta_verify::verify_differential_replay",
+                },
+                TheoremEvidence {
+                    kind: RuntimeTest,
+                    reference: "detta_core::tests::deterministic_replay_produces_identical_roots",
+                },
+            ],
+        },
+        SafetyTheoremCoverage {
+            id: "THM-010",
+            name: "Replay Safety",
+            evidence: vec![
+                TheoremEvidence {
+                    kind: RuntimeTest,
+                    reference: "detta_core::tests::replayed_nonce_is_rejected",
+                },
+                TheoremEvidence {
+                    kind: Model,
+                    reference: "models/DeTTaBlockExecution.tla::ReplaySafety",
+                },
+            ],
+        },
+        SafetyTheoremCoverage {
+            id: "THM-011",
+            name: "Caller Integrity",
+            evidence: vec![TheoremEvidence {
+                kind: RuntimeTest,
+                reference: "detta_core::tests::caller_identity_cannot_be_forged",
+            }],
+        },
+        SafetyTheoremCoverage {
+            id: "THM-012",
+            name: "No Write-Scope Leakage Across Calls",
+            evidence: vec![
+                TheoremEvidence {
+                    kind: RuntimeTest,
+                    reference: "detta_core::tests::router_cross_contract_call_does_not_inherit_user_allowance",
+                },
+                TheoremEvidence {
+                    kind: Model,
+                    reference: "models/DeTTaBlockExecution.tla::NoWriteScopeLeakageAcrossCalls",
+                },
+            ],
+        },
+        SafetyTheoremCoverage {
+            id: "THM-013",
+            name: "View Read-Only Safety",
+            evidence: vec![TheoremEvidence {
+                kind: RuntimeTest,
+                reference: "detta_core::tests::view_reads_are_read_only",
+            }],
+        },
+        SafetyTheoremCoverage {
+            id: "THM-014",
+            name: "Schema Safety",
+            evidence: vec![
+                TheoremEvidence {
+                    kind: RuntimeTest,
+                    reference: "detta_core::tests::arithmetic_overflow_reverts_without_state_or_events",
+                },
+                TheoremEvidence {
+                    kind: Model,
+                    reference: "models/DeTTaBlockExecution.tla::TypeOK",
+                },
+            ],
+        },
+        SafetyTheoremCoverage {
+            id: "THM-015",
+            name: "Raw Primitive Exclusion",
+            evidence: vec![
+                TheoremEvidence {
+                    kind: RuntimeTest,
+                    reference: "detta_evaluator::tests::evaluator_rejects_forbidden_primitive",
+                },
+                TheoremEvidence {
+                    kind: Model,
+                    reference: "models/DeTTaBlockExecution.tla::RawPrimitiveExclusion",
+                },
+            ],
+        },
+    ]
+}
+
 pub fn verify_kernel_trace(
     contract: &str,
     write_scope: &BTreeSet<StateKey>,
@@ -365,6 +578,26 @@ mod tests {
         state.deploy_router("RouterA", "TokenA").unwrap();
 
         assert_eq!(lint_state(&state), vec![]);
+    }
+
+    #[test]
+    fn scs_theorem_coverage_is_complete_and_auditable() {
+        let coverage = scs_theorem_coverage();
+        let ids: BTreeSet<_> = coverage.iter().map(|entry| entry.id).collect();
+
+        assert_eq!(coverage.len(), 15);
+        assert_eq!(ids.len(), 15);
+        for index in 1..=15 {
+            let id = format!("THM-{index:03}");
+            assert!(ids.contains(id.as_str()), "{id} has no coverage entry");
+        }
+        for entry in coverage {
+            assert!(!entry.name.is_empty());
+            assert!(!entry.evidence.is_empty(), "{} has no evidence", entry.id);
+            for evidence in entry.evidence {
+                assert!(!evidence.reference.is_empty());
+            }
+        }
     }
 
     #[test]

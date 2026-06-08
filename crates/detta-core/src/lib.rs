@@ -4512,6 +4512,72 @@ mod tests {
     }
 
     #[test]
+    fn invariant_failure_reverts_full_transition() {
+        let mut state = seeded_state();
+        state.storage.insert(
+            StateKey::TotalSupply {
+                contract: "TokenA".into(),
+                asset: "USDC".into(),
+            },
+            StateValue::UInt(999),
+        );
+        let storage_before = state.storage_root();
+        let registry_before = state.registry_root();
+        let event_before = state.event_root();
+
+        let receipt = state.apply_transaction(tx(
+            "tx1",
+            "Alice",
+            1,
+            Method::Transfer,
+            vec![principal("Bob"), asset("USDC"), amount(10)],
+        ));
+
+        assert_eq!(receipt.status, TxStatus::Reverted);
+        assert_eq!(receipt.error, Some(ExecutionError::InvariantViolation));
+        assert_eq!(state.storage_root(), storage_before);
+        assert_eq!(state.registry_root(), registry_before);
+        assert_eq!(state.event_root(), event_before);
+        assert_eq!(state.balance("TokenA", "Alice", "USDC"), 100);
+        assert_eq!(state.balance("TokenA", "Bob", "USDC"), 50);
+        assert_eq!(state.total_supply("TokenA", "USDC"), 999);
+        assert!(state.events().is_empty());
+    }
+
+    #[test]
+    fn arithmetic_overflow_reverts_without_state_or_events() {
+        let mut state = seeded_state();
+        state.storage.insert(
+            StateKey::Balance {
+                contract: "TokenA".into(),
+                owner: "Bob".into(),
+                asset: "USDC".into(),
+            },
+            StateValue::UInt(u128::MAX),
+        );
+        let storage_before = state.storage_root();
+        let registry_before = state.registry_root();
+        let event_before = state.event_root();
+
+        let receipt = state.apply_transaction(tx(
+            "tx1",
+            "Alice",
+            1,
+            Method::Transfer,
+            vec![principal("Bob"), asset("USDC"), amount(1)],
+        ));
+
+        assert_eq!(receipt.status, TxStatus::Reverted);
+        assert_eq!(receipt.error, Some(ExecutionError::ArithmeticOverflow));
+        assert_eq!(state.storage_root(), storage_before);
+        assert_eq!(state.registry_root(), registry_before);
+        assert_eq!(state.event_root(), event_before);
+        assert_eq!(state.balance("TokenA", "Alice", "USDC"), 100);
+        assert_eq!(state.balance("TokenA", "Bob", "USDC"), u128::MAX);
+        assert!(state.events().is_empty());
+    }
+
+    #[test]
     fn insufficient_balance_reverts_storage_registry_and_events() {
         let mut state = seeded_state();
         let storage_before = state.storage_root();
