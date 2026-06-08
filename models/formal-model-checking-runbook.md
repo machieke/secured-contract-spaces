@@ -20,6 +20,31 @@ sha256sum models/DeTTaBlockExecution.cfg
 - the checked-in manifest root matches
   `models/detta-proof-artifact-manifest.sha256`;
 - the manifest includes the current `models/DeTTaBlockExecution.tla` SHA-256.
+- the manifest binds every checked-in restricted evaluator fixture JSON and
+  evaluator fixture attestation file.
+
+## Proof Manifest v2 Runtime Artifacts
+
+`models/detta-proof-artifact-manifest.json` uses
+`detta.proof-artifact-manifest.v2`. Version 2 separates proof artifacts into:
+
+- `model_artifacts`: formal model files such as TLA+ modules and bounded model
+  checker configs;
+- `runtime_artifacts`: deterministic runtime fixtures and attestations that
+  support theorem evidence but are not standalone formal models.
+
+Restricted evaluator runtime artifacts include:
+
+- proof trace JSON fixtures;
+- forbidden primitive, resource exhaustion, and arithmetic overflow fixtures;
+- `.sha256` release attestations for those fixture files;
+- the dedicated proof trace root attestation for the compact JSON
+  serialization of `report.trace`.
+
+The manifest stores the SHA-256 of each artifact file. For fixture JSON files,
+that root authenticates the fixture document. For fixture `.sha256` files, that
+root authenticates the release attestation file itself. The evaluator crate also
+checks each attestation against the corresponding fixture bytes or trace root.
 
 ## Current TLA Artifact
 
@@ -65,7 +90,7 @@ release artifact.
 
 ## Refresh Procedure
 
-When theorem coverage or model files change:
+When theorem coverage, model files, or runtime artifacts change:
 
 1. Update `detta_verify::scs_theorem_coverage()` or the model file.
 2. Update `models/detta-proof-artifact-manifest.json`.
