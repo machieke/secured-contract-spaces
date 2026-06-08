@@ -21,8 +21,8 @@ use detta_rpc::{
     SnapshotSyncClientMetricsReport, ValidatorSetMetadataUpdateStatus,
 };
 use detta_storage::{
-    FileStorage, SnapshotImportAuditRecord, StorageError, ValidatorSetMetadataAuditOutcome,
-    ValidatorSetMetadataAuditRecord,
+    FileStorage, SnapshotImportAuditConfig, SnapshotImportAuditRecord, StorageError,
+    ValidatorSetMetadataAuditOutcome, ValidatorSetMetadataAuditRecord,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -421,6 +421,14 @@ impl PersistentValidatorNode {
         {
             node.apply_validator_set_metadata(metadata)?;
         }
+        if let Some(config) = node
+            .storage
+            .maybe_load_snapshot_import_audit_config()
+            .map_err(NodeError::Storage)?
+        {
+            node.max_snapshot_import_audit_records = config.max_records;
+            node.max_snapshot_import_audit_page_size = config.max_page_size;
+        }
         node.load_pending_validator_set_metadata_authorizations()?;
         Ok(node)
     }
@@ -728,9 +736,19 @@ impl PersistentValidatorNode {
         self.max_validator_set_metadata_audit_page_size = max_page_size;
     }
 
-    pub fn set_snapshot_import_audit_limits(&mut self, max_records: usize, max_page_size: usize) {
+    pub fn set_snapshot_import_audit_limits(
+        &mut self,
+        max_records: usize,
+        max_page_size: usize,
+    ) -> Result<(), NodeError> {
         self.max_snapshot_import_audit_records = max_records;
         self.max_snapshot_import_audit_page_size = max_page_size;
+        self.storage
+            .commit_snapshot_import_audit_config(&SnapshotImportAuditConfig {
+                max_records,
+                max_page_size,
+            })
+            .map_err(NodeError::Storage)
     }
 
     pub fn validator_set_metadata_quorum(&self) -> usize {
@@ -3946,7 +3964,7 @@ mod tests {
             &sink_dir,
         )
         .unwrap();
-        sink.set_snapshot_import_audit_limits(1, 1);
+        sink.set_snapshot_import_audit_limits(1, 1).unwrap();
         let imported = sink
             .import_snapshot_chunk_set(&chunk_set, &required_metadata_roots)
             .unwrap();
@@ -4185,6 +4203,10 @@ mod tests {
                 .snapshot_import_audit_root,
             snapshot_import_audit_root
         );
+        let restarted_roots = restarted_sink.node_snapshot_roots().unwrap();
+        assert_eq!(restarted_roots.snapshot_import_audit_record_count, 1);
+        assert_eq!(restarted_roots.snapshot_import_audit_max_records, 1);
+        assert_eq!(restarted_roots.snapshot_import_audit_max_page_size, 1);
         assert_eq!(
             restarted_sink
                 .load_required_snapshot_metadata_roots()

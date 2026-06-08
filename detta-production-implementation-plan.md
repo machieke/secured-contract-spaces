@@ -136,11 +136,12 @@ Completed production-plan slices:
   pagination through storage, node loaders, and RPC-backed flows.
 - [x] Persistent snapshot root responses include snapshot import audit
   retention diagnostics: retained count, max records, and max page size.
+- [x] Snapshot import audit retention-limit configuration persists through
+  storage and reloads after node restart.
 
 Next implementation slices:
 
-- [ ] Persist snapshot import audit retention limit configuration across
-  restart.
+- [ ] Expose snapshot import audit retention configuration over node-aware RPC.
 
 # 1. Production Objective
 

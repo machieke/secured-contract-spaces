@@ -50,6 +50,12 @@ pub struct SnapshotImportAuditRecord {
     pub metadata_roots_verified: bool,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SnapshotImportAuditConfig {
+    pub max_records: usize,
+    pub max_page_size: usize,
+}
+
 impl FileStorage {
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, StorageError> {
         let root = root.into();
@@ -317,6 +323,23 @@ impl FileStorage {
         hash_bincode(&records)
     }
 
+    pub fn commit_snapshot_import_audit_config(
+        &self,
+        config: &SnapshotImportAuditConfig,
+    ) -> Result<(), StorageError> {
+        write_json_atomic(&self.snapshot_import_audit_config_path(), config)
+    }
+
+    pub fn maybe_load_snapshot_import_audit_config(
+        &self,
+    ) -> Result<Option<SnapshotImportAuditConfig>, StorageError> {
+        let path = self.snapshot_import_audit_config_path();
+        if !path.exists() {
+            return Ok(None);
+        }
+        read_json(&path).map(Some)
+    }
+
     pub fn commit_mempool(&self, transactions: &[Transaction]) -> Result<(), StorageError> {
         write_json_atomic(&self.mempool_path(), &transactions)
     }
@@ -375,6 +398,10 @@ impl FileStorage {
 
     fn snapshot_import_audit_path(&self) -> PathBuf {
         self.root.join("snapshot_import_audit.bin")
+    }
+
+    fn snapshot_import_audit_config_path(&self) -> PathBuf {
+        self.root.join("snapshot_import_audit_config.bin")
     }
 
     fn mempool_path(&self) -> PathBuf {
@@ -936,6 +963,24 @@ mod tests {
                 .snapshot_import_audit_root()
                 .unwrap(),
             retained_root
+        );
+        let config = SnapshotImportAuditConfig {
+            max_records: 2,
+            max_page_size: 1,
+        };
+        assert_eq!(
+            storage.maybe_load_snapshot_import_audit_config().unwrap(),
+            None
+        );
+        storage
+            .commit_snapshot_import_audit_config(&config)
+            .unwrap();
+        assert_eq!(
+            FileStorage::open(&dir)
+                .unwrap()
+                .maybe_load_snapshot_import_audit_config()
+                .unwrap(),
+            Some(config)
         );
         fs::remove_dir_all(dir).unwrap();
     }
