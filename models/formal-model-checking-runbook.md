@@ -59,6 +59,8 @@ cargo test -p detta-verify
 - evaluator fixture inventory fixture, attestation, and trace-root attestation
   paths are unique.
 - evaluator fixture inventory roots are lowercase SHA-256 hex.
+- the evaluator fixture inventory trace root matches the proof-trace fixture,
+  compact trace bytes, and trace-root attestation.
 
 The evaluator `sha256sum -c` commands verify fixture-file attestations. The
 final `sha256sum` command reports the file root of the compact-trace-root
@@ -126,6 +128,8 @@ Before accepting a release proof bundle, verify:
 - every evaluator fixture inventory path is unique across fixture,
   attestation, and trace-root attestation fields;
 - every evaluator fixture inventory root uses lowercase SHA-256 hex;
+- the evaluator fixture inventory trace root matches the proof-trace fixture,
+  compact trace bytes, and trace-root attestation;
 - every root listed inside the evaluator fixture inventory matches the
   corresponding `runtime_artifacts` entry;
 - `detta-restricted-evaluator-fixture-inventory.sha256` verifies against the

@@ -1456,6 +1456,42 @@ mod tests {
     }
 
     #[test]
+    fn proof_runtime_evaluator_fixture_inventory_trace_root_matches_fixture() {
+        let inventory: EvaluatorFixtureInventoryForTest = serde_json::from_str(include_str!(
+            "../../../models/detta-restricted-evaluator-fixture-inventory.json"
+        ))
+        .unwrap();
+        let trace_entries = inventory
+            .fixtures
+            .iter()
+            .filter(|entry| entry.trace_root.is_some())
+            .collect::<Vec<_>>();
+        let fixture: ProofTraceFixtureForTest = serde_json::from_str(include_str!(
+            "../../../models/detta-restricted-evaluator-proof-trace.json"
+        ))
+        .unwrap();
+        let trace_bytes = serde_json::to_vec(&fixture.report.trace).unwrap();
+        let trace_root = proof_artifact_manifest_root_bytes(&trace_bytes);
+        let attestation =
+            include_str!("../../../models/detta-restricted-evaluator-proof-trace-root.sha256");
+        let (attested_root, file_name) = sha256sum_attestation_parts(attestation);
+
+        assert_eq!(trace_entries.len(), 1);
+        let entry = trace_entries.first().unwrap();
+        let inventory_trace_root = entry.trace_root.as_deref().unwrap();
+
+        assert_eq!(entry.name.as_str(), "proof-trace");
+        assert_eq!(
+            entry.trace_root_attestation_path.as_deref(),
+            Some("models/detta-restricted-evaluator-proof-trace-root.sha256")
+        );
+        assert_eq!(file_name, "detta-restricted-evaluator-proof-trace.trace");
+        assert_eq!(inventory_trace_root, fixture.trace_root);
+        assert_eq!(inventory_trace_root, trace_root);
+        assert_eq!(inventory_trace_root, attested_root);
+    }
+
+    #[test]
     fn theorem_fixture_evidence_references_runtime_artifacts() {
         let runtime_artifacts: BTreeSet<_> = proof_runtime_artifacts()
             .into_iter()

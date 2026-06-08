@@ -243,10 +243,13 @@ Completed production-plan slices:
   verify.
 - [x] Evaluator fixture inventory roots are checked for lowercase SHA-256
   format in verify.
+- [x] Evaluator fixture inventory trace-root metadata is checked against the
+  proof-trace fixture and attestation in verify.
 
 Next implementation slices:
 
-- [ ] Add evaluator fixture inventory trace-root consistency checks in verify.
+- [ ] Add evaluator fixture inventory fixture-schema uniqueness checks in
+  verify.
 
 # 1. Production Objective
 
