@@ -81,6 +81,7 @@ cargo test -p detta-verify
 - evaluator fixture inventory roots are lowercase SHA-256 hex.
 - the evaluator fixture inventory trace root matches the proof-trace fixture,
   compact trace bytes, and trace-root attestation.
+- theorem coverage order is stable from `THM-001` through `THM-015`.
 
 The evaluator `sha256sum -c` commands verify fixture-file attestations. The
 final `sha256sum` command reports the file root of the compact-trace-root
@@ -178,6 +179,7 @@ Before accepting a release proof bundle, verify:
   checked-in inventory JSON;
 - every fixture evidence reference with `kind: "Fixture"` resolves to a
   `runtime_artifacts` path;
+- theorem coverage order is stable from `THM-001` through `THM-015`;
 - `detta-restricted-evaluator-proof-trace-root.sha256` matches both the
   fixture `trace_root` field and the recomputed root of `report.trace`;
 - `models/detta-proof-artifact-manifest.sha256` verifies after all fixture,

@@ -753,6 +753,23 @@ mod tests {
     }
 
     #[test]
+    fn scs_theorem_coverage_order_is_stable() {
+        let coverage_ids: Vec<_> = scs_theorem_coverage()
+            .iter()
+            .map(|entry| entry.id)
+            .collect();
+
+        assert_eq!(
+            coverage_ids,
+            vec![
+                "THM-001", "THM-002", "THM-003", "THM-004", "THM-005", "THM-006", "THM-007",
+                "THM-008", "THM-009", "THM-010", "THM-011", "THM-012", "THM-013", "THM-014",
+                "THM-015",
+            ]
+        );
+    }
+
+    #[test]
     fn proof_artifact_manifest_matches_checked_in_json() {
         let expected: serde_json::Value = serde_json::from_str(include_str!(
             "../../../models/detta-proof-artifact-manifest.json"
