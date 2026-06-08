@@ -1531,6 +1531,16 @@ mod tests {
     }
 
     #[test]
+    fn proof_release_attestation_target_paths_are_unique() {
+        let target_paths: BTreeSet<_> = proof_release_attestations_for_test()
+            .into_iter()
+            .map(|fixture| fixture.target_path)
+            .collect();
+
+        assert_eq!(target_paths.len(), PROOF_RELEASE_ATTESTATION_COUNT);
+    }
+
+    #[test]
     fn proof_release_attestation_target_paths_use_models_namespace() {
         for fixture in proof_release_attestations_for_test() {
             assert!(
