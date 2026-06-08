@@ -5,12 +5,12 @@ use detta_consensus::{
 use detta_core::{
     Block, BlockError, ChainId, DeTTaState, MempoolError, StateSnapshot, Transaction, ValidatorNode,
 };
-use detta_network::{Envelope, InMemoryTransport, NetworkError, NetworkMessage};
+use detta_network::{Envelope, InMemoryTransport, NetworkError, NetworkMessage, TcpProtocolStream};
 use detta_protocol::{
     build_snapshot_chunks_with_metadata_roots, ProtocolMessageKind, SignatureError,
-    SignedValidatorMessage, SnapshotChunkRequest, SnapshotChunkSet, SnapshotSyncError,
-    ValidatorPublicKey, ValidatorSetMetadata, ValidatorSetMetadataUpdate, ValidatorSigningKey,
-    SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT,
+    SignedValidatorMessage, SnapshotChunkManifest, SnapshotChunkRequest, SnapshotChunkSet,
+    SnapshotSyncError, ValidatorPublicKey, ValidatorSetMetadata, ValidatorSetMetadataUpdate,
+    ValidatorSigningKey, SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT,
 };
 use detta_rpc::{
     json_rpc_response_for_request, JsonRpcHandler, PersistentNodeSnapshotRoots, RpcError,
@@ -53,6 +53,10 @@ pub enum NodeError {
         actual: String,
     },
     UnexpectedSignedMessage {
+        expected: ProtocolMessageKind,
+        actual: ProtocolMessageKind,
+    },
+    UnexpectedSnapshotSyncMessage {
         expected: ProtocolMessageKind,
         actual: ProtocolMessageKind,
     },
@@ -114,6 +118,83 @@ pub struct PersistentValidatorNode {
 pub struct PersistentNodeSnapshot {
     pub state_snapshot: StateSnapshot,
     pub validator_set_metadata_audit_root: String,
+}
+
+pub fn fetch_verified_snapshot_chunk_set_over_tcp(
+    stream: &mut TcpProtocolStream,
+    snapshot_root: impl Into<String>,
+    max_chunks_per_request: u32,
+    required_metadata_roots: &BTreeMap<String, String>,
+) -> Result<SnapshotChunkSet, NodeError> {
+    if max_chunks_per_request == 0 {
+        return Err(NodeError::SnapshotSync(SnapshotSyncError::InvalidChunkSize));
+    }
+
+    let snapshot_root = snapshot_root.into();
+    let mut manifest: Option<SnapshotChunkManifest> = None;
+    let mut chunks = Vec::new();
+    let mut start_index = 0;
+
+    loop {
+        stream
+            .send(&NetworkMessage::SnapshotChunkRequest(
+                SnapshotChunkRequest {
+                    snapshot_root: snapshot_root.clone(),
+                    start_index,
+                    max_chunks: max_chunks_per_request,
+                },
+            ))
+            .map_err(NodeError::Network)?;
+
+        let manifest_message = stream.receive().map_err(NodeError::Network)?;
+        let NetworkMessage::SnapshotChunkManifest(next_manifest) = manifest_message else {
+            return Err(NodeError::UnexpectedSnapshotSyncMessage {
+                expected: ProtocolMessageKind::SnapshotChunkManifest,
+                actual: manifest_message.kind(),
+            });
+        };
+        if let Some(manifest) = &manifest {
+            if manifest != &next_manifest {
+                let expected = manifest.manifest_hash().map_err(NodeError::SnapshotSync)?;
+                let actual = next_manifest
+                    .manifest_hash()
+                    .map_err(NodeError::SnapshotSync)?;
+                return Err(NodeError::SnapshotSync(
+                    SnapshotSyncError::ManifestHashMismatch { expected, actual },
+                ));
+            }
+        } else {
+            manifest = Some(next_manifest);
+        }
+
+        let manifest_ref = manifest.as_ref().unwrap();
+        let remaining = manifest_ref.chunk_count.saturating_sub(start_index);
+        let expected_chunks = remaining.min(max_chunks_per_request);
+        for _ in 0..expected_chunks {
+            let chunk_message = stream.receive().map_err(NodeError::Network)?;
+            match chunk_message {
+                NetworkMessage::SnapshotChunk(chunk) => chunks.push(chunk),
+                message => {
+                    return Err(NodeError::UnexpectedSnapshotSyncMessage {
+                        expected: ProtocolMessageKind::SnapshotChunk,
+                        actual: message.kind(),
+                    });
+                }
+            }
+        }
+
+        if chunks.len() >= manifest_ref.chunk_count as usize {
+            let chunk_set = SnapshotChunkSet {
+                manifest: manifest.unwrap(),
+                chunks,
+            };
+            chunk_set
+                .verify_with_metadata_roots(required_metadata_roots)
+                .map_err(NodeError::SnapshotSync)?;
+            return Ok(chunk_set);
+        }
+        start_index += expected_chunks;
+    }
 }
 
 impl PersistentValidatorNode {
@@ -3349,6 +3430,84 @@ mod tests {
 
         fs::remove_dir_all(sink_dir).unwrap();
         fs::remove_dir_all(node_dir).unwrap();
+    }
+
+    #[test]
+    fn tcp_state_sync_client_requires_snapshot_metadata_root_status() {
+        let source_dir = temp_dir("tcp-state-sync-source");
+        let source =
+            PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &source_dir).unwrap();
+        source
+            .record_validator_set_metadata_audit(
+                "validator-set-update-1".into(),
+                ValidatorSetMetadataAuditOutcome::Applied,
+                vec!["validator-1".into()],
+                "applied".into(),
+            )
+            .unwrap();
+        let snapshot_root = source.rpc().get_state_root();
+        let status = source.snapshot_metadata_root_status().unwrap();
+        let mut required_metadata_roots = BTreeMap::new();
+        required_metadata_roots.insert(
+            SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT.into(),
+            status.validator_set_metadata_audit_root.clone(),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut tcp = TcpProtocolStream::from_stream(stream);
+            while let Ok(message) = tcp.receive() {
+                match message {
+                    NetworkMessage::SnapshotChunkRequest(request) => {
+                        for response in source.serve_snapshot_chunk_request(&request, 64).unwrap() {
+                            tcp.send(&response).unwrap();
+                        }
+                    }
+                    message => panic!("expected snapshot chunk request, got {message:?}"),
+                }
+            }
+            fs::remove_dir_all(source_dir).unwrap();
+        });
+
+        let mut client = TcpProtocolStream::connect(addr).unwrap();
+        let chunk_set = fetch_verified_snapshot_chunk_set_over_tcp(
+            &mut client,
+            snapshot_root.clone(),
+            2,
+            &required_metadata_roots,
+        )
+        .unwrap();
+        assert_eq!(
+            chunk_set
+                .manifest
+                .metadata_roots
+                .get(SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT),
+            Some(&status.validator_set_metadata_audit_root)
+        );
+
+        let sink_dir = temp_dir("tcp-state-sync-sink");
+        let sink = PersistentValidatorNode::bootstrap(
+            "validator-2",
+            DeTTaState::new("detta-local"),
+            &sink_dir,
+        )
+        .unwrap();
+        let imported = sink
+            .import_snapshot_chunk_set(&chunk_set, &required_metadata_roots)
+            .unwrap();
+        assert_eq!(imported.global_state_root, snapshot_root);
+        assert_eq!(
+            sink.node_snapshot_roots()
+                .unwrap()
+                .validator_set_metadata_audit_root,
+            status.validator_set_metadata_audit_root
+        );
+
+        drop(client);
+        handle.join().unwrap();
+        fs::remove_dir_all(sink_dir).unwrap();
     }
 
     #[test]

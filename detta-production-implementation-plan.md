@@ -88,10 +88,12 @@ Completed production-plan slices:
   roots after retention pruning.
 - [x] Snapshot metadata root status is exposed over node-aware RPC, including
   imported-vs-local replacement state.
+- [x] TCP state-sync client flows require snapshot metadata roots derived from
+  source status before accepting and importing chunk sets.
 
 Next implementation slices:
 
-- [ ] Require snapshot metadata root status checks in TCP state-sync client flows.
+- [ ] Add TCP state-sync retry/resume metrics for metadata-root-verified imports.
 
 # 1. Production Objective
 
