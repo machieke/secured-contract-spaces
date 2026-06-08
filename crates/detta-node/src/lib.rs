@@ -451,6 +451,7 @@ impl PersistentValidatorNode {
             outbox_root: snapshot.state_snapshot.outbox_root,
             global_state_root: snapshot.state_snapshot.global_state_root,
             validator_set_metadata_audit_root: snapshot.validator_set_metadata_audit_root,
+            snapshot_import_audit_root: self.snapshot_import_audit_root()?,
             required_snapshot_metadata_roots,
             required_snapshot_metadata_roots_root,
             snapshot_sync_client_metrics,
@@ -1687,6 +1688,7 @@ mod tests {
             outbox_root: snapshot.state_snapshot.outbox_root.clone(),
             global_state_root: snapshot.state_snapshot.global_state_root.clone(),
             validator_set_metadata_audit_root: snapshot.validator_set_metadata_audit_root.clone(),
+            snapshot_import_audit_root: FileStorage::snapshot_import_audit_root_for(&[]).unwrap(),
             required_snapshot_metadata_roots: BTreeMap::new(),
             required_snapshot_metadata_roots_root:
                 FileStorage::required_snapshot_metadata_roots_root_for(&BTreeMap::new()).unwrap(),
@@ -3344,6 +3346,10 @@ mod tests {
             initial_snapshot.required_snapshot_metadata_roots_root,
             expected_required_metadata_roots_root
         );
+        assert_eq!(
+            initial_snapshot.snapshot_import_audit_root,
+            expected_snapshot_import_audit_root
+        );
         write_rpc_request(&mut stream, &RpcRequest::GetSnapshotSyncClientMetrics);
         assert_eq!(
             read_rpc_response(&mut reader),
@@ -3380,7 +3386,7 @@ mod tests {
         assert_eq!(
             read_rpc_response(&mut reader),
             RpcResponse::Ok(RpcResult::SnapshotImportAuditRoot(
-                expected_snapshot_import_audit_root
+                expected_snapshot_import_audit_root.clone()
             ))
         );
 
@@ -4007,6 +4013,10 @@ mod tests {
             sink_roots.required_snapshot_metadata_roots_root,
             required_metadata_roots_root
         );
+        assert_eq!(
+            sink_roots.snapshot_import_audit_root,
+            snapshot_import_audit_root
+        );
         let response = sink
             .serve_snapshot_chunk_request(
                 &SnapshotChunkRequest {
@@ -4048,8 +4058,15 @@ mod tests {
         assert_eq!(
             restarted_sink.handle_rpc_request(RpcRequest::GetSnapshotImportAuditRoot),
             RpcResponse::Ok(RpcResult::SnapshotImportAuditRoot(
-                snapshot_import_audit_root
+                snapshot_import_audit_root.clone()
             ))
+        );
+        assert_eq!(
+            restarted_sink
+                .node_snapshot_roots()
+                .unwrap()
+                .snapshot_import_audit_root,
+            snapshot_import_audit_root
         );
         assert_eq!(
             restarted_sink

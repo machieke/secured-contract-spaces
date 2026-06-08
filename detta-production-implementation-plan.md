@@ -126,10 +126,12 @@ Completed production-plan slices:
   node-aware RPC.
 - [x] Snapshot import audit records and their stable root are served over the
   shared TCP JSON RPC path.
+- [x] Snapshot import audit roots are included in persistent snapshot root
+  responses for consolidated audit discovery.
 
 Next implementation slices:
 
-- [ ] Include snapshot import audit roots in persistent snapshot root responses.
+- [ ] Bind snapshot import audit roots into snapshot metadata manifests.
 
 # 1. Production Objective
 
