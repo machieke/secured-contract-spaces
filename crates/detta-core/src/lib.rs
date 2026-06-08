@@ -340,6 +340,81 @@ pub enum BlockError {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum MempoolError {
+    ChainMismatch,
+    InvalidSignature,
+    DuplicateTransaction,
+    NonceAlreadyUsed,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Mempool {
+    pending: Vec<Transaction>,
+    tx_hashes: BTreeSet<TxHash>,
+}
+
+impl Mempool {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn submit(&mut self, state: &DeTTaState, tx: Transaction) -> Result<(), MempoolError> {
+        if tx.chain_id != state.chain_id {
+            return Err(MempoolError::ChainMismatch);
+        }
+        if !tx.signature_ok {
+            return Err(MempoolError::InvalidSignature);
+        }
+        if self.tx_hashes.contains(&tx.tx_hash) {
+            return Err(MempoolError::DuplicateTransaction);
+        }
+        if state.used_nonces.contains(&(tx.sender.clone(), tx.nonce)) {
+            return Err(MempoolError::NonceAlreadyUsed);
+        }
+
+        self.tx_hashes.insert(tx.tx_hash.clone());
+        self.pending.push(tx);
+        Ok(())
+    }
+
+    pub fn pending_len(&self) -> usize {
+        self.pending.len()
+    }
+
+    pub fn drain_ordered(&mut self) -> Vec<Transaction> {
+        let mut transactions = std::mem::take(&mut self.pending);
+        self.tx_hashes.clear();
+        transactions.sort_by(|left, right| {
+            (left.sender.as_str(), left.nonce, left.tx_hash.as_str()).cmp(&(
+                right.sender.as_str(),
+                right.nonce,
+                right.tx_hash.as_str(),
+            ))
+        });
+        transactions
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum SnapshotError {
+    StorageRootMismatch,
+    RegistryRootMismatch,
+    EventRootMismatch,
+    NonceRootMismatch,
+    GlobalStateRootMismatch,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct StateSnapshot {
+    pub state: DeTTaState,
+    pub storage_root: String,
+    pub registry_root: String,
+    pub event_root: String,
+    pub nonce_root: String,
+    pub global_state_root: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ReturnValue {
     Unit,
     UInt(Amount),
@@ -618,6 +693,7 @@ impl ReceiptProof {
 pub struct ValidatorNode {
     validator_id: String,
     state: DeTTaState,
+    mempool: Mempool,
 }
 
 impl ValidatorNode {
@@ -625,11 +701,20 @@ impl ValidatorNode {
         Self {
             validator_id: validator_id.into(),
             state,
+            mempool: Mempool::new(),
         }
     }
 
     pub fn state(&self) -> &DeTTaState {
         &self.state
+    }
+
+    pub fn pending_len(&self) -> usize {
+        self.mempool.pending_len()
+    }
+
+    pub fn submit_transaction(&mut self, tx: Transaction) -> Result<(), MempoolError> {
+        self.mempool.submit(&self.state, tx)
     }
 
     pub fn propose_block(
@@ -648,6 +733,11 @@ impl ValidatorNode {
                 certificate,
             )
             .0
+    }
+
+    pub fn propose_pending_block(&mut self, height: u64, timestamp: u64) -> Block {
+        let transactions = self.mempool.drain_ordered();
+        self.propose_block(height, transactions, timestamp)
     }
 
     pub fn validate_and_apply(&mut self, block: &Block) -> Result<(), BlockError> {
@@ -687,6 +777,36 @@ impl DeTTaState {
             used_nonces: BTreeSet::new(),
             used_certificate_nonces: BTreeSet::new(),
             events: Vec::new(),
+        }
+    }
+
+    pub fn from_snapshot(snapshot: StateSnapshot) -> Result<Self, SnapshotError> {
+        if snapshot.storage_root != snapshot.state.storage_root() {
+            return Err(SnapshotError::StorageRootMismatch);
+        }
+        if snapshot.registry_root != snapshot.state.registry_root() {
+            return Err(SnapshotError::RegistryRootMismatch);
+        }
+        if snapshot.event_root != snapshot.state.event_root() {
+            return Err(SnapshotError::EventRootMismatch);
+        }
+        if snapshot.nonce_root != snapshot.state.nonce_root() {
+            return Err(SnapshotError::NonceRootMismatch);
+        }
+        if snapshot.global_state_root != snapshot.state.global_state_root() {
+            return Err(SnapshotError::GlobalStateRootMismatch);
+        }
+        Ok(snapshot.state)
+    }
+
+    pub fn snapshot(&self) -> StateSnapshot {
+        StateSnapshot {
+            state: self.clone(),
+            storage_root: self.storage_root(),
+            registry_root: self.registry_root(),
+            event_root: self.event_root(),
+            nonce_root: self.nonce_root(),
+            global_state_root: self.global_state_root(),
         }
     }
 
@@ -2651,6 +2771,76 @@ mod tests {
         assert!(validators
             .iter()
             .all(|validator| validator.state().storage_root() == block.header.storage_root));
+    }
+
+    #[test]
+    fn validator_mempool_orders_pending_transactions_into_block() {
+        let mut proposer = ValidatorNode::new("validator-1", seeded_state());
+        let tx_b = tx(
+            "tx-b",
+            "Bob",
+            1,
+            Method::Transfer,
+            vec![principal("Alice"), asset("USDC"), amount(5)],
+        );
+        let tx_a = tx(
+            "tx-a",
+            "Alice",
+            1,
+            Method::Transfer,
+            vec![principal("Bob"), asset("USDC"), amount(10)],
+        );
+
+        proposer.submit_transaction(tx_b).unwrap();
+        proposer.submit_transaction(tx_a.clone()).unwrap();
+        assert_eq!(proposer.pending_len(), 2);
+        assert_eq!(
+            proposer.submit_transaction(tx_a),
+            Err(MempoolError::DuplicateTransaction)
+        );
+
+        let block = proposer.propose_pending_block(1, 1_000);
+
+        assert_eq!(proposer.pending_len(), 0);
+        assert_eq!(block.transactions[0].sender, "Alice");
+        assert_eq!(block.transactions[1].sender, "Bob");
+        assert_eq!(block.receipts.len(), 2);
+    }
+
+    #[test]
+    fn full_node_can_sync_from_verified_state_snapshot() {
+        let proposer = ValidatorNode::new("validator-1", seeded_state());
+        let txs = vec![tx(
+            "tx1",
+            "Alice",
+            1,
+            Method::Transfer,
+            vec![principal("Bob"), asset("USDC"), amount(10)],
+        )];
+        let block = proposer.propose_block(1, txs, 1_000);
+        let mut validator = ValidatorNode::new("validator-2", seeded_state());
+        validator.validate_and_apply(&block).unwrap();
+
+        let snapshot = validator.state().snapshot();
+        let synced = DeTTaState::from_snapshot(snapshot).unwrap();
+
+        assert_eq!(synced.storage_root(), validator.state().storage_root());
+        assert_eq!(synced.registry_root(), validator.state().registry_root());
+        assert_eq!(synced.event_root(), validator.state().event_root());
+        assert_eq!(
+            synced.global_state_root(),
+            validator.state().global_state_root()
+        );
+    }
+
+    #[test]
+    fn tampered_state_snapshot_is_rejected() {
+        let mut snapshot = seeded_state().snapshot();
+        snapshot.storage_root = "bad-root".into();
+
+        let error = DeTTaState::from_snapshot(snapshot).unwrap_err();
+
+        assert_eq!(error, SnapshotError::StorageRootMismatch);
     }
 
     #[test]
