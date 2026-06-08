@@ -1384,6 +1384,13 @@ mod tests {
         assert_eq!(attestation.matches('\n').count(), 1);
     }
 
+    #[test]
+    fn proof_artifact_manifest_root_attestation_uses_single_separator_token() {
+        let attestation = include_str!("../../../models/detta-proof-artifact-manifest.sha256");
+
+        assert_eq!(attestation.matches("  ").count(), 1);
+    }
+
     struct ProofReleaseAttestationFixture {
         attestation: &'static str,
         file_name: &'static str,
