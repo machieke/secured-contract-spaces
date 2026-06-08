@@ -938,17 +938,59 @@ pub enum MempoolError {
     InvalidSignature,
     DuplicateTransaction,
     NonceAlreadyUsed,
+    InsufficientBudget,
+    TransactionTooLarge {
+        max_bytes: usize,
+        actual_bytes: usize,
+    },
+    PoolFull {
+        max_pending: usize,
+    },
+    SenderPendingLimitExceeded {
+        sender: Principal,
+        max_pending_per_sender: usize,
+    },
+}
+
+pub const DEFAULT_MEMPOOL_MAX_PENDING: usize = 10_000;
+pub const DEFAULT_MEMPOOL_MAX_PENDING_PER_SENDER: usize = 1_024;
+pub const DEFAULT_MEMPOOL_MAX_TRANSACTION_BYTES: usize = 64 * 1024;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MempoolAdmissionPolicy {
+    pub max_pending: usize,
+    pub max_pending_per_sender: usize,
+    pub max_transaction_bytes: usize,
+}
+
+impl Default for MempoolAdmissionPolicy {
+    fn default() -> Self {
+        Self {
+            max_pending: DEFAULT_MEMPOOL_MAX_PENDING,
+            max_pending_per_sender: DEFAULT_MEMPOOL_MAX_PENDING_PER_SENDER,
+            max_transaction_bytes: DEFAULT_MEMPOOL_MAX_TRANSACTION_BYTES,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Mempool {
     pending: Vec<Transaction>,
     tx_hashes: BTreeSet<TxHash>,
+    policy: MempoolAdmissionPolicy,
 }
 
 impl Mempool {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn with_policy(policy: MempoolAdmissionPolicy) -> Self {
+        Self {
+            pending: Vec::new(),
+            tx_hashes: BTreeSet::new(),
+            policy,
+        }
     }
 
     pub fn from_transactions(
@@ -974,6 +1016,32 @@ impl Mempool {
         }
         if state.used_nonces.contains(&(tx.sender.clone(), tx.nonce)) {
             return Err(MempoolError::NonceAlreadyUsed);
+        }
+        let actual_bytes = canonical_bytes(&tx).len();
+        if actual_bytes > self.policy.max_transaction_bytes {
+            return Err(MempoolError::TransactionTooLarge {
+                max_bytes: self.policy.max_transaction_bytes,
+                actual_bytes,
+            });
+        }
+        if tx.budget < transaction_resource_units(&tx) {
+            return Err(MempoolError::InsufficientBudget);
+        }
+        if self.pending.len() >= self.policy.max_pending {
+            return Err(MempoolError::PoolFull {
+                max_pending: self.policy.max_pending,
+            });
+        }
+        let sender_pending = self
+            .pending
+            .iter()
+            .filter(|pending| pending.sender == tx.sender)
+            .count();
+        if sender_pending >= self.policy.max_pending_per_sender {
+            return Err(MempoolError::SenderPendingLimitExceeded {
+                sender: tx.sender,
+                max_pending_per_sender: self.policy.max_pending_per_sender,
+            });
         }
 
         self.tx_hashes.insert(tx.tx_hash.clone());
@@ -1393,6 +1461,21 @@ impl ValidatorNode {
             validator_id: validator_id.into(),
             state,
             mempool: Mempool::new(),
+            blocks: BTreeMap::new(),
+            transactions: BTreeMap::new(),
+            receipts: BTreeMap::new(),
+        }
+    }
+
+    pub fn with_mempool_policy(
+        validator_id: impl Into<String>,
+        state: DeTTaState,
+        policy: MempoolAdmissionPolicy,
+    ) -> Self {
+        Self {
+            validator_id: validator_id.into(),
+            state,
+            mempool: Mempool::with_policy(policy),
             blocks: BTreeMap::new(),
             transactions: BTreeMap::new(),
             receipts: BTreeMap::new(),
@@ -5183,6 +5266,111 @@ mod tests {
         assert_eq!(block.transactions[0].sender, "Alice");
         assert_eq!(block.transactions[1].sender, "Bob");
         assert_eq!(block.receipts.len(), 2);
+    }
+
+    #[test]
+    fn mempool_admission_enforces_budget_size_and_pending_limits() {
+        let state = seeded_state();
+
+        let mut under_budget = tx(
+            "tx-low-budget",
+            "Alice",
+            1,
+            Method::Transfer,
+            vec![principal("Bob"), asset("USDC"), amount(10)],
+        );
+        under_budget.budget = 1;
+        let mut mempool = Mempool::new();
+        assert_eq!(
+            mempool.submit(&state, under_budget),
+            Err(MempoolError::InsufficientBudget)
+        );
+
+        let mut size_limited = Mempool::with_policy(MempoolAdmissionPolicy {
+            max_transaction_bytes: 32,
+            ..MempoolAdmissionPolicy::default()
+        });
+        assert!(matches!(
+            size_limited.submit(
+                &state,
+                tx(
+                    "tx-large",
+                    "Alice",
+                    1,
+                    Method::Transfer,
+                    vec![principal("Bob"), asset("USDC"), amount(10)]
+                )
+            ),
+            Err(MempoolError::TransactionTooLarge {
+                max_bytes: 32,
+                actual_bytes
+            }) if actual_bytes > 32
+        ));
+
+        let mut globally_limited = Mempool::with_policy(MempoolAdmissionPolicy {
+            max_pending: 1,
+            max_pending_per_sender: 10,
+            ..MempoolAdmissionPolicy::default()
+        });
+        globally_limited
+            .submit(
+                &state,
+                tx(
+                    "tx-global-1",
+                    "Alice",
+                    1,
+                    Method::Transfer,
+                    vec![principal("Bob"), asset("USDC"), amount(10)],
+                ),
+            )
+            .unwrap();
+        assert_eq!(
+            globally_limited.submit(
+                &state,
+                tx(
+                    "tx-global-2",
+                    "Bob",
+                    1,
+                    Method::Transfer,
+                    vec![principal("Alice"), asset("USDC"), amount(5)],
+                ),
+            ),
+            Err(MempoolError::PoolFull { max_pending: 1 })
+        );
+
+        let mut sender_limited = Mempool::with_policy(MempoolAdmissionPolicy {
+            max_pending: 10,
+            max_pending_per_sender: 1,
+            ..MempoolAdmissionPolicy::default()
+        });
+        sender_limited
+            .submit(
+                &state,
+                tx(
+                    "tx-sender-1",
+                    "Alice",
+                    1,
+                    Method::Transfer,
+                    vec![principal("Bob"), asset("USDC"), amount(10)],
+                ),
+            )
+            .unwrap();
+        assert_eq!(
+            sender_limited.submit(
+                &state,
+                tx(
+                    "tx-sender-2",
+                    "Alice",
+                    2,
+                    Method::Transfer,
+                    vec![principal("Bob"), asset("USDC"), amount(10)],
+                ),
+            ),
+            Err(MempoolError::SenderPendingLimitExceeded {
+                sender: "Alice".into(),
+                max_pending_per_sender: 1,
+            })
+        );
     }
 
     #[test]

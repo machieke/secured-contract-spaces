@@ -593,6 +593,14 @@ fn rpc_error_code(error: &RpcError) -> &'static str {
         RpcError::Mempool(MempoolError::InvalidSignature) => "mempool.invalid_signature",
         RpcError::Mempool(MempoolError::DuplicateTransaction) => "mempool.duplicate_transaction",
         RpcError::Mempool(MempoolError::NonceAlreadyUsed) => "mempool.nonce_already_used",
+        RpcError::Mempool(MempoolError::InsufficientBudget) => "mempool.insufficient_budget",
+        RpcError::Mempool(MempoolError::TransactionTooLarge { .. }) => {
+            "mempool.transaction_too_large"
+        }
+        RpcError::Mempool(MempoolError::PoolFull { .. }) => "mempool.pool_full",
+        RpcError::Mempool(MempoolError::SenderPendingLimitExceeded { .. }) => {
+            "mempool.sender_pending_limit_exceeded"
+        }
         RpcError::Block(BlockError::ChainMismatch) => "block.chain_mismatch",
         RpcError::Block(BlockError::PreviousBlockMismatch) => "block.previous_block_mismatch",
         RpcError::Block(BlockError::TxRootMismatch) => "block.tx_root_mismatch",
@@ -625,6 +633,18 @@ fn rpc_error_message(error: &RpcError) -> &'static str {
         RpcError::Mempool(MempoolError::DuplicateTransaction) => "transaction is already pending",
         RpcError::Mempool(MempoolError::NonceAlreadyUsed) => {
             "transaction nonce has already been committed"
+        }
+        RpcError::Mempool(MempoolError::InsufficientBudget) => {
+            "transaction budget is below deterministic execution cost"
+        }
+        RpcError::Mempool(MempoolError::TransactionTooLarge { .. }) => {
+            "transaction exceeds the configured mempool byte limit"
+        }
+        RpcError::Mempool(MempoolError::PoolFull { .. }) => {
+            "mempool has reached the configured pending transaction limit"
+        }
+        RpcError::Mempool(MempoolError::SenderPendingLimitExceeded { .. }) => {
+            "sender has reached the configured pending transaction limit"
         }
         RpcError::Block(BlockError::ChainMismatch) => "block chain ID does not match this node",
         RpcError::Block(BlockError::PreviousBlockMismatch) => {

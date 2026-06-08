@@ -366,6 +366,8 @@ Completed production-plan slices:
 - [x] Local release gate runs the deterministic generated-corpus fuzz smoke
   test explicitly.
 - [x] Local release gate and CI run the checked-in TLA+ bounded simulation job.
+- [x] Durable mempool admission enforces deterministic budget, byte-size,
+  global-pending, and per-sender pending limits with stable RPC errors.
 
 Next implementation slices:
 
