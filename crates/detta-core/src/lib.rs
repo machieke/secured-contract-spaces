@@ -934,6 +934,9 @@ pub struct ValidatorNode {
     validator_id: String,
     state: DeTTaState,
     mempool: Mempool,
+    blocks: BTreeMap<u64, Block>,
+    transactions: BTreeMap<TxHash, Transaction>,
+    receipts: BTreeMap<TxHash, Receipt>,
 }
 
 impl ValidatorNode {
@@ -942,11 +945,26 @@ impl ValidatorNode {
             validator_id: validator_id.into(),
             state,
             mempool: Mempool::new(),
+            blocks: BTreeMap::new(),
+            transactions: BTreeMap::new(),
+            receipts: BTreeMap::new(),
         }
     }
 
     pub fn state(&self) -> &DeTTaState {
         &self.state
+    }
+
+    pub fn get_block(&self, height: u64) -> Option<&Block> {
+        self.blocks.get(&height)
+    }
+
+    pub fn get_transaction(&self, tx_hash: &str) -> Option<&Transaction> {
+        self.transactions.get(tx_hash)
+    }
+
+    pub fn get_receipt(&self, tx_hash: &str) -> Option<&Receipt> {
+        self.receipts.get(tx_hash)
     }
 
     pub fn pending_len(&self) -> usize {
@@ -981,7 +999,16 @@ impl ValidatorNode {
     }
 
     pub fn validate_and_apply(&mut self, block: &Block) -> Result<(), BlockError> {
-        self.state.apply_block(block)
+        self.state.apply_block(block)?;
+        for tx in &block.transactions {
+            self.transactions.insert(tx.tx_hash.clone(), tx.clone());
+        }
+        for receipt in &block.receipts {
+            self.receipts
+                .insert(receipt.tx_hash.clone(), receipt.clone());
+        }
+        self.blocks.insert(block.header.height, block.clone());
+        Ok(())
     }
 }
 
@@ -1584,6 +1611,11 @@ impl DeTTaState {
         self.contracts
             .get(&contract)
             .map(|record| record.code_hash.as_str())
+    }
+
+    pub fn contract(&self, contract: impl Into<ContractId>) -> Option<&ContractRecord> {
+        let contract = contract.into();
+        self.contracts.get(&contract)
     }
 
     pub fn scheduled_upgrade(&self, upgrade_id: &str) -> Option<&ScheduledUpgrade> {

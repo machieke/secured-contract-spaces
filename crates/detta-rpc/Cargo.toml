@@ -1,0 +1,9 @@
+[package]
+name = "detta-rpc"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+detta-core = { path = "../detta-core" }
+serde = { version = "1.0", features = ["derive"] }

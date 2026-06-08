@@ -46,6 +46,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "detta-rpc"
+version = "0.1.0"
+dependencies = [
+ "detta-core",
+ "serde",
+]
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
