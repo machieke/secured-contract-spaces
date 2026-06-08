@@ -164,10 +164,12 @@ Completed production-plan slices:
   responses.
 - [x] Expanded snapshot metadata root status RPC semantics are documented for
   client implementers.
+- [x] Formal theorem coverage is exported as a stable checked-in proof-artifact
+  manifest.
 
 Next implementation slices:
 
-- [ ] Export formal theorem coverage as a stable proof-artifact manifest.
+- [ ] Add a stable proof-artifact manifest root for release attestations.
 
 # 1. Production Objective
 

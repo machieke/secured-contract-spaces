@@ -6,6 +6,9 @@ This directory contains formal-model artifacts for the DeTTa runtime.
   dispatcher-mediated calls, method-policy lookup, nonce replay prevention,
   active reentrancy locks, guarded writes, commit/revert atomicity, and
   deterministic replay obligations.
+- `detta-proof-artifact-manifest.json` is the stable proof-artifact manifest
+  exported by `detta_verify::proof_artifact_manifest()`. The verify crate tests
+  that the checked-in JSON stays synchronized with theorem coverage.
 
 The model is intentionally abstract over hashing, signatures, concrete storage
 encoding, and networking. Those are checked by the Rust implementation tests and

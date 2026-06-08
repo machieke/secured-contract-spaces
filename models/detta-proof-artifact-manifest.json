@@ -1,0 +1,202 @@
+{
+  "schema": "detta.proof-artifact-manifest.v1",
+  "project": "DeTTa",
+  "scope": "Secured Contract Spaces runtime safety obligations",
+  "theorem_count": 15,
+  "coverage": [
+    {
+      "id": "THM-001",
+      "name": "Dispatcher-Only External Mutation",
+      "evidence": [
+        {
+          "kind": "RuntimeTest",
+          "reference": "detta_core::tests::missing_method_policy_is_denied"
+        },
+        {
+          "kind": "Model",
+          "reference": "models/DeTTaBlockExecution.tla::AuthorizationSafety"
+        }
+      ]
+    },
+    {
+      "id": "THM-002",
+      "name": "Contract Isolation",
+      "evidence": [
+        {
+          "kind": "Verifier",
+          "reference": "detta_verify::verify_kernel_trace"
+        },
+        {
+          "kind": "RuntimeTest",
+          "reference": "detta_verify::tests::symbolic_trace_rejects_cross_contract_write"
+        }
+      ]
+    },
+    {
+      "id": "THM-003",
+      "name": "Method Write-Scope Safety",
+      "evidence": [
+        {
+          "kind": "Verifier",
+          "reference": "detta_verify::verify_kernel_trace"
+        },
+        {
+          "kind": "RuntimeTest",
+          "reference": "detta_verify::tests::symbolic_trace_rejects_out_of_scope_write"
+        }
+      ]
+    },
+    {
+      "id": "THM-004",
+      "name": "No Authority From Syntax",
+      "evidence": [
+        {
+          "kind": "RuntimeTest",
+          "reference": "detta_evaluator::tests::transfer_like_arguments_are_plain_data_not_authority"
+        }
+      ]
+    },
+    {
+      "id": "THM-005",
+      "name": "Live Registry Authorization",
+      "evidence": [
+        {
+          "kind": "RuntimeTest",
+          "reference": "detta_core::tests::transfer_from_requires_live_registry_allowance"
+        }
+      ]
+    },
+    {
+      "id": "THM-006",
+      "name": "Registry Consumption Atomicity",
+      "evidence": [
+        {
+          "kind": "RuntimeTest",
+          "reference": "detta_core::tests::allowance_consumption_reverts_with_failed_transfer"
+        },
+        {
+          "kind": "Model",
+          "reference": "models/DeTTaBlockExecution.tla::Atomicity"
+        }
+      ]
+    },
+    {
+      "id": "THM-007",
+      "name": "Event Atomicity",
+      "evidence": [
+        {
+          "kind": "RuntimeTest",
+          "reference": "detta_core::tests::insufficient_balance_reverts_storage_registry_and_events"
+        },
+        {
+          "kind": "Model",
+          "reference": "models/DeTTaBlockExecution.tla::Atomicity"
+        }
+      ]
+    },
+    {
+      "id": "THM-008",
+      "name": "Invariant Preservation",
+      "evidence": [
+        {
+          "kind": "RuntimeTest",
+          "reference": "detta_core::tests::transfer_preserves_supply_and_commits_event"
+        },
+        {
+          "kind": "RuntimeTest",
+          "reference": "detta_core::tests::invariant_failure_reverts_full_transition"
+        }
+      ]
+    },
+    {
+      "id": "THM-009",
+      "name": "Determinism",
+      "evidence": [
+        {
+          "kind": "Verifier",
+          "reference": "detta_verify::verify_differential_replay"
+        },
+        {
+          "kind": "RuntimeTest",
+          "reference": "detta_core::tests::deterministic_replay_produces_identical_roots"
+        }
+      ]
+    },
+    {
+      "id": "THM-010",
+      "name": "Replay Safety",
+      "evidence": [
+        {
+          "kind": "RuntimeTest",
+          "reference": "detta_core::tests::replayed_nonce_is_rejected"
+        },
+        {
+          "kind": "Model",
+          "reference": "models/DeTTaBlockExecution.tla::ReplaySafety"
+        }
+      ]
+    },
+    {
+      "id": "THM-011",
+      "name": "Caller Integrity",
+      "evidence": [
+        {
+          "kind": "RuntimeTest",
+          "reference": "detta_core::tests::caller_identity_cannot_be_forged"
+        }
+      ]
+    },
+    {
+      "id": "THM-012",
+      "name": "No Write-Scope Leakage Across Calls",
+      "evidence": [
+        {
+          "kind": "RuntimeTest",
+          "reference": "detta_core::tests::router_cross_contract_call_does_not_inherit_user_allowance"
+        },
+        {
+          "kind": "Model",
+          "reference": "models/DeTTaBlockExecution.tla::NoWriteScopeLeakageAcrossCalls"
+        }
+      ]
+    },
+    {
+      "id": "THM-013",
+      "name": "View Read-Only Safety",
+      "evidence": [
+        {
+          "kind": "RuntimeTest",
+          "reference": "detta_core::tests::view_reads_are_read_only"
+        }
+      ]
+    },
+    {
+      "id": "THM-014",
+      "name": "Schema Safety",
+      "evidence": [
+        {
+          "kind": "RuntimeTest",
+          "reference": "detta_core::tests::arithmetic_overflow_reverts_without_state_or_events"
+        },
+        {
+          "kind": "Model",
+          "reference": "models/DeTTaBlockExecution.tla::TypeOK"
+        }
+      ]
+    },
+    {
+      "id": "THM-015",
+      "name": "Raw Primitive Exclusion",
+      "evidence": [
+        {
+          "kind": "RuntimeTest",
+          "reference": "detta_evaluator::tests::evaluator_rejects_forbidden_primitive"
+        },
+        {
+          "kind": "Model",
+          "reference": "models/DeTTaBlockExecution.tla::RawPrimitiveExclusion"
+        }
+      ]
+    }
+  ]
+}

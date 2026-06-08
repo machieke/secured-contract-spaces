@@ -211,6 +211,26 @@ pub struct SafetyTheoremCoverage {
     pub evidence: Vec<TheoremEvidence>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ProofArtifactManifest {
+    pub schema: &'static str,
+    pub project: &'static str,
+    pub scope: &'static str,
+    pub theorem_count: usize,
+    pub coverage: Vec<SafetyTheoremCoverage>,
+}
+
+pub fn proof_artifact_manifest() -> ProofArtifactManifest {
+    let coverage = scs_theorem_coverage();
+    ProofArtifactManifest {
+        schema: "detta.proof-artifact-manifest.v1",
+        project: "DeTTa",
+        scope: "Secured Contract Spaces runtime safety obligations",
+        theorem_count: coverage.len(),
+        coverage,
+    }
+}
+
 pub fn scs_theorem_coverage() -> Vec<SafetyTheoremCoverage> {
     use TheoremEvidenceKind::{Model, RuntimeTest, Verifier};
 
@@ -598,6 +618,17 @@ mod tests {
                 assert!(!evidence.reference.is_empty());
             }
         }
+    }
+
+    #[test]
+    fn proof_artifact_manifest_matches_checked_in_json() {
+        let expected: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../models/detta-proof-artifact-manifest.json"
+        ))
+        .unwrap();
+        let actual = serde_json::to_value(proof_artifact_manifest()).unwrap();
+
+        assert_eq!(actual, expected);
     }
 
     #[test]
