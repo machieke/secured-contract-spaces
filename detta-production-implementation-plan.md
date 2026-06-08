@@ -128,10 +128,12 @@ Completed production-plan slices:
   shared TCP JSON RPC path.
 - [x] Snapshot import audit roots are included in persistent snapshot root
   responses for consolidated audit discovery.
+- [x] Snapshot manifests bind snapshot import audit roots when import audit
+  records exist.
 
 Next implementation slices:
 
-- [ ] Bind snapshot import audit roots into snapshot metadata manifests.
+- [ ] Require snapshot import audit roots during downstream verified imports.
 
 # 1. Production Objective
 

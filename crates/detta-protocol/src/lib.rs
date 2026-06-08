@@ -14,6 +14,7 @@ pub const SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT: &str = "validator_set_meta
 pub const SNAPSHOT_METADATA_STATE_SYNC_CLIENT_METRICS_ROOT: &str = "state_sync_client_metrics_root";
 pub const SNAPSHOT_METADATA_REQUIRED_METADATA_ROOTS_ROOT: &str =
     "required_snapshot_metadata_roots_root";
+pub const SNAPSHOT_METADATA_SNAPSHOT_IMPORT_AUDIT_ROOT: &str = "snapshot_import_audit_root";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub enum ValidatorSignatureDomain {

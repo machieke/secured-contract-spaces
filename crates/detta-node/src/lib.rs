@@ -11,7 +11,8 @@ use detta_protocol::{
     SignedValidatorMessage, SnapshotChunkManifest, SnapshotChunkRequest, SnapshotChunkSet,
     SnapshotSyncError, ValidatorPublicKey, ValidatorSetMetadata, ValidatorSetMetadataUpdate,
     ValidatorSigningKey, SNAPSHOT_METADATA_REQUIRED_METADATA_ROOTS_ROOT,
-    SNAPSHOT_METADATA_STATE_SYNC_CLIENT_METRICS_ROOT, SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT,
+    SNAPSHOT_METADATA_SNAPSHOT_IMPORT_AUDIT_ROOT, SNAPSHOT_METADATA_STATE_SYNC_CLIENT_METRICS_ROOT,
+    SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT,
 };
 use detta_rpc::{
     json_rpc_response_for_request, JsonRpcHandler, PersistentNodeSnapshotRoots,
@@ -562,6 +563,14 @@ impl PersistentValidatorNode {
             metadata_roots.insert(
                 SNAPSHOT_METADATA_REQUIRED_METADATA_ROOTS_ROOT.into(),
                 FileStorage::required_snapshot_metadata_roots_root_for(&required_metadata_roots)
+                    .map_err(NodeError::Storage)?,
+            );
+        }
+        let snapshot_import_audit_records = self.load_snapshot_import_audit_records()?;
+        if !snapshot_import_audit_records.is_empty() {
+            metadata_roots.insert(
+                SNAPSHOT_METADATA_SNAPSHOT_IMPORT_AUDIT_ROOT.into(),
+                FileStorage::snapshot_import_audit_root_for(&snapshot_import_audit_records)
                     .map_err(NodeError::Storage)?,
             );
         }
@@ -4040,6 +4049,12 @@ mod tests {
                         .metadata_roots
                         .get(SNAPSHOT_METADATA_REQUIRED_METADATA_ROOTS_ROOT),
                     Some(&required_metadata_roots_root)
+                );
+                assert_eq!(
+                    manifest
+                        .metadata_roots
+                        .get(SNAPSHOT_METADATA_SNAPSHOT_IMPORT_AUDIT_ROOT),
+                    Some(&snapshot_import_audit_root)
                 );
             }
             message => panic!("expected snapshot manifest, got {message:?}"),
