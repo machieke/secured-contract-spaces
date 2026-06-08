@@ -96,10 +96,12 @@ Completed production-plan slices:
   metadata-root verification on the successful reconnect.
 - [x] TCP state-sync client metrics persist through storage and reload after
   restart for sync diagnostics.
+- [x] Persisted TCP state-sync diagnostics are exposed through node-aware RPC,
+  including the empty-before-sync state.
 
 Next implementation slices:
 
-- [ ] Expose persisted TCP state-sync diagnostics over node-aware RPC.
+- [ ] Expose persisted TCP state-sync diagnostics through the TCP JSON RPC path.
 
 # 1. Production Objective
 

@@ -15,7 +15,7 @@ use detta_protocol::{
 use detta_rpc::{
     json_rpc_response_for_request, JsonRpcHandler, PersistentNodeSnapshotRoots, RpcError,
     RpcErrorBody, RpcRequest, RpcResponse, RpcResult, RpcService, RpcTransportError,
-    SnapshotMetadataRootStatus, ValidatorSetMetadataUpdateStatus,
+    SnapshotMetadataRootStatus, SnapshotSyncClientMetricsReport, ValidatorSetMetadataUpdateStatus,
 };
 use detta_storage::{
     FileStorage, StorageError, ValidatorSetMetadataAuditOutcome, ValidatorSetMetadataAuditRecord,
@@ -150,6 +150,20 @@ impl SnapshotSyncClientMetrics {
         self.chunks_received += attempt.chunks_received;
         self.resume_requests += attempt.resume_requests;
         self.metadata_roots_verified |= attempt.metadata_roots_verified;
+    }
+}
+
+fn snapshot_sync_client_metrics_report(
+    metrics: SnapshotSyncClientMetrics,
+) -> SnapshotSyncClientMetricsReport {
+    SnapshotSyncClientMetricsReport {
+        retry_attempts: metrics.retry_attempts,
+        stream_failures: metrics.stream_failures,
+        requests_sent: metrics.requests_sent,
+        manifests_received: metrics.manifests_received,
+        chunks_received: metrics.chunks_received,
+        resume_requests: metrics.resume_requests,
+        metadata_roots_verified: metrics.metadata_roots_verified,
     }
 }
 
@@ -529,6 +543,15 @@ impl PersistentValidatorNode {
             RpcRequest::GetSnapshotMetadataRootStatus => self
                 .snapshot_metadata_root_status()
                 .map(RpcResult::SnapshotMetadataRootStatus)
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(node_rpc_error_response),
+            RpcRequest::GetSnapshotSyncClientMetrics => self
+                .load_snapshot_sync_client_metrics()
+                .map(|metrics| {
+                    RpcResult::SnapshotSyncClientMetrics(
+                        metrics.map(snapshot_sync_client_metrics_report),
+                    )
+                })
                 .map(RpcResponse::Ok)
                 .unwrap_or_else(node_rpc_error_response),
             request => self.rpc.handle_request(request),
@@ -3616,7 +3639,7 @@ mod tests {
         assert!(metrics.metadata_roots_verified);
 
         let sink_dir = temp_dir("tcp-state-sync-sink");
-        let sink = PersistentValidatorNode::bootstrap(
+        let mut sink = PersistentValidatorNode::bootstrap(
             "validator-2",
             DeTTaState::new("detta-local"),
             &sink_dir,
@@ -3626,10 +3649,21 @@ mod tests {
             .import_snapshot_chunk_set(&chunk_set, &required_metadata_roots)
             .unwrap();
         assert_eq!(imported.global_state_root, snapshot_root);
+        assert_eq!(
+            sink.handle_rpc_request(RpcRequest::GetSnapshotSyncClientMetrics),
+            RpcResponse::Ok(RpcResult::SnapshotSyncClientMetrics(None))
+        );
+        let expected_metrics_report = snapshot_sync_client_metrics_report(metrics.clone());
         sink.persist_snapshot_sync_client_metrics(&metrics).unwrap();
         assert_eq!(
             sink.load_snapshot_sync_client_metrics().unwrap(),
             Some(metrics.clone())
+        );
+        assert_eq!(
+            sink.handle_rpc_request(RpcRequest::GetSnapshotSyncClientMetrics),
+            RpcResponse::Ok(RpcResult::SnapshotSyncClientMetrics(Some(
+                expected_metrics_report.clone()
+            )))
         );
         assert_eq!(
             sink.node_snapshot_roots()
@@ -3638,10 +3672,17 @@ mod tests {
             status.validator_set_metadata_audit_root
         );
 
-        let restarted_sink = PersistentValidatorNode::restart("validator-2", &sink_dir).unwrap();
+        let mut restarted_sink =
+            PersistentValidatorNode::restart("validator-2", &sink_dir).unwrap();
         assert_eq!(
             restarted_sink.load_snapshot_sync_client_metrics().unwrap(),
-            Some(metrics)
+            Some(metrics.clone())
+        );
+        assert_eq!(
+            restarted_sink.handle_rpc_request(RpcRequest::GetSnapshotSyncClientMetrics),
+            RpcResponse::Ok(RpcResult::SnapshotSyncClientMetrics(Some(
+                expected_metrics_report
+            )))
         );
 
         drop(client);
