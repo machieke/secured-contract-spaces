@@ -1302,6 +1302,57 @@ impl OutboxMessageProof {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CrossShardFinalityProof {
+    pub source_chain: ChainId,
+    pub source_height: u64,
+    pub finalized_block_hash: String,
+    pub outbox_root: String,
+    pub quorum: usize,
+    pub signers: Vec<Principal>,
+    pub message_proof: OutboxMessageProof,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExpectedBridgeMessage<'a> {
+    pub destination_chain: &'a ChainId,
+    pub destination_contract: &'a ContractId,
+    pub source_chain: &'a ChainId,
+    pub message_id: &'a str,
+    pub recipient: &'a Principal,
+    pub asset: &'a AssetId,
+    pub amount: Amount,
+}
+
+impl CrossShardFinalityProof {
+    pub fn verify_message(&self, expected: &ExpectedBridgeMessage<'_>) -> bool {
+        if self.quorum == 0 || self.signers.len() < self.quorum {
+            return false;
+        }
+        let unique_signers: BTreeSet<_> = self.signers.iter().collect();
+        if unique_signers.len() != self.signers.len() {
+            return false;
+        }
+        if self.finalized_block_hash.is_empty() {
+            return false;
+        }
+        if !self.message_proof.verify() || self.message_proof.proof.root != self.outbox_root {
+            return false;
+        }
+
+        let message = &self.message_proof.message;
+        self.source_chain == *expected.source_chain
+            && message.source_chain == self.source_chain
+            && message.source_height == self.source_height
+            && message.destination_chain == *expected.destination_chain
+            && message.destination_contract == *expected.destination_contract
+            && message.message_id == expected.message_id
+            && message.recipient == *expected.recipient
+            && message.asset == *expected.asset
+            && message.amount == expected.amount
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatorNode {
     validator_id: String,
@@ -2942,15 +2993,16 @@ impl DeTTaState {
         let amount = expect_amount(amount)?;
         let certificate = expect_certificate(certificate)?;
 
-        verify_bridge_certificate(
-            &certificate,
-            &source_chain,
-            &tx.target,
-            &message_id,
-            &recipient,
-            &asset,
+        let expected = ExpectedBridgeMessage {
+            destination_chain: &self.chain_id,
+            destination_contract: &tx.target,
+            source_chain: &source_chain,
+            message_id: &message_id,
+            recipient: &recipient,
+            asset: &asset,
             amount,
-        )?;
+        };
+        verify_bridge_finality_proof(&certificate, &expected)?;
 
         let consumed_key = bridge_message_consumed_key(&tx.target, &message_id);
         if self.uint_at(&consumed_key) != 0 {
@@ -4048,32 +4100,14 @@ fn verify_permit_certificate(
     Ok(parts[7].to_string())
 }
 
-fn verify_bridge_certificate(
+fn verify_bridge_finality_proof(
     certificate: &str,
-    source_chain: &ChainId,
-    contract: &ContractId,
-    message_id: &str,
-    recipient: &Principal,
-    asset: &AssetId,
-    amount: Amount,
+    expected: &ExpectedBridgeMessage<'_>,
 ) -> Result<(), ExecutionError> {
-    let parts: Vec<_> = certificate.split(':').collect();
-    if parts.len() != 7 {
-        return Err(ExecutionError::InvalidBridgeMessage);
-    }
+    let proof: CrossShardFinalityProof =
+        serde_json::from_str(certificate).map_err(|_| ExecutionError::InvalidBridgeMessage)?;
 
-    let amount_text = amount.to_string();
-    let expected = [
-        "bridge",
-        source_chain.as_str(),
-        contract.as_str(),
-        message_id,
-        recipient.as_str(),
-        asset.as_str(),
-        amount_text.as_str(),
-    ];
-
-    if parts != expected {
+    if !proof.verify_message(expected) {
         return Err(ExecutionError::InvalidBridgeMessage);
     }
 
@@ -4317,6 +4351,50 @@ mod tests {
 
     fn text(value: &str) -> Argument {
         Argument::Text(value.into())
+    }
+
+    fn bridge_finality_proof() -> CrossShardFinalityProof {
+        let mut source = DeTTaState::new("SourceChain");
+        source.deploy_bridge("BridgeSource", "detta-local").unwrap();
+        let (block, next_state) = source.build_block(
+            1,
+            vec![Transaction {
+                chain_id: "SourceChain".into(),
+                tx_hash: "source-tx1".into(),
+                sender: "Alice".into(),
+                nonce: 1,
+                target: "BridgeSource".into(),
+                method: Method::QueueBridgeMessage,
+                args: vec![
+                    text("detta-local"),
+                    text("BridgeA"),
+                    text("msg-1"),
+                    principal("Alice"),
+                    asset("USDC"),
+                    amount(100),
+                ],
+                signature_ok: true,
+                budget: 1_000_000,
+            }],
+            1_000,
+            "source-validator-1",
+            "source-cert-1",
+        );
+        let message_proof = next_state.outbox_message_proof(0).unwrap();
+
+        CrossShardFinalityProof {
+            source_chain: "SourceChain".into(),
+            source_height: 1,
+            finalized_block_hash: block.block_hash(),
+            outbox_root: block.header.outbox_root,
+            quorum: 2,
+            signers: vec!["source-validator-1".into(), "source-validator-2".into()],
+            message_proof,
+        }
+    }
+
+    fn bridge_finality_certificate() -> String {
+        serde_json::to_string(&bridge_finality_proof()).unwrap()
     }
 
     #[test]
@@ -5316,7 +5394,7 @@ mod tests {
     fn bridge_redeems_message_once_and_rejects_replay() {
         let mut state = DeTTaState::new("detta-local");
         state.deploy_bridge("BridgeA", "SourceChain").unwrap();
-        let certificate = "bridge:SourceChain:BridgeA:msg-1:Alice:USDC:100";
+        let certificate = bridge_finality_certificate();
 
         let first = state.apply_transaction(tx_to(
             "BridgeA",
@@ -5329,7 +5407,7 @@ mod tests {
                 principal("Alice"),
                 asset("USDC"),
                 amount(100),
-                Argument::Certificate(certificate.into()),
+                Argument::Certificate(certificate.clone()),
             ],
         ));
         assert_eq!(first.status, TxStatus::Committed);
@@ -5345,7 +5423,7 @@ mod tests {
                 principal("Alice"),
                 asset("USDC"),
                 amount(100),
-                Argument::Certificate(certificate.into()),
+                Argument::Certificate(certificate),
             ],
         ));
         assert_eq!(replay.status, TxStatus::Reverted);
@@ -5369,6 +5447,32 @@ mod tests {
                 asset("USDC"),
                 amount(100),
                 Argument::Certificate("bridge:bad".into()),
+            ],
+        ));
+
+        assert_eq!(receipt.status, TxStatus::Reverted);
+        assert_eq!(receipt.error, Some(ExecutionError::InvalidBridgeMessage));
+    }
+
+    #[test]
+    fn bridge_rejects_tampered_outbox_finality_proof() {
+        let mut state = DeTTaState::new("detta-local");
+        state.deploy_bridge("BridgeA", "SourceChain").unwrap();
+        let mut proof = bridge_finality_proof();
+        proof.outbox_root = "bad-root".into();
+
+        let receipt = state.apply_transaction(tx_to(
+            "BridgeA",
+            "tx1",
+            "Relayer",
+            1,
+            Method::RedeemBridgeMessage,
+            vec![
+                text("msg-1"),
+                principal("Alice"),
+                asset("USDC"),
+                amount(100),
+                Argument::Certificate(serde_json::to_string(&proof).unwrap()),
             ],
         ));
 
