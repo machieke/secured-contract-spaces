@@ -5,7 +5,7 @@ use detta_core::{
 use detta_network::{Envelope, InMemoryTransport, NetworkError, NetworkMessage};
 use detta_protocol::{
     build_snapshot_chunks, SignatureError, SignedValidatorMessage, SnapshotChunkRequest,
-    SnapshotSyncError, ValidatorPublicKey,
+    SnapshotSyncError, ValidatorPublicKey, ValidatorSigningKey,
 };
 use detta_rpc::{RpcError, RpcService};
 use detta_storage::{FileStorage, StorageError};
@@ -27,6 +27,14 @@ pub enum NodeError {
     SnapshotRootNotFound {
         requested: String,
         available: String,
+    },
+    SigningKeyMismatch {
+        expected: String,
+        actual: String,
+    },
+    BlockProposerMismatch {
+        expected: String,
+        actual: String,
     },
 }
 
@@ -164,6 +172,42 @@ impl PersistentValidatorNode {
             .map_err(NodeError::Network)
     }
 
+    pub fn sign_validator_message(
+        &self,
+        signing_key: &ValidatorSigningKey,
+        message: NetworkMessage,
+    ) -> Result<NetworkMessage, NodeError> {
+        if signing_key.validator_id() != self.validator_id {
+            return Err(NodeError::SigningKeyMismatch {
+                expected: self.validator_id.clone(),
+                actual: signing_key.validator_id().to_string(),
+            });
+        }
+        let signed = signing_key
+            .sign_message(&self.network_id, self.chain_id.clone(), message)
+            .map_err(NodeError::Signature)?;
+        Ok(NetworkMessage::SignedValidator(Box::new(signed)))
+    }
+
+    pub fn gossip_signed_block_proposal(
+        &self,
+        block: Block,
+        signing_key: &ValidatorSigningKey,
+        transport: &mut InMemoryTransport,
+    ) -> Result<usize, NodeError> {
+        if block.header.proposer != self.validator_id {
+            return Err(NodeError::BlockProposerMismatch {
+                expected: self.validator_id.clone(),
+                actual: block.header.proposer,
+            });
+        }
+        let signed =
+            self.sign_validator_message(signing_key, NetworkMessage::Block(Box::new(block)))?;
+        transport
+            .broadcast(self.validator_id.clone(), signed)
+            .map_err(NodeError::Network)
+    }
+
     pub fn produce_block(&mut self, height: u64, timestamp: u64) -> Result<Block, NodeError> {
         let block = self
             .rpc
@@ -285,12 +329,14 @@ impl PersistentValidatorNode {
 mod tests {
     use super::*;
     use detta_core::{Argument, Method};
-    use detta_network::InMemoryTransport;
+    use detta_network::{InMemoryTransport, TcpProtocolStream};
     use detta_protocol::{
         ProtocolMessage, SignatureError, SnapshotChunkRequest, SnapshotChunkSet,
         ValidatorSigningKey,
     };
     use std::fs;
+    use std::net::TcpListener;
+    use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_dir(name: &str) -> PathBuf {
@@ -513,6 +559,126 @@ mod tests {
 
         fs::remove_dir_all(validator_dir).unwrap();
         fs::remove_dir_all(peer_dir).unwrap();
+    }
+
+    #[test]
+    fn persistent_node_gossips_signed_block_proposal_to_peer() {
+        let proposer_dir = temp_dir("signed-proposal");
+        let peer_dir = temp_dir("signed-proposal-peer");
+        let proposer_key = validator_key("validator-1", 7);
+        let mut proposer =
+            PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &proposer_dir)
+                .unwrap();
+        proposer.set_network_id("detta-testnet");
+        proposer.submit_transaction(transfer_tx()).unwrap();
+        let block = proposer.produce_block(1, 1_000).unwrap();
+
+        let mut peer =
+            PersistentValidatorNode::bootstrap("validator-2", seeded_state(), &peer_dir).unwrap();
+        peer.set_network_id("detta-testnet");
+        peer.trust_validator_key(proposer_key.public_key());
+        let mut transport =
+            InMemoryTransport::new(["validator-1".into(), "validator-2".into()]).unwrap();
+
+        assert_eq!(
+            proposer
+                .gossip_signed_block_proposal(block.clone(), &proposer_key, &mut transport)
+                .unwrap(),
+            1
+        );
+        let envelope = transport.drain_peer("validator-2").unwrap().pop().unwrap();
+
+        assert!(matches!(
+            envelope.message,
+            NetworkMessage::SignedValidator(_)
+        ));
+        assert_eq!(
+            peer.ingest_network_envelope(&envelope).unwrap(),
+            NetworkIngestOutcome::BlockImported
+        );
+        assert_eq!(peer.load_block(1).unwrap().block_hash(), block.block_hash());
+
+        fs::remove_dir_all(proposer_dir).unwrap();
+        fs::remove_dir_all(peer_dir).unwrap();
+    }
+
+    #[test]
+    fn tcp_signed_block_proposal_round_trips_with_signed_vote() {
+        let proposer_dir = temp_dir("tcp-signed-proposer");
+        let peer_dir = temp_dir("tcp-signed-peer");
+        let proposer_key = validator_key("validator-1", 7);
+        let peer_key = validator_key("validator-2", 8);
+        let mut proposer =
+            PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &proposer_dir)
+                .unwrap();
+        proposer.set_network_id("detta-testnet");
+        proposer.trust_validator_key(peer_key.public_key());
+        proposer.submit_transaction(transfer_tx()).unwrap();
+        let block = proposer.produce_block(1, 1_000).unwrap();
+        let block_hash = block.block_hash();
+        let signed_block = proposer
+            .sign_validator_message(
+                &proposer_key,
+                NetworkMessage::Block(Box::new(block.clone())),
+            )
+            .unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server_block = block.clone();
+        let server_proposer_key = proposer_key.public_key();
+        let server = thread::spawn(move || {
+            let mut peer =
+                PersistentValidatorNode::bootstrap("validator-2", seeded_state(), &peer_dir)
+                    .unwrap();
+            peer.set_network_id("detta-testnet");
+            peer.trust_validator_key(server_proposer_key);
+
+            let (stream, _) = listener.accept().unwrap();
+            let mut tcp = TcpProtocolStream::from_stream(stream);
+            let message = tcp.receive().unwrap();
+            let envelope = Envelope {
+                from: "validator-1".into(),
+                to: "validator-2".into(),
+                message,
+            };
+
+            assert_eq!(
+                peer.ingest_network_envelope(&envelope).unwrap(),
+                NetworkIngestOutcome::BlockImported
+            );
+
+            let vote = Vote {
+                validator_id: "validator-2".into(),
+                height: server_block.header.height,
+                block_hash: server_block.block_hash(),
+            };
+            let signed_vote = peer
+                .sign_validator_message(&peer_key, NetworkMessage::Vote(vote))
+                .unwrap();
+            tcp.send(&signed_vote).unwrap();
+            fs::remove_dir_all(peer_dir).unwrap();
+        });
+
+        let mut tcp = TcpProtocolStream::connect(addr).unwrap();
+        tcp.send(&signed_block).unwrap();
+        let response = tcp.receive().unwrap();
+        let response_envelope = Envelope {
+            from: "validator-2".into(),
+            to: "validator-1".into(),
+            message: response,
+        };
+
+        assert_eq!(
+            proposer
+                .ingest_network_envelope(&response_envelope)
+                .unwrap(),
+            NetworkIngestOutcome::VoteReceived
+        );
+        server.join().unwrap();
+        assert_eq!(proposer.load_block(1).unwrap().block_hash(), block_hash);
+
+        fs::remove_dir_all(proposer_dir).unwrap();
     }
 
     #[test]

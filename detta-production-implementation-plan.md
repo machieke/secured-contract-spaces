@@ -38,10 +38,13 @@ Completed production-plan slices:
   validator keyring before ingesting the inner protocol message.
 - [x] Persistent nodes serve authenticated snapshot manifests and chunk ranges
   from durable storage for state sync.
+- [x] Signed block proposals propagate as verified validator envelopes, with a
+  real TCP signed proposal/signed vote round trip covered by tests.
 
 Next implementation slices:
 
-- [ ] Add signed block proposal propagation and a multi-process finality loop.
+- [ ] Add quorum vote collection and finality-certificate assembly across TCP
+  validator peers.
 
 # 1. Production Objective
 
