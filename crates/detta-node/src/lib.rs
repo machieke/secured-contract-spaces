@@ -132,6 +132,7 @@ pub struct SnapshotSyncClientMetrics {
     pub chunks_received: u32,
     pub resume_requests: u32,
     pub metadata_roots_verified: bool,
+    pub required_metadata_roots_root: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -152,6 +153,9 @@ impl SnapshotSyncClientMetrics {
         self.chunks_received += attempt.chunks_received;
         self.resume_requests += attempt.resume_requests;
         self.metadata_roots_verified |= attempt.metadata_roots_verified;
+        if attempt.required_metadata_roots_root.is_some() {
+            self.required_metadata_roots_root = attempt.required_metadata_roots_root;
+        }
     }
 }
 
@@ -166,6 +170,7 @@ fn snapshot_sync_client_metrics_report(
         chunks_received: metrics.chunks_received,
         resume_requests: metrics.resume_requests,
         metadata_roots_verified: metrics.metadata_roots_verified,
+        required_metadata_roots_root: metrics.required_metadata_roots_root,
     }
 }
 
@@ -241,6 +246,9 @@ pub fn fetch_verified_snapshot_chunk_set_over_tcp_with_metrics(
     }
 
     let snapshot_root = snapshot_root.into();
+    let required_metadata_roots_root =
+        FileStorage::required_snapshot_metadata_roots_root_for(required_metadata_roots)
+            .map_err(NodeError::Storage)?;
     let mut manifest: Option<SnapshotChunkManifest> = None;
     let mut chunks = Vec::new();
     let mut start_index = 0;
@@ -311,6 +319,7 @@ pub fn fetch_verified_snapshot_chunk_set_over_tcp_with_metrics(
                 .verify_with_metadata_roots(required_metadata_roots)
                 .map_err(NodeError::SnapshotSync)?;
             metrics.metadata_roots_verified = true;
+            metrics.required_metadata_roots_root = Some(required_metadata_roots_root);
             return Ok((chunk_set, metrics));
         }
         start_index += expected_chunks;
@@ -3197,7 +3206,7 @@ mod tests {
             .unwrap();
         let server = JsonRpcServer::bind("127.0.0.1:0").unwrap();
         let addr = server.local_addr().unwrap();
-        let sync_metrics = SnapshotSyncClientMetrics {
+        let mut sync_metrics = SnapshotSyncClientMetrics {
             retry_attempts: 1,
             stream_failures: 0,
             requests_sent: 3,
@@ -3205,8 +3214,8 @@ mod tests {
             chunks_received: 5,
             resume_requests: 2,
             metadata_roots_verified: true,
+            required_metadata_roots_root: None,
         };
-        let expected_sync_report = snapshot_sync_client_metrics_report(sync_metrics.clone());
         let mut required_metadata_roots = BTreeMap::new();
         required_metadata_roots.insert(
             SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT.into(),
@@ -3222,6 +3231,9 @@ mod tests {
                 &expected_required_metadata_roots,
             )
             .unwrap();
+        sync_metrics.required_metadata_roots_root =
+            Some(expected_required_metadata_roots_root.clone());
+        let expected_sync_report = snapshot_sync_client_metrics_report(sync_metrics.clone());
         let handle = thread::spawn(move || {
             let mut node = PersistentValidatorNode::bootstrap_with_validator_set(
                 "validator-2",
@@ -3713,6 +3725,7 @@ mod tests {
             chunks_received: 4,
             resume_requests: 1,
             metadata_roots_verified: true,
+            required_metadata_roots_root: None,
         };
         source
             .persist_snapshot_sync_client_metrics(&source_metrics)
@@ -3720,6 +3733,9 @@ mod tests {
         let snapshot_root = source.rpc().get_state_root();
         let status = source.snapshot_metadata_root_status().unwrap();
         let required_metadata_roots = source.snapshot_metadata_roots().unwrap();
+        let expected_required_metadata_roots_root =
+            FileStorage::required_snapshot_metadata_roots_root_for(&required_metadata_roots)
+                .unwrap();
         let expected_metrics_root = required_metadata_roots
             .get(SNAPSHOT_METADATA_STATE_SYNC_CLIENT_METRICS_ROOT)
             .cloned()
@@ -3772,6 +3788,10 @@ mod tests {
             metrics.requests_sent.saturating_sub(1)
         );
         assert!(metrics.metadata_roots_verified);
+        assert_eq!(
+            metrics.required_metadata_roots_root.as_deref(),
+            Some(expected_required_metadata_roots_root.as_str())
+        );
 
         let sink_dir = temp_dir("tcp-state-sync-sink");
         let mut sink = PersistentValidatorNode::bootstrap(
@@ -3789,6 +3809,10 @@ mod tests {
             required_metadata_roots
         );
         let required_metadata_roots_root = sink.required_snapshot_metadata_roots_root().unwrap();
+        assert_eq!(
+            required_metadata_roots_root,
+            expected_required_metadata_roots_root
+        );
         assert_eq!(
             sink.handle_rpc_request(RpcRequest::GetRequiredSnapshotMetadataRoots),
             RpcResponse::Ok(RpcResult::RequiredSnapshotMetadataRoots(
@@ -3958,6 +3982,9 @@ mod tests {
             SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT.into(),
             audit_root.clone(),
         );
+        let required_metadata_roots_root =
+            FileStorage::required_snapshot_metadata_roots_root_for(&required_metadata_roots)
+                .unwrap();
 
         let failing_listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let failing_addr = failing_listener.local_addr().unwrap();
@@ -4011,6 +4038,10 @@ mod tests {
         assert_eq!(metrics.stream_failures, 1);
         assert!(metrics.requests_sent > 0);
         assert!(metrics.metadata_roots_verified);
+        assert_eq!(
+            metrics.required_metadata_roots_root.as_deref(),
+            Some(required_metadata_roots_root.as_str())
+        );
 
         failing_handle.join().unwrap();
         healthy_handle.join().unwrap();

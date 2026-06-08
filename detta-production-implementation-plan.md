@@ -116,11 +116,13 @@ Completed production-plan slices:
   root responses for audit discovery.
 - [x] Required snapshot metadata-root requirement sets have stable roots exposed
   through dedicated RPC reports and persistent snapshot root responses.
+- [x] State-sync client diagnostics record the stable root of the required
+  metadata-root set verified by successful sync attempts.
 
 Next implementation slices:
 
-- [ ] Include required snapshot metadata-root requirement roots in state-sync
-  client diagnostics.
+- [ ] Bind state-sync diagnostics requirement roots into snapshot metadata for
+  downstream audit proofs.
 
 # 1. Production Objective
 

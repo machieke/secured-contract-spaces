@@ -139,6 +139,7 @@ pub struct SnapshotSyncClientMetricsReport {
     pub chunks_received: u32,
     pub resume_requests: u32,
     pub metadata_roots_verified: bool,
+    pub required_metadata_roots_root: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
