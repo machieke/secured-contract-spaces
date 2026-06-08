@@ -3,6 +3,11 @@ use detta_core::{
     OutboxMessageProof, Principal, Receipt, RegistryNonInclusionProof, RegistryProof, StateKey,
     StateSnapshot, StorageNonInclusionProof, StorageProof, Transaction, ValidatorNode,
 };
+use serde::{Deserialize, Serialize};
+use std::io::{self, BufReader, Read, Write};
+use std::net::{SocketAddr, TcpListener, ToSocketAddrs};
+
+pub const DEFAULT_MAX_RPC_REQUEST_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RpcError {
@@ -13,6 +18,135 @@ pub enum RpcError {
     TransactionNotFound,
     ContractNotFound,
     ProofNotFound,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "method", content = "params", rename_all = "snake_case")]
+pub enum RpcRequest {
+    SubmitTransaction {
+        transaction: Transaction,
+    },
+    ProduceBlock {
+        height: u64,
+        timestamp: u64,
+    },
+    ImportBlock {
+        block: Box<Block>,
+    },
+    GetTransaction {
+        tx_hash: String,
+    },
+    GetReceipt {
+        tx_hash: String,
+    },
+    GetBlock {
+        height: u64,
+    },
+    GetStateRoot,
+    GetSnapshot,
+    GetBalance {
+        contract: ContractId,
+        owner: Principal,
+        asset: AssetId,
+    },
+    GetTotalSupply {
+        contract: ContractId,
+        asset: AssetId,
+    },
+    GetStorageProof {
+        key: StateKey,
+    },
+    GetStorageNonInclusionProof {
+        key: StateKey,
+    },
+    GetRegistryProof {
+        key: GrantKey,
+    },
+    GetRegistryNonInclusionProof {
+        key: GrantKey,
+    },
+    GetOutboxMessageProof {
+        index: usize,
+    },
+    GetEvents,
+    GetContract {
+        contract: ContractId,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "result", content = "data", rename_all = "snake_case")]
+pub enum RpcResult {
+    Submitted,
+    Imported,
+    Block(Box<Block>),
+    Transaction(Box<Transaction>),
+    Receipt(Box<Receipt>),
+    StateRoot(String),
+    Snapshot(Box<StateSnapshot>),
+    Amount(Amount),
+    StorageProof(Box<StorageProof>),
+    StorageNonInclusionProof(Box<StorageNonInclusionProof>),
+    RegistryProof(Box<RegistryProof>),
+    RegistryNonInclusionProof(Box<RegistryNonInclusionProof>),
+    OutboxMessageProof(Box<OutboxMessageProof>),
+    Events(Vec<Event>),
+    Contract(Box<ContractRecord>),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "status", content = "body", rename_all = "snake_case")]
+pub enum RpcResponse {
+    Ok(RpcResult),
+    Error(RpcErrorBody),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RpcErrorBody {
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug)]
+pub enum RpcTransportError {
+    Io(io::Error),
+    Encode(serde_json::Error),
+    RequestTooLarge { max_bytes: usize },
+}
+
+impl From<io::Error> for RpcTransportError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+pub struct JsonRpcServer {
+    listener: TcpListener,
+    max_request_bytes: usize,
+}
+
+impl JsonRpcServer {
+    pub fn bind(addr: impl ToSocketAddrs) -> Result<Self, RpcTransportError> {
+        let listener = TcpListener::bind(addr)?;
+        Ok(Self {
+            listener,
+            max_request_bytes: DEFAULT_MAX_RPC_REQUEST_BYTES,
+        })
+    }
+
+    pub fn with_max_request_bytes(mut self, max_request_bytes: usize) -> Self {
+        self.max_request_bytes = max_request_bytes;
+        self
+    }
+
+    pub fn local_addr(&self) -> Result<SocketAddr, RpcTransportError> {
+        self.listener.local_addr().map_err(RpcTransportError::Io)
+    }
+
+    pub fn serve_next_connection(&self, service: &mut RpcService) -> Result<(), RpcTransportError> {
+        let (stream, _) = self.listener.accept()?;
+        serve_json_rpc_connection(service, stream, self.max_request_bytes)
+    }
 }
 
 pub struct RpcService {
@@ -145,12 +279,225 @@ impl RpcService {
             .cloned()
             .ok_or(RpcError::ContractNotFound)
     }
+
+    pub fn handle_request(&mut self, request: RpcRequest) -> RpcResponse {
+        match request {
+            RpcRequest::SubmitTransaction { transaction } => self
+                .submit_transaction(transaction)
+                .map(|()| RpcResult::Submitted)
+                .into(),
+            RpcRequest::ProduceBlock { height, timestamp } => self
+                .produce_block(height, timestamp)
+                .map(|block| RpcResult::Block(Box::new(block)))
+                .into(),
+            RpcRequest::ImportBlock { block } => self
+                .import_block(&block)
+                .map(|()| RpcResult::Imported)
+                .into(),
+            RpcRequest::GetTransaction { tx_hash } => self
+                .get_transaction(&tx_hash)
+                .map(|transaction| RpcResult::Transaction(Box::new(transaction)))
+                .into(),
+            RpcRequest::GetReceipt { tx_hash } => self
+                .get_receipt(&tx_hash)
+                .map(|receipt| RpcResult::Receipt(Box::new(receipt)))
+                .into(),
+            RpcRequest::GetBlock { height } => self
+                .get_block(height)
+                .map(|block| RpcResult::Block(Box::new(block)))
+                .into(),
+            RpcRequest::GetStateRoot => {
+                RpcResponse::Ok(RpcResult::StateRoot(self.get_state_root()))
+            }
+            RpcRequest::GetSnapshot => {
+                RpcResponse::Ok(RpcResult::Snapshot(Box::new(self.snapshot())))
+            }
+            RpcRequest::GetBalance {
+                contract,
+                owner,
+                asset,
+            } => RpcResponse::Ok(RpcResult::Amount(
+                self.call_balance_view(contract, owner, asset),
+            )),
+            RpcRequest::GetTotalSupply { contract, asset } => RpcResponse::Ok(RpcResult::Amount(
+                self.call_total_supply_view(contract, asset),
+            )),
+            RpcRequest::GetStorageProof { key } => self
+                .get_storage_proof(&key)
+                .map(|proof| RpcResult::StorageProof(Box::new(proof)))
+                .into(),
+            RpcRequest::GetStorageNonInclusionProof { key } => self
+                .get_storage_non_inclusion_proof(&key)
+                .map(|proof| RpcResult::StorageNonInclusionProof(Box::new(proof)))
+                .into(),
+            RpcRequest::GetRegistryProof { key } => self
+                .get_registry_proof(&key)
+                .map(|proof| RpcResult::RegistryProof(Box::new(proof)))
+                .into(),
+            RpcRequest::GetRegistryNonInclusionProof { key } => self
+                .get_registry_non_inclusion_proof(&key)
+                .map(|proof| RpcResult::RegistryNonInclusionProof(Box::new(proof)))
+                .into(),
+            RpcRequest::GetOutboxMessageProof { index } => self
+                .get_outbox_message_proof(index)
+                .map(|proof| RpcResult::OutboxMessageProof(Box::new(proof)))
+                .into(),
+            RpcRequest::GetEvents => RpcResponse::Ok(RpcResult::Events(self.get_events())),
+            RpcRequest::GetContract { contract } => self
+                .get_contract(contract)
+                .map(|contract| RpcResult::Contract(Box::new(contract)))
+                .into(),
+        }
+    }
+
+    pub fn handle_json_request(&mut self, request: &[u8]) -> Result<Vec<u8>, RpcTransportError> {
+        let response = match serde_json::from_slice::<RpcRequest>(request) {
+            Ok(request) => self.handle_request(request),
+            Err(error) => RpcResponse::Error(RpcErrorBody {
+                code: "rpc.decode_error".into(),
+                message: error.to_string(),
+            }),
+        };
+
+        serde_json::to_vec(&response).map_err(RpcTransportError::Encode)
+    }
+}
+
+impl From<Result<RpcResult, RpcError>> for RpcResponse {
+    fn from(result: Result<RpcResult, RpcError>) -> Self {
+        match result {
+            Ok(result) => RpcResponse::Ok(result),
+            Err(error) => RpcResponse::Error(RpcErrorBody::from(error)),
+        }
+    }
+}
+
+impl From<RpcError> for RpcErrorBody {
+    fn from(error: RpcError) -> Self {
+        Self {
+            code: rpc_error_code(&error).into(),
+            message: rpc_error_message(&error).into(),
+        }
+    }
+}
+
+pub fn serve_json_rpc_connection<S: Read + Write>(
+    service: &mut RpcService,
+    stream: S,
+    max_request_bytes: usize,
+) -> Result<(), RpcTransportError> {
+    let mut reader = BufReader::new(stream);
+
+    loop {
+        let Some(request) = read_bounded_json_line(&mut reader, max_request_bytes)? else {
+            return Ok(());
+        };
+
+        let response = service.handle_json_request(&request)?;
+        let stream = reader.get_mut();
+        stream.write_all(&response)?;
+        stream.write_all(b"\n")?;
+        stream.flush()?;
+    }
+}
+
+fn read_bounded_json_line<R: Read>(
+    reader: &mut R,
+    max_request_bytes: usize,
+) -> Result<Option<Vec<u8>>, RpcTransportError> {
+    let mut line = Vec::new();
+    let mut byte = [0_u8; 1];
+
+    loop {
+        let read = reader.read(&mut byte)?;
+        if read == 0 {
+            return if line.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(line))
+            };
+        }
+
+        line.push(byte[0]);
+        if line.len() > max_request_bytes {
+            return Err(RpcTransportError::RequestTooLarge {
+                max_bytes: max_request_bytes,
+            });
+        }
+        if byte[0] == b'\n' {
+            return Ok(Some(line));
+        }
+    }
+}
+
+fn rpc_error_code(error: &RpcError) -> &'static str {
+    match error {
+        RpcError::Mempool(MempoolError::ChainMismatch) => "mempool.chain_mismatch",
+        RpcError::Mempool(MempoolError::InvalidSignature) => "mempool.invalid_signature",
+        RpcError::Mempool(MempoolError::DuplicateTransaction) => "mempool.duplicate_transaction",
+        RpcError::Mempool(MempoolError::NonceAlreadyUsed) => "mempool.nonce_already_used",
+        RpcError::Block(BlockError::ChainMismatch) => "block.chain_mismatch",
+        RpcError::Block(BlockError::PreviousBlockMismatch) => "block.previous_block_mismatch",
+        RpcError::Block(BlockError::TxRootMismatch) => "block.tx_root_mismatch",
+        RpcError::Block(BlockError::ReceiptRootMismatch) => "block.receipt_root_mismatch",
+        RpcError::Block(BlockError::ReceiptMismatch) => "block.receipt_mismatch",
+        RpcError::Block(BlockError::StorageRootMismatch) => "block.storage_root_mismatch",
+        RpcError::Block(BlockError::RegistryRootMismatch) => "block.registry_root_mismatch",
+        RpcError::Block(BlockError::PolicyRootMismatch) => "block.policy_root_mismatch",
+        RpcError::Block(BlockError::EventRootMismatch) => "block.event_root_mismatch",
+        RpcError::Block(BlockError::NonceRootMismatch) => "block.nonce_root_mismatch",
+        RpcError::Block(BlockError::OutboxRootMismatch) => "block.outbox_root_mismatch",
+        RpcError::Block(BlockError::GlobalStateRootMismatch) => "block.global_state_root_mismatch",
+        RpcError::BlockNotFound => "rpc.block_not_found",
+        RpcError::ReceiptNotFound => "rpc.receipt_not_found",
+        RpcError::TransactionNotFound => "rpc.transaction_not_found",
+        RpcError::ContractNotFound => "rpc.contract_not_found",
+        RpcError::ProofNotFound => "rpc.proof_not_found",
+    }
+}
+
+fn rpc_error_message(error: &RpcError) -> &'static str {
+    match error {
+        RpcError::Mempool(MempoolError::ChainMismatch) => {
+            "transaction chain ID does not match this node"
+        }
+        RpcError::Mempool(MempoolError::InvalidSignature) => {
+            "transaction signature failed admission"
+        }
+        RpcError::Mempool(MempoolError::DuplicateTransaction) => "transaction is already pending",
+        RpcError::Mempool(MempoolError::NonceAlreadyUsed) => {
+            "transaction nonce has already been committed"
+        }
+        RpcError::Block(BlockError::ChainMismatch) => "block chain ID does not match this node",
+        RpcError::Block(BlockError::PreviousBlockMismatch) => {
+            "block does not extend the latest committed block"
+        }
+        RpcError::Block(BlockError::TxRootMismatch) => "block transaction root is invalid",
+        RpcError::Block(BlockError::ReceiptRootMismatch) => "block receipt root is invalid",
+        RpcError::Block(BlockError::ReceiptMismatch) => "block receipts are invalid",
+        RpcError::Block(BlockError::StorageRootMismatch) => "block storage root is invalid",
+        RpcError::Block(BlockError::RegistryRootMismatch) => "block registry root is invalid",
+        RpcError::Block(BlockError::PolicyRootMismatch) => "block policy root is invalid",
+        RpcError::Block(BlockError::EventRootMismatch) => "block event root is invalid",
+        RpcError::Block(BlockError::NonceRootMismatch) => "block nonce root is invalid",
+        RpcError::Block(BlockError::OutboxRootMismatch) => "block outbox root is invalid",
+        RpcError::Block(BlockError::GlobalStateRootMismatch) => {
+            "block global state root is invalid"
+        }
+        RpcError::BlockNotFound => "block was not found",
+        RpcError::ReceiptNotFound => "receipt was not found",
+        RpcError::TransactionNotFound => "transaction was not found",
+        RpcError::ContractNotFound => "contract was not found",
+        RpcError::ProofNotFound => "proof was not found",
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use detta_core::{Argument, ContractInvariant, DeTTaState, Method, TxStatus};
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::{Shutdown, TcpStream};
 
     fn seeded_rpc() -> RpcService {
         let mut state = DeTTaState::new("detta-local");
@@ -180,6 +527,19 @@ mod tests {
             signature_ok: true,
             budget: 1_000_000,
         }
+    }
+
+    fn write_request(stream: &mut TcpStream, request: &RpcRequest) {
+        serde_json::to_writer(&mut *stream, request).unwrap();
+        stream.write_all(b"\n").unwrap();
+        stream.flush().unwrap();
+    }
+
+    fn read_response(reader: &mut BufReader<TcpStream>) -> RpcResponse {
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        assert!(!line.is_empty());
+        serde_json::from_str(&line).unwrap()
     }
 
     #[test]
@@ -220,5 +580,105 @@ mod tests {
             .declared_invariants()
             .contains(&ContractInvariant::TokenSupplyMatchesBalances));
         assert_eq!(rpc.get_state_root(), block.header.global_state_root);
+    }
+
+    #[test]
+    fn json_rpc_dispatch_returns_stable_success_and_error_responses() {
+        let mut rpc = seeded_rpc();
+
+        let balance_response = rpc.handle_request(RpcRequest::GetBalance {
+            contract: "TokenA".into(),
+            owner: "Alice".into(),
+            asset: "USDC".into(),
+        });
+        assert_eq!(balance_response, RpcResponse::Ok(RpcResult::Amount(100)));
+
+        let missing_response = rpc.handle_request(RpcRequest::GetReceipt {
+            tx_hash: "missing".into(),
+        });
+        assert_eq!(
+            missing_response,
+            RpcResponse::Error(RpcErrorBody {
+                code: "rpc.receipt_not_found".into(),
+                message: "receipt was not found".into(),
+            })
+        );
+
+        let malformed = rpc
+            .handle_json_request(br#"{"method":"does_not_exist"}"#)
+            .unwrap();
+        let malformed_response: RpcResponse = serde_json::from_slice(&malformed).unwrap();
+        match malformed_response {
+            RpcResponse::Error(error) => assert_eq!(error.code, "rpc.decode_error"),
+            response => panic!("expected decode error, got {response:?}"),
+        }
+    }
+
+    #[test]
+    fn json_rpc_tcp_server_serves_stateful_requests_over_socket() {
+        let server = JsonRpcServer::bind("127.0.0.1:0").unwrap();
+        let addr = server.local_addr().unwrap();
+        let server_thread = std::thread::spawn(move || {
+            let mut rpc = seeded_rpc();
+            server.serve_next_connection(&mut rpc).unwrap();
+        });
+
+        let mut stream = TcpStream::connect(addr).unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+
+        write_request(
+            &mut stream,
+            &RpcRequest::SubmitTransaction {
+                transaction: transfer_tx(),
+            },
+        );
+        assert_eq!(
+            read_response(&mut reader),
+            RpcResponse::Ok(RpcResult::Submitted)
+        );
+
+        write_request(
+            &mut stream,
+            &RpcRequest::ProduceBlock {
+                height: 1,
+                timestamp: 1_000,
+            },
+        );
+        match read_response(&mut reader) {
+            RpcResponse::Ok(RpcResult::Block(block)) => {
+                assert_eq!(block.header.height, 1);
+                assert_eq!(block.transactions.len(), 1);
+            }
+            response => panic!("expected produced block, got {response:?}"),
+        }
+
+        write_request(
+            &mut stream,
+            &RpcRequest::GetReceipt {
+                tx_hash: "tx1".into(),
+            },
+        );
+        match read_response(&mut reader) {
+            RpcResponse::Ok(RpcResult::Receipt(receipt)) => {
+                assert_eq!(receipt.status, TxStatus::Committed);
+            }
+            response => panic!("expected receipt, got {response:?}"),
+        }
+
+        write_request(
+            &mut stream,
+            &RpcRequest::GetBalance {
+                contract: "TokenA".into(),
+                owner: "Bob".into(),
+                asset: "USDC".into(),
+            },
+        );
+        assert_eq!(
+            read_response(&mut reader),
+            RpcResponse::Ok(RpcResult::Amount(60))
+        );
+
+        stream.shutdown(Shutdown::Write).unwrap();
+        server_thread.join().unwrap();
     }
 }

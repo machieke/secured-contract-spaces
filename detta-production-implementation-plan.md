@@ -28,10 +28,11 @@ Completed production-plan slices:
 - [x] Persistent nodes gossip admitted transactions to validator peers.
 - [x] Persistent nodes propagate consensus votes and finality certificates over
   network envelopes.
+- [x] External line-delimited JSON RPC transport serves typed requests over TCP
+  sockets.
 
 Next implementation slices:
 
-- [ ] Add externally served RPC transport instead of only in-process RPC.
 - [ ] Add signed validator protocol messages and signature-domain checks.
 - [ ] Add chunked snapshot state sync over protocol envelopes.
 
