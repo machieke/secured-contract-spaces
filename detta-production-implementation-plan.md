@@ -200,11 +200,13 @@ Completed production-plan slices:
   evidence.
 - [x] Restricted evaluator proof trace root has a dedicated SHA-256
   attestation.
+- [x] Restricted evaluator proof trace root attestation is bound into the
+  proof-artifact manifest.
 
 Next implementation slices:
 
-- [ ] Bind restricted evaluator proof trace root attestation into the
-  proof-artifact manifest.
+- [ ] Add proof-manifest tests that every checked-in evaluator attestation is
+  bound.
 
 # 1. Production Objective
 

@@ -19,6 +19,10 @@
       "sha256": "513d919a2f2038b02519512b5416b35bdddf5158cb8dadb792c7b6ed61147a38"
     },
     {
+      "path": "models/detta-restricted-evaluator-proof-trace-root.sha256",
+      "sha256": "962954607a2b57634bebd9f634f04d0e4206d35c948257398c198d3fe8a7febc"
+    },
+    {
       "path": "models/detta-restricted-evaluator-forbidden-primitives.json",
       "sha256": "8da9bb850bf189c0ce69753717a47c40173636f564710dcab288d8ee1ac2622c"
     },

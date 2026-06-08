@@ -274,6 +274,12 @@ pub fn proof_runtime_artifacts() -> Vec<ModelArtifactRoot> {
             )),
         },
         ModelArtifactRoot {
+            path: "models/detta-restricted-evaluator-proof-trace-root.sha256",
+            sha256: proof_artifact_manifest_root_bytes(include_bytes!(
+                "../../../models/detta-restricted-evaluator-proof-trace-root.sha256"
+            )),
+        },
+        ModelArtifactRoot {
             path: "models/detta-restricted-evaluator-forbidden-primitives.json",
             sha256: proof_artifact_manifest_root_bytes(include_bytes!(
                 "../../../models/detta-restricted-evaluator-forbidden-primitives.json"
@@ -781,6 +787,11 @@ mod tests {
                 ModelArtifactRoot {
                     path: "models/detta-restricted-evaluator-proof-trace.json",
                     sha256: "513d919a2f2038b02519512b5416b35bdddf5158cb8dadb792c7b6ed61147a38"
+                        .into(),
+                },
+                ModelArtifactRoot {
+                    path: "models/detta-restricted-evaluator-proof-trace-root.sha256",
+                    sha256: "962954607a2b57634bebd9f634f04d0e4206d35c948257398c198d3fe8a7febc"
                         .into(),
                 },
                 ModelArtifactRoot {
