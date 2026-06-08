@@ -978,6 +978,66 @@ mod tests {
     }
 
     #[derive(serde::Deserialize)]
+    struct EvaluatorFixtureInventoryForTest {
+        fixtures: Vec<EvaluatorFixtureInventoryEntryForTest>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct EvaluatorFixtureInventoryEntryForTest {
+        fixture_path: String,
+        fixture_sha256: String,
+        attestation_path: String,
+        attestation_sha256: String,
+        trace_root_attestation_path: Option<String>,
+        trace_root_attestation_sha256: Option<String>,
+    }
+
+    #[test]
+    fn proof_runtime_artifacts_match_evaluator_fixture_inventory_entries() {
+        let inventory: EvaluatorFixtureInventoryForTest = serde_json::from_str(include_str!(
+            "../../../models/detta-restricted-evaluator-fixture-inventory.json"
+        ))
+        .unwrap();
+        let runtime_roots: BTreeMap<_, _> = proof_runtime_artifacts()
+            .into_iter()
+            .map(|artifact| (artifact.path, artifact.sha256))
+            .collect();
+
+        assert_eq!(inventory.fixtures.len(), 4);
+        for entry in inventory.fixtures {
+            assert_eq!(
+                runtime_roots
+                    .get(entry.fixture_path.as_str())
+                    .map(String::as_str),
+                Some(entry.fixture_sha256.as_str()),
+                "{} fixture root is not bound in proof runtime artifacts",
+                entry.fixture_path
+            );
+            assert_eq!(
+                runtime_roots
+                    .get(entry.attestation_path.as_str())
+                    .map(String::as_str),
+                Some(entry.attestation_sha256.as_str()),
+                "{} attestation root is not bound in proof runtime artifacts",
+                entry.attestation_path
+            );
+
+            match (
+                entry.trace_root_attestation_path,
+                entry.trace_root_attestation_sha256,
+            ) {
+                (Some(path), Some(root)) => assert_eq!(
+                    runtime_roots.get(path.as_str()).map(String::as_str),
+                    Some(root.as_str()),
+                    "{path} trace-root attestation is not bound in proof runtime artifacts"
+                ),
+                (None, None) => {}
+                _ => panic!("trace-root attestation path and root must both be present or absent"),
+            }
+        }
+    }
+
+    #[derive(serde::Deserialize)]
     struct ProofTraceFixtureForTest {
         trace_root: String,
         report: ProofTraceReportForTest,

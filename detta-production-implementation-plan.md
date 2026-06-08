@@ -217,10 +217,12 @@ Completed production-plan slices:
 - [x] Stable evaluator fixture inventory is exported.
 - [x] SHA-256 attestation exists for evaluator fixture inventory.
 - [x] Evaluator fixture inventory is bound into the proof manifest.
+- [x] Evaluator fixture inventory entries are validated against proof manifest
+  roots.
 
 Next implementation slices:
 
-- [ ] Validate evaluator fixture inventory entries against proof manifest roots.
+- [ ] Add proof manifest runtime artifact path uniqueness checks.
 
 # 1. Production Objective
 

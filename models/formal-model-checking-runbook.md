@@ -31,6 +31,8 @@ cargo test -p detta-verify
 - the manifest includes the current `models/DeTTaBlockExecution.tla` SHA-256.
 - the manifest binds every checked-in restricted evaluator fixture JSON and
   evaluator fixture attestation file, including the fixture inventory.
+- each evaluator fixture inventory entry matches the corresponding manifest
+  `runtime_artifacts` root.
 
 The evaluator `sha256sum -c` commands verify fixture-file attestations. The
 final `sha256sum` command reports the file root of the compact-trace-root
@@ -76,6 +78,8 @@ Before accepting a release proof bundle, verify:
   `runtime_artifacts`;
 - the evaluator fixture inventory JSON and `.sha256` paths appear in
   `runtime_artifacts`;
+- every root listed inside the evaluator fixture inventory matches the
+  corresponding `runtime_artifacts` entry;
 - `detta-restricted-evaluator-fixture-inventory.sha256` verifies against the
   checked-in inventory JSON;
 - every fixture evidence reference with `kind: "Fixture"` resolves to a
