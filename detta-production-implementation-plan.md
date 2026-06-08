@@ -148,11 +148,13 @@ Completed production-plan slices:
   snapshot root responses for consolidated discovery.
 - [x] Snapshot import audit configuration roots are exposed through dedicated
   node-aware and TCP JSON RPC for lightweight clients.
+- [x] Snapshot metadata root status reports local, persisted, and effective
+  snapshot import audit configuration roots.
 
 Next implementation slices:
 
-- [ ] Add snapshot import audit configuration root diagnostics to snapshot
-  metadata root status.
+- [ ] Add snapshot import audit root diagnostics to snapshot metadata root
+  status.
 
 # 1. Production Objective
 

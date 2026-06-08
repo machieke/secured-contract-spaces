@@ -500,6 +500,16 @@ impl PersistentValidatorNode {
         let validator_set_metadata_audit_root = persisted_validator_set_metadata_audit_root
             .clone()
             .unwrap_or_else(|| local_validator_set_metadata_audit_root.clone());
+        let local_snapshot_import_audit_config_root = self
+            .storage
+            .snapshot_import_audit_config_root()
+            .map_err(NodeError::Storage)?;
+        let persisted_snapshot_import_audit_config_root = persisted_metadata_roots
+            .get(SNAPSHOT_METADATA_SNAPSHOT_IMPORT_AUDIT_CONFIG_ROOT)
+            .cloned();
+        let snapshot_import_audit_config_root = persisted_snapshot_import_audit_config_root
+            .clone()
+            .or_else(|| local_snapshot_import_audit_config_root.clone());
         let persisted_matches_local_validator_set_metadata_audit_root =
             persisted_validator_set_metadata_audit_root
                 .as_ref()
@@ -508,12 +518,25 @@ impl PersistentValidatorNode {
             persisted_validator_set_metadata_audit_root
                 .as_ref()
                 .is_some_and(|root| root != &local_validator_set_metadata_audit_root);
+        let persisted_matches_local_snapshot_import_audit_config_root =
+            persisted_snapshot_import_audit_config_root
+                .as_ref()
+                .is_some_and(|root| Some(root) == local_snapshot_import_audit_config_root.as_ref());
+        let using_imported_snapshot_import_audit_config_root =
+            persisted_snapshot_import_audit_config_root
+                .as_ref()
+                .is_some_and(|root| Some(root) != local_snapshot_import_audit_config_root.as_ref());
         Ok(SnapshotMetadataRootStatus {
             validator_set_metadata_audit_root,
             local_validator_set_metadata_audit_root,
             persisted_validator_set_metadata_audit_root,
             using_imported_validator_set_metadata_audit_root,
             persisted_matches_local_validator_set_metadata_audit_root,
+            snapshot_import_audit_config_root,
+            local_snapshot_import_audit_config_root,
+            persisted_snapshot_import_audit_config_root,
+            using_imported_snapshot_import_audit_config_root,
+            persisted_matches_local_snapshot_import_audit_config_root,
         })
     }
 
@@ -3184,6 +3207,11 @@ mod tests {
                     persisted_validator_set_metadata_audit_root: Some(retained_root.clone()),
                     using_imported_validator_set_metadata_audit_root: false,
                     persisted_matches_local_validator_set_metadata_audit_root: true,
+                    snapshot_import_audit_config_root: None,
+                    local_snapshot_import_audit_config_root: None,
+                    persisted_snapshot_import_audit_config_root: None,
+                    using_imported_snapshot_import_audit_config_root: false,
+                    persisted_matches_local_snapshot_import_audit_config_root: false,
                 },
             ))
         );
@@ -3877,6 +3905,11 @@ mod tests {
                     persisted_validator_set_metadata_audit_root: Some(expected_audit_root.clone()),
                     using_imported_validator_set_metadata_audit_root: true,
                     persisted_matches_local_validator_set_metadata_audit_root: false,
+                    snapshot_import_audit_config_root: None,
+                    local_snapshot_import_audit_config_root: None,
+                    persisted_snapshot_import_audit_config_root: None,
+                    using_imported_snapshot_import_audit_config_root: false,
+                    persisted_matches_local_snapshot_import_audit_config_root: false,
                 },
             ))
         );
@@ -4053,6 +4086,21 @@ mod tests {
                 snapshot_import_audit_config_root.clone()
             )))
         );
+        let sink_metadata_status = sink.snapshot_metadata_root_status().unwrap();
+        assert_eq!(
+            sink_metadata_status.snapshot_import_audit_config_root,
+            Some(snapshot_import_audit_config_root.clone())
+        );
+        assert_eq!(
+            sink_metadata_status.local_snapshot_import_audit_config_root,
+            Some(snapshot_import_audit_config_root.clone())
+        );
+        assert_eq!(
+            sink_metadata_status.persisted_snapshot_import_audit_config_root,
+            None
+        );
+        assert!(!sink_metadata_status.using_imported_snapshot_import_audit_config_root);
+        assert!(!sink_metadata_status.persisted_matches_local_snapshot_import_audit_config_root);
         let imported = sink
             .import_snapshot_chunk_set(&chunk_set, &required_metadata_roots)
             .unwrap();
@@ -4265,6 +4313,23 @@ mod tests {
             .import_snapshot_chunk_set(&downstream_chunk_set, &downstream_required_metadata_roots)
             .unwrap();
         assert_eq!(downstream_import.global_state_root, snapshot_root);
+        let downstream_metadata_status = downstream.snapshot_metadata_root_status().unwrap();
+        assert_eq!(
+            downstream_metadata_status.snapshot_import_audit_config_root,
+            Some(snapshot_import_audit_config_root.clone())
+        );
+        assert_eq!(
+            downstream_metadata_status.local_snapshot_import_audit_config_root,
+            None
+        );
+        assert_eq!(
+            downstream_metadata_status.persisted_snapshot_import_audit_config_root,
+            Some(snapshot_import_audit_config_root.clone())
+        );
+        assert!(downstream_metadata_status.using_imported_snapshot_import_audit_config_root);
+        assert!(
+            !downstream_metadata_status.persisted_matches_local_snapshot_import_audit_config_root
+        );
         let mut wrong_downstream_roots = downstream_required_metadata_roots.clone();
         wrong_downstream_roots.insert(
             SNAPSHOT_METADATA_SNAPSHOT_IMPORT_AUDIT_ROOT.into(),
