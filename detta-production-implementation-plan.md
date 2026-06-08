@@ -307,10 +307,11 @@ Completed production-plan slices:
   verify.
 - [x] Proof release attestation roots are checked for SHA-256 hex length in
   verify.
+- [x] Proof release attestation count is checked in verify.
 
 Next implementation slices:
 
-- [ ] Add proof release attestation count checks in verify.
+- [ ] Add proof release attestation filename uniqueness checks in verify.
 
 # 1. Production Objective
 

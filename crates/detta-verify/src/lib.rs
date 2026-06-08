@@ -226,6 +226,7 @@ pub const PROOF_ARTIFACT_MANIFEST_SCOPE: &str =
     "Secured Contract Spaces runtime safety obligations";
 pub const PROOF_MODEL_ARTIFACT_COUNT: usize = 2;
 pub const PROOF_RUNTIME_ARTIFACT_COUNT: usize = 11;
+pub const PROOF_RELEASE_ATTESTATION_COUNT: usize = 7;
 pub const SHA256_HEX_LENGTH: usize = 64;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -1403,6 +1404,21 @@ mod tests {
             include_str!("../../../models/detta-restricted-evaluator-fixture-inventory.sha256"),
             "detta-restricted-evaluator-fixture-inventory.json",
         );
+    }
+
+    #[test]
+    fn proof_release_attestation_count_is_stable() {
+        let attestations = [
+            include_str!("../../../models/detta-proof-artifact-manifest.sha256"),
+            include_str!("../../../models/detta-restricted-evaluator-proof-trace.sha256"),
+            include_str!("../../../models/detta-restricted-evaluator-proof-trace-root.sha256"),
+            include_str!("../../../models/detta-restricted-evaluator-forbidden-primitives.sha256"),
+            include_str!("../../../models/detta-restricted-evaluator-resource-exhaustion.sha256"),
+            include_str!("../../../models/detta-restricted-evaluator-arithmetic-overflow.sha256"),
+            include_str!("../../../models/detta-restricted-evaluator-fixture-inventory.sha256"),
+        ];
+
+        assert_eq!(attestations.len(), PROOF_RELEASE_ATTESTATION_COUNT);
     }
 
     #[test]
