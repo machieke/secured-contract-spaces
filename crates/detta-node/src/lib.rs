@@ -461,6 +461,10 @@ impl PersistentValidatorNode {
         let snapshot_sync_client_metrics = self
             .load_snapshot_sync_client_metrics()?
             .map(snapshot_sync_client_metrics_report);
+        let snapshot_import_audit_config_root = self
+            .storage
+            .snapshot_import_audit_config_root()
+            .map_err(NodeError::Storage)?;
         Ok(PersistentNodeSnapshotRoots {
             storage_root: snapshot.state_snapshot.storage_root,
             registry_root: snapshot.state_snapshot.registry_root,
@@ -474,6 +478,7 @@ impl PersistentValidatorNode {
             snapshot_import_audit_record_count: snapshot_import_audit_records.len(),
             snapshot_import_audit_max_records: self.max_snapshot_import_audit_records,
             snapshot_import_audit_max_page_size: self.max_snapshot_import_audit_page_size,
+            snapshot_import_audit_config_root,
             required_snapshot_metadata_roots,
             required_snapshot_metadata_roots_root,
             snapshot_sync_client_metrics,
@@ -1764,6 +1769,7 @@ mod tests {
             snapshot_import_audit_record_count: 0,
             snapshot_import_audit_max_records: DEFAULT_MAX_SNAPSHOT_IMPORT_AUDIT_RECORDS,
             snapshot_import_audit_max_page_size: DEFAULT_MAX_SNAPSHOT_IMPORT_AUDIT_PAGE_SIZE,
+            snapshot_import_audit_config_root: None,
             required_snapshot_metadata_roots: BTreeMap::new(),
             required_snapshot_metadata_roots_root:
                 FileStorage::required_snapshot_metadata_roots_root_for(&BTreeMap::new()).unwrap(),
@@ -3388,6 +3394,11 @@ mod tests {
             max_records: 7,
             max_page_size: 3,
         };
+        let expected_snapshot_import_audit_config_root =
+            FileStorage::snapshot_import_audit_config_root_for(
+                &expected_snapshot_import_audit_config,
+            )
+            .unwrap();
         let server_snapshot_import_audit_config = expected_snapshot_import_audit_config.clone();
         let handle = thread::spawn(move || {
             let mut node = PersistentValidatorNode::bootstrap_with_validator_set(
@@ -3443,6 +3454,10 @@ mod tests {
         assert_eq!(
             initial_snapshot.snapshot_import_audit_max_page_size,
             expected_snapshot_import_audit_config.max_page_size
+        );
+        assert_eq!(
+            initial_snapshot.snapshot_import_audit_config_root,
+            Some(expected_snapshot_import_audit_config_root)
         );
         write_rpc_request(&mut stream, &RpcRequest::GetSnapshotSyncClientMetrics);
         assert_eq!(
@@ -4148,6 +4163,10 @@ mod tests {
         assert_eq!(sink_roots.snapshot_import_audit_record_count, 1);
         assert_eq!(sink_roots.snapshot_import_audit_max_records, 1);
         assert_eq!(sink_roots.snapshot_import_audit_max_page_size, 1);
+        assert_eq!(
+            sink_roots.snapshot_import_audit_config_root,
+            Some(snapshot_import_audit_config_root.clone())
+        );
         let response = sink
             .serve_snapshot_chunk_request(
                 &SnapshotChunkRequest {
@@ -4253,7 +4272,7 @@ mod tests {
             NodeError::SnapshotSync(SnapshotSyncError::MetadataRootMismatch {
                 key: SNAPSHOT_METADATA_SNAPSHOT_IMPORT_AUDIT_CONFIG_ROOT.into(),
                 expected: "wrong-import-audit-config-root".into(),
-                actual: Some(snapshot_import_audit_config_root),
+                actual: Some(snapshot_import_audit_config_root.clone()),
             })
         );
         fs::remove_dir_all(downstream_dir).unwrap();
@@ -4285,6 +4304,10 @@ mod tests {
         assert_eq!(restarted_roots.snapshot_import_audit_record_count, 1);
         assert_eq!(restarted_roots.snapshot_import_audit_max_records, 1);
         assert_eq!(restarted_roots.snapshot_import_audit_max_page_size, 1);
+        assert_eq!(
+            restarted_roots.snapshot_import_audit_config_root,
+            Some(snapshot_import_audit_config_root)
+        );
         assert_eq!(
             restarted_sink.handle_rpc_request(RpcRequest::GetSnapshotImportAuditConfig),
             RpcResponse::Ok(RpcResult::SnapshotImportAuditConfig(

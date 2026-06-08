@@ -340,6 +340,12 @@ impl FileStorage {
         read_json(&path).map(Some)
     }
 
+    pub fn snapshot_import_audit_config_root(&self) -> Result<Option<String>, StorageError> {
+        self.maybe_load_snapshot_import_audit_config()?
+            .map(|config| Self::snapshot_import_audit_config_root_for(&config))
+            .transpose()
+    }
+
     pub fn snapshot_import_audit_config_root_for(
         config: &SnapshotImportAuditConfig,
     ) -> Result<String, StorageError> {
@@ -978,11 +984,16 @@ mod tests {
             storage.maybe_load_snapshot_import_audit_config().unwrap(),
             None
         );
+        assert_eq!(storage.snapshot_import_audit_config_root().unwrap(), None);
         storage
             .commit_snapshot_import_audit_config(&config)
             .unwrap();
         let config_root = FileStorage::snapshot_import_audit_config_root_for(&config).unwrap();
         assert_ne!(config_root, retained_root);
+        assert_eq!(
+            storage.snapshot_import_audit_config_root().unwrap(),
+            Some(config_root)
+        );
         assert_eq!(
             FileStorage::open(&dir)
                 .unwrap()

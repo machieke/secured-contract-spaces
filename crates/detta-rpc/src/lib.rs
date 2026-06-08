@@ -122,6 +122,7 @@ pub struct PersistentNodeSnapshotRoots {
     pub snapshot_import_audit_record_count: usize,
     pub snapshot_import_audit_max_records: usize,
     pub snapshot_import_audit_max_page_size: usize,
+    pub snapshot_import_audit_config_root: Option<String>,
     pub required_snapshot_metadata_roots: BTreeMap<String, String>,
     pub required_snapshot_metadata_roots_root: String,
     pub snapshot_sync_client_metrics: Option<SnapshotSyncClientMetricsReport>,

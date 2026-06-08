@@ -144,11 +144,13 @@ Completed production-plan slices:
   TCP JSON RPC path.
 - [x] Snapshot manifests bind snapshot import audit configuration roots and
   downstream imports can require them.
+- [x] Snapshot import audit configuration roots are included in persistent
+  snapshot root responses for consolidated discovery.
 
 Next implementation slices:
 
-- [ ] Add snapshot import audit configuration roots to persistent snapshot root
-  responses for consolidated discovery.
+- [ ] Expose snapshot import audit configuration roots through dedicated
+  node-aware RPC for lightweight clients.
 
 # 1. Production Objective
 
