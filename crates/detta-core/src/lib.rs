@@ -22,6 +22,8 @@ pub enum Method {
     RedeemBridgeMessage,
     PauseContract,
     UnpauseContract,
+    DepositCollateral,
+    Borrow,
     Other(String),
 }
 
@@ -68,6 +70,16 @@ pub enum StateKey {
         contract: ContractId,
         message_id: String,
     },
+    Collateral {
+        contract: ContractId,
+        borrower: Principal,
+        asset: AssetId,
+    },
+    Debt {
+        contract: ContractId,
+        borrower: Principal,
+        asset: AssetId,
+    },
 }
 
 impl StateKey {
@@ -81,6 +93,8 @@ impl StateKey {
             StateKey::OraclePrice { contract, .. } => contract,
             StateKey::OracleTimestamp { contract, .. } => contract,
             StateKey::BridgeMessageConsumed { contract, .. } => contract,
+            StateKey::Collateral { contract, .. } => contract,
+            StateKey::Debt { contract, .. } => contract,
         }
     }
 }
@@ -189,10 +203,27 @@ pub struct ContractRecord {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ContractKind {
     Token,
-    AmmPool { asset_a: AssetId, asset_b: AssetId },
-    Oracle { asset: AssetId, max_age: u64 },
-    Bridge { source_chain: ChainId },
-    Governance { governed_contract: ContractId },
+    AmmPool {
+        asset_a: AssetId,
+        asset_b: AssetId,
+    },
+    Oracle {
+        asset: AssetId,
+        max_age: u64,
+    },
+    Bridge {
+        source_chain: ChainId,
+    },
+    Governance {
+        governed_contract: ContractId,
+    },
+    LendingVault {
+        collateral_asset: AssetId,
+        debt_asset: AssetId,
+        oracle_contract: ContractId,
+        ltv_bps: u64,
+        max_oracle_age: u64,
+    },
 }
 
 impl ContractRecord {
@@ -252,6 +283,29 @@ impl ContractRecord {
             code_hash,
             kind: ContractKind::Governance { governed_contract },
             exported_methods: BTreeSet::from([Method::PauseContract, Method::UnpauseContract]),
+        }
+    }
+
+    fn lending_vault(
+        contract_id: ContractId,
+        code_hash: String,
+        collateral_asset: AssetId,
+        debt_asset: AssetId,
+        oracle_contract: ContractId,
+        ltv_bps: u64,
+        max_oracle_age: u64,
+    ) -> Self {
+        Self {
+            contract_id,
+            code_hash,
+            kind: ContractKind::LendingVault {
+                collateral_asset,
+                debt_asset,
+                oracle_contract,
+                ltv_bps,
+                max_oracle_age,
+            },
+            exported_methods: BTreeSet::from([Method::DepositCollateral, Method::Borrow]),
         }
     }
 }
@@ -318,6 +372,16 @@ pub enum EventPayload {
         contract: ContractId,
         admin: Principal,
     },
+    CollateralDeposited {
+        borrower: Principal,
+        asset: AssetId,
+        amount: Amount,
+    },
+    Borrowed {
+        borrower: Principal,
+        asset: AssetId,
+        amount: Amount,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -359,6 +423,7 @@ pub enum ExecutionError {
     BridgeMessageReplay,
     UnauthorizedGovernance,
     ContractPaused,
+    InsufficientCollateral,
     ArithmeticOverflow,
     WriteScopeViolation,
     ContractIsolationViolation,
@@ -1031,6 +1096,43 @@ impl DeTTaState {
         Ok(())
     }
 
+    pub fn deploy_lending_vault(
+        &mut self,
+        contract: impl Into<ContractId>,
+        collateral_asset: impl Into<AssetId>,
+        debt_asset: impl Into<AssetId>,
+        oracle_contract: impl Into<ContractId>,
+        ltv_bps: u64,
+        max_oracle_age: u64,
+    ) -> Result<(), ExecutionError> {
+        let contract = contract.into();
+        let collateral_asset = collateral_asset.into();
+        let debt_asset = debt_asset.into();
+        let oracle_contract = oracle_contract.into();
+        let code_hash = root_of(&(
+            "detta-lending-vault-v1",
+            &contract,
+            &collateral_asset,
+            &debt_asset,
+            &oracle_contract,
+            ltv_bps,
+            max_oracle_age,
+        ));
+        self.contracts.insert(
+            contract.clone(),
+            ContractRecord::lending_vault(
+                contract,
+                code_hash,
+                collateral_asset,
+                debt_asset,
+                oracle_contract,
+                ltv_bps,
+                max_oracle_age,
+            ),
+        );
+        Ok(())
+    }
+
     pub fn apply_transaction(&mut self, tx: Transaction) -> Receipt {
         if tx.chain_id != self.chain_id {
             return self.rejected_receipt(tx.tx_hash, ExecutionError::ChainMismatch);
@@ -1259,6 +1361,40 @@ impl DeTTaState {
         self.paused_contracts.contains(&contract.into())
     }
 
+    pub fn collateral(
+        &self,
+        contract: impl Into<ContractId>,
+        borrower: impl Into<Principal>,
+        asset: impl Into<AssetId>,
+    ) -> Amount {
+        let key = StateKey::Collateral {
+            contract: contract.into(),
+            borrower: borrower.into(),
+            asset: asset.into(),
+        };
+        self.storage
+            .get(&key)
+            .map(StateValue::as_uint)
+            .unwrap_or_default()
+    }
+
+    pub fn debt(
+        &self,
+        contract: impl Into<ContractId>,
+        borrower: impl Into<Principal>,
+        asset: impl Into<AssetId>,
+    ) -> Amount {
+        let key = StateKey::Debt {
+            contract: contract.into(),
+            borrower: borrower.into(),
+            asset: asset.into(),
+        };
+        self.storage
+            .get(&key)
+            .map(StateValue::as_uint)
+            .unwrap_or_default()
+    }
+
     pub fn allowance_remaining(
         &self,
         contract: impl Into<ContractId>,
@@ -1450,6 +1586,24 @@ impl DeTTaState {
             ContractKind::Governance { governed_contract } => match tx.method {
                 Method::PauseContract => self.pause_contract(tx, governed_contract),
                 Method::UnpauseContract => self.unpause_contract(tx, governed_contract),
+                _ => Err(ExecutionError::PolicyMissing),
+            },
+            ContractKind::LendingVault {
+                collateral_asset,
+                debt_asset,
+                oracle_contract,
+                ltv_bps,
+                max_oracle_age,
+            } => match tx.method {
+                Method::DepositCollateral => self.deposit_collateral(tx, collateral_asset),
+                Method::Borrow => self.borrow(
+                    tx,
+                    collateral_asset,
+                    debt_asset,
+                    oracle_contract,
+                    ltv_bps,
+                    max_oracle_age,
+                ),
                 _ => Err(ExecutionError::PolicyMissing),
             },
         }
@@ -1929,6 +2083,113 @@ impl DeTTaState {
         Ok(ReturnValue::Unit)
     }
 
+    fn deposit_collateral(
+        &mut self,
+        tx: &Transaction,
+        collateral_asset: AssetId,
+    ) -> Result<ReturnValue, ExecutionError> {
+        let [asset, amount] = expect_args(&tx.args)?;
+        let asset = expect_asset(asset)?;
+        let amount = expect_amount(amount)?;
+        if asset != collateral_asset {
+            return Err(ExecutionError::InvalidPoolAsset);
+        }
+
+        let borrower = tx.sender.clone();
+        let collateral_key = collateral_key(&tx.target, &borrower, &asset);
+        let frame = AuthorizedFrame {
+            contract: tx.target.clone(),
+            msg_sender: borrower.clone(),
+            write_scope: BTreeSet::from([collateral_key.clone()]),
+        };
+        let current = self.uint_at(&collateral_key);
+        self.state_set(
+            &frame,
+            collateral_key,
+            StateValue::UInt(
+                current
+                    .checked_add(amount)
+                    .ok_or(ExecutionError::ArithmeticOverflow)?,
+            ),
+        )?;
+
+        self.emit(
+            &tx.target,
+            &tx.tx_hash,
+            EventPayload::CollateralDeposited {
+                borrower,
+                asset,
+                amount,
+            },
+        );
+        Ok(ReturnValue::Unit)
+    }
+
+    fn borrow(
+        &mut self,
+        tx: &Transaction,
+        collateral_asset: AssetId,
+        debt_asset: AssetId,
+        oracle_contract: ContractId,
+        ltv_bps: u64,
+        max_oracle_age: u64,
+    ) -> Result<ReturnValue, ExecutionError> {
+        let [asset, amount] = expect_args(&tx.args)?;
+        let asset = expect_asset(asset)?;
+        let amount = expect_amount(amount)?;
+        if asset != debt_asset {
+            return Err(ExecutionError::InvalidPoolAsset);
+        }
+
+        let borrower = tx.sender.clone();
+        let oracle_timestamp = self.oracle_timestamp(&oracle_contract, &collateral_asset);
+        if oracle_timestamp.saturating_add(max_oracle_age) < self.height {
+            return Err(ExecutionError::StaleOraclePrice);
+        }
+
+        let price = self.oracle_price(&oracle_contract, &collateral_asset);
+        if price == 0 {
+            return Err(ExecutionError::StaleOraclePrice);
+        }
+
+        let collateral = self.collateral(&tx.target, &borrower, &collateral_asset);
+        let debt_key = debt_key(&tx.target, &borrower, &debt_asset);
+        let current_debt = self.uint_at(&debt_key);
+        let next_debt = current_debt
+            .checked_add(amount)
+            .ok_or(ExecutionError::ArithmeticOverflow)?;
+
+        let collateral_value = collateral
+            .checked_mul(price)
+            .ok_or(ExecutionError::ArithmeticOverflow)?;
+        let max_debt = collateral_value
+            .checked_mul(ltv_bps as Amount)
+            .ok_or(ExecutionError::ArithmeticOverflow)?
+            / 10_000;
+
+        if next_debt > max_debt {
+            return Err(ExecutionError::InsufficientCollateral);
+        }
+
+        let frame = AuthorizedFrame {
+            contract: tx.target.clone(),
+            msg_sender: borrower.clone(),
+            write_scope: BTreeSet::from([debt_key.clone()]),
+        };
+        self.state_set(&frame, debt_key, StateValue::UInt(next_debt))?;
+
+        self.emit(
+            &tx.target,
+            &tx.tx_hash,
+            EventPayload::Borrowed {
+                borrower,
+                asset,
+                amount,
+            },
+        );
+        Ok(ReturnValue::Unit)
+    }
+
     fn consume_allowance(
         &mut self,
         contract: &ContractId,
@@ -2208,6 +2469,22 @@ fn bridge_message_consumed_key(contract: &ContractId, message_id: &str) -> State
     StateKey::BridgeMessageConsumed {
         contract: contract.clone(),
         message_id: message_id.to_string(),
+    }
+}
+
+fn collateral_key(contract: &ContractId, borrower: &Principal, asset: &AssetId) -> StateKey {
+    StateKey::Collateral {
+        contract: contract.clone(),
+        borrower: borrower.clone(),
+        asset: asset.clone(),
+    }
+}
+
+fn debt_key(contract: &ContractId, borrower: &Principal, asset: &AssetId) -> StateKey {
+    StateKey::Debt {
+        contract: contract.clone(),
+        borrower: borrower.clone(),
+        asset: asset.clone(),
     }
 }
 
@@ -3405,5 +3682,130 @@ mod tests {
         assert_eq!(pause.status, TxStatus::Reverted);
         assert_eq!(pause.error, Some(ExecutionError::UnauthorizedGovernance));
         assert!(!state.is_paused("TokenA"));
+    }
+
+    #[test]
+    fn lending_vault_allows_borrow_with_sufficient_collateral() {
+        let mut state = DeTTaState::new("detta-local");
+        state
+            .deploy_oracle("OracleA", "ATOM", "Reporter", 10)
+            .unwrap();
+        state
+            .deploy_lending_vault("VaultA", "ATOM", "USDC", "OracleA", 5_000, 10)
+            .unwrap();
+        state.apply_transaction(tx_to(
+            "OracleA",
+            "tx1",
+            "Reporter",
+            1,
+            Method::SubmitPrice,
+            vec![asset("ATOM"), amount(2), amount(0)],
+        ));
+        state.apply_transaction(tx_to(
+            "VaultA",
+            "tx2",
+            "Alice",
+            1,
+            Method::DepositCollateral,
+            vec![asset("ATOM"), amount(100)],
+        ));
+
+        let borrow = state.apply_transaction(tx_to(
+            "VaultA",
+            "tx3",
+            "Alice",
+            2,
+            Method::Borrow,
+            vec![asset("USDC"), amount(100)],
+        ));
+
+        assert_eq!(borrow.status, TxStatus::Committed);
+        assert_eq!(state.collateral("VaultA", "Alice", "ATOM"), 100);
+        assert_eq!(state.debt("VaultA", "Alice", "USDC"), 100);
+    }
+
+    #[test]
+    fn lending_vault_rejects_undercollateralized_borrow() {
+        let mut state = DeTTaState::new("detta-local");
+        state
+            .deploy_oracle("OracleA", "ATOM", "Reporter", 10)
+            .unwrap();
+        state
+            .deploy_lending_vault("VaultA", "ATOM", "USDC", "OracleA", 5_000, 10)
+            .unwrap();
+        state.apply_transaction(tx_to(
+            "OracleA",
+            "tx1",
+            "Reporter",
+            1,
+            Method::SubmitPrice,
+            vec![asset("ATOM"), amount(2), amount(0)],
+        ));
+        state.apply_transaction(tx_to(
+            "VaultA",
+            "tx2",
+            "Alice",
+            1,
+            Method::DepositCollateral,
+            vec![asset("ATOM"), amount(100)],
+        ));
+        let debt_before = state.debt("VaultA", "Alice", "USDC");
+
+        let borrow = state.apply_transaction(tx_to(
+            "VaultA",
+            "tx3",
+            "Alice",
+            2,
+            Method::Borrow,
+            vec![asset("USDC"), amount(101)],
+        ));
+
+        assert_eq!(borrow.status, TxStatus::Reverted);
+        assert_eq!(borrow.error, Some(ExecutionError::InsufficientCollateral));
+        assert_eq!(state.debt("VaultA", "Alice", "USDC"), debt_before);
+    }
+
+    #[test]
+    fn lending_vault_rejects_stale_oracle_price() {
+        let mut state = DeTTaState::new("detta-local");
+        state
+            .deploy_oracle("OracleA", "ATOM", "Reporter", 10)
+            .unwrap();
+        state
+            .deploy_lending_vault("VaultA", "ATOM", "USDC", "OracleA", 5_000, 10)
+            .unwrap();
+        state.apply_transaction(tx_to(
+            "OracleA",
+            "tx1",
+            "Reporter",
+            1,
+            Method::SubmitPrice,
+            vec![asset("ATOM"), amount(2), amount(50)],
+        ));
+        state.apply_transaction(tx_to(
+            "VaultA",
+            "tx2",
+            "Alice",
+            1,
+            Method::DepositCollateral,
+            vec![asset("ATOM"), amount(100)],
+        ));
+
+        let txs = vec![tx_to(
+            "VaultA",
+            "tx3",
+            "Alice",
+            2,
+            Method::Borrow,
+            vec![asset("USDC"), amount(100)],
+        )];
+        let (block, next_state) = state.build_block(100, txs, 1_000, "validator-1", "cert-1");
+
+        assert_eq!(block.receipts[0].status, TxStatus::Reverted);
+        assert_eq!(
+            block.receipts[0].error,
+            Some(ExecutionError::StaleOraclePrice)
+        );
+        assert_eq!(next_state.debt("VaultA", "Alice", "USDC"), 0);
     }
 }
