@@ -266,8 +266,20 @@ impl FileStorage {
         &self,
         record: SnapshotImportAuditRecord,
     ) -> Result<(), StorageError> {
+        self.append_snapshot_import_audit_record_with_retention(record, usize::MAX)
+    }
+
+    pub fn append_snapshot_import_audit_record_with_retention(
+        &self,
+        record: SnapshotImportAuditRecord,
+        max_records: usize,
+    ) -> Result<(), StorageError> {
         let mut records = self.load_snapshot_import_audit_records()?;
         records.push(record);
+        if records.len() > max_records {
+            let remove_count = records.len() - max_records;
+            records.drain(0..remove_count);
+        }
         write_json_atomic(&self.snapshot_import_audit_path(), &records)
     }
 
@@ -871,6 +883,15 @@ mod tests {
             chunk_count: 3,
             metadata_roots_verified: true,
         };
+        let third = SnapshotImportAuditRecord {
+            snapshot_root: "snapshot-root-3".into(),
+            manifest_hash: "manifest-hash-3".into(),
+            required_metadata_roots_root: "required-roots-root-3".into(),
+            required_metadata_roots_count: 3,
+            manifest_metadata_roots_count: 4,
+            chunk_count: 5,
+            metadata_roots_verified: true,
+        };
 
         assert_eq!(
             storage.load_snapshot_import_audit_records().unwrap(),
@@ -900,12 +921,21 @@ mod tests {
             FileStorage::snapshot_import_audit_root_for(&[first.clone(), second.clone()]).unwrap(),
             populated_root
         );
+        storage
+            .append_snapshot_import_audit_record_with_retention(third.clone(), 2)
+            .unwrap();
+        assert_eq!(
+            storage.load_snapshot_import_audit_records().unwrap(),
+            vec![second.clone(), third.clone()]
+        );
+        let retained_root = FileStorage::snapshot_import_audit_root_for(&[second, third]).unwrap();
+        assert_eq!(storage.snapshot_import_audit_root().unwrap(), retained_root);
         assert_eq!(
             FileStorage::open(&dir)
                 .unwrap()
                 .snapshot_import_audit_root()
                 .unwrap(),
-            populated_root
+            retained_root
         );
         fs::remove_dir_all(dir).unwrap();
     }

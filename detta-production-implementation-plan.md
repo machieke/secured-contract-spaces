@@ -132,10 +132,12 @@ Completed production-plan slices:
   records exist.
 - [x] Downstream verified imports can require snapshot import audit roots and
   reject mismatched import-audit roots before commit.
+- [x] Snapshot import audit records support retention limits and bounded
+  pagination through storage, node loaders, and RPC-backed flows.
 
 Next implementation slices:
 
-- [ ] Add retention and pagination limits for snapshot import audit records.
+- [ ] Include snapshot import audit retention limits in diagnostics.
 
 # 1. Production Objective
 

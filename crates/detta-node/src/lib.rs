@@ -33,6 +33,8 @@ pub const DEFAULT_MAX_PENDING_VALIDATOR_SET_METADATA_UPDATES: usize = 128;
 pub const DEFAULT_MAX_PENDING_VALIDATOR_SET_METADATA_AUTHORIZATIONS_PER_VALIDATOR: usize = 32;
 pub const DEFAULT_MAX_VALIDATOR_SET_METADATA_AUDIT_RECORDS: usize = 4_096;
 pub const DEFAULT_MAX_VALIDATOR_SET_METADATA_AUDIT_PAGE_SIZE: usize = 100;
+pub const DEFAULT_MAX_SNAPSHOT_IMPORT_AUDIT_RECORDS: usize = 4_096;
+pub const DEFAULT_MAX_SNAPSHOT_IMPORT_AUDIT_PAGE_SIZE: usize = 100;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NodeError {
@@ -115,6 +117,8 @@ pub struct PersistentValidatorNode {
     max_pending_validator_set_metadata_authorizations_per_validator: usize,
     max_validator_set_metadata_audit_records: usize,
     max_validator_set_metadata_audit_page_size: usize,
+    max_snapshot_import_audit_records: usize,
+    max_snapshot_import_audit_page_size: usize,
     rpc: RpcService,
     storage: FileStorage,
 }
@@ -359,6 +363,8 @@ impl PersistentValidatorNode {
                 DEFAULT_MAX_VALIDATOR_SET_METADATA_AUDIT_RECORDS,
             max_validator_set_metadata_audit_page_size:
                 DEFAULT_MAX_VALIDATOR_SET_METADATA_AUDIT_PAGE_SIZE,
+            max_snapshot_import_audit_records: DEFAULT_MAX_SNAPSHOT_IMPORT_AUDIT_RECORDS,
+            max_snapshot_import_audit_page_size: DEFAULT_MAX_SNAPSHOT_IMPORT_AUDIT_PAGE_SIZE,
         })
     }
 
@@ -405,6 +411,8 @@ impl PersistentValidatorNode {
                 DEFAULT_MAX_VALIDATOR_SET_METADATA_AUDIT_RECORDS,
             max_validator_set_metadata_audit_page_size:
                 DEFAULT_MAX_VALIDATOR_SET_METADATA_AUDIT_PAGE_SIZE,
+            max_snapshot_import_audit_records: DEFAULT_MAX_SNAPSHOT_IMPORT_AUDIT_RECORDS,
+            max_snapshot_import_audit_page_size: DEFAULT_MAX_SNAPSHOT_IMPORT_AUDIT_PAGE_SIZE,
         };
         if let Some(metadata) = node
             .storage
@@ -714,6 +722,11 @@ impl PersistentValidatorNode {
     ) {
         self.max_validator_set_metadata_audit_records = max_records;
         self.max_validator_set_metadata_audit_page_size = max_page_size;
+    }
+
+    pub fn set_snapshot_import_audit_limits(&mut self, max_records: usize, max_page_size: usize) {
+        self.max_snapshot_import_audit_records = max_records;
+        self.max_snapshot_import_audit_page_size = max_page_size;
     }
 
     pub fn validator_set_metadata_quorum(&self) -> usize {
@@ -1201,7 +1214,10 @@ impl PersistentValidatorNode {
         limit: usize,
     ) -> Result<Vec<SnapshotImportAuditRecord>, NodeError> {
         self.storage
-            .load_snapshot_import_audit_records_page(offset, limit)
+            .load_snapshot_import_audit_records_page(
+                offset,
+                limit.min(self.max_snapshot_import_audit_page_size),
+            )
             .map_err(NodeError::Storage)
     }
 
@@ -1432,18 +1448,21 @@ impl PersistentValidatorNode {
             FileStorage::required_snapshot_metadata_roots_root_for(required_metadata_roots)
                 .map_err(NodeError::Storage)?;
         self.storage
-            .append_snapshot_import_audit_record(SnapshotImportAuditRecord {
-                snapshot_root: snapshot.global_state_root.clone(),
-                manifest_hash: chunk_set
-                    .manifest
-                    .manifest_hash()
-                    .map_err(NodeError::SnapshotSync)?,
-                required_metadata_roots_root,
-                required_metadata_roots_count: required_metadata_roots.len(),
-                manifest_metadata_roots_count: chunk_set.manifest.metadata_roots.len(),
-                chunk_count: chunk_set.manifest.chunk_count,
-                metadata_roots_verified: true,
-            })
+            .append_snapshot_import_audit_record_with_retention(
+                SnapshotImportAuditRecord {
+                    snapshot_root: snapshot.global_state_root.clone(),
+                    manifest_hash: chunk_set
+                        .manifest
+                        .manifest_hash()
+                        .map_err(NodeError::SnapshotSync)?,
+                    required_metadata_roots_root,
+                    required_metadata_roots_count: required_metadata_roots.len(),
+                    manifest_metadata_roots_count: chunk_set.manifest.metadata_roots.len(),
+                    chunk_count: chunk_set.manifest.chunk_count,
+                    metadata_roots_verified: true,
+                },
+                self.max_snapshot_import_audit_records,
+            )
             .map_err(NodeError::Storage)?;
         Ok(snapshot)
     }
@@ -3911,6 +3930,7 @@ mod tests {
             &sink_dir,
         )
         .unwrap();
+        sink.set_snapshot_import_audit_limits(1, 1);
         let imported = sink
             .import_snapshot_chunk_set(&chunk_set, &required_metadata_roots)
             .unwrap();
@@ -3935,6 +3955,18 @@ mod tests {
         };
         assert_eq!(
             sink.load_snapshot_import_audit_records().unwrap(),
+            vec![expected_import_audit_record.clone()]
+        );
+        let retained_import = sink
+            .import_snapshot_chunk_set(&chunk_set, &required_metadata_roots)
+            .unwrap();
+        assert_eq!(retained_import.global_state_root, snapshot_root);
+        assert_eq!(
+            sink.load_snapshot_import_audit_records().unwrap(),
+            vec![expected_import_audit_record.clone()]
+        );
+        assert_eq!(
+            sink.load_snapshot_import_audit_records_page(0, 10).unwrap(),
             vec![expected_import_audit_record.clone()]
         );
         let snapshot_import_audit_root = sink.snapshot_import_audit_root().unwrap();
