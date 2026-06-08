@@ -40,11 +40,13 @@ Completed production-plan slices:
   from durable storage for state sync.
 - [x] Signed block proposals propagate as verified validator envelopes, with a
   real TCP signed proposal/signed vote round trip covered by tests.
+- [x] Persistent nodes collect verified signed votes from TCP validator peers
+  and assemble a finality certificate at quorum.
 
 Next implementation slices:
 
-- [ ] Add quorum vote collection and finality-certificate assembly across TCP
-  validator peers.
+- [ ] Persist and gossip assembled finality certificates from the proposer node.
+- [ ] Add reconnect/retry handling for disconnected TCP validator peers.
 
 # 1. Production Objective
 

@@ -1,11 +1,11 @@
-use detta_consensus::{FinalityCertificate, Vote};
+use detta_consensus::{ConsensusCluster, ConsensusError, FinalityCertificate, Vote};
 use detta_core::{
     Block, BlockError, ChainId, DeTTaState, MempoolError, Transaction, ValidatorNode,
 };
 use detta_network::{Envelope, InMemoryTransport, NetworkError, NetworkMessage};
 use detta_protocol::{
-    build_snapshot_chunks, SignatureError, SignedValidatorMessage, SnapshotChunkRequest,
-    SnapshotSyncError, ValidatorPublicKey, ValidatorSigningKey,
+    build_snapshot_chunks, ProtocolMessageKind, SignatureError, SignedValidatorMessage,
+    SnapshotChunkRequest, SnapshotSyncError, ValidatorPublicKey, ValidatorSigningKey,
 };
 use detta_rpc::{RpcError, RpcService};
 use detta_storage::{FileStorage, StorageError};
@@ -21,6 +21,7 @@ pub enum NodeError {
     Block(BlockError),
     Mempool(MempoolError),
     Network(NetworkError),
+    Consensus(ConsensusError),
     ValidatorKeyNotFound(String),
     Signature(SignatureError),
     SnapshotSync(SnapshotSyncError),
@@ -35,6 +36,10 @@ pub enum NodeError {
     BlockProposerMismatch {
         expected: String,
         actual: String,
+    },
+    UnexpectedSignedMessage {
+        expected: ProtocolMessageKind,
+        actual: ProtocolMessageKind,
     },
 }
 
@@ -240,11 +245,11 @@ impl PersistentValidatorNode {
                 Ok(NetworkIngestOutcome::FinalityCertificateReceived)
             }
             NetworkMessage::SignedValidator(signed) => {
-                self.verify_signed_validator_message(signed)?;
+                let message = self.verified_signed_validator_message(signed)?;
                 let signed_envelope = Envelope {
                     from: envelope.from.clone(),
                     to: envelope.to.clone(),
-                    message: signed.message.as_ref().clone(),
+                    message,
                 };
                 self.ingest_network_envelope(&signed_envelope)
             }
@@ -293,6 +298,37 @@ impl PersistentValidatorNode {
         Ok(messages)
     }
 
+    pub fn verified_consensus_vote(&self, message: &NetworkMessage) -> Result<Vote, NodeError> {
+        let NetworkMessage::SignedValidator(signed) = message else {
+            return Err(NodeError::UnexpectedSignedMessage {
+                expected: ProtocolMessageKind::Vote,
+                actual: message.kind(),
+            });
+        };
+        match self.verified_signed_validator_message(signed)? {
+            NetworkMessage::Vote(vote) => Ok(vote),
+            other => Err(NodeError::UnexpectedSignedMessage {
+                expected: ProtocolMessageKind::Vote,
+                actual: other.kind(),
+            }),
+        }
+    }
+
+    pub fn collect_finality_certificate(
+        &self,
+        height: u64,
+        block_hash: &str,
+        messages: &[NetworkMessage],
+        quorum: usize,
+    ) -> Result<FinalityCertificate, NodeError> {
+        let votes = messages
+            .iter()
+            .map(|message| self.verified_consensus_vote(message))
+            .collect::<Result<Vec<_>, _>>()?;
+        ConsensusCluster::certificate_from_votes(height, block_hash, votes, quorum)
+            .map_err(NodeError::Consensus)
+    }
+
     fn persist_committed_block(&self, block: &Block) -> Result<(), NodeError> {
         self.storage
             .commit_block(block)
@@ -322,6 +358,14 @@ impl PersistentValidatorNode {
         signed
             .verify(&self.network_id, &self.chain_id, public_key)
             .map_err(NodeError::Signature)
+    }
+
+    fn verified_signed_validator_message(
+        &self,
+        signed: &SignedValidatorMessage,
+    ) -> Result<NetworkMessage, NodeError> {
+        self.verify_signed_validator_message(signed)?;
+        Ok(signed.message.as_ref().clone())
     }
 }
 
@@ -677,6 +721,104 @@ mod tests {
         );
         server.join().unwrap();
         assert_eq!(proposer.load_block(1).unwrap().block_hash(), block_hash);
+
+        fs::remove_dir_all(proposer_dir).unwrap();
+    }
+
+    #[test]
+    fn tcp_signed_votes_assemble_finality_certificate_at_quorum() {
+        let proposer_dir = temp_dir("tcp-finality-proposer");
+        let proposer_key = validator_key("validator-1", 7);
+        let peer2_key = validator_key("validator-2", 8);
+        let peer3_key = validator_key("validator-3", 9);
+        let mut proposer =
+            PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &proposer_dir)
+                .unwrap();
+        proposer.set_network_id("detta-testnet");
+        proposer.trust_validator_key(proposer_key.public_key());
+        proposer.trust_validator_key(peer2_key.public_key());
+        proposer.trust_validator_key(peer3_key.public_key());
+        proposer.submit_transaction(transfer_tx()).unwrap();
+        let block = proposer.produce_block(1, 1_000).unwrap();
+        let block_hash = block.block_hash();
+        let signed_block = proposer
+            .sign_validator_message(
+                &proposer_key,
+                NetworkMessage::Block(Box::new(block.clone())),
+            )
+            .unwrap();
+
+        let mut peers = Vec::new();
+        for (peer_id, peer_key) in [
+            ("validator-2".to_string(), peer2_key),
+            ("validator-3".to_string(), peer3_key),
+        ] {
+            let peer_dir = temp_dir(&format!("tcp-finality-{peer_id}"));
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let proposer_public_key = proposer_key.public_key();
+            let peer_block = block.clone();
+            let handle = thread::spawn(move || {
+                let mut peer =
+                    PersistentValidatorNode::bootstrap(&peer_id, seeded_state(), &peer_dir)
+                        .unwrap();
+                peer.set_network_id("detta-testnet");
+                peer.trust_validator_key(proposer_public_key);
+
+                let (stream, _) = listener.accept().unwrap();
+                let mut tcp = TcpProtocolStream::from_stream(stream);
+                let envelope = Envelope {
+                    from: "validator-1".into(),
+                    to: peer_id.clone(),
+                    message: tcp.receive().unwrap(),
+                };
+                assert_eq!(
+                    peer.ingest_network_envelope(&envelope).unwrap(),
+                    NetworkIngestOutcome::BlockImported
+                );
+
+                let vote = Vote {
+                    validator_id: peer_id.clone(),
+                    height: peer_block.header.height,
+                    block_hash: peer_block.block_hash(),
+                };
+                let signed_vote = peer
+                    .sign_validator_message(&peer_key, NetworkMessage::Vote(vote))
+                    .unwrap();
+                tcp.send(&signed_vote).unwrap();
+                fs::remove_dir_all(peer_dir).unwrap();
+            });
+            peers.push((addr, handle));
+        }
+
+        let mut signed_votes = vec![proposer
+            .sign_validator_message(
+                &proposer_key,
+                NetworkMessage::Vote(Vote {
+                    validator_id: "validator-1".into(),
+                    height: block.header.height,
+                    block_hash: block_hash.clone(),
+                }),
+            )
+            .unwrap()];
+
+        for (addr, handle) in peers {
+            let mut tcp = TcpProtocolStream::connect(addr).unwrap();
+            tcp.send(&signed_block).unwrap();
+            signed_votes.push(tcp.receive().unwrap());
+            handle.join().unwrap();
+        }
+
+        let certificate = proposer
+            .collect_finality_certificate(block.header.height, &block_hash, &signed_votes, 3)
+            .unwrap();
+
+        assert_eq!(certificate.height, block.header.height);
+        assert_eq!(certificate.block_hash, block_hash);
+        assert_eq!(
+            certificate.signers,
+            vec!["validator-1", "validator-2", "validator-3"]
+        );
 
         fs::remove_dir_all(proposer_dir).unwrap();
     }
