@@ -12,6 +12,8 @@ This directory contains formal-model artifacts for the DeTTa runtime.
   checked-in JSON stays synchronized with theorem coverage and model files.
 - `detta-proof-artifact-manifest.sha256` records the release-attestation root
   for the checked-in proof-artifact manifest.
+- `formal-model-checking-runbook.md` describes the repository checks, external
+  model-checker preparation, and manifest refresh procedure.
 
 The model is intentionally abstract over hashing, signatures, concrete storage
 encoding, and networking. Those are checked by the Rust implementation tests and

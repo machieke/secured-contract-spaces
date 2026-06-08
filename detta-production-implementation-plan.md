@@ -170,10 +170,12 @@ Completed production-plan slices:
   attestations.
 - [x] TLA formal model artifact roots are included in the proof-artifact
   manifest.
+- [x] Formal model checking runbook documents proof-artifact checks and refresh
+  workflow.
 
 Next implementation slices:
 
-- [ ] Add a formal model checking runbook for proof artifacts.
+- [ ] Align theorem evidence references with concrete TLA model operators.
 
 # 1. Production Objective
 
