@@ -330,10 +330,12 @@ Completed production-plan slices:
 - [x] Proof release attestation roots are checked for lowercase hex in verify.
 - [x] Proof release attestation filenames are checked to reject path
   separators in verify.
+- [x] Proof release attestation files are checked for a single trailing newline
+  in verify.
 
 Next implementation slices:
 
-- [ ] Add proof release attestation newline count checks in verify.
+- [ ] Add proof release attestation separator token checks in verify.
 
 # 1. Production Objective
 

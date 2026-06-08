@@ -1566,6 +1566,14 @@ mod tests {
     }
 
     #[test]
+    fn proof_release_attestations_have_single_trailing_newline() {
+        for fixture in proof_release_attestations_for_test() {
+            assert!(fixture.attestation.ends_with('\n'));
+            assert_eq!(fixture.attestation.matches('\n').count(), 1);
+        }
+    }
+
+    #[test]
     fn proof_release_attestation_target_extensions_are_consistent() {
         for fixture in proof_release_attestations_for_test() {
             let target_extension = fixture.target_path.rsplit('.').next().unwrap();
