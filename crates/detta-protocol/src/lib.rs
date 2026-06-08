@@ -2,6 +2,7 @@ use detta_consensus::{EquivocationEvidence, FinalityCertificate, ValidatorSetUpd
 use detta_core::{Block, StateSnapshot, Transaction};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 
 pub const PROTOCOL_MAGIC: [u8; 4] = *b"DTTA";
 pub const CURRENT_PROTOCOL_VERSION: u16 = 1;
@@ -17,6 +18,7 @@ pub enum ProtocolMessage {
     ValidatorSetUpdate(ValidatorSetUpdate),
     EquivocationEvidence(EquivocationEvidence),
     StateSnapshot(Box<StateSnapshot>),
+    PeerHello(PeerHello),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -28,6 +30,39 @@ pub enum ProtocolMessageKind {
     ValidatorSetUpdate,
     EquivocationEvidence,
     StateSnapshot,
+    PeerHello,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+pub enum PeerRole {
+    Validator,
+    FullNode,
+    ArchiveNode,
+    LightClient,
+    Relayer,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PeerHello {
+    pub peer_id: String,
+    pub network_id: String,
+    pub protocol_version: u16,
+    pub roles: BTreeSet<PeerRole>,
+}
+
+impl PeerHello {
+    pub fn new(
+        peer_id: impl Into<String>,
+        network_id: impl Into<String>,
+        roles: impl IntoIterator<Item = PeerRole>,
+    ) -> Self {
+        Self {
+            peer_id: peer_id.into(),
+            network_id: network_id.into(),
+            protocol_version: CURRENT_PROTOCOL_VERSION,
+            roles: roles.into_iter().collect(),
+        }
+    }
 }
 
 impl ProtocolMessage {
@@ -40,6 +75,7 @@ impl ProtocolMessage {
             ProtocolMessage::ValidatorSetUpdate(_) => ProtocolMessageKind::ValidatorSetUpdate,
             ProtocolMessage::EquivocationEvidence(_) => ProtocolMessageKind::EquivocationEvidence,
             ProtocolMessage::StateSnapshot(_) => ProtocolMessageKind::StateSnapshot,
+            ProtocolMessage::PeerHello(_) => ProtocolMessageKind::PeerHello,
         }
     }
 }
@@ -215,6 +251,21 @@ mod tests {
             let encoded = encode_message(&message).unwrap();
             assert_eq!(decode_message(&encoded), Ok(message));
         }
+    }
+
+    #[test]
+    fn peer_hello_message_round_trips() {
+        let hello = PeerHello::new(
+            "validator-1",
+            "detta-testnet",
+            [PeerRole::Validator, PeerRole::ArchiveNode],
+        );
+        let message = ProtocolMessage::PeerHello(hello.clone());
+        let encoded = encode_message(&message).unwrap();
+
+        assert_eq!(decode_message(&encoded), Ok(message));
+        assert_eq!(hello.protocol_version, CURRENT_PROTOCOL_VERSION);
+        assert!(hello.roles.contains(&PeerRole::Validator));
     }
 
     #[test]

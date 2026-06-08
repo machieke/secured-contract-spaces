@@ -22,10 +22,10 @@ Completed production-plan slices:
 - [x] Persistent nodes ingest decoded transaction and block network envelopes.
 - [x] Blocking TCP protocol stream can round-trip DeTTa protocol messages over
   local sockets.
+- [x] TCP peers exchange and validate `PeerHello` identity metadata.
 
 Next implementation slices:
 
-- [ ] Add peer identity handshake and network peer metadata.
 - [ ] Add durable peer connection manager and bounded receive loops.
 - [ ] Add transaction gossip from RPC admission through validator peers.
 - [ ] Add consensus vote/certificate propagation over the network transport.

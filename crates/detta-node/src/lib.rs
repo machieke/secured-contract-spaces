@@ -16,7 +16,7 @@ pub enum NodeError {
 pub enum NetworkIngestOutcome {
     TransactionAccepted,
     BlockImported,
-    IgnoredConsensusControl,
+    IgnoredControlMessage,
 }
 
 pub struct PersistentValidatorNode {
@@ -113,7 +113,8 @@ impl PersistentValidatorNode {
             | NetworkMessage::FinalityCertificate(_)
             | NetworkMessage::ValidatorSetUpdate(_)
             | NetworkMessage::EquivocationEvidence(_)
-            | NetworkMessage::StateSnapshot(_) => Ok(NetworkIngestOutcome::IgnoredConsensusControl),
+            | NetworkMessage::StateSnapshot(_)
+            | NetworkMessage::PeerHello(_) => Ok(NetworkIngestOutcome::IgnoredControlMessage),
         }
     }
 

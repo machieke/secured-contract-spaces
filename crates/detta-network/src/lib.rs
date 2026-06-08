@@ -1,5 +1,6 @@
 use detta_protocol::{
-    decode_message, encode_message, ProtocolError, ProtocolMessage, HEADER_LEN, MAX_PAYLOAD_LEN,
+    decode_message, encode_message, PeerHello, ProtocolError, ProtocolMessage, HEADER_LEN,
+    MAX_PAYLOAD_LEN,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -29,6 +30,7 @@ pub enum NetworkError {
     UnknownPeer(PeerId),
     Protocol(ProtocolError),
     Io(String),
+    PeerRejected(String),
 }
 
 #[derive(Debug)]
@@ -52,6 +54,34 @@ impl TcpProtocolStream {
 
     pub fn receive(&mut self) -> Result<NetworkMessage, NetworkError> {
         read_wire_message(&mut self.stream)
+    }
+
+    pub fn handshake(&mut self, local: PeerHello) -> Result<PeerHello, NetworkError> {
+        let expected_network = local.network_id.clone();
+        let expected_version = local.protocol_version;
+        self.send(&NetworkMessage::PeerHello(local))?;
+
+        match self.receive()? {
+            NetworkMessage::PeerHello(remote) => {
+                if remote.network_id != expected_network {
+                    return Err(NetworkError::PeerRejected(format!(
+                        "network mismatch: {}",
+                        remote.network_id
+                    )));
+                }
+                if remote.protocol_version != expected_version {
+                    return Err(NetworkError::PeerRejected(format!(
+                        "protocol version mismatch: {}",
+                        remote.protocol_version
+                    )));
+                }
+                Ok(remote)
+            }
+            other => Err(NetworkError::PeerRejected(format!(
+                "expected peer hello, got {:?}",
+                other.kind()
+            ))),
+        }
     }
 }
 
@@ -209,7 +239,7 @@ mod tests {
     use super::*;
     use detta_consensus::{EquivocationEvidence, Vote};
     use detta_core::{Argument, DeTTaState, Method, Transaction, ValidatorNode};
-    use detta_protocol::{encode_message, ProtocolError, PROTOCOL_MAGIC};
+    use detta_protocol::{encode_message, PeerRole, ProtocolError, PROTOCOL_MAGIC};
     use std::net::TcpListener;
     use std::thread;
 
@@ -392,6 +422,39 @@ mod tests {
                 block_hash: "block-a".into(),
             })
         );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn tcp_protocol_stream_exchanges_peer_hello() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut server = TcpProtocolStream::from_stream(stream);
+            let remote = server
+                .handshake(PeerHello::new(
+                    "validator-1",
+                    "detta-testnet",
+                    [PeerRole::Validator],
+                ))
+                .unwrap();
+
+            assert_eq!(remote.peer_id, "full-node-1");
+            assert!(remote.roles.contains(&PeerRole::FullNode));
+        });
+
+        let mut client = TcpProtocolStream::connect(addr).unwrap();
+        let remote = client
+            .handshake(PeerHello::new(
+                "full-node-1",
+                "detta-testnet",
+                [PeerRole::FullNode],
+            ))
+            .unwrap();
+
+        assert_eq!(remote.peer_id, "validator-1");
+        assert!(remote.roles.contains(&PeerRole::Validator));
         server.join().unwrap();
     }
 }
