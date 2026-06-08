@@ -36,11 +36,11 @@ Completed production-plan slices:
   snapshots and reject missing, duplicate, and tampered chunks.
 - [x] Persistent nodes verify signed validator envelopes against a trusted
   validator keyring before ingesting the inner protocol message.
+- [x] Persistent nodes serve authenticated snapshot manifests and chunk ranges
+  from durable storage for state sync.
 
 Next implementation slices:
 
-- [ ] Add a state-sync peer service that serves chunk requests from persistent
-  storage.
 - [ ] Add signed block proposal propagation and a multi-process finality loop.
 
 # 1. Production Objective

@@ -3,7 +3,10 @@ use detta_core::{
     Block, BlockError, ChainId, DeTTaState, MempoolError, Transaction, ValidatorNode,
 };
 use detta_network::{Envelope, InMemoryTransport, NetworkError, NetworkMessage};
-use detta_protocol::{SignatureError, SignedValidatorMessage, ValidatorPublicKey};
+use detta_protocol::{
+    build_snapshot_chunks, SignatureError, SignedValidatorMessage, SnapshotChunkRequest,
+    SnapshotSyncError, ValidatorPublicKey,
+};
 use detta_rpc::{RpcError, RpcService};
 use detta_storage::{FileStorage, StorageError};
 use std::collections::BTreeMap;
@@ -20,6 +23,11 @@ pub enum NodeError {
     Network(NetworkError),
     ValidatorKeyNotFound(String),
     Signature(SignatureError),
+    SnapshotSync(SnapshotSyncError),
+    SnapshotRootNotFound {
+        requested: String,
+        available: String,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -210,6 +218,37 @@ impl PersistentValidatorNode {
         self.storage.load_block(height).map_err(NodeError::Storage)
     }
 
+    pub fn serve_snapshot_chunk_request(
+        &self,
+        request: &SnapshotChunkRequest,
+        max_chunk_bytes: usize,
+    ) -> Result<Vec<NetworkMessage>, NodeError> {
+        let snapshot = self.storage.load_snapshot().map_err(NodeError::Storage)?;
+        if request.snapshot_root != snapshot.global_state_root {
+            return Err(NodeError::SnapshotRootNotFound {
+                requested: request.snapshot_root.clone(),
+                available: snapshot.global_state_root,
+            });
+        }
+
+        let chunk_set =
+            build_snapshot_chunks(&snapshot, max_chunk_bytes).map_err(NodeError::SnapshotSync)?;
+        let start = request.start_index as usize;
+        let limit = request.max_chunks as usize;
+        let mut messages = vec![NetworkMessage::SnapshotChunkManifest(
+            chunk_set.manifest.clone(),
+        )];
+        messages.extend(
+            chunk_set
+                .chunks
+                .into_iter()
+                .skip(start)
+                .take(limit)
+                .map(NetworkMessage::SnapshotChunk),
+        );
+        Ok(messages)
+    }
+
     fn persist_committed_block(&self, block: &Block) -> Result<(), NodeError> {
         self.storage
             .commit_block(block)
@@ -247,7 +286,10 @@ mod tests {
     use super::*;
     use detta_core::{Argument, Method};
     use detta_network::InMemoryTransport;
-    use detta_protocol::{ProtocolMessage, SignatureError, ValidatorSigningKey};
+    use detta_protocol::{
+        ProtocolMessage, SignatureError, SnapshotChunkRequest, SnapshotChunkSet,
+        ValidatorSigningKey,
+    };
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -563,6 +605,91 @@ mod tests {
         );
 
         fs::remove_dir_all(peer_dir).unwrap();
+    }
+
+    #[test]
+    fn persistent_node_serves_snapshot_chunks_from_storage() {
+        let node_dir = temp_dir("state-sync-source");
+        let node =
+            PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &node_dir).unwrap();
+        let snapshot_root = node.rpc().get_state_root();
+        let mut all_chunks = Vec::new();
+        let mut manifest = None;
+        let mut start_index = 0;
+
+        loop {
+            let response = node
+                .serve_snapshot_chunk_request(
+                    &SnapshotChunkRequest {
+                        snapshot_root: snapshot_root.clone(),
+                        start_index,
+                        max_chunks: 2,
+                    },
+                    64,
+                )
+                .unwrap();
+
+            match &response[0] {
+                NetworkMessage::SnapshotChunkManifest(next_manifest) => {
+                    if let Some(manifest) = &manifest {
+                        assert_eq!(manifest, next_manifest);
+                    } else {
+                        manifest = Some(next_manifest.clone());
+                    }
+                }
+                message => panic!("expected snapshot manifest, got {message:?}"),
+            }
+
+            for message in response.into_iter().skip(1) {
+                match message {
+                    NetworkMessage::SnapshotChunk(chunk) => all_chunks.push(chunk),
+                    message => panic!("expected snapshot chunk, got {message:?}"),
+                }
+            }
+
+            let manifest_ref = manifest.as_ref().unwrap();
+            if all_chunks.len() >= manifest_ref.chunk_count as usize {
+                break;
+            }
+            start_index += 2;
+        }
+
+        let chunk_set = SnapshotChunkSet {
+            manifest: manifest.unwrap(),
+            chunks: all_chunks,
+        };
+        let reconstructed = chunk_set.reconstruct_snapshot().unwrap();
+        assert_eq!(reconstructed.global_state_root, snapshot_root);
+
+        fs::remove_dir_all(node_dir).unwrap();
+    }
+
+    #[test]
+    fn persistent_node_rejects_unknown_snapshot_root_request() {
+        let node_dir = temp_dir("state-sync-missing-root");
+        let node =
+            PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &node_dir).unwrap();
+
+        let error = node
+            .serve_snapshot_chunk_request(
+                &SnapshotChunkRequest {
+                    snapshot_root: "missing-root".into(),
+                    start_index: 0,
+                    max_chunks: 1,
+                },
+                64,
+            )
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            NodeError::SnapshotRootNotFound {
+                requested: "missing-root".into(),
+                available: node.rpc().get_state_root(),
+            }
+        );
+
+        fs::remove_dir_all(node_dir).unwrap();
     }
 
     #[test]
