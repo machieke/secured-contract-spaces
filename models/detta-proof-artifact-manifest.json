@@ -21,6 +21,10 @@
     {
       "path": "models/detta-restricted-evaluator-forbidden-primitives.json",
       "sha256": "8da9bb850bf189c0ce69753717a47c40173636f564710dcab288d8ee1ac2622c"
+    },
+    {
+      "path": "models/detta-restricted-evaluator-resource-exhaustion.json",
+      "sha256": "ba6a1a61581be50de96532e86e3f3e2c9c8792a9506c4149a58fe2a7be9e1806"
     }
   ],
   "theorem_count": 15,

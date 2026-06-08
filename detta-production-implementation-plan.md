@@ -187,11 +187,12 @@ Completed production-plan slices:
 - [x] Restricted evaluator resource exhaustion has a stable golden fixture.
 - [x] Restricted evaluator resource exhaustion fixture has a SHA-256
   attestation.
+- [x] Restricted evaluator resource exhaustion fixture root is bound into the
+  proof-artifact manifest.
 
 Next implementation slices:
 
-- [ ] Bind restricted evaluator resource fixture root into the proof-artifact
-  manifest.
+- [ ] Reference the restricted evaluator resource fixture in theorem evidence.
 
 # 1. Production Objective
 
