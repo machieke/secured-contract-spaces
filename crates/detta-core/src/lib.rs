@@ -24,6 +24,8 @@ pub enum Method {
     UnpauseContract,
     DepositCollateral,
     Borrow,
+    Stake,
+    Unstake,
     Other(String),
 }
 
@@ -80,6 +82,15 @@ pub enum StateKey {
         borrower: Principal,
         asset: AssetId,
     },
+    StakeBalance {
+        contract: ContractId,
+        staker: Principal,
+        asset: AssetId,
+    },
+    TotalStaked {
+        contract: ContractId,
+        asset: AssetId,
+    },
 }
 
 impl StateKey {
@@ -95,6 +106,8 @@ impl StateKey {
             StateKey::BridgeMessageConsumed { contract, .. } => contract,
             StateKey::Collateral { contract, .. } => contract,
             StateKey::Debt { contract, .. } => contract,
+            StateKey::StakeBalance { contract, .. } => contract,
+            StateKey::TotalStaked { contract, .. } => contract,
         }
     }
 }
@@ -224,6 +237,9 @@ pub enum ContractKind {
         ltv_bps: u64,
         max_oracle_age: u64,
     },
+    Staking {
+        asset: AssetId,
+    },
 }
 
 impl ContractRecord {
@@ -308,6 +324,15 @@ impl ContractRecord {
             exported_methods: BTreeSet::from([Method::DepositCollateral, Method::Borrow]),
         }
     }
+
+    fn staking(contract_id: ContractId, code_hash: String, asset: AssetId) -> Self {
+        Self {
+            contract_id,
+            code_hash,
+            kind: ContractKind::Staking { asset },
+            exported_methods: BTreeSet::from([Method::Stake, Method::Unstake]),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -382,6 +407,16 @@ pub enum EventPayload {
         asset: AssetId,
         amount: Amount,
     },
+    Staked {
+        staker: Principal,
+        asset: AssetId,
+        amount: Amount,
+    },
+    Unstaked {
+        staker: Principal,
+        asset: AssetId,
+        amount: Amount,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -424,6 +459,7 @@ pub enum ExecutionError {
     UnauthorizedGovernance,
     ContractPaused,
     InsufficientCollateral,
+    InsufficientStake,
     ArithmeticOverflow,
     WriteScopeViolation,
     ContractIsolationViolation,
@@ -1133,6 +1169,25 @@ impl DeTTaState {
         Ok(())
     }
 
+    pub fn deploy_staking(
+        &mut self,
+        contract: impl Into<ContractId>,
+        asset: impl Into<AssetId>,
+    ) -> Result<(), ExecutionError> {
+        let contract = contract.into();
+        let asset = asset.into();
+        let code_hash = root_of(&("detta-staking-v1", &contract, &asset));
+        self.contracts.insert(
+            contract.clone(),
+            ContractRecord::staking(contract.clone(), code_hash, asset.clone()),
+        );
+        self.storage.insert(
+            StateKey::TotalStaked { contract, asset },
+            StateValue::UInt(0),
+        );
+        Ok(())
+    }
+
     pub fn apply_transaction(&mut self, tx: Transaction) -> Receipt {
         if tx.chain_id != self.chain_id {
             return self.rejected_receipt(tx.tx_hash, ExecutionError::ChainMismatch);
@@ -1395,6 +1450,38 @@ impl DeTTaState {
             .unwrap_or_default()
     }
 
+    pub fn stake_balance(
+        &self,
+        contract: impl Into<ContractId>,
+        staker: impl Into<Principal>,
+        asset: impl Into<AssetId>,
+    ) -> Amount {
+        let key = StateKey::StakeBalance {
+            contract: contract.into(),
+            staker: staker.into(),
+            asset: asset.into(),
+        };
+        self.storage
+            .get(&key)
+            .map(StateValue::as_uint)
+            .unwrap_or_default()
+    }
+
+    pub fn total_staked(
+        &self,
+        contract: impl Into<ContractId>,
+        asset: impl Into<AssetId>,
+    ) -> Amount {
+        let key = StateKey::TotalStaked {
+            contract: contract.into(),
+            asset: asset.into(),
+        };
+        self.storage
+            .get(&key)
+            .map(StateValue::as_uint)
+            .unwrap_or_default()
+    }
+
     pub fn allowance_remaining(
         &self,
         contract: impl Into<ContractId>,
@@ -1604,6 +1691,11 @@ impl DeTTaState {
                     ltv_bps,
                     max_oracle_age,
                 ),
+                _ => Err(ExecutionError::PolicyMissing),
+            },
+            ContractKind::Staking { asset } => match tx.method {
+                Method::Stake => self.stake(tx, asset),
+                Method::Unstake => self.unstake(tx, asset),
                 _ => Err(ExecutionError::PolicyMissing),
             },
         }
@@ -2190,6 +2282,112 @@ impl DeTTaState {
         Ok(ReturnValue::Unit)
     }
 
+    fn stake(
+        &mut self,
+        tx: &Transaction,
+        staking_asset: AssetId,
+    ) -> Result<ReturnValue, ExecutionError> {
+        let [asset, amount] = expect_args(&tx.args)?;
+        let asset = expect_asset(asset)?;
+        let amount = expect_amount(amount)?;
+        if asset != staking_asset {
+            return Err(ExecutionError::InvalidPoolAsset);
+        }
+
+        let staker = tx.sender.clone();
+        let stake_key = stake_balance_key(&tx.target, &staker, &asset);
+        let total_key = total_staked_key(&tx.target, &asset);
+        let frame = AuthorizedFrame {
+            contract: tx.target.clone(),
+            msg_sender: staker.clone(),
+            write_scope: BTreeSet::from([stake_key.clone(), total_key.clone()]),
+        };
+
+        let current_stake = self.uint_at(&stake_key);
+        let total_staked = self.uint_at(&total_key);
+        self.state_set(
+            &frame,
+            stake_key,
+            StateValue::UInt(
+                current_stake
+                    .checked_add(amount)
+                    .ok_or(ExecutionError::ArithmeticOverflow)?,
+            ),
+        )?;
+        self.state_set(
+            &frame,
+            total_key,
+            StateValue::UInt(
+                total_staked
+                    .checked_add(amount)
+                    .ok_or(ExecutionError::ArithmeticOverflow)?,
+            ),
+        )?;
+
+        if !self.staking_invariants_hold(&tx.target, &asset) {
+            return Err(ExecutionError::InvariantViolation);
+        }
+
+        self.emit(
+            &tx.target,
+            &tx.tx_hash,
+            EventPayload::Staked {
+                staker,
+                asset,
+                amount,
+            },
+        );
+        Ok(ReturnValue::Unit)
+    }
+
+    fn unstake(
+        &mut self,
+        tx: &Transaction,
+        staking_asset: AssetId,
+    ) -> Result<ReturnValue, ExecutionError> {
+        let [asset, amount] = expect_args(&tx.args)?;
+        let asset = expect_asset(asset)?;
+        let amount = expect_amount(amount)?;
+        if asset != staking_asset {
+            return Err(ExecutionError::InvalidPoolAsset);
+        }
+
+        let staker = tx.sender.clone();
+        let stake_key = stake_balance_key(&tx.target, &staker, &asset);
+        let total_key = total_staked_key(&tx.target, &asset);
+        let current_stake = self.uint_at(&stake_key);
+        if current_stake < amount {
+            return Err(ExecutionError::InsufficientStake);
+        }
+        let total_staked = self.uint_at(&total_key);
+        if total_staked < amount {
+            return Err(ExecutionError::InvariantViolation);
+        }
+
+        let frame = AuthorizedFrame {
+            contract: tx.target.clone(),
+            msg_sender: staker.clone(),
+            write_scope: BTreeSet::from([stake_key.clone(), total_key.clone()]),
+        };
+        self.state_set(&frame, stake_key, StateValue::UInt(current_stake - amount))?;
+        self.state_set(&frame, total_key, StateValue::UInt(total_staked - amount))?;
+
+        if !self.staking_invariants_hold(&tx.target, &asset) {
+            return Err(ExecutionError::InvariantViolation);
+        }
+
+        self.emit(
+            &tx.target,
+            &tx.tx_hash,
+            EventPayload::Unstaked {
+                staker,
+                asset,
+                amount,
+            },
+        );
+        Ok(ReturnValue::Unit)
+    }
+
     fn consume_allowance(
         &mut self,
         contract: &ContractId,
@@ -2341,6 +2539,24 @@ impl DeTTaState {
         lp_balance_sum == Some(lp_supply)
     }
 
+    fn staking_invariants_hold(&self, contract: &ContractId, asset: &AssetId) -> bool {
+        let total_staked = self.total_staked(contract.clone(), asset.clone());
+        let stake_sum = self
+            .storage
+            .iter()
+            .filter_map(|(key, value)| match key {
+                StateKey::StakeBalance {
+                    contract: stake_contract,
+                    asset: stake_asset,
+                    ..
+                } if stake_contract == contract && stake_asset == asset => Some(value.as_uint()),
+                _ => None,
+            })
+            .try_fold(0u128, |acc, value| acc.checked_add(value));
+
+        stake_sum == Some(total_staked)
+    }
+
     fn emit(&mut self, contract: &ContractId, tx_hash: &TxHash, payload: EventPayload) {
         self.events.push(Event {
             contract: contract.clone(),
@@ -2484,6 +2700,21 @@ fn debt_key(contract: &ContractId, borrower: &Principal, asset: &AssetId) -> Sta
     StateKey::Debt {
         contract: contract.clone(),
         borrower: borrower.clone(),
+        asset: asset.clone(),
+    }
+}
+
+fn stake_balance_key(contract: &ContractId, staker: &Principal, asset: &AssetId) -> StateKey {
+    StateKey::StakeBalance {
+        contract: contract.clone(),
+        staker: staker.clone(),
+        asset: asset.clone(),
+    }
+}
+
+fn total_staked_key(contract: &ContractId, asset: &AssetId) -> StateKey {
+    StateKey::TotalStaked {
+        contract: contract.clone(),
         asset: asset.clone(),
     }
 }
@@ -3807,5 +4038,65 @@ mod tests {
             Some(ExecutionError::StaleOraclePrice)
         );
         assert_eq!(next_state.debt("VaultA", "Alice", "USDC"), 0);
+    }
+
+    #[test]
+    fn staking_updates_staker_balance_and_total_staked() {
+        let mut state = DeTTaState::new("detta-local");
+        state.deploy_staking("StakeA", "ATOM").unwrap();
+
+        let stake = state.apply_transaction(tx_to(
+            "StakeA",
+            "tx1",
+            "Alice",
+            1,
+            Method::Stake,
+            vec![asset("ATOM"), amount(100)],
+        ));
+        assert_eq!(stake.status, TxStatus::Committed);
+        assert_eq!(state.stake_balance("StakeA", "Alice", "ATOM"), 100);
+        assert_eq!(state.total_staked("StakeA", "ATOM"), 100);
+
+        let unstake = state.apply_transaction(tx_to(
+            "StakeA",
+            "tx2",
+            "Alice",
+            2,
+            Method::Unstake,
+            vec![asset("ATOM"), amount(40)],
+        ));
+        assert_eq!(unstake.status, TxStatus::Committed);
+        assert_eq!(state.stake_balance("StakeA", "Alice", "ATOM"), 60);
+        assert_eq!(state.total_staked("StakeA", "ATOM"), 60);
+    }
+
+    #[test]
+    fn staking_reverts_over_unstake() {
+        let mut state = DeTTaState::new("detta-local");
+        state.deploy_staking("StakeA", "ATOM").unwrap();
+        state.apply_transaction(tx_to(
+            "StakeA",
+            "tx1",
+            "Alice",
+            1,
+            Method::Stake,
+            vec![asset("ATOM"), amount(50)],
+        ));
+        let storage_before = state.storage_root();
+
+        let unstake = state.apply_transaction(tx_to(
+            "StakeA",
+            "tx2",
+            "Alice",
+            2,
+            Method::Unstake,
+            vec![asset("ATOM"), amount(51)],
+        ));
+
+        assert_eq!(unstake.status, TxStatus::Reverted);
+        assert_eq!(unstake.error, Some(ExecutionError::InsufficientStake));
+        assert_eq!(state.storage_root(), storage_before);
+        assert_eq!(state.stake_balance("StakeA", "Alice", "ATOM"), 50);
+        assert_eq!(state.total_staked("StakeA", "ATOM"), 50);
     }
 }
