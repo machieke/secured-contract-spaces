@@ -295,10 +295,12 @@ Completed production-plan slices:
   expected verifier function coverage in verify.
 - [x] Proof manifest theorem evidence entries are checked for per-theorem
   uniqueness in verify.
+- [x] Proof manifest theorem IDs are checked against expected theorem names in
+  verify.
 
 Next implementation slices:
 
-- [ ] Add proof manifest theorem id-to-name mapping checks in verify.
+- [ ] Add proof manifest theorem name uniqueness checks in verify.
 
 # 1. Production Objective
 

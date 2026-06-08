@@ -770,6 +770,35 @@ mod tests {
     }
 
     #[test]
+    fn scs_theorem_ids_map_to_expected_names() {
+        let names_by_id: BTreeMap<_, _> = scs_theorem_coverage()
+            .iter()
+            .map(|entry| (entry.id, entry.name))
+            .collect();
+
+        assert_eq!(
+            names_by_id,
+            BTreeMap::from([
+                ("THM-001", "Dispatcher-Only External Mutation"),
+                ("THM-002", "Contract Isolation"),
+                ("THM-003", "Method Write-Scope Safety"),
+                ("THM-004", "No Authority From Syntax"),
+                ("THM-005", "Live Registry Authorization"),
+                ("THM-006", "Registry Consumption Atomicity"),
+                ("THM-007", "Event Atomicity"),
+                ("THM-008", "Invariant Preservation"),
+                ("THM-009", "Determinism"),
+                ("THM-010", "Replay Safety"),
+                ("THM-011", "Caller Integrity"),
+                ("THM-012", "No Write-Scope Leakage Across Calls"),
+                ("THM-013", "View Read-Only Safety"),
+                ("THM-014", "Schema Safety"),
+                ("THM-015", "Raw Primitive Exclusion"),
+            ])
+        );
+    }
+
+    #[test]
     fn scs_theorem_evidence_order_is_stable() {
         use TheoremEvidenceKind::{Fixture, Model, RuntimeTest, Verifier};
 
