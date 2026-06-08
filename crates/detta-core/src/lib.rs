@@ -5259,6 +5259,33 @@ mod tests {
     }
 
     #[test]
+    fn canonical_balance_keys_cannot_duplicate_storage_entries() {
+        let mut state = seeded_state();
+        let key = StateKey::Balance {
+            contract: "TokenA".into(),
+            owner: "Alice".into(),
+            asset: "USDC".into(),
+        };
+
+        state.storage.insert(key.clone(), StateValue::UInt(77));
+        state.storage.insert(key.clone(), StateValue::UInt(88));
+
+        let entries = state.storage_entries();
+        let key_count = entries
+            .iter()
+            .filter(|(candidate, _)| candidate == &key)
+            .count();
+        let serialized_keys: BTreeSet<_> = entries
+            .iter()
+            .map(|(candidate, _)| serde_json::to_string(candidate).unwrap())
+            .collect();
+
+        assert_eq!(key_count, 1);
+        assert_eq!(serialized_keys.len(), entries.len());
+        assert_eq!(state.balance("TokenA", "Alice", "USDC"), 88);
+    }
+
+    #[test]
     fn restricted_evaluator_rejects_forbidden_escape_hatches() {
         let evaluator = RestrictedEvaluator;
         let allowed = [
