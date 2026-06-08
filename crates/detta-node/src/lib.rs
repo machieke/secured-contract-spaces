@@ -446,6 +446,7 @@ impl PersistentValidatorNode {
 
     pub fn node_snapshot_roots(&self) -> Result<PersistentNodeSnapshotRoots, NodeError> {
         let snapshot = self.node_snapshot()?;
+        let snapshot_import_audit_records = self.load_snapshot_import_audit_records()?;
         let required_snapshot_metadata_roots = self.load_required_snapshot_metadata_roots()?;
         let required_snapshot_metadata_roots_root = self.required_snapshot_metadata_roots_root()?;
         let snapshot_sync_client_metrics = self
@@ -461,6 +462,9 @@ impl PersistentValidatorNode {
             global_state_root: snapshot.state_snapshot.global_state_root,
             validator_set_metadata_audit_root: snapshot.validator_set_metadata_audit_root,
             snapshot_import_audit_root: self.snapshot_import_audit_root()?,
+            snapshot_import_audit_record_count: snapshot_import_audit_records.len(),
+            snapshot_import_audit_max_records: self.max_snapshot_import_audit_records,
+            snapshot_import_audit_max_page_size: self.max_snapshot_import_audit_page_size,
             required_snapshot_metadata_roots,
             required_snapshot_metadata_roots_root,
             snapshot_sync_client_metrics,
@@ -1717,6 +1721,9 @@ mod tests {
             global_state_root: snapshot.state_snapshot.global_state_root.clone(),
             validator_set_metadata_audit_root: snapshot.validator_set_metadata_audit_root.clone(),
             snapshot_import_audit_root: FileStorage::snapshot_import_audit_root_for(&[]).unwrap(),
+            snapshot_import_audit_record_count: 0,
+            snapshot_import_audit_max_records: DEFAULT_MAX_SNAPSHOT_IMPORT_AUDIT_RECORDS,
+            snapshot_import_audit_max_page_size: DEFAULT_MAX_SNAPSHOT_IMPORT_AUDIT_PAGE_SIZE,
             required_snapshot_metadata_roots: BTreeMap::new(),
             required_snapshot_metadata_roots_root:
                 FileStorage::required_snapshot_metadata_roots_root_for(&BTreeMap::new()).unwrap(),
@@ -3378,6 +3385,15 @@ mod tests {
             initial_snapshot.snapshot_import_audit_root,
             expected_snapshot_import_audit_root
         );
+        assert_eq!(initial_snapshot.snapshot_import_audit_record_count, 1);
+        assert_eq!(
+            initial_snapshot.snapshot_import_audit_max_records,
+            DEFAULT_MAX_SNAPSHOT_IMPORT_AUDIT_RECORDS
+        );
+        assert_eq!(
+            initial_snapshot.snapshot_import_audit_max_page_size,
+            DEFAULT_MAX_SNAPSHOT_IMPORT_AUDIT_PAGE_SIZE
+        );
         write_rpc_request(&mut stream, &RpcRequest::GetSnapshotSyncClientMetrics);
         assert_eq!(
             read_rpc_response(&mut reader),
@@ -4058,6 +4074,9 @@ mod tests {
             sink_roots.snapshot_import_audit_root,
             snapshot_import_audit_root
         );
+        assert_eq!(sink_roots.snapshot_import_audit_record_count, 1);
+        assert_eq!(sink_roots.snapshot_import_audit_max_records, 1);
+        assert_eq!(sink_roots.snapshot_import_audit_max_page_size, 1);
         let response = sink
             .serve_snapshot_chunk_request(
                 &SnapshotChunkRequest {

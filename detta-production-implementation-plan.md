@@ -134,10 +134,13 @@ Completed production-plan slices:
   reject mismatched import-audit roots before commit.
 - [x] Snapshot import audit records support retention limits and bounded
   pagination through storage, node loaders, and RPC-backed flows.
+- [x] Persistent snapshot root responses include snapshot import audit
+  retention diagnostics: retained count, max records, and max page size.
 
 Next implementation slices:
 
-- [ ] Include snapshot import audit retention limits in diagnostics.
+- [ ] Persist snapshot import audit retention limit configuration across
+  restart.
 
 # 1. Production Objective
 
