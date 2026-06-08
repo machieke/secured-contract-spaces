@@ -4,7 +4,7 @@ use detta_core::{
     StateSnapshot, StorageNonInclusionProof, StorageProof, Transaction, ValidatorNode,
 };
 use detta_protocol::SignedValidatorMessage;
-use detta_storage::ValidatorSetMetadataAuditRecord;
+use detta_storage::{SnapshotImportAuditRecord, ValidatorSetMetadataAuditRecord};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::{self, BufReader, Read, Write};
@@ -90,6 +90,11 @@ pub enum RpcRequest {
         offset: usize,
         limit: usize,
     },
+    GetSnapshotImportAuditRecords {
+        offset: usize,
+        limit: usize,
+    },
+    GetSnapshotImportAuditRoot,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -166,6 +171,8 @@ pub enum RpcResult {
     Contract(Box<ContractRecord>),
     ValidatorSetMetadataUpdateStatus(ValidatorSetMetadataUpdateStatus),
     ValidatorSetMetadataAuditRecords(Vec<ValidatorSetMetadataAuditRecord>),
+    SnapshotImportAuditRecords(Vec<SnapshotImportAuditRecord>),
+    SnapshotImportAuditRoot(String),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -435,6 +442,8 @@ impl RpcService {
             RpcRequest::ProposeValidatorSetMetadataUpdate { .. }
             | RpcRequest::GetValidatorSetMetadataUpdateStatus { .. }
             | RpcRequest::GetValidatorSetMetadataAuditRecords { .. }
+            | RpcRequest::GetSnapshotImportAuditRecords { .. }
+            | RpcRequest::GetSnapshotImportAuditRoot
             | RpcRequest::GetPersistentNodeSnapshotRoots
             | RpcRequest::GetSnapshotMetadataRootStatus
             | RpcRequest::GetSnapshotSyncClientMetrics
@@ -779,6 +788,23 @@ mod tests {
         );
         assert_eq!(
             rpc.handle_request(RpcRequest::GetRequiredSnapshotMetadataRoots),
+            RpcResponse::Error(RpcErrorBody {
+                code: "rpc.unsupported_node_method".into(),
+                message: "method must be handled by a persistent validator node".into(),
+            })
+        );
+        assert_eq!(
+            rpc.handle_request(RpcRequest::GetSnapshotImportAuditRecords {
+                offset: 0,
+                limit: 10,
+            }),
+            RpcResponse::Error(RpcErrorBody {
+                code: "rpc.unsupported_node_method".into(),
+                message: "method must be handled by a persistent validator node".into(),
+            })
+        );
+        assert_eq!(
+            rpc.handle_request(RpcRequest::GetSnapshotImportAuditRoot),
             RpcResponse::Error(RpcErrorBody {
                 code: "rpc.unsupported_node_method".into(),
                 message: "method must be handled by a persistent validator node".into(),

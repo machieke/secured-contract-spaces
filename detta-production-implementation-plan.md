@@ -122,10 +122,13 @@ Completed production-plan slices:
   for downstream state-sync audit proofs.
 - [x] Verified snapshot imports append persistent audit records with snapshot
   root, manifest hash, required-root-set root, root counts, and chunk count.
+- [x] Snapshot import audit records and their stable root are exposed through
+  node-aware RPC.
 
 Next implementation slices:
 
-- [ ] Expose snapshot import audit records and roots over node-aware RPC.
+- [ ] Serve snapshot import audit records and roots over the shared TCP JSON
+  RPC path.
 
 # 1. Production Objective
 

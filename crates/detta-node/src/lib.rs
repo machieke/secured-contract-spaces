@@ -600,6 +600,16 @@ impl PersistentValidatorNode {
                 .map(RpcResult::ValidatorSetMetadataAuditRecords)
                 .map(RpcResponse::Ok)
                 .unwrap_or_else(node_rpc_error_response),
+            RpcRequest::GetSnapshotImportAuditRecords { offset, limit } => self
+                .load_snapshot_import_audit_records_page(offset, limit)
+                .map(RpcResult::SnapshotImportAuditRecords)
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(node_rpc_error_response),
+            RpcRequest::GetSnapshotImportAuditRoot => self
+                .snapshot_import_audit_root()
+                .map(RpcResult::SnapshotImportAuditRoot)
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(node_rpc_error_response),
             RpcRequest::GetPersistentNodeSnapshotRoots => self
                 .node_snapshot_roots()
                 .map(|snapshot| RpcResult::PersistentNodeSnapshotRoots(Box::new(snapshot)))
@@ -1182,6 +1192,12 @@ impl PersistentValidatorNode {
     ) -> Result<Vec<SnapshotImportAuditRecord>, NodeError> {
         self.storage
             .load_snapshot_import_audit_records_page(offset, limit)
+            .map_err(NodeError::Storage)
+    }
+
+    pub fn snapshot_import_audit_root(&self) -> Result<String, NodeError> {
+        self.storage
+            .snapshot_import_audit_root()
             .map_err(NodeError::Storage)
     }
 
@@ -3870,6 +3886,22 @@ mod tests {
             sink.load_snapshot_import_audit_records().unwrap(),
             vec![expected_import_audit_record.clone()]
         );
+        let snapshot_import_audit_root = sink.snapshot_import_audit_root().unwrap();
+        assert_eq!(
+            sink.handle_rpc_request(RpcRequest::GetSnapshotImportAuditRecords {
+                offset: 0,
+                limit: 10,
+            }),
+            RpcResponse::Ok(RpcResult::SnapshotImportAuditRecords(vec![
+                expected_import_audit_record.clone()
+            ]))
+        );
+        assert_eq!(
+            sink.handle_rpc_request(RpcRequest::GetSnapshotImportAuditRoot),
+            RpcResponse::Ok(RpcResult::SnapshotImportAuditRoot(
+                snapshot_import_audit_root.clone()
+            ))
+        );
         assert_eq!(
             sink.handle_rpc_request(RpcRequest::GetRequiredSnapshotMetadataRoots),
             RpcResponse::Ok(RpcResult::RequiredSnapshotMetadataRoots(
@@ -3896,6 +3928,10 @@ mod tests {
         assert_eq!(
             sink.load_snapshot_import_audit_records().unwrap(),
             vec![expected_import_audit_record.clone()]
+        );
+        assert_eq!(
+            sink.snapshot_import_audit_root().unwrap(),
+            snapshot_import_audit_root
         );
         assert_eq!(
             sink.handle_rpc_request(RpcRequest::GetSnapshotSyncClientMetrics),
@@ -3972,6 +4008,12 @@ mod tests {
         assert_eq!(
             restarted_sink.load_snapshot_import_audit_records().unwrap(),
             vec![expected_import_audit_record]
+        );
+        assert_eq!(
+            restarted_sink.handle_rpc_request(RpcRequest::GetSnapshotImportAuditRoot),
+            RpcResponse::Ok(RpcResult::SnapshotImportAuditRoot(
+                snapshot_import_audit_root
+            ))
         );
         assert_eq!(
             restarted_sink
