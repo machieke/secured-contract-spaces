@@ -1,6 +1,10 @@
-use detta_protocol::{decode_message, encode_message, ProtocolError, ProtocolMessage};
+use detta_protocol::{
+    decode_message, encode_message, ProtocolError, ProtocolMessage, HEADER_LEN, MAX_PAYLOAD_LEN,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::io::{Read, Write};
+use std::net::{TcpStream, ToSocketAddrs};
 
 pub type PeerId = String;
 pub type NetworkMessage = ProtocolMessage;
@@ -24,6 +28,31 @@ pub enum NetworkError {
     DuplicatePeer(PeerId),
     UnknownPeer(PeerId),
     Protocol(ProtocolError),
+    Io(String),
+}
+
+#[derive(Debug)]
+pub struct TcpProtocolStream {
+    stream: TcpStream,
+}
+
+impl TcpProtocolStream {
+    pub fn connect(addr: impl ToSocketAddrs) -> Result<Self, NetworkError> {
+        let stream = TcpStream::connect(addr).map_err(io_error)?;
+        Ok(Self { stream })
+    }
+
+    pub fn from_stream(stream: TcpStream) -> Self {
+        Self { stream }
+    }
+
+    pub fn send(&mut self, message: &NetworkMessage) -> Result<(), NetworkError> {
+        write_wire_message(&mut self.stream, message)
+    }
+
+    pub fn receive(&mut self) -> Result<NetworkMessage, NetworkError> {
+        read_wire_message(&mut self.stream)
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -142,12 +171,47 @@ impl InMemoryTransport {
     }
 }
 
+fn write_wire_message(
+    writer: &mut impl Write,
+    message: &NetworkMessage,
+) -> Result<(), NetworkError> {
+    let bytes = encode_message(message).map_err(NetworkError::Protocol)?;
+    writer.write_all(&bytes).map_err(io_error)
+}
+
+fn read_wire_message(reader: &mut impl Read) -> Result<NetworkMessage, NetworkError> {
+    let mut header = [0u8; HEADER_LEN];
+    reader.read_exact(&mut header).map_err(io_error)?;
+
+    let declared = u32::from_be_bytes([header[6], header[7], header[8], header[9]]) as usize;
+    if declared > MAX_PAYLOAD_LEN {
+        return Err(NetworkError::Protocol(ProtocolError::PayloadTooLarge {
+            actual: declared,
+            max: MAX_PAYLOAD_LEN,
+        }));
+    }
+
+    let mut bytes = Vec::with_capacity(HEADER_LEN + declared);
+    bytes.extend_from_slice(&header);
+    let mut payload = vec![0; declared];
+    reader.read_exact(&mut payload).map_err(io_error)?;
+    bytes.extend_from_slice(&payload);
+
+    decode_message(&bytes).map_err(NetworkError::Protocol)
+}
+
+fn io_error(error: std::io::Error) -> NetworkError {
+    NetworkError::Io(error.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use detta_consensus::{EquivocationEvidence, Vote};
     use detta_core::{Argument, DeTTaState, Method, Transaction, ValidatorNode};
     use detta_protocol::{encode_message, ProtocolError, PROTOCOL_MAGIC};
+    use std::net::TcpListener;
+    use std::thread;
 
     fn seeded_state() -> DeTTaState {
         let mut state = DeTTaState::new("detta-local");
@@ -294,5 +358,40 @@ mod tests {
             envelopes[1].message,
             NetworkMessage::EquivocationEvidence(evidence)
         );
+    }
+
+    #[test]
+    fn tcp_protocol_stream_round_trips_over_local_socket() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut server = TcpProtocolStream::from_stream(stream);
+            let message = server.receive().unwrap();
+            assert!(matches!(message, NetworkMessage::Transaction(_)));
+            server
+                .send(&NetworkMessage::Vote(Vote {
+                    validator_id: "validator-1".into(),
+                    height: 1,
+                    block_hash: "block-a".into(),
+                }))
+                .unwrap();
+        });
+
+        let mut client = TcpProtocolStream::connect(addr).unwrap();
+        client
+            .send(&NetworkMessage::Transaction(transfer_tx()))
+            .unwrap();
+        let response = client.receive().unwrap();
+
+        assert_eq!(
+            response,
+            NetworkMessage::Vote(Vote {
+                validator_id: "validator-1".into(),
+                height: 1,
+                block_hash: "block-a".into(),
+            })
+        );
+        server.join().unwrap();
     }
 }
