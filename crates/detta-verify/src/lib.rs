@@ -1376,53 +1376,71 @@ mod tests {
         assert_eq!(checked_in_proof_artifact_manifest_root(), root);
     }
 
-    type ProofReleaseAttestationFixture = (&'static str, &'static str);
+    struct ProofReleaseAttestationFixture {
+        attestation: &'static str,
+        file_name: &'static str,
+        target_path: &'static str,
+    }
+
     type ProofReleaseAttestationFixtures =
         [ProofReleaseAttestationFixture; PROOF_RELEASE_ATTESTATION_COUNT];
 
     fn proof_release_attestations_for_test() -> ProofReleaseAttestationFixtures {
         [
-            (
-                include_str!("../../../models/detta-proof-artifact-manifest.sha256"),
-                "detta-proof-artifact-manifest.json",
-            ),
-            (
-                include_str!("../../../models/detta-restricted-evaluator-proof-trace.sha256"),
-                "detta-restricted-evaluator-proof-trace.json",
-            ),
-            (
-                include_str!("../../../models/detta-restricted-evaluator-proof-trace-root.sha256"),
-                "detta-restricted-evaluator-proof-trace.trace",
-            ),
-            (
-                include_str!(
+            ProofReleaseAttestationFixture {
+                attestation: include_str!("../../../models/detta-proof-artifact-manifest.sha256"),
+                file_name: "detta-proof-artifact-manifest.json",
+                target_path: "models/detta-proof-artifact-manifest.json",
+            },
+            ProofReleaseAttestationFixture {
+                attestation: include_str!(
+                    "../../../models/detta-restricted-evaluator-proof-trace.sha256"
+                ),
+                file_name: "detta-restricted-evaluator-proof-trace.json",
+                target_path: "models/detta-restricted-evaluator-proof-trace.json",
+            },
+            ProofReleaseAttestationFixture {
+                attestation: include_str!(
+                    "../../../models/detta-restricted-evaluator-proof-trace-root.sha256"
+                ),
+                file_name: "detta-restricted-evaluator-proof-trace.trace",
+                target_path: "models/detta-restricted-evaluator-proof-trace.trace",
+            },
+            ProofReleaseAttestationFixture {
+                attestation: include_str!(
                     "../../../models/detta-restricted-evaluator-forbidden-primitives.sha256"
                 ),
-                "detta-restricted-evaluator-forbidden-primitives.json",
-            ),
-            (
-                include_str!(
+                file_name: "detta-restricted-evaluator-forbidden-primitives.json",
+                target_path: "models/detta-restricted-evaluator-forbidden-primitives.json",
+            },
+            ProofReleaseAttestationFixture {
+                attestation: include_str!(
                     "../../../models/detta-restricted-evaluator-resource-exhaustion.sha256"
                 ),
-                "detta-restricted-evaluator-resource-exhaustion.json",
-            ),
-            (
-                include_str!(
+                file_name: "detta-restricted-evaluator-resource-exhaustion.json",
+                target_path: "models/detta-restricted-evaluator-resource-exhaustion.json",
+            },
+            ProofReleaseAttestationFixture {
+                attestation: include_str!(
                     "../../../models/detta-restricted-evaluator-arithmetic-overflow.sha256"
                 ),
-                "detta-restricted-evaluator-arithmetic-overflow.json",
-            ),
-            (
-                include_str!("../../../models/detta-restricted-evaluator-fixture-inventory.sha256"),
-                "detta-restricted-evaluator-fixture-inventory.json",
-            ),
+                file_name: "detta-restricted-evaluator-arithmetic-overflow.json",
+                target_path: "models/detta-restricted-evaluator-arithmetic-overflow.json",
+            },
+            ProofReleaseAttestationFixture {
+                attestation: include_str!(
+                    "../../../models/detta-restricted-evaluator-fixture-inventory.sha256"
+                ),
+                file_name: "detta-restricted-evaluator-fixture-inventory.json",
+                target_path: "models/detta-restricted-evaluator-fixture-inventory.json",
+            },
         ]
     }
 
     #[test]
     fn proof_release_attestations_use_sha256sum_format() {
-        for (attestation, expected_file_name) in proof_release_attestations_for_test() {
-            assert_sha256sum_attestation_format(attestation, expected_file_name);
+        for fixture in proof_release_attestations_for_test() {
+            assert_sha256sum_attestation_format(fixture.attestation, fixture.file_name);
         }
     }
 
@@ -1438,7 +1456,7 @@ mod tests {
     fn proof_release_attestation_filenames_are_unique() {
         let filenames: BTreeSet<_> = proof_release_attestations_for_test()
             .into_iter()
-            .map(|(attestation, _)| sha256sum_attestation_parts(attestation).1)
+            .map(|fixture| sha256sum_attestation_parts(fixture.attestation).1)
             .collect();
 
         assert_eq!(filenames.len(), PROOF_RELEASE_ATTESTATION_COUNT);
@@ -1448,7 +1466,7 @@ mod tests {
     fn proof_release_attestation_filenames_use_expected_suffixes() {
         let filenames: Vec<_> = proof_release_attestations_for_test()
             .into_iter()
-            .map(|(attestation, _)| sha256sum_attestation_parts(attestation).1)
+            .map(|fixture| sha256sum_attestation_parts(fixture.attestation).1)
             .collect();
 
         assert_eq!(
@@ -1474,7 +1492,7 @@ mod tests {
     fn proof_release_attestation_filenames_match_expected_set() {
         let filenames: BTreeSet<_> = proof_release_attestations_for_test()
             .into_iter()
-            .map(|(attestation, _)| sha256sum_attestation_parts(attestation).1)
+            .map(|fixture| sha256sum_attestation_parts(fixture.attestation).1)
             .collect();
 
         assert_eq!(
@@ -1492,9 +1510,30 @@ mod tests {
     }
 
     #[test]
+    fn proof_release_attestation_target_paths_match_expected_set() {
+        let target_paths: BTreeSet<_> = proof_release_attestations_for_test()
+            .into_iter()
+            .map(|fixture| fixture.target_path)
+            .collect();
+
+        assert_eq!(
+            target_paths,
+            BTreeSet::from([
+                "models/detta-proof-artifact-manifest.json",
+                "models/detta-restricted-evaluator-arithmetic-overflow.json",
+                "models/detta-restricted-evaluator-fixture-inventory.json",
+                "models/detta-restricted-evaluator-forbidden-primitives.json",
+                "models/detta-restricted-evaluator-proof-trace.json",
+                "models/detta-restricted-evaluator-proof-trace.trace",
+                "models/detta-restricted-evaluator-resource-exhaustion.json",
+            ])
+        );
+    }
+
+    #[test]
     fn proof_release_attestation_roots_have_sha256_hex_length() {
-        for (attestation, _) in proof_release_attestations_for_test() {
-            let (root, file_name) = sha256sum_attestation_parts(attestation);
+        for fixture in proof_release_attestations_for_test() {
+            let (root, file_name) = sha256sum_attestation_parts(fixture.attestation);
 
             assert_eq!(
                 root.len(),
@@ -1506,34 +1545,12 @@ mod tests {
 
     #[test]
     fn proof_release_attestation_filenames_bind_target_artifacts() {
-        assert_sha256sum_attestation_filename_binds_artifact(
-            include_str!("../../../models/detta-proof-artifact-manifest.sha256"),
-            "models/detta-proof-artifact-manifest.json",
-        );
-        assert_sha256sum_attestation_filename_binds_artifact(
-            include_str!("../../../models/detta-restricted-evaluator-proof-trace.sha256"),
-            "models/detta-restricted-evaluator-proof-trace.json",
-        );
-        assert_sha256sum_attestation_filename_binds_artifact(
-            include_str!("../../../models/detta-restricted-evaluator-forbidden-primitives.sha256"),
-            "models/detta-restricted-evaluator-forbidden-primitives.json",
-        );
-        assert_sha256sum_attestation_filename_binds_artifact(
-            include_str!("../../../models/detta-restricted-evaluator-resource-exhaustion.sha256"),
-            "models/detta-restricted-evaluator-resource-exhaustion.json",
-        );
-        assert_sha256sum_attestation_filename_binds_artifact(
-            include_str!("../../../models/detta-restricted-evaluator-arithmetic-overflow.sha256"),
-            "models/detta-restricted-evaluator-arithmetic-overflow.json",
-        );
-        assert_sha256sum_attestation_filename_binds_artifact(
-            include_str!("../../../models/detta-restricted-evaluator-fixture-inventory.sha256"),
-            "models/detta-restricted-evaluator-fixture-inventory.json",
-        );
-        assert_sha256sum_attestation_filename_matches(
-            include_str!("../../../models/detta-restricted-evaluator-proof-trace-root.sha256"),
-            "detta-restricted-evaluator-proof-trace.trace",
-        );
+        for fixture in proof_release_attestations_for_test() {
+            assert_sha256sum_attestation_filename_binds_artifact(
+                fixture.attestation,
+                fixture.target_path,
+            );
+        }
     }
 
     #[test]
