@@ -332,10 +332,12 @@ Completed production-plan slices:
   separators in verify.
 - [x] Proof release attestation files are checked for a single trailing newline
   in verify.
+- [x] Proof release attestation lines are checked for a single sha256sum
+  separator token in verify.
 
 Next implementation slices:
 
-- [ ] Add proof release attestation separator token checks in verify.
+- [ ] Add proof release attestation nonempty part checks in verify.
 
 # 1. Production Objective
 

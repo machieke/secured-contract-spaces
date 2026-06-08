@@ -1574,6 +1574,19 @@ mod tests {
     }
 
     #[test]
+    fn proof_release_attestations_use_single_separator_token() {
+        for fixture in proof_release_attestations_for_test() {
+            let line = fixture.attestation.strip_suffix('\n').unwrap();
+            let (root, file_name) = line.split_once("  ").unwrap();
+
+            assert_eq!(line.matches("  ").count(), 1);
+            assert!(!line.contains("   "));
+            assert!(!root.contains(' '));
+            assert!(!file_name.contains(' '));
+        }
+    }
+
+    #[test]
     fn proof_release_attestation_target_extensions_are_consistent() {
         for fixture in proof_release_attestations_for_test() {
             let target_extension = fixture.target_path.rsplit('.').next().unwrap();
