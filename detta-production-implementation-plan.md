@@ -235,10 +235,12 @@ Completed production-plan slices:
   inventory coverage.
 - [x] Proof manifest evaluator fixture JSON paths are checked against inventory
   coverage.
+- [x] Evaluator fixture inventory schema, version, and evaluator identifiers are
+  checked in verify.
 
 Next implementation slices:
 
-- [ ] Add evaluator fixture inventory schema and version checks in verify.
+- [ ] Add evaluator fixture inventory entry name uniqueness checks in verify.
 
 # 1. Production Objective
 

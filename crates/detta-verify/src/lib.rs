@@ -1281,6 +1281,9 @@ mod tests {
 
     #[derive(serde::Deserialize)]
     struct EvaluatorFixtureInventoryForTest {
+        schema: String,
+        schema_version: u32,
+        evaluator: String,
         fixtures: Vec<EvaluatorFixtureInventoryEntryForTest>,
     }
 
@@ -1292,6 +1295,21 @@ mod tests {
         attestation_sha256: String,
         trace_root_attestation_path: Option<String>,
         trace_root_attestation_sha256: Option<String>,
+    }
+
+    #[test]
+    fn proof_runtime_evaluator_fixture_inventory_schema_is_explicit() {
+        let inventory: EvaluatorFixtureInventoryForTest = serde_json::from_str(include_str!(
+            "../../../models/detta-restricted-evaluator-fixture-inventory.json"
+        ))
+        .unwrap();
+
+        assert_eq!(
+            inventory.schema,
+            "detta.restricted-evaluator-fixture-inventory.v1"
+        );
+        assert_eq!(inventory.schema_version, 1);
+        assert_eq!(inventory.evaluator, "detta.restricted-script-evaluator");
     }
 
     #[test]
