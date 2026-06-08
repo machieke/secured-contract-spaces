@@ -1376,85 +1376,80 @@ mod tests {
         assert_eq!(checked_in_proof_artifact_manifest_root(), root);
     }
 
+    type ProofReleaseAttestationFixture = (&'static str, &'static str);
+    type ProofReleaseAttestationFixtures =
+        [ProofReleaseAttestationFixture; PROOF_RELEASE_ATTESTATION_COUNT];
+
+    fn proof_release_attestations_for_test() -> ProofReleaseAttestationFixtures {
+        [
+            (
+                include_str!("../../../models/detta-proof-artifact-manifest.sha256"),
+                "detta-proof-artifact-manifest.json",
+            ),
+            (
+                include_str!("../../../models/detta-restricted-evaluator-proof-trace.sha256"),
+                "detta-restricted-evaluator-proof-trace.json",
+            ),
+            (
+                include_str!("../../../models/detta-restricted-evaluator-proof-trace-root.sha256"),
+                "detta-restricted-evaluator-proof-trace.trace",
+            ),
+            (
+                include_str!(
+                    "../../../models/detta-restricted-evaluator-forbidden-primitives.sha256"
+                ),
+                "detta-restricted-evaluator-forbidden-primitives.json",
+            ),
+            (
+                include_str!(
+                    "../../../models/detta-restricted-evaluator-resource-exhaustion.sha256"
+                ),
+                "detta-restricted-evaluator-resource-exhaustion.json",
+            ),
+            (
+                include_str!(
+                    "../../../models/detta-restricted-evaluator-arithmetic-overflow.sha256"
+                ),
+                "detta-restricted-evaluator-arithmetic-overflow.json",
+            ),
+            (
+                include_str!("../../../models/detta-restricted-evaluator-fixture-inventory.sha256"),
+                "detta-restricted-evaluator-fixture-inventory.json",
+            ),
+        ]
+    }
+
     #[test]
     fn proof_release_attestations_use_sha256sum_format() {
-        assert_sha256sum_attestation_format(
-            include_str!("../../../models/detta-proof-artifact-manifest.sha256"),
-            "detta-proof-artifact-manifest.json",
-        );
-        assert_sha256sum_attestation_format(
-            include_str!("../../../models/detta-restricted-evaluator-proof-trace.sha256"),
-            "detta-restricted-evaluator-proof-trace.json",
-        );
-        assert_sha256sum_attestation_format(
-            include_str!("../../../models/detta-restricted-evaluator-proof-trace-root.sha256"),
-            "detta-restricted-evaluator-proof-trace.trace",
-        );
-        assert_sha256sum_attestation_format(
-            include_str!("../../../models/detta-restricted-evaluator-forbidden-primitives.sha256"),
-            "detta-restricted-evaluator-forbidden-primitives.json",
-        );
-        assert_sha256sum_attestation_format(
-            include_str!("../../../models/detta-restricted-evaluator-resource-exhaustion.sha256"),
-            "detta-restricted-evaluator-resource-exhaustion.json",
-        );
-        assert_sha256sum_attestation_format(
-            include_str!("../../../models/detta-restricted-evaluator-arithmetic-overflow.sha256"),
-            "detta-restricted-evaluator-arithmetic-overflow.json",
-        );
-        assert_sha256sum_attestation_format(
-            include_str!("../../../models/detta-restricted-evaluator-fixture-inventory.sha256"),
-            "detta-restricted-evaluator-fixture-inventory.json",
-        );
+        for (attestation, expected_file_name) in proof_release_attestations_for_test() {
+            assert_sha256sum_attestation_format(attestation, expected_file_name);
+        }
     }
 
     #[test]
     fn proof_release_attestation_count_is_stable() {
-        let attestations = [
-            include_str!("../../../models/detta-proof-artifact-manifest.sha256"),
-            include_str!("../../../models/detta-restricted-evaluator-proof-trace.sha256"),
-            include_str!("../../../models/detta-restricted-evaluator-proof-trace-root.sha256"),
-            include_str!("../../../models/detta-restricted-evaluator-forbidden-primitives.sha256"),
-            include_str!("../../../models/detta-restricted-evaluator-resource-exhaustion.sha256"),
-            include_str!("../../../models/detta-restricted-evaluator-arithmetic-overflow.sha256"),
-            include_str!("../../../models/detta-restricted-evaluator-fixture-inventory.sha256"),
-        ];
-
-        assert_eq!(attestations.len(), PROOF_RELEASE_ATTESTATION_COUNT);
+        assert_eq!(
+            proof_release_attestations_for_test().len(),
+            PROOF_RELEASE_ATTESTATION_COUNT
+        );
     }
 
     #[test]
     fn proof_release_attestation_filenames_are_unique() {
-        let filenames: BTreeSet<_> = [
-            include_str!("../../../models/detta-proof-artifact-manifest.sha256"),
-            include_str!("../../../models/detta-restricted-evaluator-proof-trace.sha256"),
-            include_str!("../../../models/detta-restricted-evaluator-proof-trace-root.sha256"),
-            include_str!("../../../models/detta-restricted-evaluator-forbidden-primitives.sha256"),
-            include_str!("../../../models/detta-restricted-evaluator-resource-exhaustion.sha256"),
-            include_str!("../../../models/detta-restricted-evaluator-arithmetic-overflow.sha256"),
-            include_str!("../../../models/detta-restricted-evaluator-fixture-inventory.sha256"),
-        ]
-        .into_iter()
-        .map(|attestation| sha256sum_attestation_parts(attestation).1)
-        .collect();
+        let filenames: BTreeSet<_> = proof_release_attestations_for_test()
+            .into_iter()
+            .map(|(attestation, _)| sha256sum_attestation_parts(attestation).1)
+            .collect();
 
         assert_eq!(filenames.len(), PROOF_RELEASE_ATTESTATION_COUNT);
     }
 
     #[test]
     fn proof_release_attestation_filenames_use_expected_suffixes() {
-        let filenames: Vec<_> = [
-            include_str!("../../../models/detta-proof-artifact-manifest.sha256"),
-            include_str!("../../../models/detta-restricted-evaluator-proof-trace.sha256"),
-            include_str!("../../../models/detta-restricted-evaluator-proof-trace-root.sha256"),
-            include_str!("../../../models/detta-restricted-evaluator-forbidden-primitives.sha256"),
-            include_str!("../../../models/detta-restricted-evaluator-resource-exhaustion.sha256"),
-            include_str!("../../../models/detta-restricted-evaluator-arithmetic-overflow.sha256"),
-            include_str!("../../../models/detta-restricted-evaluator-fixture-inventory.sha256"),
-        ]
-        .into_iter()
-        .map(|attestation| sha256sum_attestation_parts(attestation).1)
-        .collect();
+        let filenames: Vec<_> = proof_release_attestations_for_test()
+            .into_iter()
+            .map(|(attestation, _)| sha256sum_attestation_parts(attestation).1)
+            .collect();
 
         assert_eq!(
             filenames
@@ -1477,18 +1472,10 @@ mod tests {
 
     #[test]
     fn proof_release_attestation_filenames_match_expected_set() {
-        let filenames: BTreeSet<_> = [
-            include_str!("../../../models/detta-proof-artifact-manifest.sha256"),
-            include_str!("../../../models/detta-restricted-evaluator-proof-trace.sha256"),
-            include_str!("../../../models/detta-restricted-evaluator-proof-trace-root.sha256"),
-            include_str!("../../../models/detta-restricted-evaluator-forbidden-primitives.sha256"),
-            include_str!("../../../models/detta-restricted-evaluator-resource-exhaustion.sha256"),
-            include_str!("../../../models/detta-restricted-evaluator-arithmetic-overflow.sha256"),
-            include_str!("../../../models/detta-restricted-evaluator-fixture-inventory.sha256"),
-        ]
-        .into_iter()
-        .map(|attestation| sha256sum_attestation_parts(attestation).1)
-        .collect();
+        let filenames: BTreeSet<_> = proof_release_attestations_for_test()
+            .into_iter()
+            .map(|(attestation, _)| sha256sum_attestation_parts(attestation).1)
+            .collect();
 
         assert_eq!(
             filenames,
@@ -1506,15 +1493,7 @@ mod tests {
 
     #[test]
     fn proof_release_attestation_roots_have_sha256_hex_length() {
-        for attestation in [
-            include_str!("../../../models/detta-proof-artifact-manifest.sha256"),
-            include_str!("../../../models/detta-restricted-evaluator-proof-trace.sha256"),
-            include_str!("../../../models/detta-restricted-evaluator-proof-trace-root.sha256"),
-            include_str!("../../../models/detta-restricted-evaluator-forbidden-primitives.sha256"),
-            include_str!("../../../models/detta-restricted-evaluator-resource-exhaustion.sha256"),
-            include_str!("../../../models/detta-restricted-evaluator-arithmetic-overflow.sha256"),
-            include_str!("../../../models/detta-restricted-evaluator-fixture-inventory.sha256"),
-        ] {
+        for (attestation, _) in proof_release_attestations_for_test() {
             let (root, file_name) = sha256sum_attestation_parts(attestation);
 
             assert_eq!(

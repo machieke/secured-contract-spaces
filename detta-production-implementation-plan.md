@@ -313,10 +313,12 @@ Completed production-plan slices:
   verify.
 - [x] Proof release attestation filenames are checked against the expected set
   in verify.
+- [x] Proof release attestation test fixtures are consolidated behind a helper
+  in verify.
 
 Next implementation slices:
 
-- [ ] Add proof release attestation helper consolidation in verify.
+- [ ] Add proof release attestation expected target path set checks in verify.
 
 # 1. Production Objective
 
