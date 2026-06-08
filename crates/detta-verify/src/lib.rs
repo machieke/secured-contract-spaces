@@ -1410,6 +1410,14 @@ mod tests {
         assert_eq!(file_name, "detta-proof-artifact-manifest.json");
     }
 
+    #[test]
+    fn proof_artifact_manifest_root_attestation_root_has_sha256_hex_length() {
+        let attestation = include_str!("../../../models/detta-proof-artifact-manifest.sha256");
+        let (root, _) = sha256sum_attestation_parts(attestation);
+
+        assert_eq!(root.len(), SHA256_HEX_LENGTH);
+    }
+
     struct ProofReleaseAttestationFixture {
         attestation: &'static str,
         file_name: &'static str,
