@@ -247,10 +247,12 @@ Completed production-plan slices:
   proof-trace fixture and attestation in verify.
 - [x] Evaluator fixture inventory fixture schemas are checked for uniqueness in
   verify.
+- [x] Evaluator fixture inventory fixture schemas are checked for expected
+  coverage in verify.
 
 Next implementation slices:
 
-- [ ] Add evaluator fixture inventory fixture-schema coverage checks in verify.
+- [ ] Add evaluator fixture inventory name-to-schema mapping checks in verify.
 
 # 1. Production Objective
 
