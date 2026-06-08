@@ -94,10 +94,12 @@ Completed production-plan slices:
   verification metrics for paged imports.
 - [x] TCP state-sync clients retry transient chunk-stream failures and preserve
   metadata-root verification on the successful reconnect.
+- [x] TCP state-sync client metrics persist through storage and reload after
+  restart for sync diagnostics.
 
 Next implementation slices:
 
-- [ ] Persist TCP state-sync client metrics for restart-safe sync diagnostics.
+- [ ] Expose persisted TCP state-sync diagnostics over node-aware RPC.
 
 # 1. Production Objective
 

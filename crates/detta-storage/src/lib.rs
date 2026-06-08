@@ -78,6 +78,23 @@ impl FileStorage {
         read_json(&path)
     }
 
+    pub fn commit_snapshot_sync_client_metrics<T: Serialize>(
+        &self,
+        metrics: &T,
+    ) -> Result<(), StorageError> {
+        write_json_atomic(&self.snapshot_sync_client_metrics_path(), metrics)
+    }
+
+    pub fn load_snapshot_sync_client_metrics<T: DeserializeOwned>(
+        &self,
+    ) -> Result<Option<T>, StorageError> {
+        let path = self.snapshot_sync_client_metrics_path();
+        if !path.exists() {
+            return Ok(None);
+        }
+        read_json(&path).map(Some)
+    }
+
     pub fn commit_block(&self, block: &Block) -> Result<(), StorageError> {
         write_json_atomic(&self.block_path(block.header.height), block)
     }
@@ -216,6 +233,10 @@ impl FileStorage {
 
     fn snapshot_metadata_roots_path(&self) -> PathBuf {
         self.root.join("latest_snapshot_metadata_roots.bin")
+    }
+
+    fn snapshot_sync_client_metrics_path(&self) -> PathBuf {
+        self.root.join("latest_snapshot_sync_client_metrics.bin")
     }
 
     fn block_path(&self, height: u64) -> PathBuf {
@@ -408,6 +429,41 @@ mod tests {
                 .load_snapshot_metadata_roots()
                 .unwrap(),
             roots
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+    struct TestSnapshotSyncMetrics {
+        requests_sent: u32,
+        metadata_roots_verified: bool,
+    }
+
+    #[test]
+    fn persists_snapshot_sync_client_metrics() {
+        let dir = temp_dir("snapshot-sync-client-metrics");
+        let storage = FileStorage::open(&dir).unwrap();
+        let metrics = TestSnapshotSyncMetrics {
+            requests_sent: 3,
+            metadata_roots_verified: true,
+        };
+
+        assert_eq!(
+            storage
+                .load_snapshot_sync_client_metrics::<TestSnapshotSyncMetrics>()
+                .unwrap(),
+            None
+        );
+        storage
+            .commit_snapshot_sync_client_metrics(&metrics)
+            .unwrap();
+        assert_eq!(
+            FileStorage::open(&dir)
+                .unwrap()
+                .load_snapshot_sync_client_metrics::<TestSnapshotSyncMetrics>()
+                .unwrap(),
+            Some(metrics)
         );
 
         fs::remove_dir_all(dir).unwrap();

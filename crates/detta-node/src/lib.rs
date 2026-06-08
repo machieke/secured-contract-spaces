@@ -20,6 +20,7 @@ use detta_rpc::{
 use detta_storage::{
     FileStorage, StorageError, ValidatorSetMetadataAuditOutcome, ValidatorSetMetadataAuditRecord,
 };
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
@@ -120,7 +121,7 @@ pub struct PersistentNodeSnapshot {
     pub validator_set_metadata_audit_root: String,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SnapshotSyncClientMetrics {
     pub retry_attempts: u32,
     pub stream_failures: u32,
@@ -452,6 +453,23 @@ impl PersistentValidatorNode {
             using_imported_validator_set_metadata_audit_root,
             persisted_matches_local_validator_set_metadata_audit_root,
         })
+    }
+
+    pub fn persist_snapshot_sync_client_metrics(
+        &self,
+        metrics: &SnapshotSyncClientMetrics,
+    ) -> Result<(), NodeError> {
+        self.storage
+            .commit_snapshot_sync_client_metrics(metrics)
+            .map_err(NodeError::Storage)
+    }
+
+    pub fn load_snapshot_sync_client_metrics(
+        &self,
+    ) -> Result<Option<SnapshotSyncClientMetrics>, NodeError> {
+        self.storage
+            .load_snapshot_sync_client_metrics()
+            .map_err(NodeError::Storage)
     }
 
     fn effective_snapshot_metadata_roots(&self) -> Result<BTreeMap<String, String>, NodeError> {
@@ -3608,11 +3626,22 @@ mod tests {
             .import_snapshot_chunk_set(&chunk_set, &required_metadata_roots)
             .unwrap();
         assert_eq!(imported.global_state_root, snapshot_root);
+        sink.persist_snapshot_sync_client_metrics(&metrics).unwrap();
+        assert_eq!(
+            sink.load_snapshot_sync_client_metrics().unwrap(),
+            Some(metrics.clone())
+        );
         assert_eq!(
             sink.node_snapshot_roots()
                 .unwrap()
                 .validator_set_metadata_audit_root,
             status.validator_set_metadata_audit_root
+        );
+
+        let restarted_sink = PersistentValidatorNode::restart("validator-2", &sink_dir).unwrap();
+        assert_eq!(
+            restarted_sink.load_snapshot_sync_client_metrics().unwrap(),
+            Some(metrics)
         );
 
         drop(client);
