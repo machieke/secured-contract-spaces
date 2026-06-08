@@ -239,10 +239,12 @@ Completed production-plan slices:
   checked in verify.
 - [x] Evaluator fixture inventory entry names are checked for uniqueness in
   verify.
+- [x] Evaluator fixture inventory entry paths are checked for uniqueness in
+  verify.
 
 Next implementation slices:
 
-- [ ] Add evaluator fixture inventory entry path uniqueness checks in verify.
+- [ ] Add evaluator fixture inventory root format checks in verify.
 
 # 1. Production Objective
 

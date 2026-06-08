@@ -1332,6 +1332,34 @@ mod tests {
     }
 
     #[test]
+    fn proof_runtime_evaluator_fixture_inventory_paths_are_unique() {
+        let inventory: EvaluatorFixtureInventoryForTest = serde_json::from_str(include_str!(
+            "../../../models/detta-restricted-evaluator-fixture-inventory.json"
+        ))
+        .unwrap();
+        let mut paths = BTreeSet::new();
+
+        for entry in &inventory.fixtures {
+            assert!(
+                paths.insert(entry.fixture_path.as_str()),
+                "{} is duplicated in the evaluator fixture inventory",
+                entry.fixture_path
+            );
+            assert!(
+                paths.insert(entry.attestation_path.as_str()),
+                "{} is duplicated in the evaluator fixture inventory",
+                entry.attestation_path
+            );
+            if let Some(path) = &entry.trace_root_attestation_path {
+                assert!(
+                    paths.insert(path.as_str()),
+                    "{path} is duplicated in the evaluator fixture inventory"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn proof_runtime_artifacts_match_evaluator_fixture_inventory_entries() {
         let inventory: EvaluatorFixtureInventoryForTest = serde_json::from_str(include_str!(
             "../../../models/detta-restricted-evaluator-fixture-inventory.json"
