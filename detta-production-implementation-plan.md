@@ -370,6 +370,8 @@ Completed production-plan slices:
   global-pending, and per-sender pending limits with stable RPC errors.
 - [x] Peer protocol-version negotiation accepts adjacent compatible version
   windows and rejects incompatible windows over manager and TCP handshakes.
+- [x] Staking contracts support configured rewards and delayed unbonding with
+  aggregate pending-unbond invariants and block-height tests.
 
 Next implementation slices:
 
