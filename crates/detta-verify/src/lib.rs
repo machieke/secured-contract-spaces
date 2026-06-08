@@ -197,6 +197,7 @@ pub enum TheoremEvidenceKind {
     RuntimeTest,
     Model,
     Verifier,
+    Fixture,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -292,7 +293,7 @@ pub fn checked_in_proof_artifact_manifest_root() -> String {
 }
 
 pub fn scs_theorem_coverage() -> Vec<SafetyTheoremCoverage> {
-    use TheoremEvidenceKind::{Model, RuntimeTest, Verifier};
+    use TheoremEvidenceKind::{Fixture, Model, RuntimeTest, Verifier};
 
     vec![
         SafetyTheoremCoverage {
@@ -334,6 +335,10 @@ pub fn scs_theorem_coverage() -> Vec<SafetyTheoremCoverage> {
                 TheoremEvidence {
                     kind: RuntimeTest,
                     reference: "detta_verify::tests::symbolic_trace_rejects_out_of_scope_write",
+                },
+                TheoremEvidence {
+                    kind: Fixture,
+                    reference: "models/detta-restricted-evaluator-proof-trace.json",
                 },
             ],
         },
@@ -470,10 +475,16 @@ pub fn scs_theorem_coverage() -> Vec<SafetyTheoremCoverage> {
         SafetyTheoremCoverage {
             id: "THM-015",
             name: "Raw Primitive Exclusion",
-            evidence: vec![TheoremEvidence {
-                kind: RuntimeTest,
-                reference: "detta_evaluator::tests::evaluator_rejects_forbidden_primitive",
-            }],
+            evidence: vec![
+                TheoremEvidence {
+                    kind: RuntimeTest,
+                    reference: "detta_evaluator::tests::evaluator_rejects_forbidden_primitive",
+                },
+                TheoremEvidence {
+                    kind: Fixture,
+                    reference: "models/detta-restricted-evaluator-forbidden-primitives.json",
+                },
+            ],
         },
     ]
 }
@@ -759,6 +770,34 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn theorem_fixture_evidence_references_runtime_artifacts() {
+        let runtime_artifacts: BTreeSet<_> = proof_runtime_artifacts()
+            .into_iter()
+            .map(|artifact| artifact.path)
+            .collect();
+        let fixture_references: BTreeSet<_> = scs_theorem_coverage()
+            .into_iter()
+            .flat_map(|theorem| theorem.evidence)
+            .filter(|evidence| evidence.kind == TheoremEvidenceKind::Fixture)
+            .map(|evidence| evidence.reference)
+            .collect();
+
+        assert_eq!(
+            fixture_references,
+            BTreeSet::from([
+                "models/detta-restricted-evaluator-proof-trace.json",
+                "models/detta-restricted-evaluator-forbidden-primitives.json",
+            ])
+        );
+        for reference in fixture_references {
+            assert!(
+                runtime_artifacts.contains(reference),
+                "{reference} is not bound as a runtime artifact"
+            );
+        }
     }
 
     #[test]

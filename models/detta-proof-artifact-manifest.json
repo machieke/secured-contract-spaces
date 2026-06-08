@@ -64,6 +64,10 @@
         {
           "kind": "RuntimeTest",
           "reference": "detta_verify::tests::symbolic_trace_rejects_out_of_scope_write"
+        },
+        {
+          "kind": "Fixture",
+          "reference": "models/detta-restricted-evaluator-proof-trace.json"
         }
       ]
     },
@@ -212,6 +216,10 @@
         {
           "kind": "RuntimeTest",
           "reference": "detta_evaluator::tests::evaluator_rejects_forbidden_primitive"
+        },
+        {
+          "kind": "Fixture",
+          "reference": "models/detta-restricted-evaluator-forbidden-primitives.json"
         }
       ]
     }
