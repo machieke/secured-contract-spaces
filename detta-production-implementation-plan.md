@@ -261,10 +261,12 @@ Completed production-plan slices:
   artifact filenames in verify.
 - [x] Evaluator fixture inventory trace-root metadata is checked for
   all-or-none proof-trace-only optionality in verify.
+- [x] Evaluator fixture inventory fixture order is checked for deterministic
+  stability in verify.
 
 Next implementation slices:
 
-- [ ] Add evaluator fixture inventory order stability checks in verify.
+- [ ] Add proof manifest model artifact order stability checks in verify.
 
 # 1. Production Objective
 

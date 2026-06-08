@@ -72,6 +72,8 @@ cargo test -p detta-verify
   filenames, with trace-root attestations using the `-root.sha256` form.
 - evaluator fixture inventory trace-root metadata appears as an all-or-none
   group only on the proof-trace fixture.
+- evaluator fixture inventory fixture order is stable: proof trace, forbidden
+  primitive, resource exhaustion, then arithmetic overflow.
 - evaluator fixture inventory roots are lowercase SHA-256 hex.
 - the evaluator fixture inventory trace root matches the proof-trace fixture,
   compact trace bytes, and trace-root attestation.
@@ -157,6 +159,8 @@ Before accepting a release proof bundle, verify:
   form;
 - evaluator fixture inventory trace-root metadata appears as an all-or-none
   group only on the proof-trace fixture;
+- evaluator fixture inventory fixture order is stable: proof trace, forbidden
+  primitive, resource exhaustion, then arithmetic overflow;
 - every evaluator fixture inventory root uses lowercase SHA-256 hex;
 - the evaluator fixture inventory trace root matches the proof-trace fixture,
   compact trace bytes, and trace-root attestation;

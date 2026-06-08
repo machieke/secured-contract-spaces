@@ -1675,6 +1675,29 @@ mod tests {
     }
 
     #[test]
+    fn proof_runtime_evaluator_fixture_inventory_order_is_stable() {
+        let inventory: EvaluatorFixtureInventoryForTest = serde_json::from_str(include_str!(
+            "../../../models/detta-restricted-evaluator-fixture-inventory.json"
+        ))
+        .unwrap();
+        let fixture_order: Vec<_> = inventory
+            .fixtures
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+
+        assert_eq!(
+            fixture_order,
+            vec![
+                "proof-trace",
+                "forbidden-primitives",
+                "resource-exhaustion",
+                "arithmetic-overflow",
+            ]
+        );
+    }
+
+    #[test]
     fn proof_runtime_evaluator_fixture_inventory_roots_are_lowercase_sha256_hex() {
         let inventory: EvaluatorFixtureInventoryForTest = serde_json::from_str(include_str!(
             "../../../models/detta-restricted-evaluator-fixture-inventory.json"
