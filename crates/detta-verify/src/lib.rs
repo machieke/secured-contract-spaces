@@ -960,6 +960,22 @@ mod tests {
     }
 
     #[test]
+    fn proof_model_and_runtime_artifact_paths_are_disjoint() {
+        let model_paths: BTreeSet<_> = proof_model_artifacts()
+            .into_iter()
+            .map(|artifact| artifact.path)
+            .collect();
+
+        for artifact in proof_runtime_artifacts() {
+            assert!(
+                !model_paths.contains(artifact.path),
+                "{} must not be listed as both model and runtime artifact",
+                artifact.path
+            );
+        }
+    }
+
+    #[test]
     fn proof_runtime_artifacts_bind_all_evaluator_attestations() {
         let runtime_paths: BTreeSet<_> = proof_runtime_artifacts()
             .into_iter()
