@@ -18,6 +18,12 @@ jobs:
         with:
           components: clippy, rustfmt
 
+      - name: Install Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
       - name: Audit dependencies
         uses: EmbarkStudios/cargo-deny-action@v2
         with:

@@ -23,6 +23,7 @@ cargo test
 cargo test -p detta-verify
 cargo test -p detta-verify tests::differential_replay_accepts_generated_transfer_corpus -- --exact
 cargo build --locked --release
+scripts/detta-model-check.sh
 ```
 
 `cargo test -p detta-verify` checks that:
@@ -327,10 +328,15 @@ implementation obligations.
 ## TLC/Apalache Use
 
 `models/DeTTaBlockExecution.cfg` is the checked-in bounded TLC config for the
-abstract block-execution model. With TLC available, run:
+abstract block-execution model. The release gate runs a pinned, deterministic
+TLC bounded simulation job through `scripts/detta-model-check.sh`. To use a
+preinstalled TLA+ tools JAR instead of the cached download, set
+`TLA2TOOLS_JAR=/path/to/tla2tools.jar`.
+
+The script runs:
 
 ```sh
-tlc2.TLC -deadlock -workers auto -config models/DeTTaBlockExecution.cfg models/DeTTaBlockExecution.tla
+java -cp "$TLA2TOOLS_JAR" tlc2.TLC -deadlock -simulate num=32 -depth 20 -seed 1 -workers auto -config models/DeTTaBlockExecution.cfg models/DeTTaBlockExecution.tla
 ```
 
 When adding a new bounded config file, give finite values for:

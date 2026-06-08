@@ -1849,12 +1849,12 @@ mod tests {
             vec![
                 ModelArtifactRoot {
                     path: "models/DeTTaBlockExecution.tla",
-                    sha256: "b1ad4c2b5bed6d8efd44451ef1a69665fe62ff234b8aa49ee8bfc0d10a8a6fc9"
+                    sha256: "ea4eb64dc59e46005a536bc4e6e133779158dec4afa731a5fe09712d906273dd"
                         .into(),
                 },
                 ModelArtifactRoot {
                     path: "models/DeTTaBlockExecution.cfg",
-                    sha256: "9149c3554fb6fb6971913c9ca7615c54289dbd04c9e612baae3b49bf203e6598"
+                    sha256: "47d31b79a518f34913797b9732cccb966be47ddcfc05635e4b1ae3a8b0f4cab2"
                         .into(),
                 },
             ]

@@ -365,6 +365,7 @@ Completed production-plan slices:
   check.
 - [x] Local release gate runs the deterministic generated-corpus fuzz smoke
   test explicitly.
+- [x] Local release gate and CI run the checked-in TLA+ bounded simulation job.
 
 Next implementation slices:
 

@@ -16,6 +16,7 @@ CONSTANTS
     Keys,
     Values,
     TxIds,
+    Nonces,
     Errors,
     NoValue,
     GenesisHash
@@ -42,23 +43,10 @@ vars ==
        height,
        finalizedHash >>
 
-TypeOK ==
-    /\ storage \in [Keys -> Values \cup {NoValue}]
-    /\ registry \subseteq (Principals \X Principals)
-    /\ policies \subseteq (Contracts \X Methods)
-    /\ usedNonces \subseteq (Principals \X Nat)
-    /\ events \in Seq(EventType)
-    /\ activeLocks \subseteq Contracts
-    /\ receipts \in Seq([tx_hash : TxIds,
-                         status  : {"Committed", "Reverted", "Rejected"},
-                         error   : Errors \cup {NoValue}])
-    /\ height \in Nat
-    /\ finalizedHash \in Values \cup {GenesisHash}
-
 TxType ==
     [ tx_hash : TxIds,
       sender  : Principals,
-      nonce   : Nat,
+      nonce   : Nonces,
       target  : Contracts,
       method  : Methods ]
 
@@ -70,6 +58,19 @@ WriteType ==
 EventType ==
     [ contract : Contracts,
       tx_hash  : TxIds ]
+
+TypeOK ==
+    /\ storage \in [Keys -> Values \cup {NoValue}]
+    /\ registry \subseteq (Principals \X Principals)
+    /\ policies \subseteq (Contracts \X Methods)
+    /\ usedNonces \subseteq (Principals \X Nonces)
+    /\ events \in Seq(EventType)
+    /\ activeLocks \subseteq Contracts
+    /\ receipts \in Seq([tx_hash : TxIds,
+                         status  : {"Committed", "Reverted", "Rejected"},
+                         error   : Errors \cup {NoValue}])
+    /\ height \in Nat
+    /\ finalizedHash \in Values \cup {GenesisHash}
 
 NullReceipt(tx, status, err) ==
     [ tx_hash |-> tx.tx_hash,
@@ -169,19 +170,19 @@ Spec == Init /\ [][Next]_vars
 
 \* THM-001 Dispatcher-only external mutation.
 DispatcherOnlyMutation ==
-    [](storage' # storage => \E tx \in TxType : DispatcherAllowed(tx))
+    [][storage' # storage => \E tx \in TxType : DispatcherAllowed(tx)]_vars
 
 \* THM-003 Method write-scope safety.
 WriteScopeSafety ==
-    [](\A tx \in TxType :
+    [][\A tx \in TxType :
         \A writes \in SUBSET WriteType :
             \A emitted \in EventType :
-                Commit(tx, writes, emitted) => WriteScopeOK(tx, writes))
+                Commit(tx, writes, emitted) => WriteScopeOK(tx, writes)]_vars
 
 \* THM-006 Registry consumption atomicity and THM-007 event atomicity.
 AtomicRevert ==
-    [](Len(receipts') > Len(receipts) /\ receipts'[Len(receipts')].status = "Reverted"
-        => storage' = storage /\ registry' = registry /\ events' = events)
+    [][Len(receipts') > Len(receipts) /\ receipts'[Len(receipts')].status = "Reverted"
+        => storage' = storage /\ registry' = registry /\ events' = events]_vars
 
 \* THM-009 Determinism is checked by running Spec from identical Init states
 \* with identical transaction traces and comparing storage, registry, events,
