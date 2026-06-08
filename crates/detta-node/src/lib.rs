@@ -11,6 +11,7 @@ use detta_protocol::{
     SignedValidatorMessage, SnapshotChunkManifest, SnapshotChunkRequest, SnapshotChunkSet,
     SnapshotSyncError, ValidatorPublicKey, ValidatorSetMetadata, ValidatorSetMetadataUpdate,
     ValidatorSigningKey, SNAPSHOT_METADATA_REQUIRED_METADATA_ROOTS_ROOT,
+    SNAPSHOT_METADATA_SNAPSHOT_IMPORT_AUDIT_CONFIG_ROOT,
     SNAPSHOT_METADATA_SNAPSHOT_IMPORT_AUDIT_ROOT, SNAPSHOT_METADATA_STATE_SYNC_CLIENT_METRICS_ROOT,
     SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT,
 };
@@ -591,6 +592,17 @@ impl PersistentValidatorNode {
             metadata_roots.insert(
                 SNAPSHOT_METADATA_SNAPSHOT_IMPORT_AUDIT_ROOT.into(),
                 FileStorage::snapshot_import_audit_root_for(&snapshot_import_audit_records)
+                    .map_err(NodeError::Storage)?,
+            );
+        }
+        if let Some(snapshot_import_audit_config) = self
+            .storage
+            .maybe_load_snapshot_import_audit_config()
+            .map_err(NodeError::Storage)?
+        {
+            metadata_roots.insert(
+                SNAPSHOT_METADATA_SNAPSHOT_IMPORT_AUDIT_CONFIG_ROOT.into(),
+                FileStorage::snapshot_import_audit_config_root_for(&snapshot_import_audit_config)
                     .map_err(NodeError::Storage)?,
             );
         }
@@ -3996,6 +4008,10 @@ mod tests {
             max_records: 1,
             max_page_size: 1,
         };
+        let snapshot_import_audit_config_root = FileStorage::snapshot_import_audit_config_root_for(
+            &expected_snapshot_import_audit_config,
+        )
+        .unwrap();
         assert_eq!(
             sink.handle_rpc_request(RpcRequest::GetSnapshotImportAuditConfig),
             RpcResponse::Ok(RpcResult::SnapshotImportAuditConfig(
@@ -4162,6 +4178,12 @@ mod tests {
                         .get(SNAPSHOT_METADATA_SNAPSHOT_IMPORT_AUDIT_ROOT),
                     Some(&snapshot_import_audit_root)
                 );
+                assert_eq!(
+                    manifest
+                        .metadata_roots
+                        .get(SNAPSHOT_METADATA_SNAPSHOT_IMPORT_AUDIT_CONFIG_ROOT),
+                    Some(&snapshot_import_audit_config_root)
+                );
             }
             message => panic!("expected snapshot manifest, got {message:?}"),
         }
@@ -4189,6 +4211,10 @@ mod tests {
             SNAPSHOT_METADATA_SNAPSHOT_IMPORT_AUDIT_ROOT.into(),
             snapshot_import_audit_root.clone(),
         );
+        downstream_required_metadata_roots.insert(
+            SNAPSHOT_METADATA_SNAPSHOT_IMPORT_AUDIT_CONFIG_ROOT.into(),
+            snapshot_import_audit_config_root.clone(),
+        );
         let downstream_dir = temp_dir("state-sync-downstream-import-audit");
         let downstream = PersistentValidatorNode::bootstrap(
             "validator-3",
@@ -4200,7 +4226,7 @@ mod tests {
             .import_snapshot_chunk_set(&downstream_chunk_set, &downstream_required_metadata_roots)
             .unwrap();
         assert_eq!(downstream_import.global_state_root, snapshot_root);
-        let mut wrong_downstream_roots = downstream_required_metadata_roots;
+        let mut wrong_downstream_roots = downstream_required_metadata_roots.clone();
         wrong_downstream_roots.insert(
             SNAPSHOT_METADATA_SNAPSHOT_IMPORT_AUDIT_ROOT.into(),
             "wrong-import-audit-root".into(),
@@ -4213,6 +4239,21 @@ mod tests {
                 key: SNAPSHOT_METADATA_SNAPSHOT_IMPORT_AUDIT_ROOT.into(),
                 expected: "wrong-import-audit-root".into(),
                 actual: Some(snapshot_import_audit_root.clone()),
+            })
+        );
+        let mut wrong_downstream_config_roots = downstream_required_metadata_roots;
+        wrong_downstream_config_roots.insert(
+            SNAPSHOT_METADATA_SNAPSHOT_IMPORT_AUDIT_CONFIG_ROOT.into(),
+            "wrong-import-audit-config-root".into(),
+        );
+        assert_eq!(
+            downstream
+                .import_snapshot_chunk_set(&downstream_chunk_set, &wrong_downstream_config_roots)
+                .unwrap_err(),
+            NodeError::SnapshotSync(SnapshotSyncError::MetadataRootMismatch {
+                key: SNAPSHOT_METADATA_SNAPSHOT_IMPORT_AUDIT_CONFIG_ROOT.into(),
+                expected: "wrong-import-audit-config-root".into(),
+                actual: Some(snapshot_import_audit_config_root),
             })
         );
         fs::remove_dir_all(downstream_dir).unwrap();

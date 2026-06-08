@@ -142,10 +142,13 @@ Completed production-plan slices:
   node-aware RPC.
 - [x] Snapshot import audit retention configuration is served over the shared
   TCP JSON RPC path.
+- [x] Snapshot manifests bind snapshot import audit configuration roots and
+  downstream imports can require them.
 
 Next implementation slices:
 
-- [ ] Include snapshot import audit configuration roots in snapshot metadata.
+- [ ] Add snapshot import audit configuration roots to persistent snapshot root
+  responses for consolidated discovery.
 
 # 1. Production Objective
 

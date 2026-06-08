@@ -340,6 +340,12 @@ impl FileStorage {
         read_json(&path).map(Some)
     }
 
+    pub fn snapshot_import_audit_config_root_for(
+        config: &SnapshotImportAuditConfig,
+    ) -> Result<String, StorageError> {
+        hash_bincode(config)
+    }
+
     pub fn commit_mempool(&self, transactions: &[Transaction]) -> Result<(), StorageError> {
         write_json_atomic(&self.mempool_path(), &transactions)
     }
@@ -975,6 +981,8 @@ mod tests {
         storage
             .commit_snapshot_import_audit_config(&config)
             .unwrap();
+        let config_root = FileStorage::snapshot_import_audit_config_root_for(&config).unwrap();
+        assert_ne!(config_root, retained_root);
         assert_eq!(
             FileStorage::open(&dir)
                 .unwrap()
