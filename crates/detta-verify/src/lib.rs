@@ -1418,6 +1418,16 @@ mod tests {
         assert_eq!(root.len(), SHA256_HEX_LENGTH);
     }
 
+    #[test]
+    fn proof_artifact_manifest_root_attestation_root_is_lowercase_hex() {
+        let attestation = include_str!("../../../models/detta-proof-artifact-manifest.sha256");
+        let (root, _) = sha256sum_attestation_parts(attestation);
+
+        assert!(root
+            .chars()
+            .all(|character| character.is_ascii_hexdigit() && !character.is_ascii_uppercase()));
+    }
+
     struct ProofReleaseAttestationFixture {
         attestation: &'static str,
         file_name: &'static str,

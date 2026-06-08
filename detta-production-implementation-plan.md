@@ -346,10 +346,12 @@ Completed production-plan slices:
   manifest artifact name in verify.
 - [x] Proof manifest root attestation root is checked for SHA-256 hex length in
   verify.
+- [x] Proof manifest root attestation root is checked for lowercase hex in
+  verify.
 
 Next implementation slices:
 
-- [ ] Add proof manifest root attestation lowercase hex checks in verify.
+- [ ] Add proof manifest root attestation filename separator checks in verify.
 
 # 1. Production Objective
 
