@@ -951,6 +951,40 @@ mod tests {
     }
 
     #[test]
+    fn scs_theorem_evidence_kinds_cover_expected_set() {
+        let coverage = scs_theorem_coverage();
+        let evidence_kinds: BTreeSet<_> = coverage
+            .iter()
+            .flat_map(|entry| &entry.evidence)
+            .map(|evidence| theorem_evidence_kind_name(&evidence.kind))
+            .collect();
+
+        assert_eq!(
+            evidence_kinds,
+            BTreeSet::from(["Fixture", "Model", "RuntimeTest", "Verifier"])
+        );
+        for entry in coverage {
+            assert!(
+                entry
+                    .evidence
+                    .iter()
+                    .any(|evidence| matches!(evidence.kind, TheoremEvidenceKind::RuntimeTest)),
+                "{} must retain at least one runtime test evidence anchor",
+                entry.id
+            );
+        }
+    }
+
+    fn theorem_evidence_kind_name(kind: &TheoremEvidenceKind) -> &'static str {
+        match kind {
+            TheoremEvidenceKind::RuntimeTest => "RuntimeTest",
+            TheoremEvidenceKind::Model => "Model",
+            TheoremEvidenceKind::Verifier => "Verifier",
+            TheoremEvidenceKind::Fixture => "Fixture",
+        }
+    }
+
+    #[test]
     fn proof_artifact_manifest_matches_checked_in_json() {
         let expected: serde_json::Value = serde_json::from_str(include_str!(
             "../../../models/detta-proof-artifact-manifest.json"
