@@ -11,6 +11,7 @@ pub const HEADER_LEN: usize = 10;
 pub const MAX_PAYLOAD_LEN: usize = 16 * 1024 * 1024;
 pub const VALIDATOR_SIGNATURE_PREFIX: &str = "detta.validator.protocol.v1";
 pub const SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT: &str = "validator_set_metadata_audit_root";
+pub const SNAPSHOT_METADATA_STATE_SYNC_CLIENT_METRICS_ROOT: &str = "state_sync_client_metrics_root";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub enum ValidatorSignatureDomain {

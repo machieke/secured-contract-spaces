@@ -10,7 +10,8 @@ use detta_protocol::{
     build_snapshot_chunks_with_metadata_roots, ProtocolMessageKind, SignatureError,
     SignedValidatorMessage, SnapshotChunkManifest, SnapshotChunkRequest, SnapshotChunkSet,
     SnapshotSyncError, ValidatorPublicKey, ValidatorSetMetadata, ValidatorSetMetadataUpdate,
-    ValidatorSigningKey, SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT,
+    ValidatorSigningKey, SNAPSHOT_METADATA_STATE_SYNC_CLIENT_METRICS_ROOT,
+    SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT,
 };
 use detta_rpc::{
     json_rpc_response_for_request, JsonRpcHandler, PersistentNodeSnapshotRoots, RpcError,
@@ -501,6 +502,16 @@ impl PersistentValidatorNode {
                 self.storage
                     .validator_set_metadata_audit_root()
                     .map_err(NodeError::Storage)?,
+            );
+        }
+        if let Some(metrics_root) = self
+            .storage
+            .snapshot_sync_client_metrics_root::<SnapshotSyncClientMetrics>()
+            .map_err(NodeError::Storage)?
+        {
+            metadata_roots.insert(
+                SNAPSHOT_METADATA_STATE_SYNC_CLIENT_METRICS_ROOT.into(),
+                metrics_root,
             );
         }
         Ok(metadata_roots)
@@ -3679,6 +3690,11 @@ mod tests {
         );
         let expected_metrics_report = snapshot_sync_client_metrics_report(metrics.clone());
         sink.persist_snapshot_sync_client_metrics(&metrics).unwrap();
+        let expected_metrics_root = sink
+            .storage
+            .snapshot_sync_client_metrics_root::<SnapshotSyncClientMetrics>()
+            .unwrap()
+            .unwrap();
         assert_eq!(
             sink.load_snapshot_sync_client_metrics().unwrap(),
             Some(metrics.clone())
@@ -3698,6 +3714,27 @@ mod tests {
             sink_roots.snapshot_sync_client_metrics,
             Some(expected_metrics_report.clone())
         );
+        let response = sink
+            .serve_snapshot_chunk_request(
+                &SnapshotChunkRequest {
+                    snapshot_root: snapshot_root.clone(),
+                    start_index: 0,
+                    max_chunks: 1,
+                },
+                64,
+            )
+            .unwrap();
+        match &response[0] {
+            NetworkMessage::SnapshotChunkManifest(manifest) => {
+                assert_eq!(
+                    manifest
+                        .metadata_roots
+                        .get(SNAPSHOT_METADATA_STATE_SYNC_CLIENT_METRICS_ROOT),
+                    Some(&expected_metrics_root)
+                );
+            }
+            message => panic!("expected snapshot manifest, got {message:?}"),
+        }
 
         let mut restarted_sink =
             PersistentValidatorNode::restart("validator-2", &sink_dir).unwrap();

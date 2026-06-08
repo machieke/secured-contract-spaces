@@ -102,10 +102,12 @@ Completed production-plan slices:
   RPC path.
 - [x] Persistent node snapshot root responses include persisted state-sync
   diagnostics when available.
+- [x] Persisted state-sync diagnostics are hashed into snapshot metadata roots
+  so manifests can authenticate diagnostics for audit proofs.
 
 Next implementation slices:
 
-- [ ] Bind state-sync diagnostics into snapshot metadata roots for audit proofs.
+- [ ] Require state-sync diagnostics roots during verified snapshot imports.
 
 # 1. Production Objective
 

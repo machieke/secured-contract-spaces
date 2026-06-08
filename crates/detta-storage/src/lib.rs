@@ -95,6 +95,14 @@ impl FileStorage {
         read_json(&path).map(Some)
     }
 
+    pub fn snapshot_sync_client_metrics_root<T: DeserializeOwned + Serialize>(
+        &self,
+    ) -> Result<Option<String>, StorageError> {
+        self.load_snapshot_sync_client_metrics::<T>()?
+            .map(|metrics| hash_bincode(&metrics))
+            .transpose()
+    }
+
     pub fn commit_block(&self, block: &Block) -> Result<(), StorageError> {
         write_json_atomic(&self.block_path(block.header.height), block)
     }
@@ -455,8 +463,18 @@ mod tests {
                 .unwrap(),
             None
         );
+        assert_eq!(
+            storage
+                .snapshot_sync_client_metrics_root::<TestSnapshotSyncMetrics>()
+                .unwrap(),
+            None
+        );
         storage
             .commit_snapshot_sync_client_metrics(&metrics)
+            .unwrap();
+        let metrics_root = storage
+            .snapshot_sync_client_metrics_root::<TestSnapshotSyncMetrics>()
+            .unwrap()
             .unwrap();
         assert_eq!(
             FileStorage::open(&dir)
@@ -464,6 +482,13 @@ mod tests {
                 .load_snapshot_sync_client_metrics::<TestSnapshotSyncMetrics>()
                 .unwrap(),
             Some(metrics)
+        );
+        assert_eq!(
+            FileStorage::open(&dir)
+                .unwrap()
+                .snapshot_sync_client_metrics_root::<TestSnapshotSyncMetrics>()
+                .unwrap(),
+            Some(metrics_root)
         );
 
         fs::remove_dir_all(dir).unwrap();
