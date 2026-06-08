@@ -703,6 +703,75 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_metadata_root_status_json_fixture_is_stable() {
+        let response = RpcResponse::Ok(RpcResult::SnapshotMetadataRootStatus(Box::new(
+            SnapshotMetadataRootStatus {
+                validator_set_metadata_audit_root: "validator-imported-root".into(),
+                local_validator_set_metadata_audit_root: "validator-local-root".into(),
+                persisted_validator_set_metadata_audit_root: Some("validator-imported-root".into()),
+                using_imported_validator_set_metadata_audit_root: true,
+                persisted_matches_local_validator_set_metadata_audit_root: false,
+                snapshot_import_audit_config_root: Some("config-imported-root".into()),
+                local_snapshot_import_audit_config_root: None,
+                persisted_snapshot_import_audit_config_root: Some("config-imported-root".into()),
+                using_imported_snapshot_import_audit_config_root: true,
+                persisted_matches_local_snapshot_import_audit_config_root: false,
+                snapshot_import_audit_root: Some("audit-local-root".into()),
+                local_snapshot_import_audit_root: Some("audit-local-root".into()),
+                persisted_snapshot_import_audit_root: Some("audit-imported-root".into()),
+                using_imported_snapshot_import_audit_root: false,
+                persisted_matches_local_snapshot_import_audit_root: false,
+                required_snapshot_metadata_roots_root: Some("required-local-root".into()),
+                local_required_snapshot_metadata_roots_root: Some("required-local-root".into()),
+                persisted_required_snapshot_metadata_roots_root: Some(
+                    "required-imported-root".into(),
+                ),
+                using_imported_required_snapshot_metadata_roots_root: false,
+                persisted_matches_local_required_snapshot_metadata_roots_root: false,
+                snapshot_sync_client_metrics_root: Some("metrics-local-root".into()),
+                local_snapshot_sync_client_metrics_root: Some("metrics-local-root".into()),
+                persisted_snapshot_sync_client_metrics_root: Some("metrics-imported-root".into()),
+                using_imported_snapshot_sync_client_metrics_root: false,
+                persisted_matches_local_snapshot_sync_client_metrics_root: false,
+            },
+        )));
+        let fixture = concat!(
+            r#"{"status":"ok","body":{"result":"snapshot_metadata_root_status","data":{"#,
+            r#""validator_set_metadata_audit_root":"validator-imported-root","#,
+            r#""local_validator_set_metadata_audit_root":"validator-local-root","#,
+            r#""persisted_validator_set_metadata_audit_root":"validator-imported-root","#,
+            r#""using_imported_validator_set_metadata_audit_root":true,"#,
+            r#""persisted_matches_local_validator_set_metadata_audit_root":false,"#,
+            r#""snapshot_import_audit_config_root":"config-imported-root","#,
+            r#""local_snapshot_import_audit_config_root":null,"#,
+            r#""persisted_snapshot_import_audit_config_root":"config-imported-root","#,
+            r#""using_imported_snapshot_import_audit_config_root":true,"#,
+            r#""persisted_matches_local_snapshot_import_audit_config_root":false,"#,
+            r#""snapshot_import_audit_root":"audit-local-root","#,
+            r#""local_snapshot_import_audit_root":"audit-local-root","#,
+            r#""persisted_snapshot_import_audit_root":"audit-imported-root","#,
+            r#""using_imported_snapshot_import_audit_root":false,"#,
+            r#""persisted_matches_local_snapshot_import_audit_root":false,"#,
+            r#""required_snapshot_metadata_roots_root":"required-local-root","#,
+            r#""local_required_snapshot_metadata_roots_root":"required-local-root","#,
+            r#""persisted_required_snapshot_metadata_roots_root":"required-imported-root","#,
+            r#""using_imported_required_snapshot_metadata_roots_root":false,"#,
+            r#""persisted_matches_local_required_snapshot_metadata_roots_root":false,"#,
+            r#""snapshot_sync_client_metrics_root":"metrics-local-root","#,
+            r#""local_snapshot_sync_client_metrics_root":"metrics-local-root","#,
+            r#""persisted_snapshot_sync_client_metrics_root":"metrics-imported-root","#,
+            r#""using_imported_snapshot_sync_client_metrics_root":false,"#,
+            r#""persisted_matches_local_snapshot_sync_client_metrics_root":false}}}"#,
+        );
+
+        assert_eq!(serde_json::to_string(&response).unwrap(), fixture);
+        assert_eq!(
+            serde_json::from_str::<RpcResponse>(fixture).unwrap(),
+            response
+        );
+    }
+
+    #[test]
     fn rpc_submits_transaction_produces_block_and_returns_receipt() {
         let mut rpc = seeded_rpc();
         rpc.submit_transaction(transfer_tx()).unwrap();

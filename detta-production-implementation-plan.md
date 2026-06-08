@@ -160,11 +160,13 @@ Completed production-plan slices:
   state-sync client metrics roots.
 - [x] Expanded snapshot metadata root diagnostics are asserted over the shared
   TCP JSON RPC path.
+- [x] Stable JSON client fixtures cover expanded snapshot metadata root status
+  responses.
 
 Next implementation slices:
 
-- [ ] Add stable JSON client fixtures for expanded snapshot metadata root
-  status responses.
+- [ ] Document expanded snapshot metadata root status RPC semantics for client
+  implementers.
 
 # 1. Production Objective
 
