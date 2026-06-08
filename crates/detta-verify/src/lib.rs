@@ -1612,6 +1612,34 @@ mod tests {
     }
 
     #[test]
+    fn proof_runtime_evaluator_fixture_inventory_attestation_paths_bind_target_filenames() {
+        let inventory: EvaluatorFixtureInventoryForTest = serde_json::from_str(include_str!(
+            "../../../models/detta-restricted-evaluator-fixture-inventory.json"
+        ))
+        .unwrap();
+
+        for entry in &inventory.fixtures {
+            let fixture_stem = entry.fixture_path.strip_suffix(".json").unwrap();
+            assert_eq!(
+                entry.attestation_path,
+                format!("{fixture_stem}.sha256"),
+                "{} must attest {} by basename",
+                entry.attestation_path,
+                entry.fixture_path
+            );
+
+            if let Some(path) = &entry.trace_root_attestation_path {
+                assert_eq!(
+                    path,
+                    &format!("{fixture_stem}-root.sha256"),
+                    "{path} must be the trace-root attestation for {}",
+                    entry.fixture_path
+                );
+            }
+        }
+    }
+
+    #[test]
     fn proof_runtime_evaluator_fixture_inventory_roots_are_lowercase_sha256_hex() {
         let inventory: EvaluatorFixtureInventoryForTest = serde_json::from_str(include_str!(
             "../../../models/detta-restricted-evaluator-fixture-inventory.json"

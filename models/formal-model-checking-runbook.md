@@ -68,6 +68,8 @@ cargo test -p detta-verify
   paths are unique.
 - evaluator fixture inventory paths stay under `models/`, avoid traversal, and
   use `.json` for fixtures and `.sha256` for attestations.
+- evaluator fixture inventory attestation paths bind to the target fixture
+  filenames, with trace-root attestations using the `-root.sha256` form.
 - evaluator fixture inventory roots are lowercase SHA-256 hex.
 - the evaluator fixture inventory trace root matches the proof-trace fixture,
   compact trace bytes, and trace-root attestation.
@@ -148,6 +150,9 @@ Before accepting a release proof bundle, verify:
   attestation, and trace-root attestation fields;
 - every evaluator fixture inventory path stays under `models/`, avoids
   traversal, and uses the expected fixture or attestation suffix;
+- every evaluator fixture inventory attestation path binds to its target
+  fixture filename, with trace-root attestations using the `-root.sha256`
+  form;
 - every evaluator fixture inventory root uses lowercase SHA-256 hex;
 - the evaluator fixture inventory trace root matches the proof-trace fixture,
   compact trace bytes, and trace-root attestation;

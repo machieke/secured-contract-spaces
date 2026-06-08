@@ -257,11 +257,12 @@ Completed production-plan slices:
   artifact root mappings in verify.
 - [x] Evaluator fixture inventory paths are checked for models namespace and
   expected suffixes in verify.
+- [x] Evaluator fixture inventory attestation paths are checked against target
+  artifact filenames in verify.
 
 Next implementation slices:
 
-- [ ] Add evaluator fixture inventory attestation target filename checks in
-  verify.
+- [ ] Add evaluator fixture inventory trace-root optionality checks in verify.
 
 # 1. Production Objective
 
