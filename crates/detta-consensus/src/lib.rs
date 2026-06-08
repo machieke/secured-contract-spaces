@@ -16,6 +16,14 @@ pub struct FinalityCertificate {
     pub signers: Vec<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct EquivocationEvidence {
+    pub validator_id: String,
+    pub height: u64,
+    pub first_block_hash: String,
+    pub second_block_hash: String,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ConsensusError {
     UnknownProposer,
@@ -30,6 +38,7 @@ pub enum ConsensusError {
         validator: String,
         error: BlockError,
     },
+    Equivocation(EquivocationEvidence),
 }
 
 pub struct ConsensusCluster {
@@ -116,6 +125,10 @@ impl ConsensusCluster {
         votes: Vec<Vote>,
         quorum: usize,
     ) -> Result<FinalityCertificate, ConsensusError> {
+        if let Some(evidence) = Self::detect_equivocation(&votes) {
+            return Err(ConsensusError::Equivocation(evidence));
+        }
+
         let mut signers = BTreeSet::new();
         for vote in votes {
             if vote.height == height && vote.block_hash == block_hash {
@@ -135,6 +148,36 @@ impl ConsensusCluster {
             block_hash: block_hash.to_string(),
             signers: signers.into_iter().collect(),
         })
+    }
+
+    pub fn detect_equivocation(votes: &[Vote]) -> Option<EquivocationEvidence> {
+        let mut seen = BTreeMap::<(&str, u64), &str>::new();
+        for vote in votes {
+            let key = (vote.validator_id.as_str(), vote.height);
+            if let Some(previous_hash) = seen.get(&key) {
+                if *previous_hash != vote.block_hash.as_str() {
+                    let (first_block_hash, second_block_hash) =
+                        ordered_hash_pair(previous_hash, &vote.block_hash);
+                    return Some(EquivocationEvidence {
+                        validator_id: vote.validator_id.clone(),
+                        height: vote.height,
+                        first_block_hash,
+                        second_block_hash,
+                    });
+                }
+            } else {
+                seen.insert(key, vote.block_hash.as_str());
+            }
+        }
+        None
+    }
+}
+
+fn ordered_hash_pair(left: &str, right: &str) -> (String, String) {
+    if left <= right {
+        (left.to_string(), right.to_string())
+    } else {
+        (right.to_string(), left.to_string())
     }
 }
 
@@ -247,6 +290,70 @@ mod tests {
                 accepted: 1,
                 required: 2
             }
+        );
+    }
+
+    #[test]
+    fn detects_validator_equivocation_at_same_height() {
+        let votes = vec![
+            Vote {
+                validator_id: "v1".into(),
+                height: 7,
+                block_hash: "hash-b".into(),
+            },
+            Vote {
+                validator_id: "v2".into(),
+                height: 7,
+                block_hash: "hash-b".into(),
+            },
+            Vote {
+                validator_id: "v1".into(),
+                height: 7,
+                block_hash: "hash-a".into(),
+            },
+        ];
+
+        assert_eq!(
+            ConsensusCluster::detect_equivocation(&votes),
+            Some(EquivocationEvidence {
+                validator_id: "v1".into(),
+                height: 7,
+                first_block_hash: "hash-a".into(),
+                second_block_hash: "hash-b".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn certificate_rejects_equivocating_votes_before_quorum() {
+        let votes = vec![
+            Vote {
+                validator_id: "v1".into(),
+                height: 1,
+                block_hash: "hash-a".into(),
+            },
+            Vote {
+                validator_id: "v1".into(),
+                height: 1,
+                block_hash: "hash-b".into(),
+            },
+            Vote {
+                validator_id: "v2".into(),
+                height: 1,
+                block_hash: "hash-a".into(),
+            },
+        ];
+
+        let error = ConsensusCluster::certificate_from_votes(1, "hash-a", votes, 2).unwrap_err();
+
+        assert_eq!(
+            error,
+            ConsensusError::Equivocation(EquivocationEvidence {
+                validator_id: "v1".into(),
+                height: 1,
+                first_block_hash: "hash-a".into(),
+                second_block_hash: "hash-b".into(),
+            })
         );
     }
 }
