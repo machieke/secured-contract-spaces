@@ -23,10 +23,11 @@ Completed production-plan slices:
 - [x] Blocking TCP protocol stream can round-trip DeTTa protocol messages over
   local sockets.
 - [x] TCP peers exchange and validate `PeerHello` identity metadata.
+- [x] Peer connection manager validates peer metadata and enforces bounded
+  receive loops.
 
 Next implementation slices:
 
-- [ ] Add durable peer connection manager and bounded receive loops.
 - [ ] Add transaction gossip from RPC admission through validator peers.
 - [ ] Add consensus vote/certificate propagation over the network transport.
 - [ ] Add externally served RPC transport instead of only in-process RPC.

@@ -33,6 +33,76 @@ pub enum NetworkError {
     PeerRejected(String),
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PeerConnection {
+    pub hello: PeerHello,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PeerConnectionManager {
+    local: PeerHello,
+    peers: BTreeMap<PeerId, PeerConnection>,
+    max_receive_batch: usize,
+}
+
+impl PeerConnectionManager {
+    pub fn new(local: PeerHello, max_receive_batch: usize) -> Self {
+        Self {
+            local,
+            peers: BTreeMap::new(),
+            max_receive_batch,
+        }
+    }
+
+    pub fn local(&self) -> &PeerHello {
+        &self.local
+    }
+
+    pub fn peer_count(&self) -> usize {
+        self.peers.len()
+    }
+
+    pub fn peer(&self, peer_id: &str) -> Option<&PeerConnection> {
+        self.peers.get(peer_id)
+    }
+
+    pub fn register_peer(&mut self, hello: PeerHello) -> Result<(), NetworkError> {
+        if hello.peer_id == self.local.peer_id {
+            return Err(NetworkError::PeerRejected(format!(
+                "peer {} cannot connect to itself",
+                hello.peer_id
+            )));
+        }
+        if hello.network_id != self.local.network_id {
+            return Err(NetworkError::PeerRejected(format!(
+                "network mismatch: {}",
+                hello.network_id
+            )));
+        }
+        if hello.protocol_version != self.local.protocol_version {
+            return Err(NetworkError::PeerRejected(format!(
+                "protocol version mismatch: {}",
+                hello.protocol_version
+            )));
+        }
+        if self.peers.contains_key(&hello.peer_id) {
+            return Err(NetworkError::DuplicatePeer(hello.peer_id));
+        }
+
+        self.peers
+            .insert(hello.peer_id.clone(), PeerConnection { hello });
+        Ok(())
+    }
+
+    pub fn receive_bounded(
+        &self,
+        transport: &mut InMemoryTransport,
+        peer_id: &str,
+    ) -> Result<Vec<Envelope>, NetworkError> {
+        transport.drain_peer_bounded(peer_id, self.max_receive_batch)
+    }
+}
+
 #[derive(Debug)]
 pub struct TcpProtocolStream {
     stream: TcpStream,
@@ -168,11 +238,27 @@ impl InMemoryTransport {
     }
 
     pub fn drain_peer(&mut self, peer: &str) -> Result<Vec<Envelope>, NetworkError> {
+        let limit = self
+            .inboxes
+            .get(peer)
+            .map(Vec::len)
+            .ok_or_else(|| NetworkError::UnknownPeer(peer.to_string()))?;
+        self.drain_peer_bounded(peer, limit)
+    }
+
+    pub fn drain_peer_bounded(
+        &mut self,
+        peer: &str,
+        max_envelopes: usize,
+    ) -> Result<Vec<Envelope>, NetworkError> {
         let inbox = self
             .inboxes
             .get_mut(peer)
             .ok_or_else(|| NetworkError::UnknownPeer(peer.to_string()))?;
-        std::mem::take(inbox)
+
+        let take_count = max_envelopes.min(inbox.len());
+        let wires: Vec<_> = inbox.drain(..take_count).collect();
+        wires
             .into_iter()
             .map(|wire| {
                 let message = decode_message(&wire.payload).map_err(NetworkError::Protocol)?;
@@ -271,6 +357,77 @@ mod tests {
             signature_ok: true,
             budget: 1_000_000,
         }
+    }
+
+    fn tx_with_hash(tx_hash: &str) -> Transaction {
+        let mut tx = transfer_tx();
+        tx.tx_hash = tx_hash.into();
+        tx
+    }
+
+    fn validator_hello(peer_id: &str) -> PeerHello {
+        PeerHello::new(peer_id, "detta-testnet", [PeerRole::Validator])
+    }
+
+    #[test]
+    fn peer_connection_manager_tracks_validated_peer_metadata() {
+        let mut manager = PeerConnectionManager::new(validator_hello("validator-1"), 16);
+        let remote = PeerHello::new("full-node-1", "detta-testnet", [PeerRole::FullNode]);
+
+        manager.register_peer(remote.clone()).unwrap();
+
+        assert_eq!(manager.peer_count(), 1);
+        assert_eq!(manager.peer("full-node-1").unwrap().hello, remote);
+        assert_eq!(
+            manager.register_peer(PeerHello::new(
+                "full-node-1",
+                "detta-testnet",
+                [PeerRole::FullNode]
+            )),
+            Err(NetworkError::DuplicatePeer("full-node-1".into()))
+        );
+        assert!(matches!(
+            manager.register_peer(PeerHello::new(
+                "validator-2",
+                "wrong-net",
+                [PeerRole::Validator]
+            )),
+            Err(NetworkError::PeerRejected(_))
+        ));
+        assert!(matches!(
+            manager.register_peer(validator_hello("validator-1")),
+            Err(NetworkError::PeerRejected(_))
+        ));
+    }
+
+    #[test]
+    fn bounded_receive_loop_preserves_unread_envelopes() {
+        let manager = PeerConnectionManager::new(validator_hello("validator-2"), 2);
+        let mut transport =
+            InMemoryTransport::new(["validator-1".into(), "validator-2".into()]).unwrap();
+        for index in 1..=3 {
+            transport
+                .send(
+                    "validator-1",
+                    "validator-2",
+                    NetworkMessage::Transaction(tx_with_hash(&format!("tx{index}"))),
+                )
+                .unwrap();
+        }
+
+        let first_batch = manager
+            .receive_bounded(&mut transport, "validator-2")
+            .unwrap();
+
+        assert_eq!(first_batch.len(), 2);
+        assert_eq!(transport.pending_len("validator-2"), Ok(1));
+
+        let second_batch = manager
+            .receive_bounded(&mut transport, "validator-2")
+            .unwrap();
+
+        assert_eq!(second_batch.len(), 1);
+        assert_eq!(transport.pending_len("validator-2"), Ok(0));
     }
 
     #[test]
