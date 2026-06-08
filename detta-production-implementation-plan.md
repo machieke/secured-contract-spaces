@@ -317,10 +317,12 @@ Completed production-plan slices:
   in verify.
 - [x] Proof release attestation target paths are checked against the expected
   set in verify.
+- [x] Proof release attestation target paths are checked for models namespace
+  and relative path safety in verify.
 
 Next implementation slices:
 
-- [ ] Add proof release attestation target path namespace checks in verify.
+- [ ] Add proof release attestation target path uniqueness checks in verify.
 
 # 1. Production Objective
 

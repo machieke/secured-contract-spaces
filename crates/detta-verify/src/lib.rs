@@ -1531,6 +1531,27 @@ mod tests {
     }
 
     #[test]
+    fn proof_release_attestation_target_paths_use_models_namespace() {
+        for fixture in proof_release_attestations_for_test() {
+            assert!(
+                fixture.target_path.starts_with("models/"),
+                "{} must be models/ relative",
+                fixture.target_path
+            );
+            assert!(
+                !fixture.target_path.contains(".."),
+                "{} must not traverse directories",
+                fixture.target_path
+            );
+            assert!(
+                !fixture.target_path.starts_with('/'),
+                "{} must be relative",
+                fixture.target_path
+            );
+        }
+    }
+
+    #[test]
     fn proof_release_attestation_roots_have_sha256_hex_length() {
         for fixture in proof_release_attestations_for_test() {
             let (root, file_name) = sha256sum_attestation_parts(fixture.attestation);
