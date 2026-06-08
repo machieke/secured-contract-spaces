@@ -193,6 +193,7 @@ version = "0.1.0"
 dependencies = [
  "detta-core",
  "detta-protocol",
+ "detta-storage",
  "serde",
  "serde_json",
 ]

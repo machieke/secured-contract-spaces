@@ -205,6 +205,11 @@ impl PersistentValidatorNode {
                     self.validator_set_metadata_update_status(update_id),
                 ))
             }
+            RpcRequest::GetValidatorSetMetadataAuditRecords => self
+                .load_validator_set_metadata_audit_records()
+                .map(RpcResult::ValidatorSetMetadataAuditRecords)
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(node_rpc_error_response),
             request => self.rpc.handle_request(request),
         }
     }
@@ -2414,31 +2419,39 @@ mod tests {
             Err(NodeError::ValidatorSetMetadataUpdateExpired { .. })
         ));
 
+        let expected_records = vec![
+            ValidatorSetMetadataAuditRecord {
+                update_id: "validator-set-update-applied".into(),
+                outcome: ValidatorSetMetadataAuditOutcome::Applied,
+                height: 0,
+                signers: vec!["validator-1".into(), "validator-2".into()],
+                reason: "applied".into(),
+            },
+            ValidatorSetMetadataAuditRecord {
+                update_id: "validator-set-update-pruned".into(),
+                outcome: ValidatorSetMetadataAuditOutcome::Pruned,
+                height: 1,
+                signers: vec!["validator-1".into()],
+                reason: "expired".into(),
+            },
+            ValidatorSetMetadataAuditRecord {
+                update_id: "validator-set-update-rejected".into(),
+                outcome: ValidatorSetMetadataAuditOutcome::Rejected,
+                height: 1,
+                signers: vec!["validator-1".into()],
+                reason: "node.validator_set_metadata_update_expired".into(),
+            },
+        ];
+
         assert_eq!(
             node.load_validator_set_metadata_audit_records().unwrap(),
-            vec![
-                ValidatorSetMetadataAuditRecord {
-                    update_id: "validator-set-update-applied".into(),
-                    outcome: ValidatorSetMetadataAuditOutcome::Applied,
-                    height: 0,
-                    signers: vec!["validator-1".into(), "validator-2".into()],
-                    reason: "applied".into(),
-                },
-                ValidatorSetMetadataAuditRecord {
-                    update_id: "validator-set-update-pruned".into(),
-                    outcome: ValidatorSetMetadataAuditOutcome::Pruned,
-                    height: 1,
-                    signers: vec!["validator-1".into()],
-                    reason: "expired".into(),
-                },
-                ValidatorSetMetadataAuditRecord {
-                    update_id: "validator-set-update-rejected".into(),
-                    outcome: ValidatorSetMetadataAuditOutcome::Rejected,
-                    height: 1,
-                    signers: vec!["validator-1".into()],
-                    reason: "node.validator_set_metadata_update_expired".into(),
-                },
-            ]
+            expected_records
+        );
+        assert_eq!(
+            node.handle_rpc_request(RpcRequest::GetValidatorSetMetadataAuditRecords),
+            RpcResponse::Ok(RpcResult::ValidatorSetMetadataAuditRecords(
+                expected_records
+            ))
         );
 
         fs::remove_dir_all(dir).unwrap();

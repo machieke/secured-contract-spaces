@@ -4,6 +4,7 @@ use detta_core::{
     StateSnapshot, StorageNonInclusionProof, StorageProof, Transaction, ValidatorNode,
 };
 use detta_protocol::SignedValidatorMessage;
+use detta_storage::ValidatorSetMetadataAuditRecord;
 use serde::{Deserialize, Serialize};
 use std::io::{self, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, ToSocketAddrs};
@@ -80,6 +81,7 @@ pub enum RpcRequest {
     GetValidatorSetMetadataUpdateStatus {
         update_id: String,
     },
+    GetValidatorSetMetadataAuditRecords,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -109,6 +111,7 @@ pub enum RpcResult {
     Events(Vec<Event>),
     Contract(Box<ContractRecord>),
     ValidatorSetMetadataUpdateStatus(ValidatorSetMetadataUpdateStatus),
+    ValidatorSetMetadataAuditRecords(Vec<ValidatorSetMetadataAuditRecord>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -376,7 +379,8 @@ impl RpcService {
                 .map(|contract| RpcResult::Contract(Box::new(contract)))
                 .into(),
             RpcRequest::ProposeValidatorSetMetadataUpdate { .. }
-            | RpcRequest::GetValidatorSetMetadataUpdateStatus { .. } => {
+            | RpcRequest::GetValidatorSetMetadataUpdateStatus { .. }
+            | RpcRequest::GetValidatorSetMetadataAuditRecords => {
                 Err(RpcError::UnsupportedNodeMethod).into()
             }
         }

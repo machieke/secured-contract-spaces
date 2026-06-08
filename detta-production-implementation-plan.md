@@ -70,10 +70,12 @@ Completed production-plan slices:
   per-validator limits to prevent one signer from occupying unbounded updates.
 - [x] Signed validator-set metadata update audit records persist applied,
   pruned, and rejected lifecycle outcomes with signer sets and reasons.
+- [x] Validator-set metadata audit records are exposed through the node-aware RPC
+  request path.
 
 Next implementation slices:
 
-- [ ] Expose validator-set metadata audit records over RPC.
+- [ ] Add validator-set metadata audit pagination and retention limits.
 
 # 1. Production Objective
 
