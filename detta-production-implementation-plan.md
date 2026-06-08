@@ -342,10 +342,12 @@ Completed production-plan slices:
   separator token in verify.
 - [x] Proof manifest root attestation line is checked for nonempty root and
   filename parts in verify.
+- [x] Proof manifest root attestation filename is checked against the proof
+  manifest artifact name in verify.
 
 Next implementation slices:
 
-- [ ] Add proof manifest root attestation filename binding checks in verify.
+- [ ] Add proof manifest root attestation root length checks in verify.
 
 # 1. Production Objective
 

@@ -1400,6 +1400,16 @@ mod tests {
         assert!(!file_name.is_empty());
     }
 
+    #[test]
+    fn proof_artifact_manifest_root_attestation_binds_manifest_filename() {
+        let attestation = include_str!("../../../models/detta-proof-artifact-manifest.sha256");
+        let (_, file_name) = sha256sum_attestation_parts(attestation);
+        let manifest_path = "models/detta-proof-artifact-manifest.json";
+
+        assert_eq!(file_name, manifest_path.rsplit('/').next().unwrap());
+        assert_eq!(file_name, "detta-proof-artifact-manifest.json");
+    }
+
     struct ProofReleaseAttestationFixture {
         attestation: &'static str,
         file_name: &'static str,
