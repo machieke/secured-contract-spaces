@@ -799,6 +799,14 @@ mod tests {
     }
 
     #[test]
+    fn scs_theorem_names_are_unique() {
+        let coverage = scs_theorem_coverage();
+        let names: BTreeSet<_> = coverage.iter().map(|entry| entry.name).collect();
+
+        assert_eq!(names.len(), coverage.len());
+    }
+
+    #[test]
     fn scs_theorem_evidence_order_is_stable() {
         use TheoremEvidenceKind::{Fixture, Model, RuntimeTest, Verifier};
 

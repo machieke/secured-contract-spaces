@@ -297,10 +297,11 @@ Completed production-plan slices:
   uniqueness in verify.
 - [x] Proof manifest theorem IDs are checked against expected theorem names in
   verify.
+- [x] Proof manifest theorem names are checked for uniqueness in verify.
 
 Next implementation slices:
 
-- [ ] Add proof manifest theorem name uniqueness checks in verify.
+- [ ] Add proof manifest theorem ID format checks in verify.
 
 # 1. Production Objective
 
