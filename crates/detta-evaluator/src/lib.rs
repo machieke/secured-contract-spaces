@@ -542,6 +542,18 @@ mod tests {
     }
 
     #[test]
+    fn restricted_evaluator_proof_trace_root_matches_checked_in_attestation() {
+        let fixture = restricted_evaluator_proof_trace_fixture();
+        let attestation =
+            include_str!("../../../models/detta-restricted-evaluator-proof-trace-root.sha256");
+        let (root, file_name) = attestation.trim().split_once("  ").unwrap();
+
+        assert_eq!(file_name, "detta-restricted-evaluator-proof-trace.trace");
+        assert_eq!(root, fixture.trace_root);
+        assert_eq!(root, trace_root(&fixture.report.trace));
+    }
+
+    #[test]
     fn restricted_evaluator_forbidden_primitive_fixture_matches_checked_in_json() {
         let expected: serde_json::Value = serde_json::from_str(include_str!(
             "../../../models/detta-restricted-evaluator-forbidden-primitives.json"

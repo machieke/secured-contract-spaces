@@ -20,6 +20,8 @@ This directory contains formal-model artifacts for the DeTTa runtime.
   trace root, and symbolic verifier result.
 - `detta-restricted-evaluator-proof-trace.sha256` records the release
   attestation root for the proof trace fixture.
+- `detta-restricted-evaluator-proof-trace-root.sha256` records the root of the
+  compact JSON serialization of the emitted proof trace.
 - `detta-restricted-evaluator-forbidden-primitives.json` is a golden fixture
   for the restricted evaluator's primitive boundary. It lists all allowed
   contract primitives and every forbidden escape hatch with the expected trap.

@@ -198,10 +198,13 @@ Completed production-plan slices:
   proof-artifact manifest.
 - [x] Restricted evaluator arithmetic overflow fixture is referenced by theorem
   evidence.
+- [x] Restricted evaluator proof trace root has a dedicated SHA-256
+  attestation.
 
 Next implementation slices:
 
-- [ ] Add restricted evaluator trace-root attestation for golden proof traces.
+- [ ] Bind restricted evaluator proof trace root attestation into the
+  proof-artifact manifest.
 
 # 1. Production Objective
 
