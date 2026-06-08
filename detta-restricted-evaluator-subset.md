@@ -17,6 +17,8 @@ The evaluator fixtures are versioned independently:
   `detta.restricted-evaluator-forbidden-primitive.v1`;
 - resource exhaustion fixture schema:
   `detta.restricted-evaluator-resource-exhaustion.v1`;
+- arithmetic overflow fixture schema:
+  `detta.restricted-evaluator-arithmetic-overflow.v1`;
 - both schemas carry `schema_version: 1`.
 
 Schema-compatible changes may add optional fields only after readers tolerate
@@ -131,6 +133,21 @@ The v1 fixture covers step-budget exhaustion after an attempted guarded write.
 The expected result is `EvaluatorError::StepBudgetExceeded` and
 `committed_report: null`, which records that no execution report is committed
 after exhaustion.
+
+## Arithmetic Overflow Fixture
+
+`models/detta-restricted-evaluator-arithmetic-overflow.json` has this schema:
+
+- `schema`: schema identifier;
+- `schema_version`: numeric schema version;
+- `evaluator`: evaluator implementation identifier;
+- `cases`: arithmetic overflow cases with name, step budget, decimal-string
+  operands, expected error, and committed report.
+
+The v1 fixture covers `u128::MAX + 1`. Operands are decimal strings so JSON
+consumers do not need implementation-specific large-integer number handling.
+The expected result is `EvaluatorError::ArithmeticOverflow` and
+`committed_report: null`.
 
 ## Refresh Workflow
 

@@ -191,10 +191,12 @@ Completed production-plan slices:
   proof-artifact manifest.
 - [x] Restricted evaluator resource exhaustion fixture is referenced by theorem
   evidence.
+- [x] Restricted evaluator arithmetic overflow has a stable golden fixture.
 
 Next implementation slices:
 
-- [ ] Add restricted evaluator arithmetic-overflow golden fixture.
+- [ ] Add SHA-256 attestation for the restricted evaluator arithmetic overflow
+  fixture.
 
 # 1. Production Objective
 

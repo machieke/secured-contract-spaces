@@ -30,6 +30,9 @@ This directory contains formal-model artifacts for the DeTTa runtime.
   absence of a committed execution report.
 - `detta-restricted-evaluator-resource-exhaustion.sha256` records the release
   attestation root for the resource exhaustion fixture.
+- `detta-restricted-evaluator-arithmetic-overflow.json` is a golden fixture for
+  checked arithmetic overflow. It records decimal-string operands, expected
+  error, and absence of a committed execution report.
 - `formal-model-checking-runbook.md` describes the repository checks, external
   model-checker preparation, and manifest refresh procedure.
 - `../detta-restricted-evaluator-subset.md` documents the implemented

@@ -13,6 +13,9 @@ pub const RESTRICTED_EVALUATOR_FORBIDDEN_PRIMITIVE_SCHEMA_VERSION: u32 = 1;
 pub const RESTRICTED_EVALUATOR_RESOURCE_EXHAUSTION_SCHEMA: &str =
     "detta.restricted-evaluator-resource-exhaustion.v1";
 pub const RESTRICTED_EVALUATOR_RESOURCE_EXHAUSTION_SCHEMA_VERSION: u32 = 1;
+pub const RESTRICTED_EVALUATOR_ARITHMETIC_OVERFLOW_SCHEMA: &str =
+    "detta.restricted-evaluator-arithmetic-overflow.v1";
+pub const RESTRICTED_EVALUATOR_ARITHMETIC_OVERFLOW_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Instruction {
@@ -96,6 +99,24 @@ pub struct RestrictedEvaluatorResourceExhaustionFixture {
     pub schema_version: u32,
     pub evaluator: String,
     pub cases: Vec<ResourceExhaustionCase>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ArithmeticOverflowCase {
+    pub name: String,
+    pub max_steps: u64,
+    pub left: String,
+    pub right: String,
+    pub expected_error: EvaluatorError,
+    pub committed_report: Option<ExecutionReport>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RestrictedEvaluatorArithmeticOverflowFixture {
+    pub schema: String,
+    pub schema_version: u32,
+    pub evaluator: String,
+    pub cases: Vec<ArithmeticOverflowCase>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -277,6 +298,31 @@ pub fn restricted_evaluator_resource_exhaustion_fixture(
             name: "step-budget-exhaustion-discards-emitted-trace".into(),
             max_steps,
             script,
+            expected_error,
+            committed_report: None,
+        }],
+    }
+}
+
+pub fn restricted_evaluator_arithmetic_overflow_fixture(
+) -> RestrictedEvaluatorArithmeticOverflowFixture {
+    let max_steps = 1;
+    let left = u128::MAX;
+    let right = 1u128;
+    let script = vec![Instruction::PureAdd { left, right }];
+    let expected_error = RestrictedScriptEvaluator::new(max_steps)
+        .execute(&script)
+        .expect_err("golden arithmetic overflow script should fail");
+
+    RestrictedEvaluatorArithmeticOverflowFixture {
+        schema: RESTRICTED_EVALUATOR_ARITHMETIC_OVERFLOW_SCHEMA.to_string(),
+        schema_version: RESTRICTED_EVALUATOR_ARITHMETIC_OVERFLOW_SCHEMA_VERSION,
+        evaluator: "detta.restricted-script-evaluator".into(),
+        cases: vec![ArithmeticOverflowCase {
+            name: "u128-addition-overflow-discards-report".into(),
+            max_steps,
+            left: left.to_string(),
+            right: right.to_string(),
             expected_error,
             committed_report: None,
         }],
@@ -611,6 +657,57 @@ mod tests {
         );
         assert_eq!(error, EvaluatorError::StepBudgetExceeded);
         assert_eq!(case.expected_error, EvaluatorError::StepBudgetExceeded);
+        assert_eq!(case.committed_report, None);
+    }
+
+    #[test]
+    fn restricted_evaluator_arithmetic_overflow_fixture_matches_checked_in_json() {
+        let expected: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../models/detta-restricted-evaluator-arithmetic-overflow.json"
+        ))
+        .unwrap();
+        let actual =
+            serde_json::to_value(restricted_evaluator_arithmetic_overflow_fixture()).unwrap();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn restricted_evaluator_arithmetic_overflow_fixture_json_is_stable() {
+        let actual = format!(
+            "{}\n",
+            serde_json::to_string_pretty(&restricted_evaluator_arithmetic_overflow_fixture())
+                .unwrap()
+        );
+
+        assert_eq!(
+            actual,
+            include_str!("../../../models/detta-restricted-evaluator-arithmetic-overflow.json")
+        );
+    }
+
+    #[test]
+    fn restricted_evaluator_arithmetic_overflow_fixture_reverts_report() {
+        let fixture = restricted_evaluator_arithmetic_overflow_fixture();
+        let case = fixture.cases.first().unwrap();
+        let script = vec![Instruction::PureAdd {
+            left: case.left.parse::<u128>().unwrap(),
+            right: case.right.parse::<u128>().unwrap(),
+        }];
+        let error = RestrictedScriptEvaluator::new(case.max_steps)
+            .execute(&script)
+            .unwrap_err();
+
+        assert_eq!(
+            fixture.schema,
+            RESTRICTED_EVALUATOR_ARITHMETIC_OVERFLOW_SCHEMA
+        );
+        assert_eq!(
+            fixture.schema_version,
+            RESTRICTED_EVALUATOR_ARITHMETIC_OVERFLOW_SCHEMA_VERSION
+        );
+        assert_eq!(error, EvaluatorError::ArithmeticOverflow);
+        assert_eq!(case.expected_error, EvaluatorError::ArithmeticOverflow);
         assert_eq!(case.committed_report, None);
     }
 }
