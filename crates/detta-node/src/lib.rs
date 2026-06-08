@@ -1,9 +1,15 @@
 use detta_consensus::{FinalityCertificate, Vote};
-use detta_core::{Block, BlockError, DeTTaState, MempoolError, Transaction, ValidatorNode};
+use detta_core::{
+    Block, BlockError, ChainId, DeTTaState, MempoolError, Transaction, ValidatorNode,
+};
 use detta_network::{Envelope, InMemoryTransport, NetworkError, NetworkMessage};
+use detta_protocol::{SignatureError, SignedValidatorMessage, ValidatorPublicKey};
 use detta_rpc::{RpcError, RpcService};
 use detta_storage::{FileStorage, StorageError};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
+
+pub const DEFAULT_NODE_NETWORK_ID: &str = "detta-localnet";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NodeError {
@@ -12,6 +18,8 @@ pub enum NodeError {
     Block(BlockError),
     Mempool(MempoolError),
     Network(NetworkError),
+    ValidatorKeyNotFound(String),
+    Signature(SignatureError),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -25,6 +33,9 @@ pub enum NetworkIngestOutcome {
 
 pub struct PersistentValidatorNode {
     validator_id: String,
+    network_id: String,
+    chain_id: ChainId,
+    validator_keys: BTreeMap<String, ValidatorPublicKey>,
     rpc: RpcService,
     storage: FileStorage,
 }
@@ -37,6 +48,7 @@ impl PersistentValidatorNode {
     ) -> Result<Self, NodeError> {
         let validator_id = validator_id.into();
         let storage = FileStorage::open(storage_root).map_err(NodeError::Storage)?;
+        let chain_id = state.chain_id().clone();
         storage
             .commit_snapshot(&state.snapshot())
             .map_err(NodeError::Storage)?;
@@ -46,6 +58,9 @@ impl PersistentValidatorNode {
             rpc: RpcService::new(ValidatorNode::new(validator_id.clone(), state)),
             storage,
             validator_id,
+            network_id: DEFAULT_NODE_NETWORK_ID.into(),
+            chain_id,
+            validator_keys: BTreeMap::new(),
         })
     }
 
@@ -58,6 +73,7 @@ impl PersistentValidatorNode {
         let snapshot = storage.load_snapshot().map_err(NodeError::Storage)?;
         let state = DeTTaState::from_snapshot(snapshot)
             .map_err(|error| NodeError::Storage(StorageError::InvalidSnapshot(error)))?;
+        let chain_id = state.chain_id().clone();
         let pending = storage.load_mempool().map_err(NodeError::Storage)?;
         let node = ValidatorNode::with_pending_transactions(validator_id.clone(), state, pending)
             .map_err(NodeError::Mempool)?;
@@ -66,6 +82,9 @@ impl PersistentValidatorNode {
             rpc: RpcService::new(node),
             storage,
             validator_id,
+            network_id: DEFAULT_NODE_NETWORK_ID.into(),
+            chain_id,
+            validator_keys: BTreeMap::new(),
         })
     }
 
@@ -75,6 +94,23 @@ impl PersistentValidatorNode {
 
     pub fn rpc(&self) -> &RpcService {
         &self.rpc
+    }
+
+    pub fn network_id(&self) -> &str {
+        &self.network_id
+    }
+
+    pub fn chain_id(&self) -> &ChainId {
+        &self.chain_id
+    }
+
+    pub fn set_network_id(&mut self, network_id: impl Into<String>) {
+        self.network_id = network_id.into();
+    }
+
+    pub fn trust_validator_key(&mut self, public_key: ValidatorPublicKey) {
+        self.validator_keys
+            .insert(public_key.validator_id.clone(), public_key);
     }
 
     pub fn pending_len(&self) -> usize {
@@ -151,11 +187,19 @@ impl PersistentValidatorNode {
             NetworkMessage::FinalityCertificate(_) => {
                 Ok(NetworkIngestOutcome::FinalityCertificateReceived)
             }
+            NetworkMessage::SignedValidator(signed) => {
+                self.verify_signed_validator_message(signed)?;
+                let signed_envelope = Envelope {
+                    from: envelope.from.clone(),
+                    to: envelope.to.clone(),
+                    message: signed.message.as_ref().clone(),
+                };
+                self.ingest_network_envelope(&signed_envelope)
+            }
             NetworkMessage::ValidatorSetUpdate(_)
             | NetworkMessage::EquivocationEvidence(_)
             | NetworkMessage::StateSnapshot(_)
             | NetworkMessage::PeerHello(_)
-            | NetworkMessage::SignedValidator(_)
             | NetworkMessage::SnapshotChunkRequest(_)
             | NetworkMessage::SnapshotChunkManifest(_)
             | NetworkMessage::SnapshotChunk(_) => Ok(NetworkIngestOutcome::IgnoredControlMessage),
@@ -183,6 +227,19 @@ impl PersistentValidatorNode {
             .map_err(NodeError::Storage)?;
         Ok(())
     }
+
+    fn verify_signed_validator_message(
+        &self,
+        signed: &SignedValidatorMessage,
+    ) -> Result<(), NodeError> {
+        let public_key = self
+            .validator_keys
+            .get(&signed.signer)
+            .ok_or_else(|| NodeError::ValidatorKeyNotFound(signed.signer.clone()))?;
+        signed
+            .verify(&self.network_id, &self.chain_id, public_key)
+            .map_err(NodeError::Signature)
+    }
 }
 
 #[cfg(test)]
@@ -190,6 +247,7 @@ mod tests {
     use super::*;
     use detta_core::{Argument, Method};
     use detta_network::InMemoryTransport;
+    use detta_protocol::{ProtocolMessage, SignatureError, ValidatorSigningKey};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -217,6 +275,10 @@ mod tests {
         let mut state = seeded_state();
         state.deploy_amm_pool("PoolA", "USDC", "ETH").unwrap();
         state
+    }
+
+    fn validator_key(validator_id: &str, seed_byte: u8) -> ValidatorSigningKey {
+        ValidatorSigningKey::from_seed(validator_id, "consensus-key-1", [seed_byte; 32])
     }
 
     fn transfer_tx() -> Transaction {
@@ -408,6 +470,98 @@ mod tests {
         );
 
         fs::remove_dir_all(validator_dir).unwrap();
+        fs::remove_dir_all(peer_dir).unwrap();
+    }
+
+    #[test]
+    fn persistent_node_verifies_signed_validator_envelope_before_ingest() {
+        let peer_dir = temp_dir("signed-peer");
+        let key = validator_key("validator-1", 7);
+        let mut peer =
+            PersistentValidatorNode::bootstrap("validator-2", seeded_state(), &peer_dir).unwrap();
+        peer.set_network_id("detta-testnet");
+        peer.trust_validator_key(key.public_key());
+
+        let vote = Vote {
+            validator_id: "validator-1".into(),
+            height: 1,
+            block_hash: "block-a".into(),
+        };
+        let signed = key
+            .sign_message(
+                "detta-testnet",
+                peer.chain_id().clone(),
+                ProtocolMessage::Vote(vote),
+            )
+            .unwrap();
+        let envelope = Envelope {
+            from: "validator-1".into(),
+            to: "validator-2".into(),
+            message: NetworkMessage::SignedValidator(Box::new(signed)),
+        };
+
+        assert_eq!(
+            peer.ingest_network_envelope(&envelope).unwrap(),
+            NetworkIngestOutcome::VoteReceived
+        );
+
+        fs::remove_dir_all(peer_dir).unwrap();
+    }
+
+    #[test]
+    fn persistent_node_rejects_untrusted_or_wrong_domain_signed_envelopes() {
+        let peer_dir = temp_dir("signed-peer-rejects");
+        let key = validator_key("validator-1", 7);
+        let mut peer =
+            PersistentValidatorNode::bootstrap("validator-2", seeded_state(), &peer_dir).unwrap();
+        peer.set_network_id("detta-testnet");
+
+        let vote = Vote {
+            validator_id: "validator-1".into(),
+            height: 1,
+            block_hash: "block-a".into(),
+        };
+        let signed = key
+            .sign_message(
+                "detta-testnet",
+                peer.chain_id().clone(),
+                ProtocolMessage::Vote(vote.clone()),
+            )
+            .unwrap();
+        let envelope = Envelope {
+            from: "validator-1".into(),
+            to: "validator-2".into(),
+            message: NetworkMessage::SignedValidator(Box::new(signed)),
+        };
+
+        assert_eq!(
+            peer.ingest_network_envelope(&envelope).unwrap_err(),
+            NodeError::ValidatorKeyNotFound("validator-1".into())
+        );
+
+        peer.trust_validator_key(key.public_key());
+        let wrong_network = key
+            .sign_message(
+                "wrong-net",
+                peer.chain_id().clone(),
+                ProtocolMessage::Vote(vote),
+            )
+            .unwrap();
+        let wrong_network_envelope = Envelope {
+            from: "validator-1".into(),
+            to: "validator-2".into(),
+            message: NetworkMessage::SignedValidator(Box::new(wrong_network)),
+        };
+
+        assert_eq!(
+            peer.ingest_network_envelope(&wrong_network_envelope)
+                .unwrap_err(),
+            NodeError::Signature(SignatureError::NetworkMismatch {
+                expected: "detta-testnet".into(),
+                actual: "wrong-net".into(),
+            })
+        );
+
         fs::remove_dir_all(peer_dir).unwrap();
     }
 

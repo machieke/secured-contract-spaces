@@ -252,6 +252,14 @@ impl SignedValidatorMessage {
                 actual: self.domain,
             });
         }
+        if let Some(claimed_signer) = claimed_message_signer(&self.message) {
+            if self.signer != claimed_signer {
+                return Err(SignatureError::MessageSignerMismatch {
+                    expected: claimed_signer.to_string(),
+                    actual: self.signer.clone(),
+                });
+            }
+        }
 
         let public_key_bytes = decode_hex_array::<32>(&public_key.public_key_hex)
             .map_err(|_| SignatureError::InvalidPublicKey)?;
@@ -300,6 +308,10 @@ pub enum SignatureError {
         expected: String,
         actual: String,
     },
+    MessageSignerMismatch {
+        expected: String,
+        actual: String,
+    },
     InvalidPublicKey,
     InvalidSignatureEncoding,
     InvalidSignature,
@@ -320,6 +332,23 @@ pub fn expected_signature_domain(
             Ok(ValidatorSignatureDomain::EquivocationEvidence)
         }
         other => Err(SignatureError::UnsupportedMessageKind(other.kind())),
+    }
+}
+
+fn claimed_message_signer(message: &ProtocolMessage) -> Option<&str> {
+    match message {
+        ProtocolMessage::Block(block) => Some(&block.header.proposer),
+        ProtocolMessage::Vote(vote) => Some(&vote.validator_id),
+        ProtocolMessage::EquivocationEvidence(evidence) => Some(&evidence.validator_id),
+        ProtocolMessage::FinalityCertificate(_)
+        | ProtocolMessage::ValidatorSetUpdate(_)
+        | ProtocolMessage::Transaction(_)
+        | ProtocolMessage::StateSnapshot(_)
+        | ProtocolMessage::PeerHello(_)
+        | ProtocolMessage::SignedValidator(_)
+        | ProtocolMessage::SnapshotChunkRequest(_)
+        | ProtocolMessage::SnapshotChunkManifest(_)
+        | ProtocolMessage::SnapshotChunk(_) => None,
     }
 }
 
@@ -827,6 +856,25 @@ mod tests {
             Err(SignatureError::SignerMismatch {
                 expected: "validator-1".into(),
                 actual: "validator-2".into(),
+            })
+        );
+
+        let mismatched_claim = key
+            .sign_message(
+                "detta-testnet",
+                "detta-local",
+                ProtocolMessage::Vote(Vote {
+                    validator_id: "validator-2".into(),
+                    height: 12,
+                    block_hash: "block-hash-12".into(),
+                }),
+            )
+            .unwrap();
+        assert_eq!(
+            mismatched_claim.verify("detta-testnet", "detta-local", &key.public_key()),
+            Err(SignatureError::MessageSignerMismatch {
+                expected: "validator-2".into(),
+                actual: "validator-1".into(),
             })
         );
 

@@ -34,11 +34,11 @@ Completed production-plan slices:
   chain, protocol-version, and message-domain separation.
 - [x] Chunked snapshot sync protocol messages reconstruct authenticated state
   snapshots and reject missing, duplicate, and tampered chunks.
+- [x] Persistent nodes verify signed validator envelopes against a trusted
+  validator keyring before ingesting the inner protocol message.
 
 Next implementation slices:
 
-- [ ] Add validator keyring verification at persistent node ingest for signed
-  validator envelopes.
 - [ ] Add a state-sync peer service that serves chunk requests from persistent
   storage.
 - [ ] Add signed block proposal propagation and a multi-process finality loop.

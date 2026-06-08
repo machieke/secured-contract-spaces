@@ -8,5 +8,6 @@ license = "MIT"
 detta-consensus = { path = "../detta-consensus" }
 detta-core = { path = "../detta-core" }
 detta-network = { path = "../detta-network" }
+detta-protocol = { path = "../detta-protocol" }
 detta-rpc = { path = "../detta-rpc" }
 detta-storage = { path = "../detta-storage" }
