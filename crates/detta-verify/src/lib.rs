@@ -1141,6 +1141,40 @@ mod tests {
     }
 
     #[test]
+    fn theorem_fixture_evidence_covers_expected_fixture_names() {
+        let inventory: EvaluatorFixtureInventoryForTest = serde_json::from_str(include_str!(
+            "../../../models/detta-restricted-evaluator-fixture-inventory.json"
+        ))
+        .unwrap();
+        let inventory_fixture_names: BTreeMap<_, _> = inventory
+            .fixtures
+            .iter()
+            .map(|entry| (entry.fixture_path.as_str(), entry.name.as_str()))
+            .collect();
+        let theorem_fixture_names: BTreeSet<_> = scs_theorem_coverage()
+            .into_iter()
+            .flat_map(|entry| entry.evidence)
+            .filter(|evidence| matches!(evidence.kind, TheoremEvidenceKind::Fixture))
+            .map(|evidence| {
+                inventory_fixture_names
+                    .get(evidence.reference)
+                    .copied()
+                    .unwrap()
+            })
+            .collect();
+
+        assert_eq!(
+            theorem_fixture_names,
+            BTreeSet::from([
+                "proof-trace",
+                "forbidden-primitives",
+                "resource-exhaustion",
+                "arithmetic-overflow",
+            ])
+        );
+    }
+
+    #[test]
     fn proof_artifact_manifest_matches_checked_in_json() {
         let expected: serde_json::Value = serde_json::from_str(include_str!(
             "../../../models/detta-proof-artifact-manifest.json"

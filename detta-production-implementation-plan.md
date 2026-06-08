@@ -285,10 +285,12 @@ Completed production-plan slices:
   evaluator fixture inventory coverage in verify.
 - [x] Proof manifest theorem fixture evidence references are checked for
   expected evaluator fixture schema coverage in verify.
+- [x] Proof manifest theorem fixture evidence references are checked for
+  expected evaluator fixture name coverage in verify.
 
 Next implementation slices:
 
-- [ ] Add proof manifest theorem fixture evidence name coverage checks in
+- [ ] Add proof manifest theorem model evidence operator coverage checks in
   verify.
 
 # 1. Production Objective
