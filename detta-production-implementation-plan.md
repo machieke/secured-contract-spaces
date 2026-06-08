@@ -158,11 +158,13 @@ Completed production-plan slices:
   manifest metadata-root emission precedence.
 - [x] Snapshot metadata root status reports local, persisted, and effective
   state-sync client metrics roots.
+- [x] Expanded snapshot metadata root diagnostics are asserted over the shared
+  TCP JSON RPC path.
 
 Next implementation slices:
 
-- [ ] Assert expanded snapshot metadata root diagnostics over the shared TCP
-  JSON RPC path.
+- [ ] Add stable JSON client fixtures for expanded snapshot metadata root
+  status responses.
 
 # 1. Production Objective
 

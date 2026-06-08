@@ -144,8 +144,14 @@ impl FileStorage {
         &self,
     ) -> Result<Option<String>, StorageError> {
         self.load_snapshot_sync_client_metrics::<T>()?
-            .map(|metrics| hash_bincode(&metrics))
+            .map(|metrics| Self::snapshot_sync_client_metrics_root_for(&metrics))
             .transpose()
+    }
+
+    pub fn snapshot_sync_client_metrics_root_for<T: Serialize>(
+        metrics: &T,
+    ) -> Result<String, StorageError> {
+        hash_bincode(metrics)
     }
 
     pub fn commit_block(&self, block: &Block) -> Result<(), StorageError> {
@@ -666,6 +672,10 @@ mod tests {
             .snapshot_sync_client_metrics_root::<TestSnapshotSyncMetrics>()
             .unwrap()
             .unwrap();
+        assert_eq!(
+            metrics_root,
+            FileStorage::snapshot_sync_client_metrics_root_for(&metrics).unwrap()
+        );
         assert_eq!(
             FileStorage::open(&dir)
                 .unwrap()

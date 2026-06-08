@@ -3506,6 +3506,8 @@ mod tests {
             .unwrap();
         sync_metrics.required_metadata_roots_root =
             Some(expected_required_metadata_roots_root.clone());
+        let expected_sync_metrics_root =
+            FileStorage::snapshot_sync_client_metrics_root_for(&sync_metrics).unwrap();
         let expected_sync_report = snapshot_sync_client_metrics_report(sync_metrics.clone());
         let snapshot_import_audit_record = SnapshotImportAuditRecord {
             snapshot_root: "snapshot-root-1".into(),
@@ -3588,6 +3590,55 @@ mod tests {
         assert_eq!(
             initial_snapshot.snapshot_import_audit_config_root,
             Some(expected_snapshot_import_audit_config_root.clone())
+        );
+        write_rpc_request(&mut stream, &RpcRequest::GetSnapshotMetadataRootStatus);
+        assert_eq!(
+            read_rpc_response(&mut reader),
+            RpcResponse::Ok(RpcResult::SnapshotMetadataRootStatus(Box::new(
+                SnapshotMetadataRootStatus {
+                    validator_set_metadata_audit_root: initial_snapshot
+                        .validator_set_metadata_audit_root
+                        .clone(),
+                    local_validator_set_metadata_audit_root: initial_snapshot
+                        .validator_set_metadata_audit_root
+                        .clone(),
+                    persisted_validator_set_metadata_audit_root: None,
+                    using_imported_validator_set_metadata_audit_root: false,
+                    persisted_matches_local_validator_set_metadata_audit_root: false,
+                    snapshot_import_audit_config_root: Some(
+                        expected_snapshot_import_audit_config_root.clone(),
+                    ),
+                    local_snapshot_import_audit_config_root: Some(
+                        expected_snapshot_import_audit_config_root.clone(),
+                    ),
+                    persisted_snapshot_import_audit_config_root: None,
+                    using_imported_snapshot_import_audit_config_root: false,
+                    persisted_matches_local_snapshot_import_audit_config_root: false,
+                    snapshot_import_audit_root: Some(expected_snapshot_import_audit_root.clone()),
+                    local_snapshot_import_audit_root: Some(
+                        expected_snapshot_import_audit_root.clone(),
+                    ),
+                    persisted_snapshot_import_audit_root: None,
+                    using_imported_snapshot_import_audit_root: false,
+                    persisted_matches_local_snapshot_import_audit_root: false,
+                    required_snapshot_metadata_roots_root: Some(
+                        expected_required_metadata_roots_root.clone(),
+                    ),
+                    local_required_snapshot_metadata_roots_root: Some(
+                        expected_required_metadata_roots_root.clone(),
+                    ),
+                    persisted_required_snapshot_metadata_roots_root: None,
+                    using_imported_required_snapshot_metadata_roots_root: false,
+                    persisted_matches_local_required_snapshot_metadata_roots_root: false,
+                    snapshot_sync_client_metrics_root: Some(expected_sync_metrics_root.clone()),
+                    local_snapshot_sync_client_metrics_root: Some(
+                        expected_sync_metrics_root.clone(),
+                    ),
+                    persisted_snapshot_sync_client_metrics_root: None,
+                    using_imported_snapshot_sync_client_metrics_root: false,
+                    persisted_matches_local_snapshot_sync_client_metrics_root: false,
+                },
+            )))
         );
         write_rpc_request(&mut stream, &RpcRequest::GetSnapshotSyncClientMetrics);
         assert_eq!(
