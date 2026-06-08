@@ -47,6 +47,8 @@ cargo test -p detta-verify
   lowercase SHA-256 root and expected basename.
 - every release attestation filename is bound to the target artifact basename
   or compact trace target name.
+- every release attestation root matches the target artifact bytes or compact
+  proof-trace bytes.
 
 The evaluator `sha256sum -c` commands verify fixture-file attestations. The
 final `sha256sum` command reports the file root of the compact-trace-root
@@ -102,6 +104,7 @@ Before accepting a release proof bundle, verify:
   format;
 - every release attestation filename matches the target artifact basename or
   compact trace target name;
+- every release attestation root recomputes from its target bytes;
 - every root listed inside the evaluator fixture inventory matches the
   corresponding `runtime_artifacts` entry;
 - `detta-restricted-evaluator-fixture-inventory.sha256` verifies against the

@@ -861,6 +861,44 @@ mod tests {
         );
     }
 
+    #[test]
+    fn proof_release_attestation_roots_match_target_bytes() {
+        assert_sha256sum_attestation_root_matches_bytes(
+            include_str!("../../../models/detta-proof-artifact-manifest.sha256"),
+            include_bytes!("../../../models/detta-proof-artifact-manifest.json"),
+        );
+        assert_sha256sum_attestation_root_matches_bytes(
+            include_str!("../../../models/detta-restricted-evaluator-proof-trace.sha256"),
+            include_bytes!("../../../models/detta-restricted-evaluator-proof-trace.json"),
+        );
+        assert_sha256sum_attestation_root_matches_bytes(
+            include_str!("../../../models/detta-restricted-evaluator-forbidden-primitives.sha256"),
+            include_bytes!("../../../models/detta-restricted-evaluator-forbidden-primitives.json"),
+        );
+        assert_sha256sum_attestation_root_matches_bytes(
+            include_str!("../../../models/detta-restricted-evaluator-resource-exhaustion.sha256"),
+            include_bytes!("../../../models/detta-restricted-evaluator-resource-exhaustion.json"),
+        );
+        assert_sha256sum_attestation_root_matches_bytes(
+            include_str!("../../../models/detta-restricted-evaluator-arithmetic-overflow.sha256"),
+            include_bytes!("../../../models/detta-restricted-evaluator-arithmetic-overflow.json"),
+        );
+        assert_sha256sum_attestation_root_matches_bytes(
+            include_str!("../../../models/detta-restricted-evaluator-fixture-inventory.sha256"),
+            include_bytes!("../../../models/detta-restricted-evaluator-fixture-inventory.json"),
+        );
+
+        let fixture: ProofTraceFixtureForTest = serde_json::from_str(include_str!(
+            "../../../models/detta-restricted-evaluator-proof-trace.json"
+        ))
+        .unwrap();
+        let trace_bytes = serde_json::to_vec(&fixture.report.trace).unwrap();
+        assert_sha256sum_attestation_root_matches_bytes(
+            include_str!("../../../models/detta-restricted-evaluator-proof-trace-root.sha256"),
+            &trace_bytes,
+        );
+    }
+
     fn assert_sha256sum_attestation_format(attestation: &str, expected_file_name: &str) {
         assert!(attestation.ends_with('\n'));
         assert_eq!(attestation.matches('\n').count(), 1);
@@ -886,6 +924,12 @@ mod tests {
         let (_, file_name) = sha256sum_attestation_parts(attestation);
 
         assert_eq!(file_name, expected_file_name);
+    }
+
+    fn assert_sha256sum_attestation_root_matches_bytes(attestation: &str, target_bytes: &[u8]) {
+        let (root, _) = sha256sum_attestation_parts(attestation);
+
+        assert_eq!(root, proof_artifact_manifest_root_bytes(target_bytes));
     }
 
     fn sha256sum_attestation_parts(attestation: &str) -> (&str, &str) {

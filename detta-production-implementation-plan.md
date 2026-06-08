@@ -229,10 +229,12 @@ Completed production-plan slices:
 - [x] Proof manifest release attestations are checked for `sha256sum` format.
 - [x] Proof manifest release attestation filenames are bound to target
   artifacts.
+- [x] Proof manifest release attestation roots are checked against target
+  bytes.
 
 Next implementation slices:
 
-- [ ] Add proof manifest release attestation target root checks.
+- [ ] Add proof manifest release attestation inventory coverage checks.
 
 # 1. Production Objective
 
