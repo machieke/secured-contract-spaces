@@ -283,10 +283,12 @@ Completed production-plan slices:
   expected restricted evaluator JSON fixture namespace in verify.
 - [x] Proof manifest theorem fixture evidence references are checked against
   evaluator fixture inventory coverage in verify.
+- [x] Proof manifest theorem fixture evidence references are checked for
+  expected evaluator fixture schema coverage in verify.
 
 Next implementation slices:
 
-- [ ] Add proof manifest theorem fixture evidence schema coverage checks in
+- [ ] Add proof manifest theorem fixture evidence name coverage checks in
   verify.
 
 # 1. Production Objective

@@ -95,6 +95,8 @@ cargo test -p detta-verify
   fixture namespace.
 - theorem fixture evidence references are listed by the evaluator fixture
   inventory.
+- theorem fixture evidence covers proof trace, forbidden primitive, resource
+  exhaustion, and arithmetic overflow fixture schemas.
 
 The evaluator `sha256sum -c` commands verify fixture-file attestations. The
 final `sha256sum` command reports the file root of the compact-trace-root
@@ -206,6 +208,8 @@ Before accepting a release proof bundle, verify:
   fixture namespace;
 - theorem fixture evidence references are listed by the evaluator fixture
   inventory;
+- theorem fixture evidence covers proof trace, forbidden primitive, resource
+  exhaustion, and arithmetic overflow fixture schemas;
 - `detta-restricted-evaluator-proof-trace-root.sha256` matches both the
   fixture `trace_root` field and the recomputed root of `report.trace`;
 - `models/detta-proof-artifact-manifest.sha256` verifies after all fixture,
