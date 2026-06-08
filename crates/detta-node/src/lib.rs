@@ -1,5 +1,5 @@
 use detta_core::{Block, BlockError, DeTTaState, MempoolError, Transaction, ValidatorNode};
-use detta_network::{Envelope, NetworkMessage};
+use detta_network::{Envelope, InMemoryTransport, NetworkError, NetworkMessage};
 use detta_rpc::{RpcError, RpcService};
 use detta_storage::{FileStorage, StorageError};
 use std::path::PathBuf;
@@ -10,6 +10,7 @@ pub enum NodeError {
     Storage(StorageError),
     Block(BlockError),
     Mempool(MempoolError),
+    Network(NetworkError),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -80,6 +81,17 @@ impl PersistentValidatorNode {
     pub fn submit_transaction(&mut self, tx: Transaction) -> Result<(), NodeError> {
         self.rpc.submit_transaction(tx).map_err(NodeError::Rpc)?;
         self.persist_mempool()
+    }
+
+    pub fn submit_and_gossip_transaction(
+        &mut self,
+        tx: Transaction,
+        transport: &mut InMemoryTransport,
+    ) -> Result<usize, NodeError> {
+        self.submit_transaction(tx.clone())?;
+        transport
+            .broadcast(self.validator_id.clone(), NetworkMessage::Transaction(tx))
+            .map_err(NodeError::Network)
     }
 
     pub fn produce_block(&mut self, height: u64, timestamp: u64) -> Result<Block, NodeError> {
@@ -281,6 +293,37 @@ mod tests {
         let reloaded = PersistentValidatorNode::restart("validator-1", &dir).unwrap();
         assert_eq!(reloaded.pending_len(), 1);
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn persistent_node_gossips_admitted_transaction_to_peer() {
+        let validator_dir = temp_dir("gossip-validator");
+        let peer_dir = temp_dir("gossip-peer");
+        let mut validator =
+            PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &validator_dir)
+                .unwrap();
+        let mut peer =
+            PersistentValidatorNode::bootstrap("validator-2", seeded_state(), &peer_dir).unwrap();
+        let mut transport =
+            InMemoryTransport::new(["validator-1".into(), "validator-2".into()]).unwrap();
+
+        let sent = validator
+            .submit_and_gossip_transaction(transfer_tx(), &mut transport)
+            .unwrap();
+
+        assert_eq!(sent, 1);
+        assert_eq!(validator.pending_len(), 1);
+        let envelope = transport.drain_peer("validator-2").unwrap().pop().unwrap();
+        assert_eq!(
+            peer.ingest_network_envelope(&envelope).unwrap(),
+            NetworkIngestOutcome::TransactionAccepted
+        );
+        assert_eq!(peer.pending_len(), 1);
+        let reloaded_peer = PersistentValidatorNode::restart("validator-2", &peer_dir).unwrap();
+        assert_eq!(reloaded_peer.pending_len(), 1);
+
+        fs::remove_dir_all(validator_dir).unwrap();
+        fs::remove_dir_all(peer_dir).unwrap();
     }
 
     #[test]
