@@ -179,10 +179,11 @@ Completed production-plan slices:
 - [x] Proof-artifact manifest schema and version are explicit constants.
 - [x] Restricted evaluator proof traces have stable golden fixtures.
 - [x] Restricted evaluator forbidden primitives have stable golden fixtures.
+- [x] Restricted evaluator subset and fixture schemas are documented.
 
 Next implementation slices:
 
-- [ ] Document the restricted evaluator subset and fixture schemas.
+- [ ] Add SHA-256 attestations for restricted evaluator fixtures.
 
 # 1. Production Objective
 

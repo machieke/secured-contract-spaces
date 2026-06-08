@@ -22,6 +22,8 @@ This directory contains formal-model artifacts for the DeTTa runtime.
   contract primitives and every forbidden escape hatch with the expected trap.
 - `formal-model-checking-runbook.md` describes the repository checks, external
   model-checker preparation, and manifest refresh procedure.
+- `../detta-restricted-evaluator-subset.md` documents the implemented
+  restricted evaluator subset, fixture schemas, and refresh workflow.
 
 The model is intentionally abstract over hashing, signatures, concrete storage
 encoding, and networking. Those are checked by the Rust implementation tests and
