@@ -166,10 +166,12 @@ Completed production-plan slices:
   client implementers.
 - [x] Formal theorem coverage is exported as a stable checked-in proof-artifact
   manifest.
+- [x] Proof-artifact manifests have stable SHA-256 roots for release
+  attestations.
 
 Next implementation slices:
 
-- [ ] Add a stable proof-artifact manifest root for release attestations.
+- [ ] Add TLA model artifact roots to the proof-artifact manifest.
 
 # 1. Production Objective
 

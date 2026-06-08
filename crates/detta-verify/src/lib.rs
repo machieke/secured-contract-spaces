@@ -3,6 +3,7 @@ use detta_core::{
     InvariantFailure, Method, StateKey, Transaction,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -229,6 +230,16 @@ pub fn proof_artifact_manifest() -> ProofArtifactManifest {
         theorem_count: coverage.len(),
         coverage,
     }
+}
+
+pub fn proof_artifact_manifest_root_bytes(bytes: &[u8]) -> String {
+    hex_lower(&Sha256::digest(bytes))
+}
+
+pub fn checked_in_proof_artifact_manifest_root() -> String {
+    proof_artifact_manifest_root_bytes(include_bytes!(
+        "../../../models/detta-proof-artifact-manifest.json"
+    ))
 }
 
 pub fn scs_theorem_coverage() -> Vec<SafetyTheoremCoverage> {
@@ -540,6 +551,10 @@ fn lcg_next(value: u64) -> u64 {
         .wrapping_add(1)
 }
 
+fn hex_lower(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 fn owner_of_key(key: &StateKey) -> &str {
     match key {
         StateKey::Balance { contract, .. }
@@ -629,6 +644,15 @@ mod tests {
         let actual = serde_json::to_value(proof_artifact_manifest()).unwrap();
 
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn proof_artifact_manifest_root_matches_checked_in_attestation() {
+        let attestation = include_str!("../../../models/detta-proof-artifact-manifest.sha256");
+        let (root, file_name) = attestation.trim().split_once("  ").unwrap();
+
+        assert_eq!(file_name, "detta-proof-artifact-manifest.json");
+        assert_eq!(checked_in_proof_artifact_manifest_root(), root);
     }
 
     #[test]
