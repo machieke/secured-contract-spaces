@@ -12,8 +12,9 @@ use detta_protocol::{
     ValidatorSetMetadataUpdate, ValidatorSigningKey,
 };
 use detta_rpc::{
-    json_rpc_response_for_request, JsonRpcHandler, RpcError, RpcErrorBody, RpcRequest, RpcResponse,
-    RpcResult, RpcService, RpcTransportError, ValidatorSetMetadataUpdateStatus,
+    json_rpc_response_for_request, JsonRpcHandler, PersistentNodeSnapshotRoots, RpcError,
+    RpcErrorBody, RpcRequest, RpcResponse, RpcResult, RpcService, RpcTransportError,
+    ValidatorSetMetadataUpdateStatus,
 };
 use detta_storage::{
     FileStorage, StorageError, ValidatorSetMetadataAuditOutcome, ValidatorSetMetadataAuditRecord,
@@ -221,6 +222,20 @@ impl PersistentValidatorNode {
         })
     }
 
+    pub fn node_snapshot_roots(&self) -> Result<PersistentNodeSnapshotRoots, NodeError> {
+        let snapshot = self.node_snapshot()?;
+        Ok(PersistentNodeSnapshotRoots {
+            storage_root: snapshot.state_snapshot.storage_root,
+            registry_root: snapshot.state_snapshot.registry_root,
+            policy_root: snapshot.state_snapshot.policy_root,
+            event_root: snapshot.state_snapshot.event_root,
+            nonce_root: snapshot.state_snapshot.nonce_root,
+            outbox_root: snapshot.state_snapshot.outbox_root,
+            global_state_root: snapshot.state_snapshot.global_state_root,
+            validator_set_metadata_audit_root: snapshot.validator_set_metadata_audit_root,
+        })
+    }
+
     pub fn handle_rpc_request(&mut self, request: RpcRequest) -> RpcResponse {
         match request {
             RpcRequest::ProposeValidatorSetMetadataUpdate { authorization } => self
@@ -236,6 +251,11 @@ impl PersistentValidatorNode {
             RpcRequest::GetValidatorSetMetadataAuditRecords { offset, limit } => self
                 .load_validator_set_metadata_audit_records_page(offset, limit)
                 .map(RpcResult::ValidatorSetMetadataAuditRecords)
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(node_rpc_error_response),
+            RpcRequest::GetPersistentNodeSnapshotRoots => self
+                .node_snapshot_roots()
+                .map(|snapshot| RpcResult::PersistentNodeSnapshotRoots(Box::new(snapshot)))
                 .map(RpcResponse::Ok)
                 .unwrap_or_else(node_rpc_error_response),
             request => self.rpc.handle_request(request),
@@ -1213,6 +1233,28 @@ mod tests {
         reader.read_line(&mut line).unwrap();
         assert!(!line.is_empty());
         serde_json::from_str(&line).unwrap()
+    }
+
+    fn persistent_node_snapshot_roots(
+        snapshot: &PersistentNodeSnapshot,
+    ) -> PersistentNodeSnapshotRoots {
+        PersistentNodeSnapshotRoots {
+            storage_root: snapshot.state_snapshot.storage_root.clone(),
+            registry_root: snapshot.state_snapshot.registry_root.clone(),
+            policy_root: snapshot.state_snapshot.policy_root.clone(),
+            event_root: snapshot.state_snapshot.event_root.clone(),
+            nonce_root: snapshot.state_snapshot.nonce_root.clone(),
+            outbox_root: snapshot.state_snapshot.outbox_root.clone(),
+            global_state_root: snapshot.state_snapshot.global_state_root.clone(),
+            validator_set_metadata_audit_root: snapshot.validator_set_metadata_audit_root.clone(),
+        }
+    }
+
+    fn expect_persistent_node_snapshot_roots(response: RpcResponse) -> PersistentNodeSnapshotRoots {
+        match response {
+            RpcResponse::Ok(RpcResult::PersistentNodeSnapshotRoots(snapshot)) => *snapshot,
+            response => panic!("expected persistent node snapshot roots, got {response:?}"),
+        }
     }
 
     fn transfer_tx() -> Transaction {
@@ -2584,7 +2626,8 @@ mod tests {
     #[test]
     fn persistent_node_snapshot_includes_validator_set_metadata_audit_root() {
         let dir = temp_dir("validator-set-audit-root");
-        let node = PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &dir).unwrap();
+        let mut node =
+            PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &dir).unwrap();
         let empty_snapshot = node.node_snapshot().unwrap();
 
         node.record_validator_set_metadata_audit(
@@ -2603,6 +2646,12 @@ mod tests {
         assert_ne!(
             populated_snapshot.validator_set_metadata_audit_root,
             empty_snapshot.validator_set_metadata_audit_root
+        );
+        assert_eq!(
+            node.handle_rpc_request(RpcRequest::GetPersistentNodeSnapshotRoots),
+            RpcResponse::Ok(RpcResult::PersistentNodeSnapshotRoots(Box::new(
+                persistent_node_snapshot_roots(&populated_snapshot)
+            )))
         );
 
         let restarted = PersistentValidatorNode::restart("validator-1", &dir).unwrap();
@@ -2743,6 +2792,10 @@ mod tests {
 
         let mut stream = TcpStream::connect(addr).unwrap();
         let mut reader = BufReader::new(stream.try_clone().unwrap());
+        write_rpc_request(&mut stream, &RpcRequest::GetPersistentNodeSnapshotRoots);
+        let initial_snapshot =
+            expect_persistent_node_snapshot_roots(read_rpc_response(&mut reader));
+
         write_rpc_request(
             &mut stream,
             &RpcRequest::ProposeValidatorSetMetadataUpdate {
@@ -2795,6 +2848,18 @@ mod tests {
                     applied: true,
                 },
             ))
+        );
+
+        write_rpc_request(&mut stream, &RpcRequest::GetPersistentNodeSnapshotRoots);
+        let updated_snapshot =
+            expect_persistent_node_snapshot_roots(read_rpc_response(&mut reader));
+        assert_eq!(
+            updated_snapshot.global_state_root,
+            initial_snapshot.global_state_root
+        );
+        assert_ne!(
+            updated_snapshot.validator_set_metadata_audit_root,
+            initial_snapshot.validator_set_metadata_audit_root
         );
 
         stream.shutdown(Shutdown::Write).unwrap();

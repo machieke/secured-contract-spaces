@@ -76,10 +76,12 @@ Completed production-plan slices:
   paginated node/RPC reads with a configured page-size cap.
 - [x] Persistent node snapshots include a deterministic validator-set metadata
   audit root that changes with audit records and survives restart.
+- [x] Persistent node snapshot metadata roots are exposed over the node-aware RPC
+  path and the shared TCP JSON RPC server.
 
 Next implementation slices:
 
-- [ ] Expose persistent node snapshot metadata roots over RPC.
+- [ ] Include persistent node metadata roots in snapshot-sync manifests.
 
 # 1. Production Objective
 
