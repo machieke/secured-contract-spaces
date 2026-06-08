@@ -1554,6 +1554,18 @@ mod tests {
     }
 
     #[test]
+    fn proof_release_attestation_filenames_have_no_path_separators() {
+        for fixture in proof_release_attestations_for_test() {
+            let (_, attested_file_name) = sha256sum_attestation_parts(fixture.attestation);
+
+            for file_name in [fixture.file_name, attested_file_name] {
+                assert!(!file_name.contains('/'));
+                assert!(!file_name.contains('\\'));
+            }
+        }
+    }
+
+    #[test]
     fn proof_release_attestation_target_extensions_are_consistent() {
         for fixture in proof_release_attestations_for_test() {
             let target_extension = fixture.target_path.rsplit('.').next().unwrap();
