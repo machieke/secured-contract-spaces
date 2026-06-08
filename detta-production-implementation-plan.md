@@ -227,10 +227,12 @@ Completed production-plan slices:
   disjointness.
 - [x] Proof manifest model artifact paths are checked for uniqueness.
 - [x] Proof manifest release attestations are checked for `sha256sum` format.
+- [x] Proof manifest release attestation filenames are bound to target
+  artifacts.
 
 Next implementation slices:
 
-- [ ] Add proof manifest release attestation filename binding checks.
+- [ ] Add proof manifest release attestation target root checks.
 
 # 1. Production Objective
 

@@ -45,6 +45,8 @@ cargo test -p detta-verify
 - model and runtime artifact path sets are disjoint.
 - every release attestation file uses single-line `sha256sum` format with a
   lowercase SHA-256 root and expected basename.
+- every release attestation filename is bound to the target artifact basename
+  or compact trace target name.
 
 The evaluator `sha256sum -c` commands verify fixture-file attestations. The
 final `sha256sum` command reports the file root of the compact-trace-root
@@ -98,6 +100,8 @@ Before accepting a release proof bundle, verify:
 - no artifact path appears in both `model_artifacts` and `runtime_artifacts`;
 - every release attestation file uses the expected single-line `sha256sum`
   format;
+- every release attestation filename matches the target artifact basename or
+  compact trace target name;
 - every root listed inside the evaluator fixture inventory matches the
   corresponding `runtime_artifacts` entry;
 - `detta-restricted-evaluator-fixture-inventory.sha256` verifies against the

@@ -829,20 +829,71 @@ mod tests {
         );
     }
 
+    #[test]
+    fn proof_release_attestation_filenames_bind_target_artifacts() {
+        assert_sha256sum_attestation_filename_binds_artifact(
+            include_str!("../../../models/detta-proof-artifact-manifest.sha256"),
+            "models/detta-proof-artifact-manifest.json",
+        );
+        assert_sha256sum_attestation_filename_binds_artifact(
+            include_str!("../../../models/detta-restricted-evaluator-proof-trace.sha256"),
+            "models/detta-restricted-evaluator-proof-trace.json",
+        );
+        assert_sha256sum_attestation_filename_binds_artifact(
+            include_str!("../../../models/detta-restricted-evaluator-forbidden-primitives.sha256"),
+            "models/detta-restricted-evaluator-forbidden-primitives.json",
+        );
+        assert_sha256sum_attestation_filename_binds_artifact(
+            include_str!("../../../models/detta-restricted-evaluator-resource-exhaustion.sha256"),
+            "models/detta-restricted-evaluator-resource-exhaustion.json",
+        );
+        assert_sha256sum_attestation_filename_binds_artifact(
+            include_str!("../../../models/detta-restricted-evaluator-arithmetic-overflow.sha256"),
+            "models/detta-restricted-evaluator-arithmetic-overflow.json",
+        );
+        assert_sha256sum_attestation_filename_binds_artifact(
+            include_str!("../../../models/detta-restricted-evaluator-fixture-inventory.sha256"),
+            "models/detta-restricted-evaluator-fixture-inventory.json",
+        );
+        assert_sha256sum_attestation_filename_matches(
+            include_str!("../../../models/detta-restricted-evaluator-proof-trace-root.sha256"),
+            "detta-restricted-evaluator-proof-trace.trace",
+        );
+    }
+
     fn assert_sha256sum_attestation_format(attestation: &str, expected_file_name: &str) {
         assert!(attestation.ends_with('\n'));
         assert_eq!(attestation.matches('\n').count(), 1);
 
-        let (root, file_name) = attestation
-            .strip_suffix('\n')
-            .unwrap()
-            .split_once("  ")
-            .unwrap();
+        let (root, file_name) = sha256sum_attestation_parts(attestation);
 
         assert_lowercase_sha256_hex(root, expected_file_name);
         assert_eq!(file_name, expected_file_name);
         assert!(!file_name.contains('/'));
         assert!(!file_name.contains('\\'));
+    }
+
+    fn assert_sha256sum_attestation_filename_binds_artifact(
+        attestation: &str,
+        target_artifact_path: &str,
+    ) {
+        let expected_file_name = target_artifact_path.rsplit('/').next().unwrap();
+
+        assert_sha256sum_attestation_filename_matches(attestation, expected_file_name);
+    }
+
+    fn assert_sha256sum_attestation_filename_matches(attestation: &str, expected_file_name: &str) {
+        let (_, file_name) = sha256sum_attestation_parts(attestation);
+
+        assert_eq!(file_name, expected_file_name);
+    }
+
+    fn sha256sum_attestation_parts(attestation: &str) -> (&str, &str) {
+        attestation
+            .strip_suffix('\n')
+            .unwrap()
+            .split_once("  ")
+            .unwrap()
     }
 
     #[test]
