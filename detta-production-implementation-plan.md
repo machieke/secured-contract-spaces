@@ -251,10 +251,12 @@ Completed production-plan slices:
   coverage in verify.
 - [x] Evaluator fixture inventory fixture names are checked against expected
   schema mappings in verify.
+- [x] Evaluator fixture inventory fixture names are checked against expected
+  artifact path mappings in verify.
 
 Next implementation slices:
 
-- [ ] Add evaluator fixture inventory name-to-path mapping checks in verify.
+- [ ] Add evaluator fixture inventory name-to-root mapping checks in verify.
 
 # 1. Production Objective
 

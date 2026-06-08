@@ -1409,6 +1409,66 @@ mod tests {
     }
 
     #[test]
+    fn proof_runtime_evaluator_fixture_inventory_names_map_to_expected_paths() {
+        let inventory: EvaluatorFixtureInventoryForTest = serde_json::from_str(include_str!(
+            "../../../models/detta-restricted-evaluator-fixture-inventory.json"
+        ))
+        .unwrap();
+        let name_to_paths: BTreeMap<_, _> = inventory
+            .fixtures
+            .iter()
+            .map(|entry| {
+                (
+                    entry.name.as_str(),
+                    (
+                        entry.fixture_path.as_str(),
+                        entry.attestation_path.as_str(),
+                        entry.trace_root_attestation_path.as_deref(),
+                    ),
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            name_to_paths,
+            BTreeMap::from([
+                (
+                    "proof-trace",
+                    (
+                        "models/detta-restricted-evaluator-proof-trace.json",
+                        "models/detta-restricted-evaluator-proof-trace.sha256",
+                        Some("models/detta-restricted-evaluator-proof-trace-root.sha256"),
+                    ),
+                ),
+                (
+                    "forbidden-primitives",
+                    (
+                        "models/detta-restricted-evaluator-forbidden-primitives.json",
+                        "models/detta-restricted-evaluator-forbidden-primitives.sha256",
+                        None,
+                    ),
+                ),
+                (
+                    "resource-exhaustion",
+                    (
+                        "models/detta-restricted-evaluator-resource-exhaustion.json",
+                        "models/detta-restricted-evaluator-resource-exhaustion.sha256",
+                        None,
+                    ),
+                ),
+                (
+                    "arithmetic-overflow",
+                    (
+                        "models/detta-restricted-evaluator-arithmetic-overflow.json",
+                        "models/detta-restricted-evaluator-arithmetic-overflow.sha256",
+                        None,
+                    ),
+                ),
+            ])
+        );
+    }
+
+    #[test]
     fn proof_runtime_evaluator_fixture_inventory_paths_are_unique() {
         let inventory: EvaluatorFixtureInventoryForTest = serde_json::from_str(include_str!(
             "../../../models/detta-restricted-evaluator-fixture-inventory.json"
