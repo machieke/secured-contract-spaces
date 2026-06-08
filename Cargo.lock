@@ -74,6 +74,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "detta-node"
+version = "0.1.0"
+dependencies = [
+ "detta-core",
+ "detta-rpc",
+ "detta-storage",
+]
+
+[[package]]
 name = "detta-rpc"
 version = "0.1.0"
 dependencies = [

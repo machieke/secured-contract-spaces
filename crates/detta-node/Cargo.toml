@@ -1,0 +1,10 @@
+[package]
+name = "detta-node"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+detta-core = { path = "../detta-core" }
+detta-rpc = { path = "../detta-rpc" }
+detta-storage = { path = "../detta-storage" }
