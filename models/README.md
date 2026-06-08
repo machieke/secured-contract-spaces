@@ -1,0 +1,21 @@
+# DeTTa Formal Models
+
+This directory contains formal-model artifacts for the DeTTa runtime.
+
+- `DeTTaBlockExecution.tla` models the abstract SCS block-execution boundary:
+  dispatcher-mediated calls, method-policy lookup, nonce replay prevention,
+  active reentrancy locks, guarded writes, commit/revert atomicity, and
+  deterministic replay obligations.
+
+The model is intentionally abstract over hashing, signatures, concrete storage
+encoding, and networking. Those are checked by the Rust implementation tests and
+can be refined into separate models later.
+
+Primary theorem mapping:
+
+- `DispatcherOnlyMutation` corresponds to `THM-001`.
+- `WriteScopeSafety` corresponds to `THM-003` and supports `THM-012`.
+- `AtomicRevert` corresponds to `THM-006` and `THM-007`.
+- `ReplaySafety` corresponds to `THM-010`.
+- Deterministic replay is represented as a trace-comparison obligation and is
+  exercised by the `detta-verify` differential replay harness.
