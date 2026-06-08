@@ -273,11 +273,12 @@ Completed production-plan slices:
   stability in verify.
 - [x] Proof manifest theorem evidence kinds are checked for expected coverage
   and runtime-test anchoring in verify.
+- [x] Proof manifest theorem runtime-test evidence references are checked for
+  expected DeTTa crate namespaces in verify.
 
 Next implementation slices:
 
-- [ ] Add proof manifest theorem runtime-test evidence namespace checks in
-  verify.
+- [ ] Add proof manifest theorem verifier evidence namespace checks in verify.
 
 # 1. Production Objective
 

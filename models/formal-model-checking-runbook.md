@@ -85,6 +85,8 @@ cargo test -p detta-verify
 - theorem evidence order is stable for each theorem ID.
 - theorem evidence uses all expected evidence kinds and every theorem retains
   at least one runtime test anchor.
+- theorem runtime-test evidence references use expected `detta_core`,
+  `detta_evaluator`, or `detta_verify` test namespaces.
 
 The evaluator `sha256sum -c` commands verify fixture-file attestations. The
 final `sha256sum` command reports the file root of the compact-trace-root
@@ -186,6 +188,8 @@ Before accepting a release proof bundle, verify:
 - theorem evidence order is stable for each theorem ID;
 - theorem evidence uses all expected evidence kinds and every theorem retains
   at least one runtime test anchor;
+- theorem runtime-test evidence references use expected `detta_core`,
+  `detta_evaluator`, or `detta_verify` test namespaces;
 - `detta-restricted-evaluator-proof-trace-root.sha256` matches both the
   fixture `trace_root` field and the recomputed root of `report.trace`;
 - `models/detta-proof-artifact-manifest.sha256` verifies after all fixture,
