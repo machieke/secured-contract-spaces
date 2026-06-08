@@ -147,6 +147,11 @@ pub struct SnapshotMetadataRootStatus {
     pub persisted_snapshot_import_audit_config_root: Option<String>,
     pub using_imported_snapshot_import_audit_config_root: bool,
     pub persisted_matches_local_snapshot_import_audit_config_root: bool,
+    pub snapshot_import_audit_root: Option<String>,
+    pub local_snapshot_import_audit_root: Option<String>,
+    pub persisted_snapshot_import_audit_root: Option<String>,
+    pub using_imported_snapshot_import_audit_root: bool,
+    pub persisted_matches_local_snapshot_import_audit_root: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

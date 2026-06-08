@@ -150,11 +150,13 @@ Completed production-plan slices:
   node-aware and TCP JSON RPC for lightweight clients.
 - [x] Snapshot metadata root status reports local, persisted, and effective
   snapshot import audit configuration roots.
+- [x] Snapshot metadata root status reports local, persisted, and effective
+  snapshot import audit roots.
 
 Next implementation slices:
 
-- [ ] Add snapshot import audit root diagnostics to snapshot metadata root
-  status.
+- [ ] Add required snapshot metadata-root set diagnostics to snapshot metadata
+  root status.
 
 # 1. Production Objective
 

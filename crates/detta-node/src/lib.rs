@@ -510,6 +510,21 @@ impl PersistentValidatorNode {
         let snapshot_import_audit_config_root = persisted_snapshot_import_audit_config_root
             .clone()
             .or_else(|| local_snapshot_import_audit_config_root.clone());
+        let snapshot_import_audit_records = self.load_snapshot_import_audit_records()?;
+        let local_snapshot_import_audit_root = if snapshot_import_audit_records.is_empty() {
+            None
+        } else {
+            Some(
+                FileStorage::snapshot_import_audit_root_for(&snapshot_import_audit_records)
+                    .map_err(NodeError::Storage)?,
+            )
+        };
+        let persisted_snapshot_import_audit_root = persisted_metadata_roots
+            .get(SNAPSHOT_METADATA_SNAPSHOT_IMPORT_AUDIT_ROOT)
+            .cloned();
+        let snapshot_import_audit_root = persisted_snapshot_import_audit_root
+            .clone()
+            .or_else(|| local_snapshot_import_audit_root.clone());
         let persisted_matches_local_validator_set_metadata_audit_root =
             persisted_validator_set_metadata_audit_root
                 .as_ref()
@@ -526,6 +541,13 @@ impl PersistentValidatorNode {
             persisted_snapshot_import_audit_config_root
                 .as_ref()
                 .is_some_and(|root| Some(root) != local_snapshot_import_audit_config_root.as_ref());
+        let persisted_matches_local_snapshot_import_audit_root =
+            persisted_snapshot_import_audit_root
+                .as_ref()
+                .is_some_and(|root| Some(root) == local_snapshot_import_audit_root.as_ref());
+        let using_imported_snapshot_import_audit_root = persisted_snapshot_import_audit_root
+            .as_ref()
+            .is_some_and(|root| Some(root) != local_snapshot_import_audit_root.as_ref());
         Ok(SnapshotMetadataRootStatus {
             validator_set_metadata_audit_root,
             local_validator_set_metadata_audit_root,
@@ -537,6 +559,11 @@ impl PersistentValidatorNode {
             persisted_snapshot_import_audit_config_root,
             using_imported_snapshot_import_audit_config_root,
             persisted_matches_local_snapshot_import_audit_config_root,
+            snapshot_import_audit_root,
+            local_snapshot_import_audit_root,
+            persisted_snapshot_import_audit_root,
+            using_imported_snapshot_import_audit_root,
+            persisted_matches_local_snapshot_import_audit_root,
         })
     }
 
@@ -3212,6 +3239,11 @@ mod tests {
                     persisted_snapshot_import_audit_config_root: None,
                     using_imported_snapshot_import_audit_config_root: false,
                     persisted_matches_local_snapshot_import_audit_config_root: false,
+                    snapshot_import_audit_root: None,
+                    local_snapshot_import_audit_root: None,
+                    persisted_snapshot_import_audit_root: None,
+                    using_imported_snapshot_import_audit_root: false,
+                    persisted_matches_local_snapshot_import_audit_root: false,
                 },
             ))
         );
@@ -3896,6 +3928,7 @@ mod tests {
             .unwrap();
         assert_eq!(imported.global_state_root, snapshot_root);
         let sink_local_audit_root = sink.storage.validator_set_metadata_audit_root().unwrap();
+        let sink_snapshot_import_audit_root = sink.snapshot_import_audit_root().unwrap();
         assert_eq!(
             sink.handle_rpc_request(RpcRequest::GetSnapshotMetadataRootStatus),
             RpcResponse::Ok(RpcResult::SnapshotMetadataRootStatus(
@@ -3910,6 +3943,11 @@ mod tests {
                     persisted_snapshot_import_audit_config_root: None,
                     using_imported_snapshot_import_audit_config_root: false,
                     persisted_matches_local_snapshot_import_audit_config_root: false,
+                    snapshot_import_audit_root: Some(sink_snapshot_import_audit_root.clone()),
+                    local_snapshot_import_audit_root: Some(sink_snapshot_import_audit_root),
+                    persisted_snapshot_import_audit_root: None,
+                    using_imported_snapshot_import_audit_root: false,
+                    persisted_matches_local_snapshot_import_audit_root: false,
                 },
             ))
         );
@@ -4140,6 +4178,21 @@ mod tests {
             vec![expected_import_audit_record.clone()]
         );
         let snapshot_import_audit_root = sink.snapshot_import_audit_root().unwrap();
+        let sink_import_audit_status = sink.snapshot_metadata_root_status().unwrap();
+        assert_eq!(
+            sink_import_audit_status.snapshot_import_audit_root,
+            Some(snapshot_import_audit_root.clone())
+        );
+        assert_eq!(
+            sink_import_audit_status.local_snapshot_import_audit_root,
+            Some(snapshot_import_audit_root.clone())
+        );
+        assert_eq!(
+            sink_import_audit_status.persisted_snapshot_import_audit_root,
+            None
+        );
+        assert!(!sink_import_audit_status.using_imported_snapshot_import_audit_root);
+        assert!(!sink_import_audit_status.persisted_matches_local_snapshot_import_audit_root);
         assert_eq!(
             sink.handle_rpc_request(RpcRequest::GetSnapshotImportAuditRecords {
                 offset: 0,
@@ -4314,6 +4367,7 @@ mod tests {
             .unwrap();
         assert_eq!(downstream_import.global_state_root, snapshot_root);
         let downstream_metadata_status = downstream.snapshot_metadata_root_status().unwrap();
+        let downstream_local_import_audit_root = downstream.snapshot_import_audit_root().unwrap();
         assert_eq!(
             downstream_metadata_status.snapshot_import_audit_config_root,
             Some(snapshot_import_audit_config_root.clone())
@@ -4330,6 +4384,20 @@ mod tests {
         assert!(
             !downstream_metadata_status.persisted_matches_local_snapshot_import_audit_config_root
         );
+        assert_eq!(
+            downstream_metadata_status.snapshot_import_audit_root,
+            Some(snapshot_import_audit_root.clone())
+        );
+        assert_eq!(
+            downstream_metadata_status.local_snapshot_import_audit_root,
+            Some(downstream_local_import_audit_root)
+        );
+        assert_eq!(
+            downstream_metadata_status.persisted_snapshot_import_audit_root,
+            Some(snapshot_import_audit_root.clone())
+        );
+        assert!(downstream_metadata_status.using_imported_snapshot_import_audit_root);
+        assert!(!downstream_metadata_status.persisted_matches_local_snapshot_import_audit_root);
         let mut wrong_downstream_roots = downstream_required_metadata_roots.clone();
         wrong_downstream_roots.insert(
             SNAPSHOT_METADATA_SNAPSHOT_IMPORT_AUDIT_ROOT.into(),
