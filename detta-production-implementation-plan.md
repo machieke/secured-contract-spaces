@@ -124,11 +124,12 @@ Completed production-plan slices:
   root, manifest hash, required-root-set root, root counts, and chunk count.
 - [x] Snapshot import audit records and their stable root are exposed through
   node-aware RPC.
+- [x] Snapshot import audit records and their stable root are served over the
+  shared TCP JSON RPC path.
 
 Next implementation slices:
 
-- [ ] Serve snapshot import audit records and roots over the shared TCP JSON
-  RPC path.
+- [ ] Include snapshot import audit roots in persistent snapshot root responses.
 
 # 1. Production Objective
 

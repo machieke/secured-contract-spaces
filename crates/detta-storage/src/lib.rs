@@ -296,6 +296,12 @@ impl FileStorage {
 
     pub fn snapshot_import_audit_root(&self) -> Result<String, StorageError> {
         let records = self.load_snapshot_import_audit_records()?;
+        Self::snapshot_import_audit_root_for(&records)
+    }
+
+    pub fn snapshot_import_audit_root_for(
+        records: &[SnapshotImportAuditRecord],
+    ) -> Result<String, StorageError> {
         hash_bincode(&records)
     }
 
@@ -886,10 +892,14 @@ mod tests {
             storage
                 .load_snapshot_import_audit_records_page(1, 1)
                 .unwrap(),
-            vec![second]
+            vec![second.clone()]
         );
         let populated_root = storage.snapshot_import_audit_root().unwrap();
         assert_ne!(populated_root, empty_root);
+        assert_eq!(
+            FileStorage::snapshot_import_audit_root_for(&[first.clone(), second.clone()]).unwrap(),
+            populated_root
+        );
         assert_eq!(
             FileStorage::open(&dir)
                 .unwrap()

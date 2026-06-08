@@ -3294,6 +3294,19 @@ mod tests {
         sync_metrics.required_metadata_roots_root =
             Some(expected_required_metadata_roots_root.clone());
         let expected_sync_report = snapshot_sync_client_metrics_report(sync_metrics.clone());
+        let snapshot_import_audit_record = SnapshotImportAuditRecord {
+            snapshot_root: "snapshot-root-1".into(),
+            manifest_hash: "manifest-hash-1".into(),
+            required_metadata_roots_root: expected_required_metadata_roots_root.clone(),
+            required_metadata_roots_count: expected_required_metadata_roots.len(),
+            manifest_metadata_roots_count: expected_required_metadata_roots.len() + 1,
+            chunk_count: 4,
+            metadata_roots_verified: true,
+        };
+        let expected_snapshot_import_audit_records = vec![snapshot_import_audit_record.clone()];
+        let expected_snapshot_import_audit_root =
+            FileStorage::snapshot_import_audit_root_for(&expected_snapshot_import_audit_records)
+                .unwrap();
         let handle = thread::spawn(move || {
             let mut node = PersistentValidatorNode::bootstrap_with_validator_set(
                 "validator-2",
@@ -3307,6 +3320,9 @@ mod tests {
                 .unwrap();
             node.storage
                 .commit_required_snapshot_metadata_roots(&required_metadata_roots)
+                .unwrap();
+            node.storage
+                .append_snapshot_import_audit_record(snapshot_import_audit_record)
                 .unwrap();
             server
                 .serve_next_connection_with_handler(&mut node)
@@ -3345,6 +3361,26 @@ mod tests {
                         .required_snapshot_metadata_roots_root
                         .clone(),
                 }
+            ))
+        );
+        write_rpc_request(
+            &mut stream,
+            &RpcRequest::GetSnapshotImportAuditRecords {
+                offset: 0,
+                limit: 10,
+            },
+        );
+        assert_eq!(
+            read_rpc_response(&mut reader),
+            RpcResponse::Ok(RpcResult::SnapshotImportAuditRecords(
+                expected_snapshot_import_audit_records
+            ))
+        );
+        write_rpc_request(&mut stream, &RpcRequest::GetSnapshotImportAuditRoot);
+        assert_eq!(
+            read_rpc_response(&mut reader),
+            RpcResponse::Ok(RpcResult::SnapshotImportAuditRoot(
+                expected_snapshot_import_audit_root
             ))
         );
 
