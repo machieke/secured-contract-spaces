@@ -5801,6 +5801,7 @@ mod tests {
         assert!(next_state.scheduled_upgrade("upgrade-1").unwrap().executed);
         assert_eq!(next_state.storage_root(), storage_before);
         assert_eq!(next_state.registry_root(), registry_before);
+        assert_eq!(next_state.check_declared_invariants(), vec![]);
         assert!(matches!(
             next_state.events().last().unwrap().payload,
             EventPayload::UpgradeExecuted { .. }
@@ -5913,6 +5914,7 @@ mod tests {
         );
         assert_eq!(next_state.storage_root(), storage_before);
         assert_eq!(next_state.registry_root(), registry_before);
+        assert_eq!(next_state.check_declared_invariants(), vec![]);
         assert!(matches!(
             next_state.events().last().unwrap().payload,
             EventPayload::PolicyUpdateExecuted { .. }
