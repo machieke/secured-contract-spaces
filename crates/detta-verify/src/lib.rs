@@ -1040,6 +1040,31 @@ mod tests {
     }
 
     #[test]
+    fn proof_runtime_artifact_order_is_stable() {
+        let artifact_paths: Vec<_> = proof_runtime_artifacts()
+            .iter()
+            .map(|artifact| artifact.path)
+            .collect();
+
+        assert_eq!(
+            artifact_paths,
+            vec![
+                "models/detta-restricted-evaluator-proof-trace.json",
+                "models/detta-restricted-evaluator-proof-trace.sha256",
+                "models/detta-restricted-evaluator-proof-trace-root.sha256",
+                "models/detta-restricted-evaluator-forbidden-primitives.json",
+                "models/detta-restricted-evaluator-forbidden-primitives.sha256",
+                "models/detta-restricted-evaluator-resource-exhaustion.json",
+                "models/detta-restricted-evaluator-resource-exhaustion.sha256",
+                "models/detta-restricted-evaluator-arithmetic-overflow.json",
+                "models/detta-restricted-evaluator-arithmetic-overflow.sha256",
+                "models/detta-restricted-evaluator-fixture-inventory.json",
+                "models/detta-restricted-evaluator-fixture-inventory.sha256",
+            ]
+        );
+    }
+
+    #[test]
     fn proof_runtime_artifact_paths_are_unique() {
         let artifacts = proof_runtime_artifacts();
         let paths: BTreeSet<_> = artifacts.iter().map(|artifact| artifact.path).collect();

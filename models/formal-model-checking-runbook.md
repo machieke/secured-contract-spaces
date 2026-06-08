@@ -44,6 +44,9 @@ cargo test -p detta-verify
 - model artifact paths are unique.
 - model artifact order is stable: TLA+ module, then TLC config.
 - model and runtime artifact path sets are disjoint.
+- runtime artifact order is stable: evaluator proof trace, its attestations,
+  forbidden primitive, resource exhaustion, arithmetic overflow, then fixture
+  inventory artifacts.
 - every release attestation file uses single-line `sha256sum` format with a
   lowercase SHA-256 root and expected basename.
 - every release attestation filename is bound to the target artifact basename
@@ -126,6 +129,9 @@ Before accepting a release proof bundle, verify:
 - every `runtime_artifacts` path is unique;
 - every `model_artifacts` path is unique;
 - model artifact order is stable: TLA+ module, then TLC config;
+- runtime artifact order is stable: evaluator proof trace, its attestations,
+  forbidden primitive, resource exhaustion, arithmetic overflow, then fixture
+  inventory artifacts;
 - every model and runtime artifact root is lowercase SHA-256 hex;
 - every model and runtime artifact path stays under `models/`;
 - every model and runtime artifact path uses an allowed suffix;
