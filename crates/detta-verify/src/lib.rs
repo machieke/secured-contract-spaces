@@ -224,6 +224,8 @@ pub const PROOF_ARTIFACT_MANIFEST_SCHEMA_VERSION: u32 = 2;
 pub const PROOF_ARTIFACT_MANIFEST_PROJECT: &str = "DeTTa";
 pub const PROOF_ARTIFACT_MANIFEST_SCOPE: &str =
     "Secured Contract Spaces runtime safety obligations";
+pub const PROOF_MODEL_ARTIFACT_COUNT: usize = 2;
+pub const PROOF_RUNTIME_ARTIFACT_COUNT: usize = 11;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ProofArtifactManifest {
@@ -1340,6 +1342,25 @@ mod tests {
 
         assert_eq!(manifest.theorem_count, manifest.coverage.len());
         assert_eq!(manifest.theorem_count, scs_theorem_coverage().len());
+    }
+
+    #[test]
+    fn proof_artifact_manifest_artifact_counts_are_stable() {
+        let manifest = proof_artifact_manifest();
+
+        assert_eq!(manifest.model_artifacts.len(), PROOF_MODEL_ARTIFACT_COUNT);
+        assert_eq!(
+            manifest.runtime_artifacts.len(),
+            PROOF_RUNTIME_ARTIFACT_COUNT
+        );
+        assert_eq!(
+            manifest.model_artifacts.len(),
+            proof_model_artifacts().len()
+        );
+        assert_eq!(
+            manifest.runtime_artifacts.len(),
+            proof_runtime_artifacts().len()
+        );
     }
 
     #[test]

@@ -109,6 +109,7 @@ cargo test -p detta-verify
 - theorem IDs use the fixed `THM-NNN` format and sequence.
 - proof manifest `theorem_count` matches the SCS theorem coverage.
 - proof manifest project and scope bind the bundle to DeTTa SCS runtime safety.
+- proof manifest model and runtime artifact counts match expected release shape.
 
 The evaluator `sha256sum -c` commands verify fixture-file attestations. The
 final `sha256sum` command reports the file root of the compact-trace-root
@@ -234,6 +235,7 @@ Before accepting a release proof bundle, verify:
 - theorem IDs use the fixed `THM-NNN` format and sequence;
 - proof manifest `theorem_count` matches the SCS theorem coverage;
 - proof manifest project and scope bind the bundle to DeTTa SCS runtime safety;
+- proof manifest model and runtime artifact counts match expected release shape;
 - `detta-restricted-evaluator-proof-trace-root.sha256` matches both the
   fixture `trace_root` field and the recomputed root of `report.trace`;
 - `models/detta-proof-artifact-manifest.sha256` verifies after all fixture,
