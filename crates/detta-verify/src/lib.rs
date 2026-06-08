@@ -1469,6 +1469,71 @@ mod tests {
     }
 
     #[test]
+    fn proof_runtime_evaluator_fixture_inventory_names_map_to_expected_roots() {
+        let inventory: EvaluatorFixtureInventoryForTest = serde_json::from_str(include_str!(
+            "../../../models/detta-restricted-evaluator-fixture-inventory.json"
+        ))
+        .unwrap();
+        let name_to_roots: BTreeMap<_, _> = inventory
+            .fixtures
+            .iter()
+            .map(|entry| {
+                (
+                    entry.name.as_str(),
+                    (
+                        entry.fixture_sha256.as_str(),
+                        entry.attestation_sha256.as_str(),
+                        entry.trace_root.as_deref(),
+                        entry.trace_root_attestation_sha256.as_deref(),
+                    ),
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            name_to_roots,
+            BTreeMap::from([
+                (
+                    "proof-trace",
+                    (
+                        "513d919a2f2038b02519512b5416b35bdddf5158cb8dadb792c7b6ed61147a38",
+                        "6e94330e7034919bd12ad6b03b4acf785dc923ae32dca9b110eb024541a8926b",
+                        Some("a90c256f6a8f5f16dcf5bc3cc063aca87f8cfaff4c17196f0d9fcebac70c4947",),
+                        Some("962954607a2b57634bebd9f634f04d0e4206d35c948257398c198d3fe8a7febc",),
+                    ),
+                ),
+                (
+                    "forbidden-primitives",
+                    (
+                        "8da9bb850bf189c0ce69753717a47c40173636f564710dcab288d8ee1ac2622c",
+                        "b5f1a047ea11a03a17a574a3835e8b63bf681f3ee4c655462f9e448c97865648",
+                        None,
+                        None,
+                    ),
+                ),
+                (
+                    "resource-exhaustion",
+                    (
+                        "ba6a1a61581be50de96532e86e3f3e2c9c8792a9506c4149a58fe2a7be9e1806",
+                        "0b0f0f62127febf4108114beeb10ba383adcf2582cbb5f263038cba960f8a0d0",
+                        None,
+                        None,
+                    ),
+                ),
+                (
+                    "arithmetic-overflow",
+                    (
+                        "8135d0a60e36e5369d80ca85985311745b3f3172bbc84a639cf3ec4cef602f2f",
+                        "d8f9f4c782699c7e56fe852968f82e54ddb0a1fe701add00dd986c300a2cb11d",
+                        None,
+                        None,
+                    ),
+                ),
+            ])
+        );
+    }
+
+    #[test]
     fn proof_runtime_evaluator_fixture_inventory_paths_are_unique() {
         let inventory: EvaluatorFixtureInventoryForTest = serde_json::from_str(include_str!(
             "../../../models/detta-restricted-evaluator-fixture-inventory.json"
