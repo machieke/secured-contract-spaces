@@ -11,3 +11,6 @@ detta-network = { path = "../detta-network" }
 detta-protocol = { path = "../detta-protocol" }
 detta-rpc = { path = "../detta-rpc" }
 detta-storage = { path = "../detta-storage" }
+
+[dev-dependencies]
+serde_json = "1.0"

@@ -161,9 +161,20 @@ impl JsonRpcServer {
     }
 
     pub fn serve_next_connection(&self, service: &mut RpcService) -> Result<(), RpcTransportError> {
-        let (stream, _) = self.listener.accept()?;
-        serve_json_rpc_connection(service, stream, self.max_request_bytes)
+        self.serve_next_connection_with_handler(service)
     }
+
+    pub fn serve_next_connection_with_handler<H: JsonRpcHandler>(
+        &self,
+        handler: &mut H,
+    ) -> Result<(), RpcTransportError> {
+        let (stream, _) = self.listener.accept()?;
+        serve_json_rpc_handler_connection(handler, stream, self.max_request_bytes)
+    }
+}
+
+pub trait JsonRpcHandler {
+    fn handle_json_request(&mut self, request: &[u8]) -> Result<Vec<u8>, RpcTransportError>;
 }
 
 pub struct RpcService {
@@ -372,15 +383,13 @@ impl RpcService {
     }
 
     pub fn handle_json_request(&mut self, request: &[u8]) -> Result<Vec<u8>, RpcTransportError> {
-        let response = match serde_json::from_slice::<RpcRequest>(request) {
-            Ok(request) => self.handle_request(request),
-            Err(error) => RpcResponse::Error(RpcErrorBody {
-                code: "rpc.decode_error".into(),
-                message: error.to_string(),
-            }),
-        };
+        json_rpc_response_for_request(request, |request| self.handle_request(request))
+    }
+}
 
-        serde_json::to_vec(&response).map_err(RpcTransportError::Encode)
+impl JsonRpcHandler for RpcService {
+    fn handle_json_request(&mut self, request: &[u8]) -> Result<Vec<u8>, RpcTransportError> {
+        RpcService::handle_json_request(self, request)
     }
 }
 
@@ -407,6 +416,14 @@ pub fn serve_json_rpc_connection<S: Read + Write>(
     stream: S,
     max_request_bytes: usize,
 ) -> Result<(), RpcTransportError> {
+    serve_json_rpc_handler_connection(service, stream, max_request_bytes)
+}
+
+pub fn serve_json_rpc_handler_connection<H: JsonRpcHandler, S: Read + Write>(
+    handler: &mut H,
+    stream: S,
+    max_request_bytes: usize,
+) -> Result<(), RpcTransportError> {
     let mut reader = BufReader::new(stream);
 
     loop {
@@ -414,12 +431,27 @@ pub fn serve_json_rpc_connection<S: Read + Write>(
             return Ok(());
         };
 
-        let response = service.handle_json_request(&request)?;
+        let response = handler.handle_json_request(&request)?;
         let stream = reader.get_mut();
         stream.write_all(&response)?;
         stream.write_all(b"\n")?;
         stream.flush()?;
     }
+}
+
+pub fn json_rpc_response_for_request(
+    request: &[u8],
+    handle: impl FnOnce(RpcRequest) -> RpcResponse,
+) -> Result<Vec<u8>, RpcTransportError> {
+    let response = match serde_json::from_slice::<RpcRequest>(request) {
+        Ok(request) => handle(request),
+        Err(error) => RpcResponse::Error(RpcErrorBody {
+            code: "rpc.decode_error".into(),
+            message: error.to_string(),
+        }),
+    };
+
+    serde_json::to_vec(&response).map_err(RpcTransportError::Encode)
 }
 
 fn read_bounded_json_line<R: Read>(

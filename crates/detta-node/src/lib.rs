@@ -12,8 +12,8 @@ use detta_protocol::{
     ValidatorSetMetadataUpdate, ValidatorSigningKey,
 };
 use detta_rpc::{
-    RpcError, RpcErrorBody, RpcRequest, RpcResponse, RpcResult, RpcService,
-    ValidatorSetMetadataUpdateStatus,
+    json_rpc_response_for_request, JsonRpcHandler, RpcError, RpcErrorBody, RpcRequest, RpcResponse,
+    RpcResult, RpcService, RpcTransportError, ValidatorSetMetadataUpdateStatus,
 };
 use detta_storage::{FileStorage, StorageError};
 use std::collections::{BTreeMap, BTreeSet};
@@ -838,6 +838,12 @@ impl PersistentValidatorNode {
     }
 }
 
+impl JsonRpcHandler for PersistentValidatorNode {
+    fn handle_json_request(&mut self, request: &[u8]) -> Result<Vec<u8>, RpcTransportError> {
+        json_rpc_response_for_request(request, |request| self.handle_rpc_request(request))
+    }
+}
+
 fn keyring_from_metadata(
     metadata: &ValidatorSetMetadata,
 ) -> Result<BTreeMap<String, ValidatorPublicKey>, NodeError> {
@@ -894,8 +900,10 @@ mod tests {
         ProtocolMessage, SignatureError, SnapshotChunkRequest, SnapshotChunkSet,
         ValidatorSetMetadataUpdate, ValidatorSigningKey,
     };
+    use detta_rpc::JsonRpcServer;
     use std::fs;
-    use std::net::TcpListener;
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::{Shutdown, TcpListener, TcpStream};
     use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -927,6 +935,19 @@ mod tests {
 
     fn validator_key(validator_id: &str, seed_byte: u8) -> ValidatorSigningKey {
         ValidatorSigningKey::from_seed(validator_id, "consensus-key-1", [seed_byte; 32])
+    }
+
+    fn write_rpc_request(stream: &mut TcpStream, request: &RpcRequest) {
+        serde_json::to_writer(&mut *stream, request).unwrap();
+        stream.write_all(b"\n").unwrap();
+        stream.flush().unwrap();
+    }
+
+    fn read_rpc_response(reader: &mut BufReader<TcpStream>) -> RpcResponse {
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        assert!(!line.is_empty());
+        serde_json::from_str(&line).unwrap()
     }
 
     fn transfer_tx() -> Transaction {
@@ -1941,6 +1962,109 @@ mod tests {
         assert!(node.trusted_validator_key("validator-3").is_some());
 
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn persistent_node_json_rpc_tcp_serves_validator_set_metadata_methods() {
+        let dir = temp_dir("validator-set-json-rpc");
+        let signer_key = validator_key("validator-1", 7);
+        let peer_key = validator_key("validator-2", 8);
+        let added_key = validator_key("validator-3", 9);
+        let update = ValidatorSetMetadataUpdate {
+            update_id: "validator-set-update-1".into(),
+            add_validators: vec![added_key.public_key()],
+            remove_validators: vec![],
+        };
+        let signer_authorization = signer_key
+            .sign_message(
+                "detta-testnet",
+                "detta-local".to_string(),
+                NetworkMessage::ValidatorSetMetadataUpdate(update.clone()),
+            )
+            .unwrap();
+        let peer_authorization = peer_key
+            .sign_message(
+                "detta-testnet",
+                "detta-local".to_string(),
+                NetworkMessage::ValidatorSetMetadataUpdate(update),
+            )
+            .unwrap();
+        let server = JsonRpcServer::bind("127.0.0.1:0").unwrap();
+        let addr = server.local_addr().unwrap();
+        let handle = thread::spawn(move || {
+            let mut node = PersistentValidatorNode::bootstrap_with_validator_set(
+                "validator-2",
+                seeded_state(),
+                &dir,
+                "detta-testnet",
+                vec![signer_key.public_key(), peer_key.public_key()],
+            )
+            .unwrap();
+            server
+                .serve_next_connection_with_handler(&mut node)
+                .unwrap();
+            assert!(node.trusted_validator_key("validator-3").is_some());
+            fs::remove_dir_all(dir).unwrap();
+        });
+
+        let mut stream = TcpStream::connect(addr).unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        write_rpc_request(
+            &mut stream,
+            &RpcRequest::ProposeValidatorSetMetadataUpdate {
+                authorization: signer_authorization,
+            },
+        );
+        assert_eq!(
+            read_rpc_response(&mut reader),
+            RpcResponse::Ok(RpcResult::ValidatorSetMetadataUpdateStatus(
+                ValidatorSetMetadataUpdateStatus {
+                    update_id: "validator-set-update-1".into(),
+                    pending_authorizations: 1,
+                    required_quorum: 2,
+                    applied: false,
+                },
+            ))
+        );
+
+        write_rpc_request(
+            &mut stream,
+            &RpcRequest::GetValidatorSetMetadataUpdateStatus {
+                update_id: "validator-set-update-1".into(),
+            },
+        );
+        assert_eq!(
+            read_rpc_response(&mut reader),
+            RpcResponse::Ok(RpcResult::ValidatorSetMetadataUpdateStatus(
+                ValidatorSetMetadataUpdateStatus {
+                    update_id: "validator-set-update-1".into(),
+                    pending_authorizations: 1,
+                    required_quorum: 2,
+                    applied: false,
+                },
+            ))
+        );
+
+        write_rpc_request(
+            &mut stream,
+            &RpcRequest::ProposeValidatorSetMetadataUpdate {
+                authorization: peer_authorization,
+            },
+        );
+        assert_eq!(
+            read_rpc_response(&mut reader),
+            RpcResponse::Ok(RpcResult::ValidatorSetMetadataUpdateStatus(
+                ValidatorSetMetadataUpdateStatus {
+                    update_id: "validator-set-update-1".into(),
+                    pending_authorizations: 0,
+                    required_quorum: 3,
+                    applied: true,
+                },
+            ))
+        );
+
+        stream.shutdown(Shutdown::Write).unwrap();
+        handle.join().unwrap();
     }
 
     #[test]

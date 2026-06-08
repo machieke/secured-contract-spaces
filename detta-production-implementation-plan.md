@@ -62,10 +62,12 @@ Completed production-plan slices:
   resume quorum assembly before clearing after durable application.
 - [x] RPC wire types and persistent-node handling support validator-set metadata
   update proposal authorizations and quorum status queries.
+- [x] Persistent validator nodes serve validator-set metadata proposal and
+  status methods over the shared TCP JSON RPC server path.
 
 Next implementation slices:
 
-- [ ] Serve persistent-node validator-set metadata RPC methods over the TCP JSON RPC server.
+- [ ] Add validator-set metadata authorization pruning and stale-update expiry.
 
 # 1. Production Objective
 

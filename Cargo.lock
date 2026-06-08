@@ -172,6 +172,7 @@ dependencies = [
  "detta-protocol",
  "detta-rpc",
  "detta-storage",
+ "serde_json",
 ]
 
 [[package]]
