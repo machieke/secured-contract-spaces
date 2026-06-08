@@ -168,10 +168,12 @@ Completed production-plan slices:
   manifest.
 - [x] Proof-artifact manifests have stable SHA-256 roots for release
   attestations.
+- [x] TLA formal model artifact roots are included in the proof-artifact
+  manifest.
 
 Next implementation slices:
 
-- [ ] Add TLA model artifact roots to the proof-artifact manifest.
+- [ ] Add a formal model checking runbook for proof artifacts.
 
 # 1. Production Objective
 

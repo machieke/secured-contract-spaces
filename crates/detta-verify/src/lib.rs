@@ -213,10 +213,17 @@ pub struct SafetyTheoremCoverage {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ModelArtifactRoot {
+    pub path: &'static str,
+    pub sha256: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ProofArtifactManifest {
     pub schema: &'static str,
     pub project: &'static str,
     pub scope: &'static str,
+    pub model_artifacts: Vec<ModelArtifactRoot>,
     pub theorem_count: usize,
     pub coverage: Vec<SafetyTheoremCoverage>,
 }
@@ -227,9 +234,19 @@ pub fn proof_artifact_manifest() -> ProofArtifactManifest {
         schema: "detta.proof-artifact-manifest.v1",
         project: "DeTTa",
         scope: "Secured Contract Spaces runtime safety obligations",
+        model_artifacts: proof_model_artifacts(),
         theorem_count: coverage.len(),
         coverage,
     }
+}
+
+pub fn proof_model_artifacts() -> Vec<ModelArtifactRoot> {
+    vec![ModelArtifactRoot {
+        path: "models/DeTTaBlockExecution.tla",
+        sha256: proof_artifact_manifest_root_bytes(include_bytes!(
+            "../../../models/DeTTaBlockExecution.tla"
+        )),
+    }]
 }
 
 pub fn proof_artifact_manifest_root_bytes(bytes: &[u8]) -> String {
@@ -653,6 +670,17 @@ mod tests {
 
         assert_eq!(file_name, "detta-proof-artifact-manifest.json");
         assert_eq!(checked_in_proof_artifact_manifest_root(), root);
+    }
+
+    #[test]
+    fn proof_model_artifacts_include_tla_roots() {
+        assert_eq!(
+            proof_model_artifacts(),
+            vec![ModelArtifactRoot {
+                path: "models/DeTTaBlockExecution.tla",
+                sha256: "169537a4ee52399bdce2c057c9f81d683d72e46354a872c3aa1800587efb93ba".into(),
+            }]
+        );
     }
 
     #[test]

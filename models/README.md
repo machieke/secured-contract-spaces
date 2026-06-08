@@ -7,8 +7,9 @@ This directory contains formal-model artifacts for the DeTTa runtime.
   active reentrancy locks, guarded writes, commit/revert atomicity, and
   deterministic replay obligations.
 - `detta-proof-artifact-manifest.json` is the stable proof-artifact manifest
-  exported by `detta_verify::proof_artifact_manifest()`. The verify crate tests
-  that the checked-in JSON stays synchronized with theorem coverage.
+  exported by `detta_verify::proof_artifact_manifest()`. It includes theorem
+  coverage and formal model artifact roots. The verify crate tests that the
+  checked-in JSON stays synchronized with theorem coverage and model files.
 - `detta-proof-artifact-manifest.sha256` records the release-attestation root
   for the checked-in proof-artifact manifest.
 

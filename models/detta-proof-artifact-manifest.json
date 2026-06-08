@@ -2,6 +2,12 @@
   "schema": "detta.proof-artifact-manifest.v1",
   "project": "DeTTa",
   "scope": "Secured Contract Spaces runtime safety obligations",
+  "model_artifacts": [
+    {
+      "path": "models/DeTTaBlockExecution.tla",
+      "sha256": "169537a4ee52399bdce2c057c9f81d683d72e46354a872c3aa1800587efb93ba"
+    }
+  ],
   "theorem_count": 15,
   "coverage": [
     {
