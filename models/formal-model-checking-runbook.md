@@ -56,6 +56,7 @@ cargo test -p detta-verify
 - the evaluator fixture inventory schema, version, and evaluator identifier are
   explicit and stable.
 - evaluator fixture inventory entry names are non-empty and unique.
+- evaluator fixture inventory fixture schemas are namespaced and unique.
 - evaluator fixture inventory fixture, attestation, and trace-root attestation
   paths are unique.
 - evaluator fixture inventory roots are lowercase SHA-256 hex.
@@ -125,6 +126,7 @@ Before accepting a release proof bundle, verify:
   `detta.restricted-evaluator-fixture-inventory.v1`, `schema_version: 1`, and
   `detta.restricted-script-evaluator`;
 - every evaluator fixture inventory entry name is non-empty and unique;
+- every evaluator fixture inventory fixture schema is namespaced and unique;
 - every evaluator fixture inventory path is unique across fixture,
   attestation, and trace-root attestation fields;
 - every evaluator fixture inventory root uses lowercase SHA-256 hex;

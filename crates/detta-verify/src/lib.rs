@@ -1290,6 +1290,7 @@ mod tests {
     #[derive(serde::Deserialize)]
     struct EvaluatorFixtureInventoryEntryForTest {
         name: String,
+        fixture_schema: String,
         fixture_path: String,
         fixture_sha256: String,
         attestation_path: String,
@@ -1329,6 +1330,26 @@ mod tests {
         assert_eq!(names.len(), inventory.fixtures.len());
         for entry in inventory.fixtures {
             assert!(!entry.name.is_empty());
+        }
+    }
+
+    #[test]
+    fn proof_runtime_evaluator_fixture_inventory_schemas_are_unique() {
+        let inventory: EvaluatorFixtureInventoryForTest = serde_json::from_str(include_str!(
+            "../../../models/detta-restricted-evaluator-fixture-inventory.json"
+        ))
+        .unwrap();
+        let fixture_schemas: BTreeSet<_> = inventory
+            .fixtures
+            .iter()
+            .map(|entry| entry.fixture_schema.as_str())
+            .collect();
+
+        assert_eq!(fixture_schemas.len(), inventory.fixtures.len());
+        for entry in inventory.fixtures {
+            assert!(entry
+                .fixture_schema
+                .starts_with("detta.restricted-evaluator-"));
         }
     }
 
