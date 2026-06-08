@@ -879,6 +879,26 @@ mod tests {
     }
 
     #[test]
+    fn proof_runtime_artifacts_bind_all_evaluator_fixture_json() {
+        let runtime_paths: BTreeSet<_> = proof_runtime_artifacts()
+            .into_iter()
+            .map(|artifact| artifact.path)
+            .collect();
+
+        for required in [
+            "models/detta-restricted-evaluator-proof-trace.json",
+            "models/detta-restricted-evaluator-forbidden-primitives.json",
+            "models/detta-restricted-evaluator-resource-exhaustion.json",
+            "models/detta-restricted-evaluator-arithmetic-overflow.json",
+        ] {
+            assert!(
+                runtime_paths.contains(required),
+                "{required} is not bound in the proof manifest runtime artifacts"
+            );
+        }
+    }
+
+    #[test]
     fn theorem_fixture_evidence_references_runtime_artifacts() {
         let runtime_artifacts: BTreeSet<_> = proof_runtime_artifacts()
             .into_iter()

@@ -204,11 +204,12 @@ Completed production-plan slices:
   proof-artifact manifest.
 - [x] Proof-manifest tests ensure every checked-in evaluator attestation is
   bound.
+- [x] Proof-manifest tests ensure every checked-in evaluator fixture JSON is
+  bound.
 
 Next implementation slices:
 
-- [ ] Add proof-manifest tests that every checked-in evaluator fixture JSON is
-  bound.
+- [ ] Document proof manifest v2 runtime artifact semantics.
 
 # 1. Production Objective
 
