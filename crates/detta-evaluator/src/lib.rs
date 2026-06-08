@@ -604,6 +604,11 @@ mod tests {
             include_str!("../../../models/detta-restricted-evaluator-resource-exhaustion.sha256"),
             "detta-restricted-evaluator-resource-exhaustion.json",
         );
+        assert_attested_fixture_root(
+            include_bytes!("../../../models/detta-restricted-evaluator-arithmetic-overflow.json"),
+            include_str!("../../../models/detta-restricted-evaluator-arithmetic-overflow.sha256"),
+            "detta-restricted-evaluator-arithmetic-overflow.json",
+        );
     }
 
     fn assert_attested_fixture_root(bytes: &[u8], attestation: &str, expected_filename: &str) {
