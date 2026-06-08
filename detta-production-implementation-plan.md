@@ -26,10 +26,11 @@ Completed production-plan slices:
 - [x] Peer connection manager validates peer metadata and enforces bounded
   receive loops.
 - [x] Persistent nodes gossip admitted transactions to validator peers.
+- [x] Persistent nodes propagate consensus votes and finality certificates over
+  network envelopes.
 
 Next implementation slices:
 
-- [ ] Add consensus vote/certificate propagation over the network transport.
 - [ ] Add externally served RPC transport instead of only in-process RPC.
 - [ ] Add signed validator protocol messages and signature-domain checks.
 - [ ] Add chunked snapshot state sync over protocol envelopes.

@@ -117,6 +117,7 @@ dependencies = [
 name = "detta-node"
 version = "0.1.0"
 dependencies = [
+ "detta-consensus",
  "detta-core",
  "detta-network",
  "detta-rpc",

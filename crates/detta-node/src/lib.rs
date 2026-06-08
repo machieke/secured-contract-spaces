@@ -1,3 +1,4 @@
+use detta_consensus::{FinalityCertificate, Vote};
 use detta_core::{Block, BlockError, DeTTaState, MempoolError, Transaction, ValidatorNode};
 use detta_network::{Envelope, InMemoryTransport, NetworkError, NetworkMessage};
 use detta_rpc::{RpcError, RpcService};
@@ -17,6 +18,8 @@ pub enum NodeError {
 pub enum NetworkIngestOutcome {
     TransactionAccepted,
     BlockImported,
+    VoteReceived,
+    FinalityCertificateReceived,
     IgnoredControlMessage,
 }
 
@@ -94,6 +97,29 @@ impl PersistentValidatorNode {
             .map_err(NodeError::Network)
     }
 
+    pub fn gossip_vote(
+        &self,
+        vote: Vote,
+        transport: &mut InMemoryTransport,
+    ) -> Result<usize, NodeError> {
+        transport
+            .broadcast(self.validator_id.clone(), NetworkMessage::Vote(vote))
+            .map_err(NodeError::Network)
+    }
+
+    pub fn gossip_finality_certificate(
+        &self,
+        certificate: FinalityCertificate,
+        transport: &mut InMemoryTransport,
+    ) -> Result<usize, NodeError> {
+        transport
+            .broadcast(
+                self.validator_id.clone(),
+                NetworkMessage::FinalityCertificate(certificate),
+            )
+            .map_err(NodeError::Network)
+    }
+
     pub fn produce_block(&mut self, height: u64, timestamp: u64) -> Result<Block, NodeError> {
         let block = self
             .rpc
@@ -121,9 +147,11 @@ impl PersistentValidatorNode {
                 self.import_block(block)?;
                 Ok(NetworkIngestOutcome::BlockImported)
             }
-            NetworkMessage::Vote(_)
-            | NetworkMessage::FinalityCertificate(_)
-            | NetworkMessage::ValidatorSetUpdate(_)
+            NetworkMessage::Vote(_) => Ok(NetworkIngestOutcome::VoteReceived),
+            NetworkMessage::FinalityCertificate(_) => {
+                Ok(NetworkIngestOutcome::FinalityCertificateReceived)
+            }
+            NetworkMessage::ValidatorSetUpdate(_)
             | NetworkMessage::EquivocationEvidence(_)
             | NetworkMessage::StateSnapshot(_)
             | NetworkMessage::PeerHello(_) => Ok(NetworkIngestOutcome::IgnoredControlMessage),
@@ -321,6 +349,59 @@ mod tests {
         assert_eq!(peer.pending_len(), 1);
         let reloaded_peer = PersistentValidatorNode::restart("validator-2", &peer_dir).unwrap();
         assert_eq!(reloaded_peer.pending_len(), 1);
+
+        fs::remove_dir_all(validator_dir).unwrap();
+        fs::remove_dir_all(peer_dir).unwrap();
+    }
+
+    #[test]
+    fn persistent_node_gossips_consensus_vote_and_certificate() {
+        let validator_dir = temp_dir("gossip-consensus-validator");
+        let peer_dir = temp_dir("gossip-consensus-peer");
+        let validator =
+            PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &validator_dir)
+                .unwrap();
+        let mut peer =
+            PersistentValidatorNode::bootstrap("validator-2", seeded_state(), &peer_dir).unwrap();
+        let mut transport =
+            InMemoryTransport::new(["validator-1".into(), "validator-2".into()]).unwrap();
+
+        let vote = Vote {
+            validator_id: "validator-1".into(),
+            height: 1,
+            block_hash: "block-a".into(),
+        };
+        let certificate = FinalityCertificate {
+            height: 1,
+            block_hash: "block-a".into(),
+            signers: vec!["validator-1".into(), "validator-2".into()],
+        };
+
+        assert_eq!(
+            validator.gossip_vote(vote.clone(), &mut transport).unwrap(),
+            1
+        );
+        assert_eq!(
+            validator
+                .gossip_finality_certificate(certificate.clone(), &mut transport)
+                .unwrap(),
+            1
+        );
+
+        let envelopes = transport.drain_peer("validator-2").unwrap();
+        assert_eq!(envelopes[0].message, NetworkMessage::Vote(vote));
+        assert_eq!(
+            peer.ingest_network_envelope(&envelopes[0]).unwrap(),
+            NetworkIngestOutcome::VoteReceived
+        );
+        assert_eq!(
+            envelopes[1].message,
+            NetworkMessage::FinalityCertificate(certificate)
+        );
+        assert_eq!(
+            peer.ingest_network_envelope(&envelopes[1]).unwrap(),
+            NetworkIngestOutcome::FinalityCertificateReceived
+        );
 
         fs::remove_dir_all(validator_dir).unwrap();
         fs::remove_dir_all(peer_dir).unwrap();
