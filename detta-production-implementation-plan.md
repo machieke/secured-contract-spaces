@@ -162,11 +162,12 @@ Completed production-plan slices:
   TCP JSON RPC path.
 - [x] Stable JSON client fixtures cover expanded snapshot metadata root status
   responses.
+- [x] Expanded snapshot metadata root status RPC semantics are documented for
+  client implementers.
 
 Next implementation slices:
 
-- [ ] Document expanded snapshot metadata root status RPC semantics for client
-  implementers.
+- [ ] Export formal theorem coverage as a stable proof-artifact manifest.
 
 # 1. Production Objective
 
