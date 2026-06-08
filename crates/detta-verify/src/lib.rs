@@ -1029,6 +1029,31 @@ mod tests {
     }
 
     #[test]
+    fn theorem_model_evidence_uses_expected_namespace() {
+        for entry in scs_theorem_coverage() {
+            for evidence in entry
+                .evidence
+                .iter()
+                .filter(|evidence| matches!(evidence.kind, TheoremEvidenceKind::Model))
+            {
+                assert!(
+                    evidence
+                        .reference
+                        .starts_with("models/DeTTaBlockExecution.tla::"),
+                    "{} model evidence uses an unexpected namespace: {}",
+                    entry.id,
+                    evidence.reference
+                );
+                assert!(
+                    !evidence.reference.rsplit_once("::").unwrap().1.is_empty(),
+                    "{} model evidence must name a TLA+ operator",
+                    entry.id
+                );
+            }
+        }
+    }
+
+    #[test]
     fn proof_artifact_manifest_matches_checked_in_json() {
         let expected: serde_json::Value = serde_json::from_str(include_str!(
             "../../../models/detta-proof-artifact-manifest.json"
