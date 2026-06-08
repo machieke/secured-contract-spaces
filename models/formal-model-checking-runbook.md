@@ -99,6 +99,8 @@ cargo test -p detta-verify
   exhaustion, and arithmetic overflow fixture schemas.
 - theorem fixture evidence covers all evaluator fixture inventory entry names.
 - theorem model evidence covers the expected TLA operator set.
+- theorem runtime-test evidence covers `detta_core`, `detta_evaluator`, and
+  `detta_verify` test crates.
 
 The evaluator `sha256sum -c` commands verify fixture-file attestations. The
 final `sha256sum` command reports the file root of the compact-trace-root
@@ -214,6 +216,8 @@ Before accepting a release proof bundle, verify:
   exhaustion, and arithmetic overflow fixture schemas;
 - theorem fixture evidence covers all evaluator fixture inventory entry names;
 - theorem model evidence covers the expected TLA operator set;
+- theorem runtime-test evidence covers `detta_core`, `detta_evaluator`, and
+  `detta_verify` test crates;
 - `detta-restricted-evaluator-proof-trace-root.sha256` matches both the
   fixture `trace_root` field and the recomputed root of `report.trace`;
 - `models/detta-proof-artifact-manifest.sha256` verifies after all fixture,

@@ -1011,6 +1011,21 @@ mod tests {
     }
 
     #[test]
+    fn theorem_runtime_test_evidence_covers_expected_crates() {
+        let runtime_test_crates: BTreeSet<_> = scs_theorem_coverage()
+            .into_iter()
+            .flat_map(|entry| entry.evidence)
+            .filter(|evidence| matches!(evidence.kind, TheoremEvidenceKind::RuntimeTest))
+            .map(|evidence| evidence.reference.split_once("::").unwrap().0)
+            .collect();
+
+        assert_eq!(
+            runtime_test_crates,
+            BTreeSet::from(["detta_core", "detta_evaluator", "detta_verify"])
+        );
+    }
+
+    #[test]
     fn theorem_verifier_evidence_uses_expected_namespace() {
         for entry in scs_theorem_coverage() {
             for evidence in entry
