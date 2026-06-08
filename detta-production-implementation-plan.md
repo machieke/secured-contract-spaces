@@ -140,11 +140,12 @@ Completed production-plan slices:
   storage and reloads after node restart.
 - [x] Snapshot import audit retention configuration is exposed through
   node-aware RPC.
+- [x] Snapshot import audit retention configuration is served over the shared
+  TCP JSON RPC path.
 
 Next implementation slices:
 
-- [ ] Serve snapshot import audit retention configuration over the shared TCP
-  JSON RPC path.
+- [ ] Include snapshot import audit configuration roots in snapshot metadata.
 
 # 1. Production Objective
 

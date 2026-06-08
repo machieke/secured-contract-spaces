@@ -3372,6 +3372,11 @@ mod tests {
         let expected_snapshot_import_audit_root =
             FileStorage::snapshot_import_audit_root_for(&expected_snapshot_import_audit_records)
                 .unwrap();
+        let expected_snapshot_import_audit_config = SnapshotImportAuditConfig {
+            max_records: 7,
+            max_page_size: 3,
+        };
+        let server_snapshot_import_audit_config = expected_snapshot_import_audit_config.clone();
         let handle = thread::spawn(move || {
             let mut node = PersistentValidatorNode::bootstrap_with_validator_set(
                 "validator-2",
@@ -3389,6 +3394,11 @@ mod tests {
             node.storage
                 .append_snapshot_import_audit_record(snapshot_import_audit_record)
                 .unwrap();
+            node.set_snapshot_import_audit_limits(
+                server_snapshot_import_audit_config.max_records,
+                server_snapshot_import_audit_config.max_page_size,
+            )
+            .unwrap();
             server
                 .serve_next_connection_with_handler(&mut node)
                 .unwrap();
@@ -3416,11 +3426,11 @@ mod tests {
         assert_eq!(initial_snapshot.snapshot_import_audit_record_count, 1);
         assert_eq!(
             initial_snapshot.snapshot_import_audit_max_records,
-            DEFAULT_MAX_SNAPSHOT_IMPORT_AUDIT_RECORDS
+            expected_snapshot_import_audit_config.max_records
         );
         assert_eq!(
             initial_snapshot.snapshot_import_audit_max_page_size,
-            DEFAULT_MAX_SNAPSHOT_IMPORT_AUDIT_PAGE_SIZE
+            expected_snapshot_import_audit_config.max_page_size
         );
         write_rpc_request(&mut stream, &RpcRequest::GetSnapshotSyncClientMetrics);
         assert_eq!(
@@ -3459,6 +3469,13 @@ mod tests {
             read_rpc_response(&mut reader),
             RpcResponse::Ok(RpcResult::SnapshotImportAuditRoot(
                 expected_snapshot_import_audit_root.clone()
+            ))
+        );
+        write_rpc_request(&mut stream, &RpcRequest::GetSnapshotImportAuditConfig);
+        assert_eq!(
+            read_rpc_response(&mut reader),
+            RpcResponse::Ok(RpcResult::SnapshotImportAuditConfig(
+                expected_snapshot_import_audit_config
             ))
         );
 
