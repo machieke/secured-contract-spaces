@@ -63,6 +63,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "detta-evaluator"
+version = "0.1.0"
+dependencies = [
+ "detta-core",
+ "detta-verify",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "detta-rpc"
 version = "0.1.0"
 dependencies = [
