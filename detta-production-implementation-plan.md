@@ -226,10 +226,11 @@ Completed production-plan slices:
 - [x] Proof manifest model and runtime artifact paths are checked for
   disjointness.
 - [x] Proof manifest model artifact paths are checked for uniqueness.
+- [x] Proof manifest release attestations are checked for `sha256sum` format.
 
 Next implementation slices:
 
-- [ ] Add proof manifest release attestation format checks.
+- [ ] Add proof manifest release attestation filename binding checks.
 
 # 1. Production Objective
 

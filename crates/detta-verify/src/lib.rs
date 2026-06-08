@@ -798,6 +798,54 @@ mod tests {
     }
 
     #[test]
+    fn proof_release_attestations_use_sha256sum_format() {
+        assert_sha256sum_attestation_format(
+            include_str!("../../../models/detta-proof-artifact-manifest.sha256"),
+            "detta-proof-artifact-manifest.json",
+        );
+        assert_sha256sum_attestation_format(
+            include_str!("../../../models/detta-restricted-evaluator-proof-trace.sha256"),
+            "detta-restricted-evaluator-proof-trace.json",
+        );
+        assert_sha256sum_attestation_format(
+            include_str!("../../../models/detta-restricted-evaluator-proof-trace-root.sha256"),
+            "detta-restricted-evaluator-proof-trace.trace",
+        );
+        assert_sha256sum_attestation_format(
+            include_str!("../../../models/detta-restricted-evaluator-forbidden-primitives.sha256"),
+            "detta-restricted-evaluator-forbidden-primitives.json",
+        );
+        assert_sha256sum_attestation_format(
+            include_str!("../../../models/detta-restricted-evaluator-resource-exhaustion.sha256"),
+            "detta-restricted-evaluator-resource-exhaustion.json",
+        );
+        assert_sha256sum_attestation_format(
+            include_str!("../../../models/detta-restricted-evaluator-arithmetic-overflow.sha256"),
+            "detta-restricted-evaluator-arithmetic-overflow.json",
+        );
+        assert_sha256sum_attestation_format(
+            include_str!("../../../models/detta-restricted-evaluator-fixture-inventory.sha256"),
+            "detta-restricted-evaluator-fixture-inventory.json",
+        );
+    }
+
+    fn assert_sha256sum_attestation_format(attestation: &str, expected_file_name: &str) {
+        assert!(attestation.ends_with('\n'));
+        assert_eq!(attestation.matches('\n').count(), 1);
+
+        let (root, file_name) = attestation
+            .strip_suffix('\n')
+            .unwrap()
+            .split_once("  ")
+            .unwrap();
+
+        assert_lowercase_sha256_hex(root, expected_file_name);
+        assert_eq!(file_name, expected_file_name);
+        assert!(!file_name.contains('/'));
+        assert!(!file_name.contains('\\'));
+    }
+
+    #[test]
     fn proof_model_artifacts_include_tla_roots() {
         assert_eq!(
             proof_model_artifacts(),
