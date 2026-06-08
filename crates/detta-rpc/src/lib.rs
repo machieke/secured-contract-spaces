@@ -157,6 +157,11 @@ pub struct SnapshotMetadataRootStatus {
     pub persisted_required_snapshot_metadata_roots_root: Option<String>,
     pub using_imported_required_snapshot_metadata_roots_root: bool,
     pub persisted_matches_local_required_snapshot_metadata_roots_root: bool,
+    pub snapshot_sync_client_metrics_root: Option<String>,
+    pub local_snapshot_sync_client_metrics_root: Option<String>,
+    pub persisted_snapshot_sync_client_metrics_root: Option<String>,
+    pub using_imported_snapshot_sync_client_metrics_root: bool,
+    pub persisted_matches_local_snapshot_sync_client_metrics_root: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

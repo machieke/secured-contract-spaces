@@ -543,6 +543,16 @@ impl PersistentValidatorNode {
         let required_snapshot_metadata_roots_root = local_required_snapshot_metadata_roots_root
             .clone()
             .or_else(|| persisted_required_snapshot_metadata_roots_root.clone());
+        let local_snapshot_sync_client_metrics_root = self
+            .storage
+            .snapshot_sync_client_metrics_root::<SnapshotSyncClientMetrics>()
+            .map_err(NodeError::Storage)?;
+        let persisted_snapshot_sync_client_metrics_root = persisted_metadata_roots
+            .get(SNAPSHOT_METADATA_STATE_SYNC_CLIENT_METRICS_ROOT)
+            .cloned();
+        let snapshot_sync_client_metrics_root = local_snapshot_sync_client_metrics_root
+            .clone()
+            .or_else(|| persisted_snapshot_sync_client_metrics_root.clone());
         let persisted_matches_local_validator_set_metadata_audit_root =
             persisted_validator_set_metadata_audit_root
                 .as_ref()
@@ -574,6 +584,13 @@ impl PersistentValidatorNode {
         let using_imported_required_snapshot_metadata_roots_root =
             local_required_snapshot_metadata_roots_root.is_none()
                 && persisted_required_snapshot_metadata_roots_root.is_some();
+        let persisted_matches_local_snapshot_sync_client_metrics_root =
+            persisted_snapshot_sync_client_metrics_root
+                .as_ref()
+                .is_some_and(|root| Some(root) == local_snapshot_sync_client_metrics_root.as_ref());
+        let using_imported_snapshot_sync_client_metrics_root =
+            local_snapshot_sync_client_metrics_root.is_none()
+                && persisted_snapshot_sync_client_metrics_root.is_some();
         Ok(SnapshotMetadataRootStatus {
             validator_set_metadata_audit_root,
             local_validator_set_metadata_audit_root,
@@ -595,6 +612,11 @@ impl PersistentValidatorNode {
             persisted_required_snapshot_metadata_roots_root,
             using_imported_required_snapshot_metadata_roots_root,
             persisted_matches_local_required_snapshot_metadata_roots_root,
+            snapshot_sync_client_metrics_root,
+            local_snapshot_sync_client_metrics_root,
+            persisted_snapshot_sync_client_metrics_root,
+            using_imported_snapshot_sync_client_metrics_root,
+            persisted_matches_local_snapshot_sync_client_metrics_root,
         })
     }
 
@@ -3280,6 +3302,11 @@ mod tests {
                     persisted_required_snapshot_metadata_roots_root: None,
                     using_imported_required_snapshot_metadata_roots_root: false,
                     persisted_matches_local_required_snapshot_metadata_roots_root: false,
+                    snapshot_sync_client_metrics_root: None,
+                    local_snapshot_sync_client_metrics_root: None,
+                    persisted_snapshot_sync_client_metrics_root: None,
+                    using_imported_snapshot_sync_client_metrics_root: false,
+                    persisted_matches_local_snapshot_sync_client_metrics_root: false,
                 },
             )))
         );
@@ -3994,6 +4021,11 @@ mod tests {
                     persisted_required_snapshot_metadata_roots_root: None,
                     using_imported_required_snapshot_metadata_roots_root: false,
                     persisted_matches_local_required_snapshot_metadata_roots_root: false,
+                    snapshot_sync_client_metrics_root: None,
+                    local_snapshot_sync_client_metrics_root: None,
+                    persisted_snapshot_sync_client_metrics_root: None,
+                    using_imported_snapshot_sync_client_metrics_root: false,
+                    persisted_matches_local_snapshot_sync_client_metrics_root: false,
                 },
             )))
         );
@@ -4089,6 +4121,17 @@ mod tests {
             .get(SNAPSHOT_METADATA_STATE_SYNC_CLIENT_METRICS_ROOT)
             .cloned()
             .unwrap();
+        assert_eq!(
+            status.snapshot_sync_client_metrics_root,
+            Some(expected_metrics_root.clone())
+        );
+        assert_eq!(
+            status.local_snapshot_sync_client_metrics_root,
+            Some(expected_metrics_root.clone())
+        );
+        assert_eq!(status.persisted_snapshot_sync_client_metrics_root, None);
+        assert!(!status.using_imported_snapshot_sync_client_metrics_root);
+        assert!(!status.persisted_matches_local_snapshot_sync_client_metrics_root);
 
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
@@ -4290,7 +4333,7 @@ mod tests {
             NodeError::SnapshotSync(SnapshotSyncError::MetadataRootMismatch {
                 key: SNAPSHOT_METADATA_STATE_SYNC_CLIENT_METRICS_ROOT.into(),
                 expected: "wrong-diagnostics-root".into(),
-                actual: Some(expected_metrics_root),
+                actual: Some(expected_metrics_root.clone()),
             })
         );
         assert_eq!(
@@ -4305,6 +4348,24 @@ mod tests {
             sink.handle_rpc_request(RpcRequest::GetSnapshotSyncClientMetrics),
             RpcResponse::Ok(RpcResult::SnapshotSyncClientMetrics(None))
         );
+        let sink_imported_metrics_status = sink.snapshot_metadata_root_status().unwrap();
+        assert_eq!(
+            sink_imported_metrics_status.snapshot_sync_client_metrics_root,
+            Some(expected_metrics_root.clone())
+        );
+        assert_eq!(
+            sink_imported_metrics_status.local_snapshot_sync_client_metrics_root,
+            None
+        );
+        assert_eq!(
+            sink_imported_metrics_status.persisted_snapshot_sync_client_metrics_root,
+            Some(expected_metrics_root.clone())
+        );
+        assert!(sink_imported_metrics_status.using_imported_snapshot_sync_client_metrics_root);
+        assert!(
+            !sink_imported_metrics_status.persisted_matches_local_snapshot_sync_client_metrics_root
+        );
+        let source_metrics_root = expected_metrics_root.clone();
         let expected_metrics_report = snapshot_sync_client_metrics_report(metrics.clone());
         sink.persist_snapshot_sync_client_metrics(&metrics).unwrap();
         let expected_metrics_root = sink
@@ -4321,6 +4382,23 @@ mod tests {
             RpcResponse::Ok(RpcResult::SnapshotSyncClientMetrics(Some(
                 expected_metrics_report.clone()
             )))
+        );
+        let sink_local_metrics_status = sink.snapshot_metadata_root_status().unwrap();
+        assert_eq!(
+            sink_local_metrics_status.snapshot_sync_client_metrics_root,
+            Some(expected_metrics_root.clone())
+        );
+        assert_eq!(
+            sink_local_metrics_status.local_snapshot_sync_client_metrics_root,
+            Some(expected_metrics_root.clone())
+        );
+        assert_eq!(
+            sink_local_metrics_status.persisted_snapshot_sync_client_metrics_root,
+            Some(source_metrics_root)
+        );
+        assert!(!sink_local_metrics_status.using_imported_snapshot_sync_client_metrics_root);
+        assert!(
+            !sink_local_metrics_status.persisted_matches_local_snapshot_sync_client_metrics_root
         );
         let sink_roots = sink.node_snapshot_roots().unwrap();
         assert_eq!(
@@ -4481,6 +4559,22 @@ mod tests {
         assert!(
             !downstream_metadata_status
                 .persisted_matches_local_required_snapshot_metadata_roots_root
+        );
+        assert_eq!(
+            downstream_metadata_status.snapshot_sync_client_metrics_root,
+            Some(expected_metrics_root.clone())
+        );
+        assert_eq!(
+            downstream_metadata_status.local_snapshot_sync_client_metrics_root,
+            None
+        );
+        assert_eq!(
+            downstream_metadata_status.persisted_snapshot_sync_client_metrics_root,
+            Some(expected_metrics_root.clone())
+        );
+        assert!(downstream_metadata_status.using_imported_snapshot_sync_client_metrics_root);
+        assert!(
+            !downstream_metadata_status.persisted_matches_local_snapshot_sync_client_metrics_root
         );
         let mut wrong_downstream_roots = downstream_required_metadata_roots.clone();
         wrong_downstream_roots.insert(

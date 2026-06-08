@@ -156,11 +156,13 @@ Completed production-plan slices:
   required snapshot metadata-root set roots.
 - [x] Snapshot metadata root status effective-root precedence matches snapshot
   manifest metadata-root emission precedence.
+- [x] Snapshot metadata root status reports local, persisted, and effective
+  state-sync client metrics roots.
 
 Next implementation slices:
 
-- [ ] Add state-sync client metrics root diagnostics to snapshot metadata root
-  status.
+- [ ] Assert expanded snapshot metadata root diagnostics over the shared TCP
+  JSON RPC path.
 
 # 1. Production Objective
 
