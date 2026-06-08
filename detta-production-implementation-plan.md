@@ -309,10 +309,12 @@ Completed production-plan slices:
   verify.
 - [x] Proof release attestation count is checked in verify.
 - [x] Proof release attestation filenames are checked for uniqueness in verify.
+- [x] Proof release attestation filenames are checked for expected suffixes in
+  verify.
 
 Next implementation slices:
 
-- [ ] Add proof release attestation filename suffix checks in verify.
+- [ ] Add proof release attestation expected filename set checks in verify.
 
 # 1. Production Objective
 

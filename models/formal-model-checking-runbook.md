@@ -114,6 +114,8 @@ cargo test -p detta-verify
 - proof release attestation roots use the 64-character SHA-256 hex length.
 - proof release attestation count matches expected release shape.
 - proof release attestation filenames are unique.
+- proof release attestation filenames target only JSON artifacts and the trace
+  root.
 
 The evaluator `sha256sum -c` commands verify fixture-file attestations. The
 final `sha256sum` command reports the file root of the compact-trace-root
@@ -244,6 +246,8 @@ Before accepting a release proof bundle, verify:
 - proof release attestation roots use the 64-character SHA-256 hex length;
 - proof release attestation count matches expected release shape;
 - proof release attestation filenames are unique;
+- proof release attestation filenames target only JSON artifacts and the trace
+  root;
 - `detta-restricted-evaluator-proof-trace-root.sha256` matches both the
   fixture `trace_root` field and the recomputed root of `report.trace`;
 - `models/detta-proof-artifact-manifest.sha256` verifies after all fixture,

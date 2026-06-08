@@ -227,6 +227,8 @@ pub const PROOF_ARTIFACT_MANIFEST_SCOPE: &str =
 pub const PROOF_MODEL_ARTIFACT_COUNT: usize = 2;
 pub const PROOF_RUNTIME_ARTIFACT_COUNT: usize = 11;
 pub const PROOF_RELEASE_ATTESTATION_COUNT: usize = 7;
+pub const PROOF_RELEASE_JSON_TARGET_COUNT: usize = 6;
+pub const PROOF_RELEASE_TRACE_TARGET_COUNT: usize = 1;
 pub const SHA256_HEX_LENGTH: usize = 64;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -1437,6 +1439,40 @@ mod tests {
         .collect();
 
         assert_eq!(filenames.len(), PROOF_RELEASE_ATTESTATION_COUNT);
+    }
+
+    #[test]
+    fn proof_release_attestation_filenames_use_expected_suffixes() {
+        let filenames: Vec<_> = [
+            include_str!("../../../models/detta-proof-artifact-manifest.sha256"),
+            include_str!("../../../models/detta-restricted-evaluator-proof-trace.sha256"),
+            include_str!("../../../models/detta-restricted-evaluator-proof-trace-root.sha256"),
+            include_str!("../../../models/detta-restricted-evaluator-forbidden-primitives.sha256"),
+            include_str!("../../../models/detta-restricted-evaluator-resource-exhaustion.sha256"),
+            include_str!("../../../models/detta-restricted-evaluator-arithmetic-overflow.sha256"),
+            include_str!("../../../models/detta-restricted-evaluator-fixture-inventory.sha256"),
+        ]
+        .into_iter()
+        .map(|attestation| sha256sum_attestation_parts(attestation).1)
+        .collect();
+
+        assert_eq!(
+            filenames
+                .iter()
+                .filter(|file_name| file_name.ends_with(".json"))
+                .count(),
+            PROOF_RELEASE_JSON_TARGET_COUNT
+        );
+        assert_eq!(
+            filenames
+                .iter()
+                .filter(|file_name| file_name.ends_with(".trace"))
+                .count(),
+            PROOF_RELEASE_TRACE_TARGET_COUNT
+        );
+        assert!(filenames
+            .iter()
+            .all(|file_name| file_name.ends_with(".json") || file_name.ends_with(".trace")));
     }
 
     #[test]
