@@ -975,6 +975,25 @@ mod tests {
         }
     }
 
+    #[test]
+    fn scs_theorem_evidence_entries_are_unique_per_theorem() {
+        for entry in scs_theorem_coverage() {
+            let mut evidence_entries = BTreeSet::new();
+            for evidence in &entry.evidence {
+                assert!(
+                    evidence_entries.insert((
+                        theorem_evidence_kind_name(&evidence.kind),
+                        evidence.reference
+                    )),
+                    "{} repeats evidence {}:{}",
+                    entry.id,
+                    theorem_evidence_kind_name(&evidence.kind),
+                    evidence.reference
+                );
+            }
+        }
+    }
+
     fn theorem_evidence_kind_name(kind: &TheoremEvidenceKind) -> &'static str {
         match kind {
             TheoremEvidenceKind::RuntimeTest => "RuntimeTest",

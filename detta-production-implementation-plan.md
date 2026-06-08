@@ -293,10 +293,12 @@ Completed production-plan slices:
   expected DeTTa crate coverage in verify.
 - [x] Proof manifest theorem verifier evidence references are checked for
   expected verifier function coverage in verify.
+- [x] Proof manifest theorem evidence entries are checked for per-theorem
+  uniqueness in verify.
 
 Next implementation slices:
 
-- [ ] Add proof manifest per-theorem duplicate evidence checks in verify.
+- [ ] Add proof manifest theorem id-to-name mapping checks in verify.
 
 # 1. Production Objective
 
