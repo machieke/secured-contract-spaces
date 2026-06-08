@@ -1,4 +1,4 @@
-use detta_core::{Block, BlockError, DeTTaState, Transaction, ValidatorNode};
+use detta_core::{Block, BlockError, DeTTaState, MempoolError, Transaction, ValidatorNode};
 use detta_rpc::{RpcError, RpcService};
 use detta_storage::{FileStorage, StorageError};
 use std::path::PathBuf;
@@ -8,6 +8,7 @@ pub enum NodeError {
     Rpc(RpcError),
     Storage(StorageError),
     Block(BlockError),
+    Mempool(MempoolError),
 }
 
 pub struct PersistentValidatorNode {
@@ -27,6 +28,7 @@ impl PersistentValidatorNode {
         storage
             .commit_snapshot(&state.snapshot())
             .map_err(NodeError::Storage)?;
+        storage.commit_mempool(&[]).map_err(NodeError::Storage)?;
 
         Ok(Self {
             rpc: RpcService::new(ValidatorNode::new(validator_id.clone(), state)),
@@ -44,9 +46,12 @@ impl PersistentValidatorNode {
         let snapshot = storage.load_snapshot().map_err(NodeError::Storage)?;
         let state = DeTTaState::from_snapshot(snapshot)
             .map_err(|error| NodeError::Storage(StorageError::InvalidSnapshot(error)))?;
+        let pending = storage.load_mempool().map_err(NodeError::Storage)?;
+        let node = ValidatorNode::with_pending_transactions(validator_id.clone(), state, pending)
+            .map_err(NodeError::Mempool)?;
 
         Ok(Self {
-            rpc: RpcService::new(ValidatorNode::new(validator_id.clone(), state)),
+            rpc: RpcService::new(node),
             storage,
             validator_id,
         })
@@ -60,8 +65,13 @@ impl PersistentValidatorNode {
         &self.rpc
     }
 
+    pub fn pending_len(&self) -> usize {
+        self.rpc.node().pending_len()
+    }
+
     pub fn submit_transaction(&mut self, tx: Transaction) -> Result<(), NodeError> {
-        self.rpc.submit_transaction(tx).map_err(NodeError::Rpc)
+        self.rpc.submit_transaction(tx).map_err(NodeError::Rpc)?;
+        self.persist_mempool()
     }
 
     pub fn produce_block(&mut self, height: u64, timestamp: u64) -> Result<Block, NodeError> {
@@ -88,6 +98,14 @@ impl PersistentValidatorNode {
             .map_err(NodeError::Storage)?;
         self.storage
             .commit_snapshot(&self.rpc.snapshot())
+            .map_err(NodeError::Storage)?;
+        self.persist_mempool()?;
+        Ok(())
+    }
+
+    fn persist_mempool(&self) -> Result<(), NodeError> {
+        self.storage
+            .commit_mempool(self.rpc.node().pending_transactions())
             .map_err(NodeError::Storage)?;
         Ok(())
     }
@@ -179,6 +197,31 @@ mod tests {
         );
         assert_eq!(
             restarted.rpc().call_balance_view("TokenA", "Bob", "USDC"),
+            60
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn persistent_validator_restores_pending_mempool_after_restart() {
+        let dir = temp_dir("mempool-restart");
+        let mut node =
+            PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &dir).unwrap();
+
+        node.submit_transaction(transfer_tx()).unwrap();
+        assert_eq!(node.pending_len(), 1);
+
+        let mut restarted = PersistentValidatorNode::restart("validator-1", &dir).unwrap();
+        assert_eq!(restarted.pending_len(), 1);
+
+        let block = restarted.produce_block(1, 1_000).unwrap();
+        assert_eq!(block.transactions.len(), 1);
+        assert_eq!(restarted.pending_len(), 0);
+
+        let reloaded = PersistentValidatorNode::restart("validator-1", &dir).unwrap();
+        assert_eq!(reloaded.pending_len(), 0);
+        assert_eq!(
+            reloaded.rpc().call_balance_view("TokenA", "Bob", "USDC"),
             60
         );
         fs::remove_dir_all(dir).unwrap();

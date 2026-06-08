@@ -1,5 +1,5 @@
 use bincode::Options;
-use detta_core::{Block, DeTTaState, SnapshotError, StateSnapshot};
+use detta_core::{Block, DeTTaState, SnapshotError, StateSnapshot, Transaction};
 use serde::{de::DeserializeOwned, Serialize};
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter};
@@ -49,12 +49,28 @@ impl FileStorage {
         read_json(&self.block_path(height))
     }
 
+    pub fn commit_mempool(&self, transactions: &[Transaction]) -> Result<(), StorageError> {
+        write_json_atomic(&self.mempool_path(), &transactions)
+    }
+
+    pub fn load_mempool(&self) -> Result<Vec<Transaction>, StorageError> {
+        let path = self.mempool_path();
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        read_json(&path)
+    }
+
     fn snapshot_path(&self) -> PathBuf {
         self.root.join("latest_snapshot.bin")
     }
 
     fn block_path(&self, height: u64) -> PathBuf {
         self.root.join("blocks").join(format!("{height}.bin"))
+    }
+
+    fn mempool_path(&self) -> PathBuf {
+        self.root.join("mempool.bin")
     }
 }
 
@@ -189,6 +205,21 @@ mod tests {
 
         assert_eq!(loaded.block_hash(), block.block_hash());
         assert_eq!(loaded.header.storage_root, block.header.storage_root);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn persists_and_loads_mempool() {
+        let dir = temp_dir("mempool");
+        let storage = FileStorage::open(&dir).unwrap();
+        let tx = transfer_tx();
+
+        assert_eq!(storage.load_mempool().unwrap(), vec![]);
+        storage.commit_mempool(std::slice::from_ref(&tx)).unwrap();
+
+        let loaded = storage.load_mempool().unwrap();
+
+        assert_eq!(loaded, vec![tx]);
         fs::remove_dir_all(dir).unwrap();
     }
 

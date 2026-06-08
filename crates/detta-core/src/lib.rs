@@ -951,6 +951,17 @@ impl Mempool {
         Self::default()
     }
 
+    pub fn from_transactions(
+        state: &DeTTaState,
+        transactions: Vec<Transaction>,
+    ) -> Result<Self, MempoolError> {
+        let mut mempool = Self::new();
+        for tx in transactions {
+            mempool.submit(state, tx)?;
+        }
+        Ok(mempool)
+    }
+
     pub fn submit(&mut self, state: &DeTTaState, tx: Transaction) -> Result<(), MempoolError> {
         if tx.chain_id != state.chain_id {
             return Err(MempoolError::ChainMismatch);
@@ -972,6 +983,19 @@ impl Mempool {
 
     pub fn pending_len(&self) -> usize {
         self.pending.len()
+    }
+
+    pub fn pending_transactions(&self) -> &[Transaction] {
+        &self.pending
+    }
+
+    pub fn retain_admissible(&mut self, state: &DeTTaState) {
+        self.pending.retain(|tx| {
+            tx.chain_id == state.chain_id
+                && tx.signature_ok
+                && !state.used_nonces.contains(&(tx.sender.clone(), tx.nonce))
+        });
+        self.tx_hashes = self.pending.iter().map(|tx| tx.tx_hash.clone()).collect();
     }
 
     pub fn drain_ordered(&mut self) -> Vec<Transaction> {
@@ -1375,6 +1399,22 @@ impl ValidatorNode {
         }
     }
 
+    pub fn with_pending_transactions(
+        validator_id: impl Into<String>,
+        state: DeTTaState,
+        pending: Vec<Transaction>,
+    ) -> Result<Self, MempoolError> {
+        let mempool = Mempool::from_transactions(&state, pending)?;
+        Ok(Self {
+            validator_id: validator_id.into(),
+            state,
+            mempool,
+            blocks: BTreeMap::new(),
+            transactions: BTreeMap::new(),
+            receipts: BTreeMap::new(),
+        })
+    }
+
     pub fn state(&self) -> &DeTTaState {
         &self.state
     }
@@ -1393,6 +1433,10 @@ impl ValidatorNode {
 
     pub fn pending_len(&self) -> usize {
         self.mempool.pending_len()
+    }
+
+    pub fn pending_transactions(&self) -> &[Transaction] {
+        self.mempool.pending_transactions()
     }
 
     pub fn submit_transaction(&mut self, tx: Transaction) -> Result<(), MempoolError> {
@@ -1431,6 +1475,7 @@ impl ValidatorNode {
             self.receipts
                 .insert(receipt.tx_hash.clone(), receipt.clone());
         }
+        self.mempool.retain_admissible(&self.state);
         self.blocks.insert(block.header.height, block.clone());
         Ok(())
     }
