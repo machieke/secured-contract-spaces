@@ -28,6 +28,7 @@ pub enum Method {
     Borrow,
     Stake,
     Unstake,
+    RouteTransferFrom,
     Other(String),
 }
 
@@ -253,6 +254,9 @@ pub enum ContractKind {
     Staking {
         asset: AssetId,
     },
+    Router {
+        token_contract: ContractId,
+    },
 }
 
 impl ContractRecord {
@@ -353,6 +357,15 @@ impl ContractRecord {
             code_hash,
             kind: ContractKind::Staking { asset },
             exported_methods: BTreeSet::from([Method::Stake, Method::Unstake]),
+        }
+    }
+
+    fn router(contract_id: ContractId, code_hash: String, token_contract: ContractId) -> Self {
+        Self {
+            contract_id,
+            code_hash,
+            kind: ContractKind::Router { token_contract },
+            exported_methods: BTreeSet::from([Method::RouteTransferFrom]),
         }
     }
 }
@@ -937,6 +950,15 @@ struct AuthorizedFrame {
     write_scope: BTreeSet<StateKey>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct LendingConfig {
+    collateral_asset: AssetId,
+    debt_asset: AssetId,
+    oracle_contract: ContractId,
+    ltv_bps: u64,
+    max_oracle_age: u64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DeTTaState {
     chain_id: ChainId,
@@ -1251,6 +1273,21 @@ impl DeTTaState {
         Ok(())
     }
 
+    pub fn deploy_router(
+        &mut self,
+        contract: impl Into<ContractId>,
+        token_contract: impl Into<ContractId>,
+    ) -> Result<(), ExecutionError> {
+        let contract = contract.into();
+        let token_contract = token_contract.into();
+        let code_hash = root_of(&("detta-router-v1", &contract, &token_contract));
+        self.contracts.insert(
+            contract.clone(),
+            ContractRecord::router(contract, code_hash, token_contract),
+        );
+        Ok(())
+    }
+
     pub fn apply_transaction(&mut self, tx: Transaction) -> Receipt {
         if tx.chain_id != self.chain_id {
             return self.rejected_receipt(tx.tx_hash, ExecutionError::ChainMismatch);
@@ -1275,7 +1312,8 @@ impl DeTTaState {
         let checkpoint_contracts = self.contracts.clone();
         let checkpoint_scheduled_upgrades = self.scheduled_upgrades.clone();
 
-        match self.execute_call(&tx) {
+        let msg_sender = tx.sender.clone();
+        match self.execute_call(&tx, msg_sender) {
             Ok(return_value) => self.committed_receipt(tx.tx_hash, return_value),
             Err(error) => {
                 self.contracts = checkpoint_contracts;
@@ -1713,7 +1751,11 @@ impl DeTTaState {
             .collect()
     }
 
-    fn execute_call(&mut self, tx: &Transaction) -> Result<ReturnValue, ExecutionError> {
+    fn execute_call(
+        &mut self,
+        tx: &Transaction,
+        msg_sender: Principal,
+    ) -> Result<ReturnValue, ExecutionError> {
         let contract = self
             .contracts
             .get(&tx.target)
@@ -1730,35 +1772,37 @@ impl DeTTaState {
 
         match contract.kind {
             ContractKind::Token => match tx.method {
-                Method::Transfer => self.transfer(tx),
-                Method::Approve => self.approve(tx),
-                Method::TransferFrom => self.transfer_from(tx),
+                Method::Transfer => self.transfer(tx, msg_sender),
+                Method::Approve => self.approve(tx, msg_sender),
+                Method::TransferFrom => self.transfer_from(tx, msg_sender),
                 Method::Permit => self.permit(tx),
                 _ => Err(ExecutionError::PolicyMissing),
             },
             ContractKind::AmmPool { asset_a, asset_b } => match tx.method {
-                Method::AddLiquidity => self.add_liquidity(tx, asset_a, asset_b),
-                Method::Swap => self.swap(tx, asset_a, asset_b),
+                Method::AddLiquidity => self.add_liquidity(tx, msg_sender, asset_a, asset_b),
+                Method::Swap => self.swap(tx, msg_sender, asset_a, asset_b),
                 _ => Err(ExecutionError::PolicyMissing),
             },
             ContractKind::Oracle { asset, max_age } => match tx.method {
-                Method::SubmitPrice => self.submit_price(tx, asset, max_age),
+                Method::SubmitPrice => self.submit_price(tx, msg_sender, asset, max_age),
                 _ => Err(ExecutionError::PolicyMissing),
             },
             ContractKind::Bridge { source_chain } => match tx.method {
-                Method::RedeemBridgeMessage => self.redeem_bridge_message(tx, source_chain),
+                Method::RedeemBridgeMessage => {
+                    self.redeem_bridge_message(tx, msg_sender, source_chain)
+                }
                 _ => Err(ExecutionError::PolicyMissing),
             },
             ContractKind::Governance {
                 governed_contract,
                 timelock_delay,
             } => match tx.method {
-                Method::PauseContract => self.pause_contract(tx, governed_contract),
-                Method::UnpauseContract => self.unpause_contract(tx, governed_contract),
+                Method::PauseContract => self.pause_contract(tx, msg_sender, governed_contract),
+                Method::UnpauseContract => self.unpause_contract(tx, msg_sender, governed_contract),
                 Method::ScheduleUpgrade => {
-                    self.schedule_upgrade(tx, governed_contract, timelock_delay)
+                    self.schedule_upgrade(tx, msg_sender, governed_contract, timelock_delay)
                 }
-                Method::ExecuteUpgrade => self.execute_upgrade(tx, governed_contract),
+                Method::ExecuteUpgrade => self.execute_upgrade(tx, msg_sender, governed_contract),
                 _ => Err(ExecutionError::PolicyMissing),
             },
             ContractKind::LendingVault {
@@ -1771,34 +1815,47 @@ impl DeTTaState {
                 Method::DepositCollateral => self.deposit_collateral(tx, collateral_asset),
                 Method::Borrow => self.borrow(
                     tx,
-                    collateral_asset,
-                    debt_asset,
-                    oracle_contract,
-                    ltv_bps,
-                    max_oracle_age,
+                    msg_sender,
+                    LendingConfig {
+                        collateral_asset,
+                        debt_asset,
+                        oracle_contract,
+                        ltv_bps,
+                        max_oracle_age,
+                    },
                 ),
                 _ => Err(ExecutionError::PolicyMissing),
             },
             ContractKind::Staking { asset } => match tx.method {
-                Method::Stake => self.stake(tx, asset),
-                Method::Unstake => self.unstake(tx, asset),
+                Method::Stake => self.stake(tx, msg_sender, asset),
+                Method::Unstake => self.unstake(tx, msg_sender, asset),
+                _ => Err(ExecutionError::PolicyMissing),
+            },
+            ContractKind::Router { token_contract } => match tx.method {
+                Method::RouteTransferFrom => {
+                    self.route_transfer_from(tx, msg_sender, token_contract)
+                }
                 _ => Err(ExecutionError::PolicyMissing),
             },
         }
     }
 
-    fn transfer(&mut self, tx: &Transaction) -> Result<ReturnValue, ExecutionError> {
+    fn transfer(
+        &mut self,
+        tx: &Transaction,
+        msg_sender: Principal,
+    ) -> Result<ReturnValue, ExecutionError> {
         let [to, asset, amount] = expect_args(&tx.args)?;
         let to = expect_principal(to)?;
         let asset = expect_asset(asset)?;
         let amount = expect_amount(amount)?;
-        let from = tx.sender.clone();
+        let from = msg_sender;
 
         let from_key = balance_key(&tx.target, &from, &asset);
         let to_key = balance_key(&tx.target, &to, &asset);
         let frame = AuthorizedFrame {
             contract: tx.target.clone(),
-            msg_sender: tx.sender.clone(),
+            msg_sender: from.clone(),
             write_scope: BTreeSet::from([from_key.clone(), to_key.clone()]),
         };
 
@@ -1831,12 +1888,16 @@ impl DeTTaState {
         Ok(ReturnValue::Unit)
     }
 
-    fn approve(&mut self, tx: &Transaction) -> Result<ReturnValue, ExecutionError> {
+    fn approve(
+        &mut self,
+        tx: &Transaction,
+        msg_sender: Principal,
+    ) -> Result<ReturnValue, ExecutionError> {
         let [spender, asset, amount] = expect_args(&tx.args)?;
         let spender = expect_principal(spender)?;
         let asset = expect_asset(asset)?;
         let amount = expect_amount(amount)?;
-        let owner = tx.sender.clone();
+        let owner = msg_sender;
 
         let key = GrantKey::Allowance {
             contract: tx.target.clone(),
@@ -1862,13 +1923,17 @@ impl DeTTaState {
         Ok(ReturnValue::Unit)
     }
 
-    fn transfer_from(&mut self, tx: &Transaction) -> Result<ReturnValue, ExecutionError> {
+    fn transfer_from(
+        &mut self,
+        tx: &Transaction,
+        msg_sender: Principal,
+    ) -> Result<ReturnValue, ExecutionError> {
         let [owner, to, asset, amount] = expect_args(&tx.args)?;
         let owner = expect_principal(owner)?;
         let to = expect_principal(to)?;
         let asset = expect_asset(asset)?;
         let amount = expect_amount(amount)?;
-        let spender = tx.sender.clone();
+        let spender = msg_sender;
 
         self.consume_allowance(&tx.target, &owner, &spender, &asset, amount)?;
 
@@ -1959,6 +2024,7 @@ impl DeTTaState {
     fn add_liquidity(
         &mut self,
         tx: &Transaction,
+        msg_sender: Principal,
         asset_a: AssetId,
         asset_b: AssetId,
     ) -> Result<ReturnValue, ExecutionError> {
@@ -1968,7 +2034,7 @@ impl DeTTaState {
         let minted_lp = amount_a
             .checked_add(amount_b)
             .ok_or(ExecutionError::ArithmeticOverflow)?;
-        let provider = tx.sender.clone();
+        let provider = msg_sender;
 
         let reserve_a_key = reserve_key(&tx.target, &asset_a);
         let reserve_b_key = reserve_key(&tx.target, &asset_b);
@@ -2049,6 +2115,7 @@ impl DeTTaState {
     fn swap(
         &mut self,
         tx: &Transaction,
+        msg_sender: Principal,
         asset_a: AssetId,
         asset_b: AssetId,
     ) -> Result<ReturnValue, ExecutionError> {
@@ -2120,7 +2187,7 @@ impl DeTTaState {
             &tx.target,
             &tx.tx_hash,
             EventPayload::Swap {
-                trader: tx.sender.clone(),
+                trader: msg_sender,
                 input_asset,
                 output_asset,
                 amount_in,
@@ -2133,6 +2200,7 @@ impl DeTTaState {
     fn submit_price(
         &mut self,
         tx: &Transaction,
+        msg_sender: Principal,
         oracle_asset: AssetId,
         max_age: u64,
     ) -> Result<ReturnValue, ExecutionError> {
@@ -2152,13 +2220,13 @@ impl DeTTaState {
             return Err(ExecutionError::StaleOraclePrice);
         }
 
-        self.require_oracle_updater(&tx.target, &tx.sender)?;
+        self.require_oracle_updater(&tx.target, &msg_sender)?;
 
         let price_key = oracle_price_key(&tx.target, &asset);
         let timestamp_key = oracle_timestamp_key(&tx.target, &asset);
         let frame = AuthorizedFrame {
             contract: tx.target.clone(),
-            msg_sender: tx.sender.clone(),
+            msg_sender: msg_sender.clone(),
             write_scope: BTreeSet::from([price_key.clone(), timestamp_key.clone()]),
         };
 
@@ -2169,7 +2237,7 @@ impl DeTTaState {
             &tx.target,
             &tx.tx_hash,
             EventPayload::PriceUpdated {
-                updater: tx.sender.clone(),
+                updater: msg_sender,
                 asset,
                 price,
                 timestamp,
@@ -2181,6 +2249,7 @@ impl DeTTaState {
     fn redeem_bridge_message(
         &mut self,
         tx: &Transaction,
+        msg_sender: Principal,
         source_chain: ChainId,
     ) -> Result<ReturnValue, ExecutionError> {
         let [message_id, recipient, asset, amount, certificate] = expect_args(&tx.args)?;
@@ -2207,7 +2276,7 @@ impl DeTTaState {
 
         let frame = AuthorizedFrame {
             contract: tx.target.clone(),
-            msg_sender: tx.sender.clone(),
+            msg_sender,
             write_scope: BTreeSet::from([consumed_key.clone()]),
         };
         self.state_set(&frame, consumed_key, StateValue::UInt(1))?;
@@ -2228,16 +2297,17 @@ impl DeTTaState {
     fn pause_contract(
         &mut self,
         tx: &Transaction,
+        msg_sender: Principal,
         governed_contract: ContractId,
     ) -> Result<ReturnValue, ExecutionError> {
-        self.require_governance_admin(&tx.target, &tx.sender)?;
+        self.require_governance_admin(&tx.target, &msg_sender)?;
         self.paused_contracts.insert(governed_contract.clone());
         self.emit(
             &tx.target,
             &tx.tx_hash,
             EventPayload::ContractPaused {
                 contract: governed_contract,
-                admin: tx.sender.clone(),
+                admin: msg_sender,
             },
         );
         Ok(ReturnValue::Unit)
@@ -2246,16 +2316,17 @@ impl DeTTaState {
     fn unpause_contract(
         &mut self,
         tx: &Transaction,
+        msg_sender: Principal,
         governed_contract: ContractId,
     ) -> Result<ReturnValue, ExecutionError> {
-        self.require_governance_admin(&tx.target, &tx.sender)?;
+        self.require_governance_admin(&tx.target, &msg_sender)?;
         self.paused_contracts.remove(&governed_contract);
         self.emit(
             &tx.target,
             &tx.tx_hash,
             EventPayload::ContractUnpaused {
                 contract: governed_contract,
-                admin: tx.sender.clone(),
+                admin: msg_sender,
             },
         );
         Ok(ReturnValue::Unit)
@@ -2264,6 +2335,7 @@ impl DeTTaState {
     fn schedule_upgrade(
         &mut self,
         tx: &Transaction,
+        msg_sender: Principal,
         governed_contract: ContractId,
         timelock_delay: u64,
     ) -> Result<ReturnValue, ExecutionError> {
@@ -2271,7 +2343,7 @@ impl DeTTaState {
         let upgrade_id = expect_text(upgrade_id)?;
         let new_code_hash = expect_text(new_code_hash)?;
 
-        self.require_governance_admin(&tx.target, &tx.sender)?;
+        self.require_governance_admin(&tx.target, &msg_sender)?;
         if self.scheduled_upgrades.contains_key(&upgrade_id) {
             return Err(ExecutionError::UpgradeAlreadyScheduled);
         }
@@ -2298,7 +2370,7 @@ impl DeTTaState {
                 contract: governed_contract,
                 new_code_hash,
                 execute_after_height,
-                admin: tx.sender.clone(),
+                admin: msg_sender,
             },
         );
         Ok(ReturnValue::Unit)
@@ -2307,12 +2379,13 @@ impl DeTTaState {
     fn execute_upgrade(
         &mut self,
         tx: &Transaction,
+        msg_sender: Principal,
         governed_contract: ContractId,
     ) -> Result<ReturnValue, ExecutionError> {
         let [upgrade_id] = expect_args(&tx.args)?;
         let upgrade_id = expect_text(upgrade_id)?;
 
-        self.require_governance_admin(&tx.target, &tx.sender)?;
+        self.require_governance_admin(&tx.target, &msg_sender)?;
 
         let storage_root_before = self.storage_root();
         let registry_root_before = self.registry_root();
@@ -2355,7 +2428,7 @@ impl DeTTaState {
                 contract: governed_contract,
                 old_code_hash,
                 new_code_hash,
-                admin: tx.sender.clone(),
+                admin: msg_sender,
             },
         );
         Ok(ReturnValue::Unit)
@@ -2406,32 +2479,30 @@ impl DeTTaState {
     fn borrow(
         &mut self,
         tx: &Transaction,
-        collateral_asset: AssetId,
-        debt_asset: AssetId,
-        oracle_contract: ContractId,
-        ltv_bps: u64,
-        max_oracle_age: u64,
+        msg_sender: Principal,
+        config: LendingConfig,
     ) -> Result<ReturnValue, ExecutionError> {
         let [asset, amount] = expect_args(&tx.args)?;
         let asset = expect_asset(asset)?;
         let amount = expect_amount(amount)?;
-        if asset != debt_asset {
+        if asset != config.debt_asset {
             return Err(ExecutionError::InvalidPoolAsset);
         }
 
-        let borrower = tx.sender.clone();
-        let oracle_timestamp = self.oracle_timestamp(&oracle_contract, &collateral_asset);
-        if oracle_timestamp.saturating_add(max_oracle_age) < self.height {
+        let borrower = msg_sender;
+        let oracle_timestamp =
+            self.oracle_timestamp(&config.oracle_contract, &config.collateral_asset);
+        if oracle_timestamp.saturating_add(config.max_oracle_age) < self.height {
             return Err(ExecutionError::StaleOraclePrice);
         }
 
-        let price = self.oracle_price(&oracle_contract, &collateral_asset);
+        let price = self.oracle_price(&config.oracle_contract, &config.collateral_asset);
         if price == 0 {
             return Err(ExecutionError::StaleOraclePrice);
         }
 
-        let collateral = self.collateral(&tx.target, &borrower, &collateral_asset);
-        let debt_key = debt_key(&tx.target, &borrower, &debt_asset);
+        let collateral = self.collateral(&tx.target, &borrower, &config.collateral_asset);
+        let debt_key = debt_key(&tx.target, &borrower, &config.debt_asset);
         let current_debt = self.uint_at(&debt_key);
         let next_debt = current_debt
             .checked_add(amount)
@@ -2441,7 +2512,7 @@ impl DeTTaState {
             .checked_mul(price)
             .ok_or(ExecutionError::ArithmeticOverflow)?;
         let max_debt = collateral_value
-            .checked_mul(ltv_bps as Amount)
+            .checked_mul(config.ltv_bps as Amount)
             .ok_or(ExecutionError::ArithmeticOverflow)?
             / 10_000;
 
@@ -2471,6 +2542,7 @@ impl DeTTaState {
     fn stake(
         &mut self,
         tx: &Transaction,
+        msg_sender: Principal,
         staking_asset: AssetId,
     ) -> Result<ReturnValue, ExecutionError> {
         let [asset, amount] = expect_args(&tx.args)?;
@@ -2480,7 +2552,7 @@ impl DeTTaState {
             return Err(ExecutionError::InvalidPoolAsset);
         }
 
-        let staker = tx.sender.clone();
+        let staker = msg_sender;
         let stake_key = stake_balance_key(&tx.target, &staker, &asset);
         let total_key = total_staked_key(&tx.target, &asset);
         let frame = AuthorizedFrame {
@@ -2529,6 +2601,7 @@ impl DeTTaState {
     fn unstake(
         &mut self,
         tx: &Transaction,
+        msg_sender: Principal,
         staking_asset: AssetId,
     ) -> Result<ReturnValue, ExecutionError> {
         let [asset, amount] = expect_args(&tx.args)?;
@@ -2538,7 +2611,7 @@ impl DeTTaState {
             return Err(ExecutionError::InvalidPoolAsset);
         }
 
-        let staker = tx.sender.clone();
+        let staker = msg_sender;
         let stake_key = stake_balance_key(&tx.target, &staker, &asset);
         let total_key = total_staked_key(&tx.target, &asset);
         let current_stake = self.uint_at(&stake_key);
@@ -2572,6 +2645,28 @@ impl DeTTaState {
             },
         );
         Ok(ReturnValue::Unit)
+    }
+
+    fn route_transfer_from(
+        &mut self,
+        tx: &Transaction,
+        _msg_sender: Principal,
+        token_contract: ContractId,
+    ) -> Result<ReturnValue, ExecutionError> {
+        let [owner, to, asset, amount] = expect_args(&tx.args)?;
+        let child_tx = Transaction {
+            chain_id: tx.chain_id.clone(),
+            tx_hash: tx.tx_hash.clone(),
+            sender: tx.sender.clone(),
+            nonce: tx.nonce,
+            target: token_contract,
+            method: Method::TransferFrom,
+            args: vec![owner.clone(), to.clone(), asset.clone(), amount.clone()],
+            signature_ok: true,
+            budget: tx.budget,
+        };
+
+        self.execute_call(&child_tx, tx.target.clone())
     }
 
     fn consume_allowance(
@@ -3298,6 +3393,79 @@ mod tests {
         ));
         assert_eq!(failure.status, TxStatus::Reverted);
         assert_eq!(failure.error, Some(ExecutionError::RegistryGrantMissing));
+    }
+
+    #[test]
+    fn router_cross_contract_transfer_from_uses_router_as_spender() {
+        let mut state = seeded_state();
+        state.deploy_router("RouterA", "TokenA").unwrap();
+
+        let approve = state.apply_transaction(tx(
+            "tx1",
+            "Alice",
+            1,
+            Method::Approve,
+            vec![principal("RouterA"), asset("USDC"), amount(100)],
+        ));
+        assert_eq!(approve.status, TxStatus::Committed);
+
+        let routed = state.apply_transaction(tx_to(
+            "RouterA",
+            "tx2",
+            "Alice",
+            2,
+            Method::RouteTransferFrom,
+            vec![
+                principal("Alice"),
+                principal("Bob"),
+                asset("USDC"),
+                amount(10),
+            ],
+        ));
+
+        assert_eq!(routed.status, TxStatus::Committed);
+        assert_eq!(
+            state.allowance_remaining("TokenA", "Alice", "RouterA", "USDC"),
+            Some(90)
+        );
+        assert_eq!(state.balance("TokenA", "Alice", "USDC"), 90);
+        assert_eq!(state.balance("TokenA", "Bob", "USDC"), 60);
+    }
+
+    #[test]
+    fn router_cross_contract_call_does_not_inherit_user_allowance() {
+        let mut state = seeded_state();
+        state.deploy_router("RouterA", "TokenA").unwrap();
+        state.apply_transaction(tx(
+            "tx1",
+            "Alice",
+            1,
+            Method::Approve,
+            vec![principal("Dex"), asset("USDC"), amount(100)],
+        ));
+
+        let routed = state.apply_transaction(tx_to(
+            "RouterA",
+            "tx2",
+            "Alice",
+            2,
+            Method::RouteTransferFrom,
+            vec![
+                principal("Alice"),
+                principal("Bob"),
+                asset("USDC"),
+                amount(10),
+            ],
+        ));
+
+        assert_eq!(routed.status, TxStatus::Reverted);
+        assert_eq!(routed.error, Some(ExecutionError::RegistryGrantMissing));
+        assert_eq!(state.balance("TokenA", "Alice", "USDC"), 100);
+        assert_eq!(state.balance("TokenA", "Bob", "USDC"), 50);
+        assert_eq!(
+            state.allowance_remaining("TokenA", "Alice", "Dex", "USDC"),
+            Some(100)
+        );
     }
 
     #[test]
