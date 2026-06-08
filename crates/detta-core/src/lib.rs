@@ -704,6 +704,34 @@ fn method_policy<const E: usize, const I: usize>(
     }
 }
 
+fn transaction_resource_units(tx: &Transaction) -> u64 {
+    let arg_units = (tx.args.len() as u64).saturating_mul(2);
+    10u64
+        .saturating_add(arg_units)
+        .saturating_add(method_resource_units(&tx.method))
+}
+
+fn method_resource_units(method: &Method) -> u64 {
+    match method {
+        Method::Transfer => 20,
+        Method::Approve => 18,
+        Method::TransferFrom => 32,
+        Method::Permit => 50,
+        Method::AddLiquidity => 42,
+        Method::Swap => 45,
+        Method::SubmitPrice => 28,
+        Method::QueueBridgeMessage => 34,
+        Method::RedeemBridgeMessage => 48,
+        Method::PauseContract | Method::UnpauseContract => 20,
+        Method::ScheduleUpgrade | Method::SchedulePolicyUpdate => 30,
+        Method::ExecuteUpgrade | Method::ExecutePolicyUpdate => 40,
+        Method::DepositCollateral | Method::Stake | Method::Unstake => 22,
+        Method::Borrow => 38,
+        Method::RouteTransferFrom => 55,
+        Method::Other(_) => 10,
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Transaction {
     pub chain_id: ChainId,
@@ -875,6 +903,7 @@ pub enum ExecutionError {
     PolicyUpdateAlreadyScheduled,
     PolicyUpdateNotFound,
     PolicyUpdateAlreadyExecuted,
+    OutOfGas,
     InsufficientCollateral,
     InsufficientStake,
     ArithmeticOverflow,
@@ -1051,6 +1080,7 @@ pub struct Receipt {
     pub status: TxStatus,
     pub error: Option<ExecutionError>,
     pub return_value: Option<ReturnValue>,
+    pub resource_units_used: u64,
     pub storage_root_after: String,
     pub registry_root_after: String,
     pub policy_root_after: String,
@@ -1779,7 +1809,15 @@ impl DeTTaState {
             return self.rejected_receipt(tx.tx_hash, ExecutionError::NonceReplay);
         }
 
+        let resource_units_used = transaction_resource_units(&tx);
         self.used_nonces.insert(nonce_key);
+        if tx.budget < resource_units_used {
+            return self.reverted_receipt(
+                tx.tx_hash,
+                ExecutionError::OutOfGas,
+                resource_units_used,
+            );
+        }
 
         let checkpoint_storage = self.storage.clone();
         let checkpoint_registry = self.registry.clone();
@@ -1795,7 +1833,9 @@ impl DeTTaState {
         let msg_sender = tx.sender.clone();
         let mut call_context = CallContext::new(tx.sender.clone());
         match self.execute_call(&tx, msg_sender, &mut call_context) {
-            Ok(return_value) => self.committed_receipt(tx.tx_hash, return_value),
+            Ok(return_value) => {
+                self.committed_receipt(tx.tx_hash, return_value, resource_units_used)
+            }
             Err(error) => {
                 self.contracts = checkpoint_contracts;
                 self.storage = checkpoint_storage;
@@ -1807,7 +1847,7 @@ impl DeTTaState {
                 self.scheduled_policy_updates = checkpoint_scheduled_policy_updates;
                 self.outbound_message_ids = checkpoint_outbound_message_ids;
                 self.cross_shard_outbox = checkpoint_cross_shard_outbox;
-                self.reverted_receipt(tx.tx_hash, error)
+                self.reverted_receipt(tx.tx_hash, error, resource_units_used)
             }
         }
     }
@@ -3756,16 +3796,38 @@ impl DeTTaState {
         });
     }
 
-    fn committed_receipt(&self, tx_hash: TxHash, return_value: ReturnValue) -> Receipt {
-        self.receipt(tx_hash, TxStatus::Committed, None, Some(return_value))
+    fn committed_receipt(
+        &self,
+        tx_hash: TxHash,
+        return_value: ReturnValue,
+        resource_units_used: u64,
+    ) -> Receipt {
+        self.receipt(
+            tx_hash,
+            TxStatus::Committed,
+            None,
+            Some(return_value),
+            resource_units_used,
+        )
     }
 
-    fn reverted_receipt(&self, tx_hash: TxHash, error: ExecutionError) -> Receipt {
-        self.receipt(tx_hash, TxStatus::Reverted, Some(error), None)
+    fn reverted_receipt(
+        &self,
+        tx_hash: TxHash,
+        error: ExecutionError,
+        resource_units_used: u64,
+    ) -> Receipt {
+        self.receipt(
+            tx_hash,
+            TxStatus::Reverted,
+            Some(error),
+            None,
+            resource_units_used,
+        )
     }
 
     fn rejected_receipt(&self, tx_hash: TxHash, error: ExecutionError) -> Receipt {
-        self.receipt(tx_hash, TxStatus::Rejected, Some(error), None)
+        self.receipt(tx_hash, TxStatus::Rejected, Some(error), None, 0)
     }
 
     fn receipt(
@@ -3774,12 +3836,14 @@ impl DeTTaState {
         status: TxStatus,
         error: Option<ExecutionError>,
         return_value: Option<ReturnValue>,
+        resource_units_used: u64,
     ) -> Receipt {
         Receipt {
             tx_hash,
             status,
             error,
             return_value,
+            resource_units_used,
             storage_root_after: self.storage_root(),
             registry_root_after: self.registry_root(),
             policy_root_after: self.policy_root(),
@@ -4312,20 +4376,61 @@ mod tests {
     #[test]
     fn transfer_preserves_supply_and_commits_event() {
         let mut state = seeded_state();
-
-        let receipt = state.apply_transaction(tx(
+        let transfer = tx(
             "tx1",
             "Alice",
             1,
             Method::Transfer,
             vec![principal("Bob"), asset("USDC"), amount(10)],
-        ));
+        );
+        let expected_units = transaction_resource_units(&transfer);
+
+        let receipt = state.apply_transaction(transfer);
 
         assert_eq!(receipt.status, TxStatus::Committed);
+        assert_eq!(receipt.resource_units_used, expected_units);
         assert_eq!(state.balance("TokenA", "Alice", "USDC"), 90);
         assert_eq!(state.balance("TokenA", "Bob", "USDC"), 60);
         assert_eq!(state.total_supply("TokenA", "USDC"), 150);
         assert_eq!(state.events().len(), 1);
+    }
+
+    #[test]
+    fn under_budget_transaction_reverts_without_state_or_events() {
+        let mut state = seeded_state();
+        let storage_before = state.storage_root();
+        let registry_before = state.registry_root();
+        let event_root_before = state.event_root();
+        let mut transfer = tx(
+            "tx1",
+            "Alice",
+            1,
+            Method::Transfer,
+            vec![principal("Bob"), asset("USDC"), amount(10)],
+        );
+        let required_units = transaction_resource_units(&transfer);
+        transfer.budget = required_units - 1;
+
+        let receipt = state.apply_transaction(transfer);
+
+        assert_eq!(receipt.status, TxStatus::Reverted);
+        assert_eq!(receipt.error, Some(ExecutionError::OutOfGas));
+        assert_eq!(receipt.resource_units_used, required_units);
+        assert_eq!(state.storage_root(), storage_before);
+        assert_eq!(state.registry_root(), registry_before);
+        assert_eq!(state.event_root(), event_root_before);
+        assert_eq!(state.balance("TokenA", "Alice", "USDC"), 100);
+        assert_eq!(state.balance("TokenA", "Bob", "USDC"), 50);
+
+        let replay = state.apply_transaction(tx(
+            "tx2",
+            "Alice",
+            1,
+            Method::Transfer,
+            vec![principal("Bob"), asset("USDC"), amount(10)],
+        ));
+        assert_eq!(replay.status, TxStatus::Rejected);
+        assert_eq!(replay.error, Some(ExecutionError::NonceReplay));
     }
 
     #[test]
