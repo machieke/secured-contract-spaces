@@ -426,6 +426,7 @@ impl PersistentValidatorNode {
 
     pub fn node_snapshot_roots(&self) -> Result<PersistentNodeSnapshotRoots, NodeError> {
         let snapshot = self.node_snapshot()?;
+        let required_snapshot_metadata_roots = self.load_required_snapshot_metadata_roots()?;
         let snapshot_sync_client_metrics = self
             .load_snapshot_sync_client_metrics()?
             .map(snapshot_sync_client_metrics_report);
@@ -438,6 +439,7 @@ impl PersistentValidatorNode {
             outbox_root: snapshot.state_snapshot.outbox_root,
             global_state_root: snapshot.state_snapshot.global_state_root,
             validator_set_metadata_audit_root: snapshot.validator_set_metadata_audit_root,
+            required_snapshot_metadata_roots,
             snapshot_sync_client_metrics,
         })
     }
@@ -1598,6 +1600,7 @@ mod tests {
             outbox_root: snapshot.state_snapshot.outbox_root.clone(),
             global_state_root: snapshot.state_snapshot.global_state_root.clone(),
             validator_set_metadata_audit_root: snapshot.validator_set_metadata_audit_root.clone(),
+            required_snapshot_metadata_roots: BTreeMap::new(),
             snapshot_sync_client_metrics: None,
         }
     }
@@ -3220,6 +3223,10 @@ mod tests {
         write_rpc_request(&mut stream, &RpcRequest::GetPersistentNodeSnapshotRoots);
         let initial_snapshot =
             expect_persistent_node_snapshot_roots(read_rpc_response(&mut reader));
+        assert_eq!(
+            initial_snapshot.required_snapshot_metadata_roots,
+            expected_required_metadata_roots
+        );
         write_rpc_request(&mut stream, &RpcRequest::GetSnapshotSyncClientMetrics);
         assert_eq!(
             read_rpc_response(&mut reader),
@@ -3231,7 +3238,7 @@ mod tests {
         assert_eq!(
             read_rpc_response(&mut reader),
             RpcResponse::Ok(RpcResult::RequiredSnapshotMetadataRoots(
-                expected_required_metadata_roots
+                initial_snapshot.required_snapshot_metadata_roots.clone()
             ))
         );
 
@@ -3797,6 +3804,10 @@ mod tests {
             sink_roots.snapshot_sync_client_metrics,
             Some(expected_metrics_report.clone())
         );
+        assert_eq!(
+            sink_roots.required_snapshot_metadata_roots,
+            required_metadata_roots
+        );
         let response = sink
             .serve_snapshot_chunk_request(
                 &SnapshotChunkRequest {
@@ -3849,6 +3860,13 @@ mod tests {
                 .unwrap()
                 .snapshot_sync_client_metrics,
             Some(expected_metrics_report)
+        );
+        assert_eq!(
+            restarted_sink
+                .node_snapshot_roots()
+                .unwrap()
+                .required_snapshot_metadata_roots,
+            required_metadata_roots
         );
 
         drop(client);

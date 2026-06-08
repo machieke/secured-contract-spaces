@@ -110,6 +110,7 @@ pub struct PersistentNodeSnapshotRoots {
     pub outbox_root: String,
     pub global_state_root: String,
     pub validator_set_metadata_audit_root: String,
+    pub required_snapshot_metadata_roots: BTreeMap<String, String>,
     pub snapshot_sync_client_metrics: Option<SnapshotSyncClientMetricsReport>,
 }
 

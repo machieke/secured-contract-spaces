@@ -112,11 +112,13 @@ Completed production-plan slices:
   after verified import and after restart.
 - [x] Required snapshot metadata-root sets are served over the shared TCP JSON
   RPC path.
+- [x] Required snapshot metadata-root sets are included in persistent snapshot
+  root responses for audit discovery.
 
 Next implementation slices:
 
-- [ ] Bind required snapshot metadata-root sets into persistent snapshot root
-  responses for audit discovery.
+- [ ] Add a stable hash/root for required snapshot metadata-root requirement
+  sets.
 
 # 1. Production Objective
 
