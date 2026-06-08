@@ -1,0 +1,22 @@
+name: DeTTa Release Gate
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+
+jobs:
+  release-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Run release gate
+        run: scripts/detta-release-gate.sh

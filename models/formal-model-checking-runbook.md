@@ -10,6 +10,9 @@ Run these from the repository root:
 scripts/detta-release-gate.sh
 ```
 
+The CI workflow in `.github/workflows/detta-release-gate.yml` runs the same
+gate for pull requests and `master` pushes.
+
 The release gate script runs:
 
 ```sh

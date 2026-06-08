@@ -358,6 +358,8 @@ Completed production-plan slices:
   sha256sum splitting in verify.
 - [x] Local release gate script runs formatting, clippy, tests, verifier, and
   proof artifact attestation checks.
+- [x] CI workflow runs the local release gate on pull requests and master
+  pushes.
 
 Next implementation slices:
 
