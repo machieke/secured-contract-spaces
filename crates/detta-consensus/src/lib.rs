@@ -31,6 +31,13 @@ pub struct SlashingRecord {
     pub evidence: EquivocationEvidence,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ValidatorSetUpdate {
+    pub update_id: String,
+    pub add_validators: Vec<(String, DeTTaState)>,
+    pub remove_validators: Vec<String>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ConsensusError {
     UnknownProposer,
@@ -38,6 +45,8 @@ pub enum ConsensusError {
     SlashedValidator(String),
     DuplicateValidator(String),
     EmptyValidatorSet,
+    ValidatorSetWouldBeEmpty,
+    ValidatorSetUpdateAlreadyApplied(String),
     QuorumNotReached {
         accepted: usize,
         required: usize,
@@ -52,6 +61,7 @@ pub enum ConsensusError {
 pub struct ConsensusCluster {
     validators: BTreeMap<String, ValidatorNode>,
     slashing_records: BTreeMap<String, SlashingRecord>,
+    applied_validator_set_updates: BTreeSet<String>,
 }
 
 impl ConsensusCluster {
@@ -74,6 +84,7 @@ impl ConsensusCluster {
         Ok(Self {
             validators: nodes,
             slashing_records: BTreeMap::new(),
+            applied_validator_set_updates: BTreeSet::new(),
         })
     }
 
@@ -103,6 +114,10 @@ impl ConsensusCluster {
 
     pub fn slashing_records(&self) -> impl Iterator<Item = &SlashingRecord> {
         self.slashing_records.values()
+    }
+
+    pub fn has_applied_validator_set_update(&self, update_id: &str) -> bool {
+        self.applied_validator_set_updates.contains(update_id)
     }
 
     pub fn record_equivocation(
@@ -191,6 +206,88 @@ impl ConsensusCluster {
             .filter(|vote| !self.is_slashed(&vote.validator_id))
             .collect();
         Self::certificate_from_votes(height, block_hash, active_votes, self.quorum())
+    }
+
+    pub fn apply_validator_set_update(
+        &mut self,
+        update: ValidatorSetUpdate,
+        certificate: &FinalityCertificate,
+    ) -> Result<(), ConsensusError> {
+        if self
+            .applied_validator_set_updates
+            .contains(&update.update_id)
+        {
+            return Err(ConsensusError::ValidatorSetUpdateAlreadyApplied(
+                update.update_id,
+            ));
+        }
+
+        self.require_active_quorum(&certificate.signers)?;
+        self.validate_validator_set_update(&update)?;
+
+        for validator_id in &update.remove_validators {
+            self.validators.remove(validator_id);
+            self.slashing_records.remove(validator_id);
+        }
+        for (validator_id, state) in update.add_validators {
+            self.validators.insert(
+                validator_id.clone(),
+                ValidatorNode::new(validator_id, state),
+            );
+        }
+        self.applied_validator_set_updates.insert(update.update_id);
+        Ok(())
+    }
+
+    fn require_active_quorum(&self, signers: &[String]) -> Result<(), ConsensusError> {
+        let mut accepted = BTreeSet::new();
+        for signer in signers {
+            if !self.validators.contains_key(signer) {
+                return Err(ConsensusError::UnknownValidator(signer.clone()));
+            }
+            if self.is_slashed(signer) {
+                return Err(ConsensusError::SlashedValidator(signer.clone()));
+            }
+            accepted.insert(signer.clone());
+        }
+
+        let required = self.quorum();
+        if accepted.len() < required {
+            return Err(ConsensusError::QuorumNotReached {
+                accepted: accepted.len(),
+                required,
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_validator_set_update(
+        &self,
+        update: &ValidatorSetUpdate,
+    ) -> Result<(), ConsensusError> {
+        let mut add_ids = BTreeSet::new();
+        for (validator_id, _) in &update.add_validators {
+            if !add_ids.insert(validator_id.clone()) || self.validators.contains_key(validator_id) {
+                return Err(ConsensusError::DuplicateValidator(validator_id.clone()));
+            }
+        }
+
+        let mut remove_ids = BTreeSet::new();
+        for validator_id in &update.remove_validators {
+            if !remove_ids.insert(validator_id.clone())
+                || !self.validators.contains_key(validator_id)
+            {
+                return Err(ConsensusError::UnknownValidator(validator_id.clone()));
+            }
+        }
+
+        let next_validator_count =
+            self.validators.len() + update.add_validators.len() - update.remove_validators.len();
+        if next_validator_count == 0 {
+            return Err(ConsensusError::ValidatorSetWouldBeEmpty);
+        }
+
+        Ok(())
     }
 
     pub fn certificate_from_votes(
@@ -564,5 +661,114 @@ mod tests {
             .certificate_from_active_votes(2, "hash-c", enough_active_votes)
             .unwrap();
         assert_eq!(certificate.signers, vec!["v2", "v3", "v4"]);
+    }
+
+    #[test]
+    fn quorum_authorizes_validator_set_update() {
+        let mut cluster = ConsensusCluster::new(vec![
+            ("v1".into(), seeded_state()),
+            ("v2".into(), seeded_state()),
+            ("v3".into(), seeded_state()),
+        ])
+        .unwrap();
+        let certificate = FinalityCertificate {
+            height: 1,
+            block_hash: "hash-a".into(),
+            signers: vec!["v1".into(), "v2".into(), "v3".into()],
+        };
+        let update = ValidatorSetUpdate {
+            update_id: "validator-update-1".into(),
+            add_validators: vec![("v4".into(), seeded_state())],
+            remove_validators: vec!["v3".into()],
+        };
+
+        cluster
+            .apply_validator_set_update(update.clone(), &certificate)
+            .unwrap();
+
+        assert!(cluster.has_applied_validator_set_update("validator-update-1"));
+        assert_eq!(cluster.validator_count(), 3);
+        assert!(cluster.validator("v3").is_none());
+        assert!(cluster.validator("v4").is_some());
+
+        let replay = cluster
+            .apply_validator_set_update(update, &certificate)
+            .unwrap_err();
+        assert_eq!(
+            replay,
+            ConsensusError::ValidatorSetUpdateAlreadyApplied("validator-update-1".into())
+        );
+    }
+
+    #[test]
+    fn validator_set_update_requires_current_quorum() {
+        let mut cluster = ConsensusCluster::new(vec![
+            ("v1".into(), seeded_state()),
+            ("v2".into(), seeded_state()),
+            ("v3".into(), seeded_state()),
+        ])
+        .unwrap();
+        let certificate = FinalityCertificate {
+            height: 1,
+            block_hash: "hash-a".into(),
+            signers: vec!["v1".into(), "v2".into()],
+        };
+        let update = ValidatorSetUpdate {
+            update_id: "validator-update-1".into(),
+            add_validators: vec![("v4".into(), seeded_state())],
+            remove_validators: vec![],
+        };
+
+        let error = cluster
+            .apply_validator_set_update(update, &certificate)
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            ConsensusError::QuorumNotReached {
+                accepted: 2,
+                required: 3,
+            }
+        );
+        assert!(cluster.validator("v4").is_none());
+    }
+
+    #[test]
+    fn validator_set_update_rejects_invalid_membership_changes() {
+        let mut cluster = ConsensusCluster::new(vec![
+            ("v1".into(), seeded_state()),
+            ("v2".into(), seeded_state()),
+            ("v3".into(), seeded_state()),
+        ])
+        .unwrap();
+        let certificate = FinalityCertificate {
+            height: 1,
+            block_hash: "hash-a".into(),
+            signers: vec!["v1".into(), "v2".into(), "v3".into()],
+        };
+
+        let duplicate = ValidatorSetUpdate {
+            update_id: "validator-update-1".into(),
+            add_validators: vec![("v3".into(), seeded_state())],
+            remove_validators: vec![],
+        };
+        assert_eq!(
+            cluster
+                .apply_validator_set_update(duplicate, &certificate)
+                .unwrap_err(),
+            ConsensusError::DuplicateValidator("v3".into())
+        );
+
+        let empty = ValidatorSetUpdate {
+            update_id: "validator-update-2".into(),
+            add_validators: vec![],
+            remove_validators: vec!["v1".into(), "v2".into(), "v3".into()],
+        };
+        assert_eq!(
+            cluster
+                .apply_validator_set_update(empty, &certificate)
+                .unwrap_err(),
+            ConsensusError::ValidatorSetWouldBeEmpty
+        );
     }
 }
