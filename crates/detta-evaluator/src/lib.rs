@@ -490,4 +490,25 @@ mod tests {
             assert_eq!(case.script, vec![Instruction::UsePrimitive(case.primitive)]);
         }
     }
+
+    #[test]
+    fn restricted_evaluator_fixture_roots_match_checked_in_attestations() {
+        assert_attested_fixture_root(
+            include_bytes!("../../../models/detta-restricted-evaluator-proof-trace.json"),
+            include_str!("../../../models/detta-restricted-evaluator-proof-trace.sha256"),
+            "detta-restricted-evaluator-proof-trace.json",
+        );
+        assert_attested_fixture_root(
+            include_bytes!("../../../models/detta-restricted-evaluator-forbidden-primitives.json"),
+            include_str!("../../../models/detta-restricted-evaluator-forbidden-primitives.sha256"),
+            "detta-restricted-evaluator-forbidden-primitives.json",
+        );
+    }
+
+    fn assert_attested_fixture_root(bytes: &[u8], attestation: &str, expected_filename: &str) {
+        let digest = Sha256::digest(bytes);
+        let expected = format!("{}  {}\n", hex_lower(&digest), expected_filename);
+
+        assert_eq!(attestation, expected);
+    }
 }

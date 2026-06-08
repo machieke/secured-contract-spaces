@@ -180,10 +180,11 @@ Completed production-plan slices:
 - [x] Restricted evaluator proof traces have stable golden fixtures.
 - [x] Restricted evaluator forbidden primitives have stable golden fixtures.
 - [x] Restricted evaluator subset and fixture schemas are documented.
+- [x] Restricted evaluator golden fixtures have SHA-256 attestations.
 
 Next implementation slices:
 
-- [ ] Add SHA-256 attestations for restricted evaluator fixtures.
+- [ ] Bind restricted evaluator fixture roots into the proof-artifact manifest.
 
 # 1. Production Objective
 

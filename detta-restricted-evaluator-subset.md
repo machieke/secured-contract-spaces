@@ -122,8 +122,10 @@ When evaluator behavior changes:
 1. Update the fixture builder functions in `crates/detta-evaluator`.
 2. Regenerate the affected JSON fixture from the pretty JSON produced by the
    builder.
-3. Run `cargo fmt && cargo test && cargo clippy --all-targets -- -D warnings`.
-4. Review the fixture diff as a semantic compatibility change, not as generated
+3. Refresh the matching `.sha256` file with the SHA-256 of the checked-in JSON
+   fixture bytes.
+4. Run `cargo fmt && cargo test && cargo clippy --all-targets -- -D warnings`.
+5. Review the fixture diff as a semantic compatibility change, not as generated
    noise.
 
 Fixture drift without an intentional schema or behavior change is a regression.
