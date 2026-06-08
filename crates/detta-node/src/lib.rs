@@ -15,7 +15,9 @@ use detta_rpc::{
     json_rpc_response_for_request, JsonRpcHandler, RpcError, RpcErrorBody, RpcRequest, RpcResponse,
     RpcResult, RpcService, RpcTransportError, ValidatorSetMetadataUpdateStatus,
 };
-use detta_storage::{FileStorage, StorageError};
+use detta_storage::{
+    FileStorage, StorageError, ValidatorSetMetadataAuditOutcome, ValidatorSetMetadataAuditRecord,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
@@ -373,7 +375,22 @@ impl PersistentValidatorNode {
                 });
             }
         };
-        let count = self.insert_pending_validator_set_metadata_authorization(*signed)?;
+        let signer = signed.signer.clone();
+        let verified_update = self.verified_validator_set_metadata_update(&signed).ok();
+        let count = match self.insert_pending_validator_set_metadata_authorization(*signed) {
+            Ok(count) => count,
+            Err(error) => {
+                if let Some(update) = verified_update {
+                    self.record_validator_set_metadata_audit(
+                        update.update_id,
+                        ValidatorSetMetadataAuditOutcome::Rejected,
+                        vec![signer],
+                        node_rpc_error_code(&error).to_string(),
+                    )?;
+                }
+                return Err(error);
+            }
+        };
         self.persist_pending_validator_set_metadata_authorizations()?;
         Ok(count)
     }
@@ -457,25 +474,36 @@ impl PersistentValidatorNode {
 
     pub fn prune_validator_set_metadata_authorizations(&mut self) -> Result<usize, NodeError> {
         let current_height = self.current_height();
-        let mut pruned_update_ids = Vec::new();
+        let mut pruned_updates = Vec::new();
         for (update_id, authorizations) in &self.pending_validator_set_metadata_authorizations {
+            let signers = authorizations.keys().cloned().collect::<Vec<_>>();
             let Some(signed) = authorizations.values().next() else {
-                pruned_update_ids.push(update_id.clone());
+                pruned_updates.push((
+                    update_id.clone(),
+                    signers,
+                    "empty_authorization_set".to_string(),
+                ));
                 continue;
             };
             let update = self.verified_validator_set_metadata_update(signed)?;
-            if self.has_applied_validator_set_update(update_id)
-                || validator_set_metadata_update_expired(&update, current_height)
-            {
-                pruned_update_ids.push(update_id.clone());
+            if self.has_applied_validator_set_update(update_id) {
+                pruned_updates.push((update_id.clone(), signers, "already_applied".to_string()));
+            } else if validator_set_metadata_update_expired(&update, current_height) {
+                pruned_updates.push((update_id.clone(), signers, "expired".to_string()));
             }
         }
 
-        let pruned = pruned_update_ids.len();
+        let pruned = pruned_updates.len();
         if pruned > 0 {
-            for update_id in pruned_update_ids {
+            for (update_id, signers, reason) in pruned_updates {
                 self.pending_validator_set_metadata_authorizations
                     .remove(&update_id);
+                self.record_validator_set_metadata_audit(
+                    update_id,
+                    ValidatorSetMetadataAuditOutcome::Pruned,
+                    signers,
+                    reason,
+                )?;
             }
             self.persist_pending_validator_set_metadata_authorizations()?;
         }
@@ -525,12 +553,27 @@ impl PersistentValidatorNode {
             .pending_validator_set_metadata_authorizations
             .get(update_id)
             .ok_or_else(|| NodeError::ValidatorSetMetadataUpdateNotFound(update_id.to_string()))?;
+        let signers = authorizations.keys().cloned().collect::<Vec<_>>();
         let messages = authorizations
             .values()
             .cloned()
             .map(|signed| NetworkMessage::SignedValidator(Box::new(signed)))
             .collect::<Vec<_>>();
-        self.apply_quorum_authorized_validator_set_metadata_update(&messages)?;
+        if let Err(error) = self.apply_quorum_authorized_validator_set_metadata_update(&messages) {
+            self.record_validator_set_metadata_audit(
+                update_id.to_string(),
+                ValidatorSetMetadataAuditOutcome::Rejected,
+                signers,
+                node_rpc_error_code(&error).to_string(),
+            )?;
+            return Err(error);
+        }
+        self.record_validator_set_metadata_audit(
+            update_id.to_string(),
+            ValidatorSetMetadataAuditOutcome::Applied,
+            signers,
+            "applied".into(),
+        )?;
         self.pending_validator_set_metadata_authorizations
             .remove(update_id);
         self.persist_pending_validator_set_metadata_authorizations()
@@ -672,6 +715,32 @@ impl PersistentValidatorNode {
     pub fn load_slashing_record(&self, validator_id: &str) -> Result<SlashingRecord, NodeError> {
         self.storage
             .load_slashing_record(validator_id)
+            .map_err(NodeError::Storage)
+    }
+
+    pub fn load_validator_set_metadata_audit_records(
+        &self,
+    ) -> Result<Vec<ValidatorSetMetadataAuditRecord>, NodeError> {
+        self.storage
+            .load_validator_set_metadata_audit_records()
+            .map_err(NodeError::Storage)
+    }
+
+    fn record_validator_set_metadata_audit(
+        &self,
+        update_id: String,
+        outcome: ValidatorSetMetadataAuditOutcome,
+        signers: Vec<String>,
+        reason: String,
+    ) -> Result<(), NodeError> {
+        self.storage
+            .append_validator_set_metadata_audit_record(ValidatorSetMetadataAuditRecord {
+                update_id,
+                outcome,
+                height: self.current_height(),
+                signers,
+                reason,
+            })
             .map_err(NodeError::Storage)
     }
 
@@ -2254,6 +2323,122 @@ mod tests {
                 pending_authorizations: 1,
                 max_pending_authorizations: 1,
             }
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn persistent_node_records_validator_set_metadata_update_audit_records() {
+        let dir = temp_dir("validator-set-audit");
+        let signer_key = validator_key("validator-1", 7);
+        let peer_key = validator_key("validator-2", 8);
+        let added_key = validator_key("validator-3", 9);
+        let pruned_added_key = validator_key("validator-4", 10);
+        let rejected_added_key = validator_key("validator-5", 11);
+        let mut node = PersistentValidatorNode::bootstrap_with_validator_set(
+            "validator-2",
+            seeded_state(),
+            &dir,
+            "detta-testnet",
+            vec![signer_key.public_key(), peer_key.public_key()],
+        )
+        .unwrap();
+        let applied_update = ValidatorSetMetadataUpdate {
+            update_id: "validator-set-update-applied".into(),
+            add_validators: vec![added_key.public_key()],
+            remove_validators: vec![],
+            expires_at_height: None,
+        };
+        for key in [&signer_key, &peer_key] {
+            let authorization = key
+                .sign_message(
+                    "detta-testnet",
+                    node.chain_id().clone(),
+                    NetworkMessage::ValidatorSetMetadataUpdate(applied_update.clone()),
+                )
+                .unwrap();
+            node.ingest_network_envelope(&Envelope {
+                from: key.validator_id().into(),
+                to: "validator-2".into(),
+                message: NetworkMessage::SignedValidator(Box::new(authorization)),
+            })
+            .unwrap();
+        }
+
+        let pruned_update = ValidatorSetMetadataUpdate {
+            update_id: "validator-set-update-pruned".into(),
+            add_validators: vec![pruned_added_key.public_key()],
+            remove_validators: vec![],
+            expires_at_height: Some(1),
+        };
+        let pruned_authorization = signer_key
+            .sign_message(
+                "detta-testnet",
+                node.chain_id().clone(),
+                NetworkMessage::ValidatorSetMetadataUpdate(pruned_update),
+            )
+            .unwrap();
+        node.ingest_network_envelope(&Envelope {
+            from: "validator-1".into(),
+            to: "validator-2".into(),
+            message: NetworkMessage::SignedValidator(Box::new(pruned_authorization)),
+        })
+        .unwrap();
+
+        node.produce_block(1, 1_000).unwrap();
+        assert_eq!(
+            node.prune_validator_set_metadata_authorizations().unwrap(),
+            1
+        );
+
+        let rejected_update = ValidatorSetMetadataUpdate {
+            update_id: "validator-set-update-rejected".into(),
+            add_validators: vec![rejected_added_key.public_key()],
+            remove_validators: vec![],
+            expires_at_height: Some(1),
+        };
+        let rejected_authorization = signer_key
+            .sign_message(
+                "detta-testnet",
+                node.chain_id().clone(),
+                NetworkMessage::ValidatorSetMetadataUpdate(rejected_update),
+            )
+            .unwrap();
+        assert!(matches!(
+            node.ingest_network_envelope(&Envelope {
+                from: "validator-1".into(),
+                to: "validator-2".into(),
+                message: NetworkMessage::SignedValidator(Box::new(rejected_authorization)),
+            }),
+            Err(NodeError::ValidatorSetMetadataUpdateExpired { .. })
+        ));
+
+        assert_eq!(
+            node.load_validator_set_metadata_audit_records().unwrap(),
+            vec![
+                ValidatorSetMetadataAuditRecord {
+                    update_id: "validator-set-update-applied".into(),
+                    outcome: ValidatorSetMetadataAuditOutcome::Applied,
+                    height: 0,
+                    signers: vec!["validator-1".into(), "validator-2".into()],
+                    reason: "applied".into(),
+                },
+                ValidatorSetMetadataAuditRecord {
+                    update_id: "validator-set-update-pruned".into(),
+                    outcome: ValidatorSetMetadataAuditOutcome::Pruned,
+                    height: 1,
+                    signers: vec!["validator-1".into()],
+                    reason: "expired".into(),
+                },
+                ValidatorSetMetadataAuditRecord {
+                    update_id: "validator-set-update-rejected".into(),
+                    outcome: ValidatorSetMetadataAuditOutcome::Rejected,
+                    height: 1,
+                    signers: vec!["validator-1".into()],
+                    reason: "node.validator_set_metadata_update_expired".into(),
+                },
+            ]
         );
 
         fs::remove_dir_all(dir).unwrap();

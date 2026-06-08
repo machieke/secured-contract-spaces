@@ -2,7 +2,7 @@ use bincode::Options;
 use detta_consensus::{FinalityCertificate, SlashingRecord};
 use detta_core::{Block, DeTTaState, SnapshotError, StateSnapshot, Transaction};
 use detta_protocol::{SignedValidatorMessage, ValidatorSetMetadata};
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
@@ -19,6 +19,22 @@ pub enum StorageError {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FileStorage {
     root: PathBuf,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum ValidatorSetMetadataAuditOutcome {
+    Applied,
+    Pruned,
+    Rejected,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ValidatorSetMetadataAuditRecord {
+    pub update_id: String,
+    pub outcome: ValidatorSetMetadataAuditOutcome,
+    pub height: u64,
+    pub signers: Vec<String>,
+    pub reason: String,
 }
 
 impl FileStorage {
@@ -116,6 +132,25 @@ impl FileStorage {
         read_json(&path)
     }
 
+    pub fn append_validator_set_metadata_audit_record(
+        &self,
+        record: ValidatorSetMetadataAuditRecord,
+    ) -> Result<(), StorageError> {
+        let mut records = self.load_validator_set_metadata_audit_records()?;
+        records.push(record);
+        write_json_atomic(&self.validator_set_metadata_audit_path(), &records)
+    }
+
+    pub fn load_validator_set_metadata_audit_records(
+        &self,
+    ) -> Result<Vec<ValidatorSetMetadataAuditRecord>, StorageError> {
+        let path = self.validator_set_metadata_audit_path();
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        read_json(&path)
+    }
+
     pub fn commit_mempool(&self, transactions: &[Transaction]) -> Result<(), StorageError> {
         write_json_atomic(&self.mempool_path(), &transactions)
     }
@@ -153,6 +188,10 @@ impl FileStorage {
     fn pending_validator_set_metadata_authorizations_path(&self) -> PathBuf {
         self.root
             .join("pending_validator_set_metadata_authorizations.bin")
+    }
+
+    fn validator_set_metadata_audit_path(&self) -> PathBuf {
+        self.root.join("validator_set_metadata_audit.bin")
     }
 
     fn mempool_path(&self) -> PathBuf {
@@ -421,6 +460,43 @@ mod tests {
                 .load_pending_validator_set_metadata_authorizations()
                 .unwrap(),
             vec![authorization]
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn appends_validator_set_metadata_audit_records() {
+        let dir = temp_dir("validator-set-audit");
+        let storage = FileStorage::open(&dir).unwrap();
+        let applied = ValidatorSetMetadataAuditRecord {
+            update_id: "validator-set-update-1".into(),
+            outcome: ValidatorSetMetadataAuditOutcome::Applied,
+            height: 3,
+            signers: vec!["validator-1".into(), "validator-2".into()],
+            reason: "applied".into(),
+        };
+        let rejected = ValidatorSetMetadataAuditRecord {
+            update_id: "validator-set-update-2".into(),
+            outcome: ValidatorSetMetadataAuditOutcome::Rejected,
+            height: 4,
+            signers: vec!["validator-3".into()],
+            reason: "expired".into(),
+        };
+
+        assert_eq!(
+            storage.load_validator_set_metadata_audit_records().unwrap(),
+            vec![]
+        );
+        storage
+            .append_validator_set_metadata_audit_record(applied.clone())
+            .unwrap();
+        storage
+            .append_validator_set_metadata_audit_record(rejected.clone())
+            .unwrap();
+
+        assert_eq!(
+            storage.load_validator_set_metadata_audit_records().unwrap(),
+            vec![applied, rejected]
         );
         fs::remove_dir_all(dir).unwrap();
     }

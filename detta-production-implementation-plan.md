@@ -68,10 +68,12 @@ Completed production-plan slices:
   reject or prune stale pending authorizations from durable storage.
 - [x] Pending validator-set metadata authorization pools are bounded, with
   per-validator limits to prevent one signer from occupying unbounded updates.
+- [x] Signed validator-set metadata update audit records persist applied,
+  pruned, and rejected lifecycle outcomes with signer sets and reasons.
 
 Next implementation slices:
 
-- [ ] Add signed validator-set metadata update audit records for applied, pruned, and rejected updates.
+- [ ] Expose validator-set metadata audit records over RPC.
 
 # 1. Production Objective
 
