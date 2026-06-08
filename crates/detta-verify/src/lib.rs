@@ -1,4 +1,7 @@
-use detta_core::{Block, ContractKind, DeTTaState, ExecutionError, Method, StateKey, Transaction};
+use detta_core::{
+    Block, ContractKind, DeTTaState, ExecutionError, InvariantFailure, Method, StateKey,
+    Transaction,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -121,6 +124,10 @@ pub fn lint_state(state: &DeTTaState) -> Vec<LintError> {
     errors
 }
 
+pub fn check_declared_invariants(state: &DeTTaState) -> Vec<InvariantFailure> {
+    state.check_declared_invariants()
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum TraceOp {
     StateGet(StateKey),
@@ -220,6 +227,7 @@ mod tests {
         let state = seeded_state();
 
         assert_eq!(lint_state(&state), vec![]);
+        assert_eq!(check_declared_invariants(&state), vec![]);
     }
 
     #[test]

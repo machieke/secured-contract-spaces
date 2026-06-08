@@ -291,6 +291,12 @@ pub enum ContractInvariant {
     RouterDoesNotInheritCallerWriteScope,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct InvariantFailure {
+    pub contract: ContractId,
+    pub invariant: ContractInvariant,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub struct PolicyKey {
     pub contract: ContractId,
@@ -1966,6 +1972,21 @@ impl DeTTaState {
         self.contracts.values()
     }
 
+    pub fn check_declared_invariants(&self) -> Vec<InvariantFailure> {
+        let mut failures = Vec::new();
+        for record in self.contracts.values() {
+            for invariant in record.declared_invariants() {
+                if !self.declared_invariant_holds(record, invariant) {
+                    failures.push(InvariantFailure {
+                        contract: record.contract_id.clone(),
+                        invariant: invariant.clone(),
+                    });
+                }
+            }
+        }
+        failures
+    }
+
     pub fn scheduled_upgrades(&self) -> impl Iterator<Item = &ScheduledUpgrade> {
         self.scheduled_upgrades.values()
     }
@@ -3327,6 +3348,64 @@ impl DeTTaState {
             .unwrap_or_default()
     }
 
+    fn declared_invariant_holds(
+        &self,
+        record: &ContractRecord,
+        invariant: &ContractInvariant,
+    ) -> bool {
+        match invariant {
+            ContractInvariant::TokenSupplyMatchesBalances => self
+                .token_total_supply_assets(&record.contract_id)
+                .into_iter()
+                .all(|asset| self.token_invariants_hold(&record.contract_id, &asset)),
+            ContractInvariant::AmmPoolAssetsDistinct => match &record.kind {
+                ContractKind::AmmPool { asset_a, asset_b } => asset_a != asset_b,
+                _ => false,
+            },
+            ContractInvariant::AmmLpSupplyMatchesBalances => {
+                self.amm_invariants_hold(&record.contract_id)
+            }
+            ContractInvariant::OracleUpdatesRequireLiveGrant => {
+                self.has_active_oracle_updater(&record.contract_id)
+            }
+            ContractInvariant::OracleFreshnessCheckedByConsumers => true,
+            ContractInvariant::BridgeInboundMessagesConsumedOnce => true,
+            ContractInvariant::BridgeOutboundMessageIdsUnique => {
+                self.outbound_messages_are_unique()
+            }
+            ContractInvariant::GovernanceChangesRequireAdminGrant => {
+                self.has_active_governance_admin(&record.contract_id)
+            }
+            ContractInvariant::GovernanceUpgradesRespectTimelock => match &record.kind {
+                ContractKind::Governance { timelock_delay, .. } => *timelock_delay > 0,
+                _ => false,
+            },
+            ContractInvariant::LendingBorrowWithinCollateralLimit => {
+                self.lending_invariants_hold(record)
+            }
+            ContractInvariant::StakingTotalMatchesBalances => match &record.kind {
+                ContractKind::Staking { asset } => {
+                    self.staking_invariants_hold(&record.contract_id, asset)
+                }
+                _ => false,
+            },
+            ContractInvariant::RouterDoesNotInheritCallerWriteScope => true,
+        }
+    }
+
+    fn token_total_supply_assets(&self, contract: &ContractId) -> BTreeSet<AssetId> {
+        self.storage
+            .keys()
+            .filter_map(|key| match key {
+                StateKey::TotalSupply {
+                    contract: supply_contract,
+                    asset,
+                } if supply_contract == contract => Some(asset.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn token_invariants_hold(&self, contract: &ContractId, asset: &AssetId) -> bool {
         let total_supply = self.total_supply(contract.clone(), asset.clone());
         let balance_sum = self
@@ -3380,6 +3459,89 @@ impl DeTTaState {
             .try_fold(0u128, |acc, value| acc.checked_add(value));
 
         stake_sum == Some(total_staked)
+    }
+
+    fn has_active_oracle_updater(&self, contract: &ContractId) -> bool {
+        self.registry.iter().any(|(key, grant)| {
+            matches!(
+                key,
+                GrantKey::OracleUpdater {
+                    contract: grant_contract,
+                    ..
+                } if grant_contract == contract
+            ) && grant.active
+                && !grant.revoked
+                && grant.rights.contains(&GrantRight::UpdateOracle)
+        })
+    }
+
+    fn has_active_governance_admin(&self, contract: &ContractId) -> bool {
+        self.registry.iter().any(|(key, grant)| {
+            matches!(
+                key,
+                GrantKey::GovernanceAdmin {
+                    contract: grant_contract,
+                    ..
+                } if grant_contract == contract
+            ) && grant.active
+                && !grant.revoked
+                && grant.rights.contains(&GrantRight::GovernanceAdmin)
+        })
+    }
+
+    fn outbound_messages_are_unique(&self) -> bool {
+        let mut seen = BTreeSet::new();
+        self.cross_shard_outbox
+            .iter()
+            .all(|message| seen.insert(message.message_id.clone()))
+    }
+
+    fn lending_invariants_hold(&self, record: &ContractRecord) -> bool {
+        let ContractKind::LendingVault {
+            collateral_asset,
+            debt_asset,
+            oracle_contract,
+            ltv_bps,
+            ..
+        } = &record.kind
+        else {
+            return false;
+        };
+
+        for (key, value) in &self.storage {
+            let StateKey::Debt {
+                contract,
+                borrower,
+                asset,
+            } = key
+            else {
+                continue;
+            };
+            if contract != &record.contract_id || asset != debt_asset {
+                continue;
+            }
+
+            let debt = value.as_uint();
+            if debt == 0 {
+                continue;
+            }
+            let price = self.oracle_price(oracle_contract.clone(), collateral_asset.clone());
+            if price == 0 {
+                return false;
+            }
+            let collateral =
+                self.collateral(contract.clone(), borrower.clone(), collateral_asset.clone());
+            let Some(collateral_value) = collateral.checked_mul(price) else {
+                return false;
+            };
+            let Some(max_debt) = collateral_value.checked_mul(*ltv_bps as Amount) else {
+                return false;
+            };
+            if debt > max_debt / 10_000 {
+                return false;
+            }
+        }
+        true
     }
 
     fn emit(&mut self, contract: &ContractId, tx_hash: &TxHash, payload: EventPayload) {
@@ -3879,6 +4041,27 @@ mod tests {
         assert!(declared.contains(&ContractInvariant::LendingBorrowWithinCollateralLimit));
         assert!(declared.contains(&ContractInvariant::StakingTotalMatchesBalances));
         assert!(declared.contains(&ContractInvariant::RouterDoesNotInheritCallerWriteScope));
+        assert_eq!(state.check_declared_invariants(), vec![]);
+    }
+
+    #[test]
+    fn declared_invariant_checker_detects_tampered_token_supply() {
+        let mut state = seeded_state();
+        state.storage.insert(
+            StateKey::TotalSupply {
+                contract: "TokenA".into(),
+                asset: "USDC".into(),
+            },
+            StateValue::UInt(999),
+        );
+
+        assert_eq!(
+            state.check_declared_invariants(),
+            vec![InvariantFailure {
+                contract: "TokenA".into(),
+                invariant: ContractInvariant::TokenSupplyMatchesBalances,
+            }]
+        );
     }
 
     #[test]
