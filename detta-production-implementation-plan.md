@@ -259,10 +259,12 @@ Completed production-plan slices:
   expected suffixes in verify.
 - [x] Evaluator fixture inventory attestation paths are checked against target
   artifact filenames in verify.
+- [x] Evaluator fixture inventory trace-root metadata is checked for
+  all-or-none proof-trace-only optionality in verify.
 
 Next implementation slices:
 
-- [ ] Add evaluator fixture inventory trace-root optionality checks in verify.
+- [ ] Add evaluator fixture inventory order stability checks in verify.
 
 # 1. Production Objective
 

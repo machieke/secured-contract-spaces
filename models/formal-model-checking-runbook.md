@@ -70,6 +70,8 @@ cargo test -p detta-verify
   use `.json` for fixtures and `.sha256` for attestations.
 - evaluator fixture inventory attestation paths bind to the target fixture
   filenames, with trace-root attestations using the `-root.sha256` form.
+- evaluator fixture inventory trace-root metadata appears as an all-or-none
+  group only on the proof-trace fixture.
 - evaluator fixture inventory roots are lowercase SHA-256 hex.
 - the evaluator fixture inventory trace root matches the proof-trace fixture,
   compact trace bytes, and trace-root attestation.
@@ -153,6 +155,8 @@ Before accepting a release proof bundle, verify:
 - every evaluator fixture inventory attestation path binds to its target
   fixture filename, with trace-root attestations using the `-root.sha256`
   form;
+- evaluator fixture inventory trace-root metadata appears as an all-or-none
+  group only on the proof-trace fixture;
 - every evaluator fixture inventory root uses lowercase SHA-256 hex;
 - the evaluator fixture inventory trace root matches the proof-trace fixture,
   compact trace bytes, and trace-root attestation;

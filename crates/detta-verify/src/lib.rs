@@ -1640,6 +1640,41 @@ mod tests {
     }
 
     #[test]
+    fn proof_runtime_evaluator_fixture_inventory_trace_root_metadata_is_proof_trace_only() {
+        let inventory: EvaluatorFixtureInventoryForTest = serde_json::from_str(include_str!(
+            "../../../models/detta-restricted-evaluator-fixture-inventory.json"
+        ))
+        .unwrap();
+        let trace_root_entries: BTreeSet<_> = inventory
+            .fixtures
+            .iter()
+            .filter(|entry| {
+                entry.trace_root.is_some()
+                    || entry.trace_root_attestation_path.is_some()
+                    || entry.trace_root_attestation_sha256.is_some()
+            })
+            .map(|entry| entry.name.as_str())
+            .collect();
+
+        assert_eq!(trace_root_entries, BTreeSet::from(["proof-trace"]));
+        for entry in &inventory.fixtures {
+            let has_trace_root = entry.trace_root.is_some();
+            assert_eq!(
+                has_trace_root,
+                entry.trace_root_attestation_path.is_some(),
+                "{} must keep trace root and trace-root attestation path together",
+                entry.name
+            );
+            assert_eq!(
+                has_trace_root,
+                entry.trace_root_attestation_sha256.is_some(),
+                "{} must keep trace root and trace-root attestation root together",
+                entry.name
+            );
+        }
+    }
+
+    #[test]
     fn proof_runtime_evaluator_fixture_inventory_roots_are_lowercase_sha256_hex() {
         let inventory: EvaluatorFixtureInventoryForTest = serde_json::from_str(include_str!(
             "../../../models/detta-restricted-evaluator-fixture-inventory.json"
