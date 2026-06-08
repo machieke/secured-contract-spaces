@@ -1,4 +1,5 @@
 use detta_core::{Block, BlockError, DeTTaState, MempoolError, Transaction, ValidatorNode};
+use detta_network::{Envelope, NetworkMessage};
 use detta_rpc::{RpcError, RpcService};
 use detta_storage::{FileStorage, StorageError};
 use std::path::PathBuf;
@@ -9,6 +10,13 @@ pub enum NodeError {
     Storage(StorageError),
     Block(BlockError),
     Mempool(MempoolError),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum NetworkIngestOutcome {
+    TransactionAccepted,
+    BlockImported,
+    IgnoredConsensusControl,
 }
 
 pub struct PersistentValidatorNode {
@@ -88,6 +96,27 @@ impl PersistentValidatorNode {
         self.persist_committed_block(block)
     }
 
+    pub fn ingest_network_envelope(
+        &mut self,
+        envelope: &Envelope,
+    ) -> Result<NetworkIngestOutcome, NodeError> {
+        match &envelope.message {
+            NetworkMessage::Transaction(tx) => {
+                self.submit_transaction(tx.clone())?;
+                Ok(NetworkIngestOutcome::TransactionAccepted)
+            }
+            NetworkMessage::Block(block) => {
+                self.import_block(block)?;
+                Ok(NetworkIngestOutcome::BlockImported)
+            }
+            NetworkMessage::Vote(_)
+            | NetworkMessage::FinalityCertificate(_)
+            | NetworkMessage::ValidatorSetUpdate(_)
+            | NetworkMessage::EquivocationEvidence(_)
+            | NetworkMessage::StateSnapshot(_) => Ok(NetworkIngestOutcome::IgnoredConsensusControl),
+        }
+    }
+
     pub fn load_block(&self, height: u64) -> Result<Block, NodeError> {
         self.storage.load_block(height).map_err(NodeError::Storage)
     }
@@ -115,6 +144,7 @@ impl PersistentValidatorNode {
 mod tests {
     use super::*;
     use detta_core::{Argument, Method};
+    use detta_network::InMemoryTransport;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -228,6 +258,31 @@ mod tests {
     }
 
     #[test]
+    fn persistent_node_ingests_gossiped_transaction_envelope() {
+        let dir = temp_dir("network-tx");
+        let mut node =
+            PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &dir).unwrap();
+        let mut transport =
+            InMemoryTransport::new(["client-1".into(), "validator-1".into()]).unwrap();
+
+        transport
+            .send(
+                "client-1",
+                "validator-1",
+                NetworkMessage::Transaction(transfer_tx()),
+            )
+            .unwrap();
+        let envelope = transport.drain_peer("validator-1").unwrap().pop().unwrap();
+        let outcome = node.ingest_network_envelope(&envelope).unwrap();
+
+        assert_eq!(outcome, NetworkIngestOutcome::TransactionAccepted);
+        assert_eq!(node.pending_len(), 1);
+        let reloaded = PersistentValidatorNode::restart("validator-1", &dir).unwrap();
+        assert_eq!(reloaded.pending_len(), 1);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn full_node_imports_and_persists_block() {
         let validator_dir = temp_dir("validator");
         let full_node_dir = temp_dir("full-node");
@@ -257,6 +312,46 @@ mod tests {
                 .header
                 .global_state_root,
             block.header.global_state_root
+        );
+
+        fs::remove_dir_all(validator_dir).unwrap();
+        fs::remove_dir_all(full_node_dir).unwrap();
+    }
+
+    #[test]
+    fn persistent_node_ingests_block_envelope() {
+        let validator_dir = temp_dir("network-block-validator");
+        let full_node_dir = temp_dir("network-block-full-node");
+        let mut validator =
+            PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &validator_dir)
+                .unwrap();
+        validator.submit_transaction(transfer_tx()).unwrap();
+        let block = validator.produce_block(1, 1_000).unwrap();
+        let mut full_node =
+            PersistentValidatorNode::bootstrap("full-node-1", seeded_state(), &full_node_dir)
+                .unwrap();
+        let mut transport =
+            InMemoryTransport::new(["validator-1".into(), "full-node-1".into()]).unwrap();
+
+        transport
+            .send(
+                "validator-1",
+                "full-node-1",
+                NetworkMessage::Block(Box::new(block.clone())),
+            )
+            .unwrap();
+        let envelope = transport.drain_peer("full-node-1").unwrap().pop().unwrap();
+        let outcome = full_node.ingest_network_envelope(&envelope).unwrap();
+
+        assert_eq!(outcome, NetworkIngestOutcome::BlockImported);
+        assert_eq!(
+            full_node.load_block(1).unwrap().header.global_state_root,
+            block.header.global_state_root
+        );
+        let reloaded = PersistentValidatorNode::restart("full-node-1", &full_node_dir).unwrap();
+        assert_eq!(
+            reloaded.rpc().call_balance_view("TokenA", "Bob", "USDC"),
+            60
         );
 
         fs::remove_dir_all(validator_dir).unwrap();

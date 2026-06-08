@@ -118,6 +118,7 @@ name = "detta-node"
 version = "0.1.0"
 dependencies = [
  "detta-core",
+ "detta-network",
  "detta-rpc",
  "detta-storage",
 ]

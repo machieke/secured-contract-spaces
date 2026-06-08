@@ -6,5 +6,6 @@ license = "MIT"
 
 [dependencies]
 detta-core = { path = "../detta-core" }
+detta-network = { path = "../detta-network" }
 detta-rpc = { path = "../detta-rpc" }
 detta-storage = { path = "../detta-storage" }
