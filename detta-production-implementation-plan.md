@@ -82,10 +82,12 @@ Completed production-plan slices:
   verification authenticates the validator-set audit root.
 - [x] Snapshot reconstruction/import can require persistent metadata roots and
   rejects mismatched validator-set audit roots before committing snapshots.
+- [x] Verified snapshot metadata roots persist alongside imported snapshots and
+  survive restart for later RPC/state-sync reporting.
 
 Next implementation slices:
 
-- [ ] Persist verified snapshot metadata roots alongside imported snapshots.
+- [ ] Add durable snapshot metadata root pruning/replacement semantics.
 
 # 1. Production Objective
 

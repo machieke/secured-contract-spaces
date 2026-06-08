@@ -4,6 +4,7 @@ use detta_core::{Block, DeTTaState, SnapshotError, StateSnapshot, Transaction};
 use detta_protocol::{SignedValidatorMessage, ValidatorSetMetadata};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
@@ -60,6 +61,21 @@ impl FileStorage {
         let snapshot: StateSnapshot = read_json(&self.snapshot_path())?;
         DeTTaState::from_snapshot(snapshot.clone()).map_err(StorageError::InvalidSnapshot)?;
         Ok(snapshot)
+    }
+
+    pub fn commit_snapshot_metadata_roots(
+        &self,
+        roots: &BTreeMap<String, String>,
+    ) -> Result<(), StorageError> {
+        write_json_atomic(&self.snapshot_metadata_roots_path(), roots)
+    }
+
+    pub fn load_snapshot_metadata_roots(&self) -> Result<BTreeMap<String, String>, StorageError> {
+        let path = self.snapshot_metadata_roots_path();
+        if !path.exists() {
+            return Ok(BTreeMap::new());
+        }
+        read_json(&path)
     }
 
     pub fn commit_block(&self, block: &Block) -> Result<(), StorageError> {
@@ -196,6 +212,10 @@ impl FileStorage {
 
     fn snapshot_path(&self) -> PathBuf {
         self.root.join("latest_snapshot.bin")
+    }
+
+    fn snapshot_metadata_roots_path(&self) -> PathBuf {
+        self.root.join("latest_snapshot_metadata_roots.bin")
     }
 
     fn block_path(&self, height: u64) -> PathBuf {
@@ -363,6 +383,33 @@ mod tests {
         assert_eq!(loaded.global_state_root, snapshot.global_state_root);
         assert_eq!(loaded.storage_root, snapshot.storage_root);
         assert_eq!(loaded.policy_root, snapshot.policy_root);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn persists_snapshot_metadata_roots() {
+        let dir = temp_dir("snapshot-metadata-roots");
+        let storage = FileStorage::open(&dir).unwrap();
+        let mut roots = BTreeMap::new();
+        roots.insert(
+            "validator_set_metadata_audit_root".into(),
+            "audit-root-1".into(),
+        );
+
+        assert_eq!(
+            storage.load_snapshot_metadata_roots().unwrap(),
+            BTreeMap::new()
+        );
+        storage.commit_snapshot_metadata_roots(&roots).unwrap();
+        assert_eq!(storage.load_snapshot_metadata_roots().unwrap(), roots);
+        assert_eq!(
+            FileStorage::open(&dir)
+                .unwrap()
+                .load_snapshot_metadata_roots()
+                .unwrap(),
+            roots
+        );
+
         fs::remove_dir_all(dir).unwrap();
     }
 

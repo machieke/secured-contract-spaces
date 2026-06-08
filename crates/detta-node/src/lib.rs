@@ -214,12 +214,13 @@ impl PersistentValidatorNode {
     }
 
     pub fn node_snapshot(&self) -> Result<PersistentNodeSnapshot, NodeError> {
+        let metadata_roots = self.effective_snapshot_metadata_roots()?;
         Ok(PersistentNodeSnapshot {
             state_snapshot: self.rpc.snapshot(),
-            validator_set_metadata_audit_root: self
-                .storage
-                .validator_set_metadata_audit_root()
-                .map_err(NodeError::Storage)?,
+            validator_set_metadata_audit_root: metadata_roots
+                .get(SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT)
+                .cloned()
+                .unwrap_or_default(),
         })
     }
 
@@ -235,6 +236,22 @@ impl PersistentValidatorNode {
             global_state_root: snapshot.state_snapshot.global_state_root,
             validator_set_metadata_audit_root: snapshot.validator_set_metadata_audit_root,
         })
+    }
+
+    fn effective_snapshot_metadata_roots(&self) -> Result<BTreeMap<String, String>, NodeError> {
+        let mut metadata_roots = self
+            .storage
+            .load_snapshot_metadata_roots()
+            .map_err(NodeError::Storage)?;
+        if !metadata_roots.contains_key(SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT) {
+            metadata_roots.insert(
+                SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT.into(),
+                self.storage
+                    .validator_set_metadata_audit_root()
+                    .map_err(NodeError::Storage)?,
+            );
+        }
+        Ok(metadata_roots)
     }
 
     pub fn handle_rpc_request(&mut self, request: RpcRequest) -> RpcResponse {
@@ -981,13 +998,7 @@ impl PersistentValidatorNode {
             });
         }
 
-        let mut metadata_roots = BTreeMap::new();
-        metadata_roots.insert(
-            SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT.into(),
-            self.storage
-                .validator_set_metadata_audit_root()
-                .map_err(NodeError::Storage)?,
-        );
+        let metadata_roots = self.effective_snapshot_metadata_roots()?;
         let chunk_set =
             build_snapshot_chunks_with_metadata_roots(&snapshot, max_chunk_bytes, metadata_roots)
                 .map_err(NodeError::SnapshotSync)?;
@@ -1017,6 +1028,9 @@ impl PersistentValidatorNode {
             .map_err(NodeError::SnapshotSync)?;
         self.storage
             .commit_snapshot(&snapshot)
+            .map_err(NodeError::Storage)?;
+        self.storage
+            .commit_snapshot_metadata_roots(&chunk_set.manifest.metadata_roots)
             .map_err(NodeError::Storage)?;
         Ok(snapshot)
     }
@@ -3154,6 +3168,42 @@ mod tests {
             .import_snapshot_chunk_set(&chunk_set, &required_metadata_roots)
             .unwrap();
         assert_eq!(imported.global_state_root, snapshot_root);
+        assert_eq!(
+            sink.node_snapshot_roots()
+                .unwrap()
+                .validator_set_metadata_audit_root,
+            expected_audit_root
+        );
+
+        let restarted_sink = PersistentValidatorNode::restart("validator-2", &sink_dir).unwrap();
+        assert_eq!(
+            restarted_sink
+                .node_snapshot_roots()
+                .unwrap()
+                .validator_set_metadata_audit_root,
+            expected_audit_root
+        );
+        let response = restarted_sink
+            .serve_snapshot_chunk_request(
+                &SnapshotChunkRequest {
+                    snapshot_root: snapshot_root.clone(),
+                    start_index: 0,
+                    max_chunks: 1,
+                },
+                64,
+            )
+            .unwrap();
+        match &response[0] {
+            NetworkMessage::SnapshotChunkManifest(manifest) => {
+                assert_eq!(
+                    manifest
+                        .metadata_roots
+                        .get(SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT),
+                    Some(&expected_audit_root)
+                );
+            }
+            message => panic!("expected snapshot manifest, got {message:?}"),
+        }
 
         let mut wrong_metadata_roots = required_metadata_roots;
         wrong_metadata_roots.insert(
