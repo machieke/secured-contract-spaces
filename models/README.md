@@ -41,6 +41,8 @@ This directory contains formal-model artifacts for the DeTTa runtime.
 - `detta-restricted-evaluator-fixture-inventory.json` is a stable inventory of
   restricted evaluator fixture schemas, fixture roots, attestation roots, and
   trace-root attestation metadata.
+- `detta-restricted-evaluator-fixture-inventory.sha256` records the release
+  attestation root for the fixture inventory.
 - `formal-model-checking-runbook.md` describes the repository checks, external
   model-checker preparation, and manifest refresh procedure.
 - `../detta-restricted-evaluator-subset.md` documents the implemented

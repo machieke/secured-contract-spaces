@@ -729,6 +729,11 @@ mod tests {
             include_str!("../../../models/detta-restricted-evaluator-arithmetic-overflow.sha256"),
             "detta-restricted-evaluator-arithmetic-overflow.json",
         );
+        assert_attested_fixture_root(
+            include_bytes!("../../../models/detta-restricted-evaluator-fixture-inventory.json"),
+            include_str!("../../../models/detta-restricted-evaluator-fixture-inventory.sha256"),
+            "detta-restricted-evaluator-fixture-inventory.json",
+        );
     }
 
     fn assert_attested_fixture_root(bytes: &[u8], attestation: &str, expected_filename: &str) {

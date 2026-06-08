@@ -159,6 +159,8 @@ The expected result is `EvaluatorError::ArithmeticOverflow` and
 `models/detta-restricted-evaluator-fixture-inventory.json` lists all evaluator
 fixture schemas, fixture roots, attestation roots, and proof-trace root
 attestation metadata.
+`models/detta-restricted-evaluator-fixture-inventory.sha256` attests that
+inventory file for release review.
 
 When evaluator behavior changes:
 
@@ -167,8 +169,11 @@ When evaluator behavior changes:
    builder.
 3. Refresh the matching `.sha256` file with the SHA-256 of the checked-in JSON
    fixture bytes.
-4. Run `cargo fmt && cargo test && cargo clippy --all-targets -- -D warnings`.
-5. Review the fixture diff as a semantic compatibility change, not as generated
+4. Refresh `detta-restricted-evaluator-fixture-inventory.json` and its
+   `.sha256` attestation when fixture paths, roots, schemas, or attestation
+   files change.
+5. Run `cargo fmt && cargo test && cargo clippy --all-targets -- -D warnings`.
+6. Review the fixture diff as a semantic compatibility change, not as generated
    noise.
 
 Fixture drift without an intentional schema or behavior change is a regression.

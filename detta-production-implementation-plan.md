@@ -215,10 +215,11 @@ Completed production-plan slices:
   attestations.
 - [x] Release-audit checklist covers proof manifest v2 evaluator artifacts.
 - [x] Stable evaluator fixture inventory is exported.
+- [x] SHA-256 attestation exists for evaluator fixture inventory.
 
 Next implementation slices:
 
-- [ ] Add SHA-256 attestation for evaluator fixture inventory.
+- [ ] Bind evaluator fixture inventory into proof manifest.
 
 # 1. Production Objective
 

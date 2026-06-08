@@ -8,14 +8,18 @@ Run these from the repository root:
 
 ```sh
 cargo test -p detta-verify
-sha256sum -c models/detta-proof-artifact-manifest.sha256
-sha256sum -c models/detta-restricted-evaluator-proof-trace.sha256
-sha256sum -c models/detta-restricted-evaluator-forbidden-primitives.sha256
-sha256sum -c models/detta-restricted-evaluator-resource-exhaustion.sha256
-sha256sum -c models/detta-restricted-evaluator-arithmetic-overflow.sha256
-sha256sum models/DeTTaBlockExecution.tla
-sha256sum models/DeTTaBlockExecution.cfg
-sha256sum models/detta-restricted-evaluator-proof-trace-root.sha256
+(
+  cd models
+  sha256sum -c detta-proof-artifact-manifest.sha256
+  sha256sum -c detta-restricted-evaluator-proof-trace.sha256
+  sha256sum -c detta-restricted-evaluator-forbidden-primitives.sha256
+  sha256sum -c detta-restricted-evaluator-resource-exhaustion.sha256
+  sha256sum -c detta-restricted-evaluator-arithmetic-overflow.sha256
+  sha256sum -c detta-restricted-evaluator-fixture-inventory.sha256
+  sha256sum DeTTaBlockExecution.tla
+  sha256sum DeTTaBlockExecution.cfg
+  sha256sum detta-restricted-evaluator-proof-trace-root.sha256
+)
 ```
 
 `cargo test -p detta-verify` checks that:
@@ -47,6 +51,8 @@ Restricted evaluator runtime artifacts include:
 
 - proof trace JSON fixtures;
 - forbidden primitive, resource exhaustion, and arithmetic overflow fixtures;
+- the fixture inventory that lists all evaluator fixture roots and
+  attestations;
 - `.sha256` release attestations for those fixture files;
 - the dedicated proof trace root attestation for the compact JSON
   serialization of `report.trace`.
@@ -68,6 +74,8 @@ Before accepting a release proof bundle, verify:
   `runtime_artifacts`;
 - every restricted evaluator fixture `.sha256` path appears in
   `runtime_artifacts`;
+- `detta-restricted-evaluator-fixture-inventory.sha256` verifies against the
+  checked-in inventory JSON;
 - every fixture evidence reference with `kind: "Fixture"` resolves to a
   `runtime_artifacts` path;
 - `detta-restricted-evaluator-proof-trace-root.sha256` matches both the
