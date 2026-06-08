@@ -1,9 +1,9 @@
 use detta_consensus::{EquivocationEvidence, FinalityCertificate, ValidatorSetUpdate, Vote};
-use detta_core::{Block, StateSnapshot, Transaction};
+use detta_core::{Block, DeTTaState, SnapshotError, StateSnapshot, Transaction};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const PROTOCOL_MAGIC: [u8; 4] = *b"DTTA";
 pub const CURRENT_PROTOCOL_VERSION: u16 = 1;
@@ -46,6 +46,38 @@ pub struct SignedValidatorMessage {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SnapshotChunkRequest {
+    pub snapshot_root: String,
+    pub start_index: u32,
+    pub max_chunks: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SnapshotChunkManifest {
+    pub snapshot_root: String,
+    pub snapshot_hash: String,
+    pub chunk_size: u32,
+    pub total_bytes: u64,
+    pub chunk_count: u32,
+    pub chunk_hashes: Vec<String>,
+    pub chunk_root: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SnapshotChunk {
+    pub manifest_hash: String,
+    pub index: u32,
+    pub bytes: Vec<u8>,
+    pub chunk_hash: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SnapshotChunkSet {
+    pub manifest: SnapshotChunkManifest,
+    pub chunks: Vec<SnapshotChunk>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ProtocolMessage {
     Transaction(Transaction),
     Block(Box<Block>),
@@ -56,6 +88,9 @@ pub enum ProtocolMessage {
     StateSnapshot(Box<StateSnapshot>),
     PeerHello(PeerHello),
     SignedValidator(Box<SignedValidatorMessage>),
+    SnapshotChunkRequest(SnapshotChunkRequest),
+    SnapshotChunkManifest(SnapshotChunkManifest),
+    SnapshotChunk(SnapshotChunk),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -69,6 +104,9 @@ pub enum ProtocolMessageKind {
     StateSnapshot,
     PeerHello,
     SignedValidator,
+    SnapshotChunkRequest,
+    SnapshotChunkManifest,
+    SnapshotChunk,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -115,6 +153,9 @@ impl ProtocolMessage {
             ProtocolMessage::StateSnapshot(_) => ProtocolMessageKind::StateSnapshot,
             ProtocolMessage::PeerHello(_) => ProtocolMessageKind::PeerHello,
             ProtocolMessage::SignedValidator(_) => ProtocolMessageKind::SignedValidator,
+            ProtocolMessage::SnapshotChunkRequest(_) => ProtocolMessageKind::SnapshotChunkRequest,
+            ProtocolMessage::SnapshotChunkManifest(_) => ProtocolMessageKind::SnapshotChunkManifest,
+            ProtocolMessage::SnapshotChunk(_) => ProtocolMessageKind::SnapshotChunk,
         }
     }
 }
@@ -282,6 +323,122 @@ pub fn expected_signature_domain(
     }
 }
 
+impl SnapshotChunkManifest {
+    pub fn manifest_hash(&self) -> Result<String, SnapshotSyncError> {
+        hash_postcard(self).map_err(|_| SnapshotSyncError::EncodeFailed)
+    }
+}
+
+impl SnapshotChunkSet {
+    pub fn from_snapshot(
+        snapshot: &StateSnapshot,
+        max_chunk_bytes: usize,
+    ) -> Result<Self, SnapshotSyncError> {
+        build_snapshot_chunks(snapshot, max_chunk_bytes)
+    }
+
+    pub fn verify(&self) -> Result<(), SnapshotSyncError> {
+        self.reconstruct_snapshot().map(|_| ())
+    }
+
+    pub fn reconstruct_snapshot(&self) -> Result<StateSnapshot, SnapshotSyncError> {
+        if self.manifest.chunk_count as usize != self.manifest.chunk_hashes.len() {
+            return Err(SnapshotSyncError::ManifestChunkCountMismatch {
+                declared: self.manifest.chunk_count,
+                actual: self.manifest.chunk_hashes.len() as u32,
+            });
+        }
+        let expected_chunk_root = chunk_root(&self.manifest.chunk_hashes)?;
+        if self.manifest.chunk_root != expected_chunk_root {
+            return Err(SnapshotSyncError::ChunkRootMismatch {
+                expected: expected_chunk_root,
+                actual: self.manifest.chunk_root.clone(),
+            });
+        }
+
+        let manifest_hash = self.manifest.manifest_hash()?;
+        let mut chunks = BTreeMap::new();
+        let mut total_bytes = 0_u64;
+
+        for chunk in &self.chunks {
+            if chunk.manifest_hash != manifest_hash {
+                return Err(SnapshotSyncError::ManifestHashMismatch {
+                    expected: manifest_hash,
+                    actual: chunk.manifest_hash.clone(),
+                });
+            }
+            if chunk.index >= self.manifest.chunk_count {
+                return Err(SnapshotSyncError::UnexpectedChunk {
+                    index: chunk.index,
+                    chunk_count: self.manifest.chunk_count,
+                });
+            }
+            if chunks.insert(chunk.index, chunk).is_some() {
+                return Err(SnapshotSyncError::DuplicateChunk { index: chunk.index });
+            }
+
+            let actual_hash = hash_bytes(&chunk.bytes);
+            let expected_hash = &self.manifest.chunk_hashes[chunk.index as usize];
+            if chunk.chunk_hash != actual_hash || &chunk.chunk_hash != expected_hash {
+                return Err(SnapshotSyncError::ChunkHashMismatch { index: chunk.index });
+            }
+            total_bytes += chunk.bytes.len() as u64;
+        }
+
+        let mut snapshot_bytes = Vec::with_capacity(self.manifest.total_bytes as usize);
+        for index in 0..self.manifest.chunk_count {
+            let chunk = chunks
+                .get(&index)
+                .ok_or(SnapshotSyncError::MissingChunk { index })?;
+            snapshot_bytes.extend_from_slice(&chunk.bytes);
+        }
+
+        if total_bytes != self.manifest.total_bytes {
+            return Err(SnapshotSyncError::TotalBytesMismatch {
+                expected: self.manifest.total_bytes,
+                actual: total_bytes,
+            });
+        }
+
+        let snapshot_hash = hash_bytes(&snapshot_bytes);
+        if snapshot_hash != self.manifest.snapshot_hash {
+            return Err(SnapshotSyncError::SnapshotHashMismatch {
+                expected: self.manifest.snapshot_hash.clone(),
+                actual: snapshot_hash,
+            });
+        }
+
+        let snapshot: StateSnapshot =
+            postcard::from_bytes(&snapshot_bytes).map_err(|_| SnapshotSyncError::DecodeFailed)?;
+        if snapshot.global_state_root != self.manifest.snapshot_root {
+            return Err(SnapshotSyncError::SnapshotRootMismatch {
+                expected: self.manifest.snapshot_root.clone(),
+                actual: snapshot.global_state_root,
+            });
+        }
+        DeTTaState::from_snapshot(snapshot.clone()).map_err(SnapshotSyncError::InvalidSnapshot)?;
+        Ok(snapshot)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SnapshotSyncError {
+    InvalidChunkSize,
+    EncodeFailed,
+    DecodeFailed,
+    ManifestChunkCountMismatch { declared: u32, actual: u32 },
+    ManifestHashMismatch { expected: String, actual: String },
+    ChunkHashMismatch { index: u32 },
+    ChunkRootMismatch { expected: String, actual: String },
+    DuplicateChunk { index: u32 },
+    MissingChunk { index: u32 },
+    UnexpectedChunk { index: u32, chunk_count: u32 },
+    TotalBytesMismatch { expected: u64, actual: u64 },
+    SnapshotHashMismatch { expected: String, actual: String },
+    SnapshotRootMismatch { expected: String, actual: String },
+    InvalidSnapshot(SnapshotError),
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ProtocolError {
     TruncatedHeader { actual: usize },
@@ -307,6 +464,68 @@ pub fn decode_message(bytes: &[u8]) -> Result<ProtocolMessage, ProtocolError> {
 pub fn message_hash(message: &ProtocolMessage) -> Result<String, ProtocolError> {
     let bytes = encode_message(message)?;
     Ok(hex_lower(&Sha256::digest(bytes)))
+}
+
+pub fn build_snapshot_chunks(
+    snapshot: &StateSnapshot,
+    max_chunk_bytes: usize,
+) -> Result<SnapshotChunkSet, SnapshotSyncError> {
+    if max_chunk_bytes == 0 {
+        return Err(SnapshotSyncError::InvalidChunkSize);
+    }
+    let chunk_size =
+        u32::try_from(max_chunk_bytes).map_err(|_| SnapshotSyncError::InvalidChunkSize)?;
+    let snapshot_bytes =
+        postcard::to_allocvec(snapshot).map_err(|_| SnapshotSyncError::EncodeFailed)?;
+    let snapshot_hash = hash_bytes(&snapshot_bytes);
+
+    let mut raw_chunks: Vec<Vec<u8>> = snapshot_bytes
+        .chunks(max_chunk_bytes)
+        .map(ToOwned::to_owned)
+        .collect();
+    if raw_chunks.is_empty() {
+        raw_chunks.push(Vec::new());
+    }
+
+    let chunk_hashes: Vec<_> = raw_chunks.iter().map(|chunk| hash_bytes(chunk)).collect();
+    let chunk_root = chunk_root(&chunk_hashes)?;
+    let chunk_count =
+        u32::try_from(chunk_hashes.len()).map_err(|_| SnapshotSyncError::InvalidChunkSize)?;
+    let manifest = SnapshotChunkManifest {
+        snapshot_root: snapshot.global_state_root.clone(),
+        snapshot_hash,
+        chunk_size,
+        total_bytes: snapshot_bytes.len() as u64,
+        chunk_count,
+        chunk_hashes,
+        chunk_root,
+    };
+    let manifest_hash = manifest.manifest_hash()?;
+    let chunks = raw_chunks
+        .into_iter()
+        .enumerate()
+        .map(|(index, bytes)| SnapshotChunk {
+            manifest_hash: manifest_hash.clone(),
+            index: index as u32,
+            chunk_hash: hash_bytes(&bytes),
+            bytes,
+        })
+        .collect();
+
+    Ok(SnapshotChunkSet { manifest, chunks })
+}
+
+fn hash_postcard<T: Serialize>(value: &T) -> Result<String, postcard::Error> {
+    let bytes = postcard::to_allocvec(value)?;
+    Ok(hash_bytes(&bytes))
+}
+
+fn chunk_root(chunk_hashes: &[String]) -> Result<String, SnapshotSyncError> {
+    hash_postcard(&chunk_hashes).map_err(|_| SnapshotSyncError::EncodeFailed)
+}
+
+fn hash_bytes(bytes: &[u8]) -> String {
+    hex_lower(&Sha256::digest(bytes))
 }
 
 fn validator_signing_payload(
@@ -621,6 +840,65 @@ mod tests {
                 ProtocolMessageKind::Transaction
             ))
         );
+    }
+
+    #[test]
+    fn snapshot_chunks_reconstruct_verified_snapshot() {
+        let snapshot = seeded_state().snapshot();
+        let chunk_set = build_snapshot_chunks(&snapshot, 64).unwrap();
+
+        assert!(chunk_set.chunks.len() > 1);
+        assert_eq!(chunk_set.manifest.snapshot_root, snapshot.global_state_root);
+        assert_eq!(chunk_set.reconstruct_snapshot().unwrap(), snapshot);
+        chunk_set.verify().unwrap();
+
+        let messages = [
+            ProtocolMessage::SnapshotChunkRequest(SnapshotChunkRequest {
+                snapshot_root: chunk_set.manifest.snapshot_root.clone(),
+                start_index: 0,
+                max_chunks: 2,
+            }),
+            ProtocolMessage::SnapshotChunkManifest(chunk_set.manifest.clone()),
+            ProtocolMessage::SnapshotChunk(chunk_set.chunks[0].clone()),
+        ];
+        for message in messages {
+            let encoded = encode_message(&message).unwrap();
+            assert_eq!(decode_message(&encoded), Ok(message));
+        }
+    }
+
+    #[test]
+    fn snapshot_chunks_reject_missing_duplicate_and_tampered_data() {
+        let snapshot = seeded_state().snapshot();
+        let chunk_set = build_snapshot_chunks(&snapshot, 64).unwrap();
+
+        let mut tampered = chunk_set.clone();
+        tampered.chunks[0].bytes.push(42);
+        assert_eq!(
+            tampered.reconstruct_snapshot(),
+            Err(SnapshotSyncError::ChunkHashMismatch { index: 0 })
+        );
+
+        let mut missing = chunk_set.clone();
+        missing.chunks.remove(0);
+        assert_eq!(
+            missing.reconstruct_snapshot(),
+            Err(SnapshotSyncError::MissingChunk { index: 0 })
+        );
+
+        let mut duplicate = chunk_set.clone();
+        duplicate.chunks.push(duplicate.chunks[0].clone());
+        assert_eq!(
+            duplicate.reconstruct_snapshot(),
+            Err(SnapshotSyncError::DuplicateChunk { index: 0 })
+        );
+
+        let mut wrong_manifest = chunk_set;
+        wrong_manifest.manifest.chunk_hashes[0] = "wrong-hash".into();
+        assert!(matches!(
+            wrong_manifest.reconstruct_snapshot(),
+            Err(SnapshotSyncError::ChunkRootMismatch { .. })
+        ));
     }
 
     #[test]

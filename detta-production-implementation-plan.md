@@ -32,10 +32,16 @@ Completed production-plan slices:
   sockets.
 - [x] Signed validator protocol envelopes use Ed25519 signatures with network,
   chain, protocol-version, and message-domain separation.
+- [x] Chunked snapshot sync protocol messages reconstruct authenticated state
+  snapshots and reject missing, duplicate, and tampered chunks.
 
 Next implementation slices:
 
-- [ ] Add chunked snapshot state sync over protocol envelopes.
+- [ ] Add validator keyring verification at persistent node ingest for signed
+  validator envelopes.
+- [ ] Add a state-sync peer service that serves chunk requests from persistent
+  storage.
+- [ ] Add signed block proposal propagation and a multi-process finality loop.
 
 # 1. Production Objective
 
