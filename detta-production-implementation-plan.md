@@ -321,10 +321,12 @@ Completed production-plan slices:
   and relative path safety in verify.
 - [x] Proof release attestation target paths are checked for uniqueness in
   verify.
+- [x] Proof release attestation target filenames are checked for consistency in
+  verify.
 
 Next implementation slices:
 
-- [ ] Add proof release attestation target filename consistency checks in
+- [ ] Add proof release attestation target extension consistency checks in
   verify.
 
 # 1. Production Objective

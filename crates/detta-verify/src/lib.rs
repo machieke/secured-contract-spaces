@@ -1541,6 +1541,19 @@ mod tests {
     }
 
     #[test]
+    fn proof_release_attestation_target_filenames_are_consistent() {
+        for fixture in proof_release_attestations_for_test() {
+            let (_, attested_file_name) = sha256sum_attestation_parts(fixture.attestation);
+
+            assert_eq!(
+                fixture.target_path.rsplit('/').next().unwrap(),
+                fixture.file_name
+            );
+            assert_eq!(attested_file_name, fixture.file_name);
+        }
+    }
+
+    #[test]
     fn proof_release_attestation_target_paths_use_models_namespace() {
         for fixture in proof_release_attestations_for_test() {
             assert!(
