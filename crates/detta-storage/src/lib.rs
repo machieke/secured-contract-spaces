@@ -1,4 +1,5 @@
 use bincode::Options;
+use detta_consensus::FinalityCertificate;
 use detta_core::{Block, DeTTaState, SnapshotError, StateSnapshot, Transaction};
 use serde::{de::DeserializeOwned, Serialize};
 use std::fs::{self, File};
@@ -23,6 +24,7 @@ impl FileStorage {
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, StorageError> {
         let root = root.into();
         fs::create_dir_all(root.join("blocks")).map_err(io_error)?;
+        fs::create_dir_all(root.join("certificates")).map_err(io_error)?;
         Ok(Self { root })
     }
 
@@ -49,6 +51,20 @@ impl FileStorage {
         read_json(&self.block_path(height))
     }
 
+    pub fn commit_finality_certificate(
+        &self,
+        certificate: &FinalityCertificate,
+    ) -> Result<(), StorageError> {
+        write_json_atomic(&self.certificate_path(certificate.height), certificate)
+    }
+
+    pub fn load_finality_certificate(
+        &self,
+        height: u64,
+    ) -> Result<FinalityCertificate, StorageError> {
+        read_json(&self.certificate_path(height))
+    }
+
     pub fn commit_mempool(&self, transactions: &[Transaction]) -> Result<(), StorageError> {
         write_json_atomic(&self.mempool_path(), &transactions)
     }
@@ -67,6 +83,10 @@ impl FileStorage {
 
     fn block_path(&self, height: u64) -> PathBuf {
         self.root.join("blocks").join(format!("{height}.bin"))
+    }
+
+    fn certificate_path(&self, height: u64) -> PathBuf {
+        self.root.join("certificates").join(format!("{height}.bin"))
     }
 
     fn mempool_path(&self) -> PathBuf {
@@ -205,6 +225,23 @@ mod tests {
 
         assert_eq!(loaded.block_hash(), block.block_hash());
         assert_eq!(loaded.header.storage_root, block.header.storage_root);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn persists_and_loads_finality_certificate() {
+        let dir = temp_dir("certificate");
+        let storage = FileStorage::open(&dir).unwrap();
+        let certificate = FinalityCertificate {
+            height: 7,
+            block_hash: "block-hash-7".into(),
+            signers: vec!["validator-1".into(), "validator-2".into()],
+        };
+
+        storage.commit_finality_certificate(&certificate).unwrap();
+        let loaded = storage.load_finality_certificate(7).unwrap();
+
+        assert_eq!(loaded, certificate);
         fs::remove_dir_all(dir).unwrap();
     }
 

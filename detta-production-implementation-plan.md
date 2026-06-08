@@ -42,10 +42,11 @@ Completed production-plan slices:
   real TCP signed proposal/signed vote round trip covered by tests.
 - [x] Persistent nodes collect verified signed votes from TCP validator peers
   and assemble a finality certificate at quorum.
+- [x] Proposer nodes persist finality certificates and gossip signed certificate
+  envelopes to validator peers.
 
 Next implementation slices:
 
-- [ ] Persist and gossip assembled finality certificates from the proposer node.
 - [ ] Add reconnect/retry handling for disconnected TCP validator peers.
 
 # 1. Production Objective

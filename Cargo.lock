@@ -200,6 +200,7 @@ name = "detta-storage"
 version = "0.1.0"
 dependencies = [
  "bincode",
+ "detta-consensus",
  "detta-core",
  "serde",
 ]

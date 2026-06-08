@@ -177,6 +177,37 @@ impl PersistentValidatorNode {
             .map_err(NodeError::Network)
     }
 
+    pub fn persist_finality_certificate(
+        &self,
+        certificate: &FinalityCertificate,
+    ) -> Result<(), NodeError> {
+        self.storage
+            .commit_finality_certificate(certificate)
+            .map_err(NodeError::Storage)
+    }
+
+    pub fn load_finality_certificate(&self, height: u64) -> Result<FinalityCertificate, NodeError> {
+        self.storage
+            .load_finality_certificate(height)
+            .map_err(NodeError::Storage)
+    }
+
+    pub fn persist_and_gossip_signed_finality_certificate(
+        &self,
+        certificate: FinalityCertificate,
+        signing_key: &ValidatorSigningKey,
+        transport: &mut InMemoryTransport,
+    ) -> Result<usize, NodeError> {
+        self.persist_finality_certificate(&certificate)?;
+        let signed = self.sign_validator_message(
+            signing_key,
+            NetworkMessage::FinalityCertificate(certificate),
+        )?;
+        transport
+            .broadcast(self.validator_id.clone(), signed)
+            .map_err(NodeError::Network)
+    }
+
     pub fn sign_validator_message(
         &self,
         signing_key: &ValidatorSigningKey,
@@ -821,6 +852,66 @@ mod tests {
         );
 
         fs::remove_dir_all(proposer_dir).unwrap();
+    }
+
+    #[test]
+    fn proposer_persists_and_gossips_signed_finality_certificate() {
+        let proposer_dir = temp_dir("signed-certificate-proposer");
+        let peer_dir = temp_dir("signed-certificate-peer");
+        let proposer_key = validator_key("validator-1", 7);
+        let mut proposer =
+            PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &proposer_dir)
+                .unwrap();
+        proposer.set_network_id("detta-testnet");
+        let mut peer =
+            PersistentValidatorNode::bootstrap("validator-2", seeded_state(), &peer_dir).unwrap();
+        peer.set_network_id("detta-testnet");
+        peer.trust_validator_key(proposer_key.public_key());
+        let mut transport =
+            InMemoryTransport::new(["validator-1".into(), "validator-2".into()]).unwrap();
+        let certificate = FinalityCertificate {
+            height: 3,
+            block_hash: "block-hash-3".into(),
+            signers: vec![
+                "validator-1".into(),
+                "validator-2".into(),
+                "validator-3".into(),
+            ],
+        };
+
+        assert_eq!(
+            proposer
+                .persist_and_gossip_signed_finality_certificate(
+                    certificate.clone(),
+                    &proposer_key,
+                    &mut transport,
+                )
+                .unwrap(),
+            1
+        );
+
+        assert_eq!(
+            proposer.load_finality_certificate(3).unwrap(),
+            certificate.clone()
+        );
+        let reloaded = PersistentValidatorNode::restart("validator-1", &proposer_dir).unwrap();
+        assert_eq!(
+            reloaded.load_finality_certificate(3).unwrap(),
+            certificate.clone()
+        );
+
+        let envelope = transport.drain_peer("validator-2").unwrap().pop().unwrap();
+        assert!(matches!(
+            envelope.message,
+            NetworkMessage::SignedValidator(_)
+        ));
+        assert_eq!(
+            peer.ingest_network_envelope(&envelope).unwrap(),
+            NetworkIngestOutcome::FinalityCertificateReceived
+        );
+
+        fs::remove_dir_all(proposer_dir).unwrap();
+        fs::remove_dir_all(peer_dir).unwrap();
     }
 
     #[test]
