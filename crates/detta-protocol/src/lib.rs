@@ -1,5 +1,6 @@
 use detta_consensus::{EquivocationEvidence, FinalityCertificate, ValidatorSetUpdate, Vote};
 use detta_core::{Block, StateSnapshot, Transaction};
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -8,6 +9,41 @@ pub const PROTOCOL_MAGIC: [u8; 4] = *b"DTTA";
 pub const CURRENT_PROTOCOL_VERSION: u16 = 1;
 pub const HEADER_LEN: usize = 10;
 pub const MAX_PAYLOAD_LEN: usize = 16 * 1024 * 1024;
+pub const VALIDATOR_SIGNATURE_PREFIX: &str = "detta.validator.protocol.v1";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+pub enum ValidatorSignatureDomain {
+    BlockProposal,
+    Vote,
+    FinalityCertificate,
+    ValidatorSetUpdate,
+    EquivocationEvidence,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ValidatorPublicKey {
+    pub validator_id: String,
+    pub key_id: String,
+    pub public_key_hex: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct ValidatorSigningKey {
+    validator_id: String,
+    key_id: String,
+    signing_key: SigningKey,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SignedValidatorMessage {
+    pub signer: String,
+    pub key_id: String,
+    pub network_id: String,
+    pub chain_id: String,
+    pub domain: ValidatorSignatureDomain,
+    pub message: Box<ProtocolMessage>,
+    pub signature_hex: String,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ProtocolMessage {
@@ -19,6 +55,7 @@ pub enum ProtocolMessage {
     EquivocationEvidence(EquivocationEvidence),
     StateSnapshot(Box<StateSnapshot>),
     PeerHello(PeerHello),
+    SignedValidator(Box<SignedValidatorMessage>),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -31,6 +68,7 @@ pub enum ProtocolMessageKind {
     EquivocationEvidence,
     StateSnapshot,
     PeerHello,
+    SignedValidator,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -76,7 +114,171 @@ impl ProtocolMessage {
             ProtocolMessage::EquivocationEvidence(_) => ProtocolMessageKind::EquivocationEvidence,
             ProtocolMessage::StateSnapshot(_) => ProtocolMessageKind::StateSnapshot,
             ProtocolMessage::PeerHello(_) => ProtocolMessageKind::PeerHello,
+            ProtocolMessage::SignedValidator(_) => ProtocolMessageKind::SignedValidator,
         }
+    }
+}
+
+impl ValidatorSigningKey {
+    pub fn from_seed(
+        validator_id: impl Into<String>,
+        key_id: impl Into<String>,
+        seed: [u8; 32],
+    ) -> Self {
+        Self {
+            validator_id: validator_id.into(),
+            key_id: key_id.into(),
+            signing_key: SigningKey::from_bytes(&seed),
+        }
+    }
+
+    pub fn validator_id(&self) -> &str {
+        &self.validator_id
+    }
+
+    pub fn key_id(&self) -> &str {
+        &self.key_id
+    }
+
+    pub fn public_key(&self) -> ValidatorPublicKey {
+        ValidatorPublicKey {
+            validator_id: self.validator_id.clone(),
+            key_id: self.key_id.clone(),
+            public_key_hex: hex_lower(&self.signing_key.verifying_key().to_bytes()),
+        }
+    }
+
+    pub fn sign_message(
+        &self,
+        network_id: impl Into<String>,
+        chain_id: impl Into<String>,
+        message: ProtocolMessage,
+    ) -> Result<SignedValidatorMessage, SignatureError> {
+        let network_id = network_id.into();
+        let chain_id = chain_id.into();
+        let domain = expected_signature_domain(&message)?;
+        let payload = validator_signing_payload(domain, &network_id, &chain_id, &message)?;
+        let signature = self.signing_key.sign(&payload);
+
+        Ok(SignedValidatorMessage {
+            signer: self.validator_id.clone(),
+            key_id: self.key_id.clone(),
+            network_id,
+            chain_id,
+            domain,
+            message: Box::new(message),
+            signature_hex: hex_lower(&signature.to_bytes()),
+        })
+    }
+}
+
+impl SignedValidatorMessage {
+    pub fn verify(
+        &self,
+        expected_network_id: &str,
+        expected_chain_id: &str,
+        public_key: &ValidatorPublicKey,
+    ) -> Result<(), SignatureError> {
+        if self.network_id != expected_network_id {
+            return Err(SignatureError::NetworkMismatch {
+                expected: expected_network_id.to_string(),
+                actual: self.network_id.clone(),
+            });
+        }
+        if self.chain_id != expected_chain_id {
+            return Err(SignatureError::ChainMismatch {
+                expected: expected_chain_id.to_string(),
+                actual: self.chain_id.clone(),
+            });
+        }
+        if self.signer != public_key.validator_id {
+            return Err(SignatureError::SignerMismatch {
+                expected: self.signer.clone(),
+                actual: public_key.validator_id.clone(),
+            });
+        }
+        if self.key_id != public_key.key_id {
+            return Err(SignatureError::KeyIdMismatch {
+                expected: self.key_id.clone(),
+                actual: public_key.key_id.clone(),
+            });
+        }
+
+        let expected_domain = expected_signature_domain(&self.message)?;
+        if self.domain != expected_domain {
+            return Err(SignatureError::DomainMismatch {
+                expected: expected_domain,
+                actual: self.domain,
+            });
+        }
+
+        let public_key_bytes = decode_hex_array::<32>(&public_key.public_key_hex)
+            .map_err(|_| SignatureError::InvalidPublicKey)?;
+        let verifying_key = VerifyingKey::from_bytes(&public_key_bytes)
+            .map_err(|_| SignatureError::InvalidPublicKey)?;
+        let signature_bytes = decode_hex_array::<64>(&self.signature_hex)
+            .map_err(|_| SignatureError::InvalidSignatureEncoding)?;
+        let signature = Signature::from_bytes(&signature_bytes);
+        let payload = validator_signing_payload(
+            self.domain,
+            &self.network_id,
+            &self.chain_id,
+            &self.message,
+        )?;
+
+        verifying_key
+            .verify(&payload, &signature)
+            .map_err(|_| SignatureError::InvalidSignature)
+    }
+
+    pub fn into_message(self) -> ProtocolMessage {
+        *self.message
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SignatureError {
+    UnsupportedMessageKind(ProtocolMessageKind),
+    DomainMismatch {
+        expected: ValidatorSignatureDomain,
+        actual: ValidatorSignatureDomain,
+    },
+    NetworkMismatch {
+        expected: String,
+        actual: String,
+    },
+    ChainMismatch {
+        expected: String,
+        actual: String,
+    },
+    SignerMismatch {
+        expected: String,
+        actual: String,
+    },
+    KeyIdMismatch {
+        expected: String,
+        actual: String,
+    },
+    InvalidPublicKey,
+    InvalidSignatureEncoding,
+    InvalidSignature,
+    EncodeFailed,
+}
+
+pub fn expected_signature_domain(
+    message: &ProtocolMessage,
+) -> Result<ValidatorSignatureDomain, SignatureError> {
+    match message {
+        ProtocolMessage::Block(_) => Ok(ValidatorSignatureDomain::BlockProposal),
+        ProtocolMessage::Vote(_) => Ok(ValidatorSignatureDomain::Vote),
+        ProtocolMessage::FinalityCertificate(_) => {
+            Ok(ValidatorSignatureDomain::FinalityCertificate)
+        }
+        ProtocolMessage::ValidatorSetUpdate(_) => Ok(ValidatorSignatureDomain::ValidatorSetUpdate),
+        ProtocolMessage::EquivocationEvidence(_) => {
+            Ok(ValidatorSignatureDomain::EquivocationEvidence)
+        }
+        other => Err(SignatureError::UnsupportedMessageKind(other.kind())),
     }
 }
 
@@ -105,6 +307,39 @@ pub fn decode_message(bytes: &[u8]) -> Result<ProtocolMessage, ProtocolError> {
 pub fn message_hash(message: &ProtocolMessage) -> Result<String, ProtocolError> {
     let bytes = encode_message(message)?;
     Ok(hex_lower(&Sha256::digest(bytes)))
+}
+
+fn validator_signing_payload(
+    domain: ValidatorSignatureDomain,
+    network_id: &str,
+    chain_id: &str,
+    message: &ProtocolMessage,
+) -> Result<Vec<u8>, SignatureError> {
+    let message_bytes = postcard::to_allocvec(message).map_err(|_| SignatureError::EncodeFailed)?;
+    let mut payload = Vec::new();
+    push_length_prefixed(&mut payload, VALIDATOR_SIGNATURE_PREFIX.as_bytes());
+    payload.extend_from_slice(&CURRENT_PROTOCOL_VERSION.to_be_bytes());
+    push_length_prefixed(&mut payload, signature_domain_name(domain).as_bytes());
+    push_length_prefixed(&mut payload, network_id.as_bytes());
+    push_length_prefixed(&mut payload, chain_id.as_bytes());
+    push_length_prefixed(&mut payload, &message_bytes);
+    Ok(payload)
+}
+
+fn signature_domain_name(domain: ValidatorSignatureDomain) -> &'static str {
+    match domain {
+        ValidatorSignatureDomain::BlockProposal => "block_proposal",
+        ValidatorSignatureDomain::Vote => "vote",
+        ValidatorSignatureDomain::FinalityCertificate => "finality_certificate",
+        ValidatorSignatureDomain::ValidatorSetUpdate => "validator_set_update",
+        ValidatorSignatureDomain::EquivocationEvidence => "equivocation_evidence",
+    }
+}
+
+fn push_length_prefixed(out: &mut Vec<u8>, value: &[u8]) {
+    let len = u32::try_from(value.len()).expect("validator signing component exceeds u32 length");
+    out.extend_from_slice(&len.to_be_bytes());
+    out.extend_from_slice(value);
 }
 
 fn encode_payload(version: u16, payload: &[u8]) -> Result<Vec<u8>, ProtocolError> {
@@ -170,6 +405,30 @@ fn hex_lower(bytes: &[u8]) -> String {
     out
 }
 
+fn decode_hex_array<const N: usize>(value: &str) -> Result<[u8; N], ()> {
+    if value.len() != N * 2 {
+        return Err(());
+    }
+
+    let mut bytes = [0_u8; N];
+    let raw = value.as_bytes();
+    for index in 0..N {
+        let high = decode_hex_nibble(raw[index * 2])?;
+        let low = decode_hex_nibble(raw[index * 2 + 1])?;
+        bytes[index] = (high << 4) | low;
+    }
+    Ok(bytes)
+}
+
+fn decode_hex_nibble(value: u8) -> Result<u8, ()> {
+    match value {
+        b'0'..=b'9' => Ok(value - b'0'),
+        b'a'..=b'f' => Ok(value - b'a' + 10),
+        b'A'..=b'F' => Ok(value - b'A' + 10),
+        _ => Err(()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,6 +466,10 @@ mod tests {
             )
             .unwrap();
         state
+    }
+
+    fn validator_key(validator_id: &str, seed_byte: u8) -> ValidatorSigningKey {
+        ValidatorSigningKey::from_seed(validator_id, "consensus-key-1", [seed_byte; 32])
     }
 
     #[test]
@@ -266,6 +529,98 @@ mod tests {
         assert_eq!(decode_message(&encoded), Ok(message));
         assert_eq!(hello.protocol_version, CURRENT_PROTOCOL_VERSION);
         assert!(hello.roles.contains(&PeerRole::Validator));
+    }
+
+    #[test]
+    fn signed_validator_vote_verifies_and_round_trips() {
+        let key = validator_key("validator-1", 7);
+        let vote = ProtocolMessage::Vote(Vote {
+            validator_id: "validator-1".into(),
+            height: 12,
+            block_hash: "block-hash-12".into(),
+        });
+
+        let signed = key
+            .sign_message("detta-testnet", "detta-local", vote.clone())
+            .unwrap();
+
+        assert_eq!(key.validator_id(), "validator-1");
+        assert_eq!(key.key_id(), "consensus-key-1");
+        assert_eq!(signed.domain, ValidatorSignatureDomain::Vote);
+        signed
+            .verify("detta-testnet", "detta-local", &key.public_key())
+            .unwrap();
+        assert_eq!(signed.clone().into_message(), vote);
+
+        let envelope = ProtocolMessage::SignedValidator(Box::new(signed));
+        let encoded = encode_message(&envelope).unwrap();
+        assert_eq!(decode_message(&encoded), Ok(envelope));
+    }
+
+    #[test]
+    fn signed_validator_messages_reject_replay_and_tampering() {
+        let key = validator_key("validator-1", 7);
+        let signed = key
+            .sign_message(
+                "detta-testnet",
+                "detta-local",
+                ProtocolMessage::Vote(Vote {
+                    validator_id: "validator-1".into(),
+                    height: 12,
+                    block_hash: "block-hash-12".into(),
+                }),
+            )
+            .unwrap();
+
+        let mut wrong_domain = signed.clone();
+        wrong_domain.domain = ValidatorSignatureDomain::FinalityCertificate;
+        assert_eq!(
+            wrong_domain.verify("detta-testnet", "detta-local", &key.public_key()),
+            Err(SignatureError::DomainMismatch {
+                expected: ValidatorSignatureDomain::Vote,
+                actual: ValidatorSignatureDomain::FinalityCertificate,
+            })
+        );
+
+        let mut wrong_network = signed.clone();
+        wrong_network.network_id = "wrong-net".into();
+        assert_eq!(
+            wrong_network.verify("detta-testnet", "detta-local", &key.public_key()),
+            Err(SignatureError::NetworkMismatch {
+                expected: "detta-testnet".into(),
+                actual: "wrong-net".into(),
+            })
+        );
+
+        let mut tampered = signed.clone();
+        match tampered.message.as_mut() {
+            ProtocolMessage::Vote(vote) => vote.block_hash = "block-hash-13".into(),
+            other => panic!("expected signed vote, got {other:?}"),
+        }
+        assert_eq!(
+            tampered.verify("detta-testnet", "detta-local", &key.public_key()),
+            Err(SignatureError::InvalidSignature)
+        );
+
+        let other_key = validator_key("validator-2", 8);
+        assert_eq!(
+            signed.verify("detta-testnet", "detta-local", &other_key.public_key()),
+            Err(SignatureError::SignerMismatch {
+                expected: "validator-1".into(),
+                actual: "validator-2".into(),
+            })
+        );
+
+        assert_eq!(
+            key.sign_message(
+                "detta-testnet",
+                "detta-local",
+                ProtocolMessage::Transaction(transfer_tx())
+            ),
+            Err(SignatureError::UnsupportedMessageKind(
+                ProtocolMessageKind::Transaction
+            ))
+        );
     }
 
     #[test]

@@ -154,7 +154,8 @@ impl PersistentValidatorNode {
             NetworkMessage::ValidatorSetUpdate(_)
             | NetworkMessage::EquivocationEvidence(_)
             | NetworkMessage::StateSnapshot(_)
-            | NetworkMessage::PeerHello(_) => Ok(NetworkIngestOutcome::IgnoredControlMessage),
+            | NetworkMessage::PeerHello(_)
+            | NetworkMessage::SignedValidator(_) => Ok(NetworkIngestOutcome::IgnoredControlMessage),
         }
     }
 

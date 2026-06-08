@@ -30,10 +30,11 @@ Completed production-plan slices:
   network envelopes.
 - [x] External line-delimited JSON RPC transport serves typed requests over TCP
   sockets.
+- [x] Signed validator protocol envelopes use Ed25519 signatures with network,
+  chain, protocol-version, and message-domain separation.
 
 Next implementation slices:
 
-- [ ] Add signed validator protocol messages and signature-domain checks.
 - [ ] Add chunked snapshot state sync over protocol envelopes.
 
 # 1. Production Objective
