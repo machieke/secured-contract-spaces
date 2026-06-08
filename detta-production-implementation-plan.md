@@ -92,10 +92,12 @@ Completed production-plan slices:
   source status before accepting and importing chunk sets.
 - [x] TCP state-sync clients report request, resume, chunk, and metadata-root
   verification metrics for paged imports.
+- [x] TCP state-sync clients retry transient chunk-stream failures and preserve
+  metadata-root verification on the successful reconnect.
 
 Next implementation slices:
 
-- [ ] Add TCP state-sync retry handling for transient chunk-stream failures.
+- [ ] Persist TCP state-sync client metrics for restart-safe sync diagnostics.
 
 # 1. Production Objective
 

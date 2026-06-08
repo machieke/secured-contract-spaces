@@ -122,11 +122,34 @@ pub struct PersistentNodeSnapshot {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SnapshotSyncClientMetrics {
+    pub retry_attempts: u32,
+    pub stream_failures: u32,
     pub requests_sent: u32,
     pub manifests_received: u32,
     pub chunks_received: u32,
     pub resume_requests: u32,
     pub metadata_roots_verified: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SnapshotSyncRetryPolicy {
+    pub max_attempts: u32,
+}
+
+impl Default for SnapshotSyncRetryPolicy {
+    fn default() -> Self {
+        Self { max_attempts: 3 }
+    }
+}
+
+impl SnapshotSyncClientMetrics {
+    fn include_attempt(&mut self, attempt: SnapshotSyncClientMetrics) {
+        self.requests_sent += attempt.requests_sent;
+        self.manifests_received += attempt.manifests_received;
+        self.chunks_received += attempt.chunks_received;
+        self.resume_requests += attempt.resume_requests;
+        self.metadata_roots_verified |= attempt.metadata_roots_verified;
+    }
 }
 
 pub fn fetch_verified_snapshot_chunk_set_over_tcp(
@@ -142,6 +165,52 @@ pub fn fetch_verified_snapshot_chunk_set_over_tcp(
         required_metadata_roots,
     )
     .map(|(chunk_set, _metrics)| chunk_set)
+}
+
+pub fn fetch_verified_snapshot_chunk_set_over_tcp_with_retries(
+    mut connect: impl FnMut() -> Result<TcpProtocolStream, NetworkError>,
+    snapshot_root: impl Into<String>,
+    max_chunks_per_request: u32,
+    required_metadata_roots: &BTreeMap<String, String>,
+    retry_policy: SnapshotSyncRetryPolicy,
+) -> Result<(SnapshotChunkSet, SnapshotSyncClientMetrics), NodeError> {
+    let snapshot_root = snapshot_root.into();
+    let mut metrics = SnapshotSyncClientMetrics::default();
+    let mut last_error = "no attempts configured".to_string();
+
+    for attempt in 0..retry_policy.max_attempts {
+        metrics.retry_attempts += 1;
+        let mut stream = match connect() {
+            Ok(stream) => stream,
+            Err(error) => {
+                metrics.stream_failures += 1;
+                last_error = format!("{error:?}");
+                continue;
+            }
+        };
+
+        match fetch_verified_snapshot_chunk_set_over_tcp_with_metrics(
+            &mut stream,
+            snapshot_root.clone(),
+            max_chunks_per_request,
+            required_metadata_roots,
+        ) {
+            Ok((chunk_set, attempt_metrics)) => {
+                metrics.include_attempt(attempt_metrics);
+                return Ok((chunk_set, metrics));
+            }
+            Err(NodeError::Network(error)) if attempt + 1 < retry_policy.max_attempts => {
+                metrics.stream_failures += 1;
+                last_error = format!("{error:?}");
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    Err(NodeError::Network(NetworkError::RetryExhausted {
+        attempts: retry_policy.max_attempts as usize,
+        last_error,
+    }))
 }
 
 pub fn fetch_verified_snapshot_chunk_set_over_tcp_with_metrics(
@@ -3549,6 +3618,96 @@ mod tests {
         drop(client);
         handle.join().unwrap();
         fs::remove_dir_all(sink_dir).unwrap();
+    }
+
+    #[test]
+    fn tcp_state_sync_client_retries_transient_chunk_stream_failure() {
+        fn audited_source(name: &str) -> (PathBuf, PersistentValidatorNode, String, String) {
+            let dir = temp_dir(name);
+            let node =
+                PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &dir).unwrap();
+            node.record_validator_set_metadata_audit(
+                "validator-set-update-1".into(),
+                ValidatorSetMetadataAuditOutcome::Applied,
+                vec!["validator-1".into()],
+                "applied".into(),
+            )
+            .unwrap();
+            let snapshot_root = node.rpc().get_state_root();
+            let audit_root = node
+                .snapshot_metadata_root_status()
+                .unwrap()
+                .validator_set_metadata_audit_root;
+            (dir, node, snapshot_root, audit_root)
+        }
+
+        let (failing_dir, failing_source, snapshot_root, audit_root) =
+            audited_source("tcp-state-sync-failing-source");
+        let (healthy_dir, healthy_source, healthy_snapshot_root, healthy_audit_root) =
+            audited_source("tcp-state-sync-healthy-source");
+        assert_eq!(healthy_snapshot_root, snapshot_root);
+        assert_eq!(healthy_audit_root, audit_root);
+        let mut required_metadata_roots = BTreeMap::new();
+        required_metadata_roots.insert(
+            SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT.into(),
+            audit_root.clone(),
+        );
+
+        let failing_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let failing_addr = failing_listener.local_addr().unwrap();
+        let failing_handle = thread::spawn(move || {
+            let (stream, _) = failing_listener.accept().unwrap();
+            let mut tcp = TcpProtocolStream::from_stream(stream);
+            match tcp.receive().unwrap() {
+                NetworkMessage::SnapshotChunkRequest(request) => {
+                    let responses = failing_source
+                        .serve_snapshot_chunk_request(&request, 64)
+                        .unwrap();
+                    tcp.send(&responses[0]).unwrap();
+                }
+                message => panic!("expected snapshot chunk request, got {message:?}"),
+            }
+            fs::remove_dir_all(failing_dir).unwrap();
+        });
+
+        let healthy_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let healthy_addr = healthy_listener.local_addr().unwrap();
+        let healthy_handle = thread::spawn(move || {
+            let (stream, _) = healthy_listener.accept().unwrap();
+            let mut tcp = TcpProtocolStream::from_stream(stream);
+            while let Ok(message) = tcp.receive() {
+                match message {
+                    NetworkMessage::SnapshotChunkRequest(request) => {
+                        for response in healthy_source
+                            .serve_snapshot_chunk_request(&request, 64)
+                            .unwrap()
+                        {
+                            tcp.send(&response).unwrap();
+                        }
+                    }
+                    message => panic!("expected snapshot chunk request, got {message:?}"),
+                }
+            }
+            fs::remove_dir_all(healthy_dir).unwrap();
+        });
+
+        let mut addrs = [failing_addr, healthy_addr].into_iter();
+        let (chunk_set, metrics) = fetch_verified_snapshot_chunk_set_over_tcp_with_retries(
+            || TcpProtocolStream::connect(addrs.next().unwrap()),
+            snapshot_root.clone(),
+            2,
+            &required_metadata_roots,
+            SnapshotSyncRetryPolicy { max_attempts: 2 },
+        )
+        .unwrap();
+        assert_eq!(chunk_set.manifest.snapshot_root, snapshot_root);
+        assert_eq!(metrics.retry_attempts, 2);
+        assert_eq!(metrics.stream_failures, 1);
+        assert!(metrics.requests_sent > 0);
+        assert!(metrics.metadata_roots_verified);
+
+        failing_handle.join().unwrap();
+        healthy_handle.join().unwrap();
     }
 
     #[test]
