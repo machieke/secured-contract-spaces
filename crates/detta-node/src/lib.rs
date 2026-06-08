@@ -495,6 +495,14 @@ impl PersistentValidatorNode {
         self.effective_snapshot_metadata_roots()
     }
 
+    pub fn load_required_snapshot_metadata_roots(
+        &self,
+    ) -> Result<BTreeMap<String, String>, NodeError> {
+        self.storage
+            .load_required_snapshot_metadata_roots()
+            .map_err(NodeError::Storage)
+    }
+
     fn effective_snapshot_metadata_roots(&self) -> Result<BTreeMap<String, String>, NodeError> {
         let mut metadata_roots = self
             .storage
@@ -1329,6 +1337,9 @@ impl PersistentValidatorNode {
             .map_err(NodeError::Storage)?;
         self.storage
             .commit_snapshot_metadata_roots(&chunk_set.manifest.metadata_roots)
+            .map_err(NodeError::Storage)?;
+        self.storage
+            .commit_required_snapshot_metadata_roots(required_metadata_roots)
             .map_err(NodeError::Storage)?;
         Ok(snapshot)
     }
@@ -3707,6 +3718,10 @@ mod tests {
             .import_snapshot_chunk_set(&chunk_set, &required_metadata_roots)
             .unwrap();
         assert_eq!(imported.global_state_root, snapshot_root);
+        assert_eq!(
+            sink.load_required_snapshot_metadata_roots().unwrap(),
+            required_metadata_roots
+        );
         let mut wrong_diagnostics_roots = required_metadata_roots.clone();
         wrong_diagnostics_roots.insert(
             SNAPSHOT_METADATA_STATE_SYNC_CLIENT_METRICS_ROOT.into(),
@@ -3778,6 +3793,12 @@ mod tests {
         assert_eq!(
             restarted_sink.load_snapshot_sync_client_metrics().unwrap(),
             Some(metrics.clone())
+        );
+        assert_eq!(
+            restarted_sink
+                .load_required_snapshot_metadata_roots()
+                .unwrap(),
+            required_metadata_roots
         );
         assert_eq!(
             restarted_sink.handle_rpc_request(RpcRequest::GetSnapshotSyncClientMetrics),

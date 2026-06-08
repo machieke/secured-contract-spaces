@@ -106,10 +106,12 @@ Completed production-plan slices:
   so manifests can authenticate diagnostics for audit proofs.
 - [x] Verified snapshot imports can require state-sync diagnostics roots and
   reject mismatched diagnostics roots before commit.
+- [x] Verified snapshot imports persist the exact required metadata-root set
+  used for the import and reload it after restart.
 
 Next implementation slices:
 
-- [ ] Persist required metadata-root sets used for verified snapshot imports.
+- [ ] Expose required snapshot metadata-root sets over node-aware RPC.
 
 # 1. Production Objective
 

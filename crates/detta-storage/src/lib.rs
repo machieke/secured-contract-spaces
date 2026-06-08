@@ -78,6 +78,23 @@ impl FileStorage {
         read_json(&path)
     }
 
+    pub fn commit_required_snapshot_metadata_roots(
+        &self,
+        roots: &BTreeMap<String, String>,
+    ) -> Result<(), StorageError> {
+        write_json_atomic(&self.required_snapshot_metadata_roots_path(), roots)
+    }
+
+    pub fn load_required_snapshot_metadata_roots(
+        &self,
+    ) -> Result<BTreeMap<String, String>, StorageError> {
+        let path = self.required_snapshot_metadata_roots_path();
+        if !path.exists() {
+            return Ok(BTreeMap::new());
+        }
+        read_json(&path)
+    }
+
     pub fn commit_snapshot_sync_client_metrics<T: Serialize>(
         &self,
         metrics: &T,
@@ -241,6 +258,11 @@ impl FileStorage {
 
     fn snapshot_metadata_roots_path(&self) -> PathBuf {
         self.root.join("latest_snapshot_metadata_roots.bin")
+    }
+
+    fn required_snapshot_metadata_roots_path(&self) -> PathBuf {
+        self.root
+            .join("latest_required_snapshot_metadata_roots.bin")
     }
 
     fn snapshot_sync_client_metrics_path(&self) -> PathBuf {
@@ -429,12 +451,30 @@ mod tests {
             storage.load_snapshot_metadata_roots().unwrap(),
             BTreeMap::new()
         );
+        assert_eq!(
+            storage.load_required_snapshot_metadata_roots().unwrap(),
+            BTreeMap::new()
+        );
         storage.commit_snapshot_metadata_roots(&roots).unwrap();
+        storage
+            .commit_required_snapshot_metadata_roots(&roots)
+            .unwrap();
         assert_eq!(storage.load_snapshot_metadata_roots().unwrap(), roots);
+        assert_eq!(
+            storage.load_required_snapshot_metadata_roots().unwrap(),
+            roots
+        );
         assert_eq!(
             FileStorage::open(&dir)
                 .unwrap()
                 .load_snapshot_metadata_roots()
+                .unwrap(),
+            roots
+        );
+        assert_eq!(
+            FileStorage::open(&dir)
+                .unwrap()
+                .load_required_snapshot_metadata_roots()
                 .unwrap(),
             roots
         );
