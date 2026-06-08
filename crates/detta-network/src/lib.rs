@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
+use std::thread;
+use std::time::Duration;
 
 pub type PeerId = String;
 pub type NetworkMessage = ProtocolMessage;
@@ -31,6 +33,22 @@ pub enum NetworkError {
     Protocol(ProtocolError),
     Io(String),
     PeerRejected(String),
+    RetryExhausted { attempts: usize, last_error: String },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RetryPolicy {
+    pub max_attempts: usize,
+    pub delay: Duration,
+}
+
+impl RetryPolicy {
+    pub fn new(max_attempts: usize, delay: Duration) -> Self {
+        Self {
+            max_attempts,
+            delay,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -112,6 +130,36 @@ impl TcpProtocolStream {
     pub fn connect(addr: impl ToSocketAddrs) -> Result<Self, NetworkError> {
         let stream = TcpStream::connect(addr).map_err(io_error)?;
         Ok(Self { stream })
+    }
+
+    pub fn connect_with_retry(
+        addr: impl ToSocketAddrs,
+        policy: RetryPolicy,
+    ) -> Result<Self, NetworkError> {
+        let addrs: Vec<_> = addr.to_socket_addrs().map_err(io_error)?.collect();
+        let mut last_error = if addrs.is_empty() {
+            "no resolved socket addresses".to_string()
+        } else {
+            "no attempts configured".to_string()
+        };
+
+        for attempt in 0..policy.max_attempts {
+            for addr in &addrs {
+                match TcpStream::connect(addr) {
+                    Ok(stream) => return Ok(Self { stream }),
+                    Err(error) => last_error = error.to_string(),
+                }
+            }
+
+            if attempt + 1 < policy.max_attempts {
+                thread::sleep(policy.delay);
+            }
+        }
+
+        Err(NetworkError::RetryExhausted {
+            attempts: policy.max_attempts,
+            last_error,
+        })
     }
 
     pub fn from_stream(stream: TcpStream) -> Self {
@@ -328,6 +376,7 @@ mod tests {
     use detta_protocol::{encode_message, PeerRole, ProtocolError, PROTOCOL_MAGIC};
     use std::net::TcpListener;
     use std::thread;
+    use std::time::Duration;
 
     fn seeded_state() -> DeTTaState {
         let mut state = DeTTaState::new("detta-local");
@@ -580,6 +629,54 @@ mod tests {
             })
         );
         server.join().unwrap();
+    }
+
+    #[test]
+    fn tcp_protocol_stream_retries_until_peer_is_available() {
+        let reserved = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = reserved.local_addr().unwrap();
+        drop(reserved);
+
+        let server = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(25));
+            let listener = TcpListener::bind(addr).unwrap();
+            let (stream, _) = listener.accept().unwrap();
+            let mut server = TcpProtocolStream::from_stream(stream);
+            assert!(matches!(server.receive().unwrap(), NetworkMessage::Vote(_)));
+        });
+
+        let mut client = TcpProtocolStream::connect_with_retry(
+            addr,
+            RetryPolicy::new(20, Duration::from_millis(5)),
+        )
+        .unwrap();
+        client
+            .send(&NetworkMessage::Vote(Vote {
+                validator_id: "validator-1".into(),
+                height: 1,
+                block_hash: "block-a".into(),
+            }))
+            .unwrap();
+
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn tcp_protocol_stream_stops_after_retry_budget_is_exhausted() {
+        let reserved = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = reserved.local_addr().unwrap();
+        drop(reserved);
+
+        let error = TcpProtocolStream::connect_with_retry(
+            addr,
+            RetryPolicy::new(2, Duration::from_millis(1)),
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            NetworkError::RetryExhausted { attempts: 2, .. }
+        ));
     }
 
     #[test]

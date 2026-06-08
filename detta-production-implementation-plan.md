@@ -44,10 +44,13 @@ Completed production-plan slices:
   and assemble a finality certificate at quorum.
 - [x] Proposer nodes persist finality certificates and gossip signed certificate
   envelopes to validator peers.
+- [x] TCP validator connections support bounded retry with delayed-peer and
+  exhausted-budget coverage.
 
 Next implementation slices:
 
-- [ ] Add reconnect/retry handling for disconnected TCP validator peers.
+- [ ] Add peer-scored reconnect queues and retry metrics for long-running
+  validator processes.
 
 # 1. Production Objective
 
