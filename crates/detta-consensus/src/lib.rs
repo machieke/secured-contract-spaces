@@ -352,7 +352,7 @@ fn ordered_hash_pair(left: &str, right: &str) -> (String, String) {
     }
 }
 
-fn quorum_for(active_validators: usize) -> usize {
+pub fn quorum_for(active_validators: usize) -> usize {
     if active_validators == 0 {
         0
     } else {

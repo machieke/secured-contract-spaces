@@ -54,10 +54,12 @@ Completed production-plan slices:
   and reloads the node keyring on restart.
 - [x] Signed validator-set metadata updates apply to durable metadata and
   replay-protected node keyrings.
+- [x] Validator-set metadata updates require quorum authorization from
+  independently verified current validators before mutating durable keyrings.
 
 Next implementation slices:
 
-- [ ] Add quorum authorization checks for validator-set metadata updates.
+- [ ] Gossip quorum-authorized validator-set metadata updates over TCP.
 
 # 1. Production Objective
 

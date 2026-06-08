@@ -1,6 +1,6 @@
 use detta_consensus::{
-    ConsensusCluster, ConsensusError, EquivocationEvidence, FinalityCertificate, SlashingRecord,
-    Vote,
+    quorum_for, ConsensusCluster, ConsensusError, EquivocationEvidence, FinalityCertificate,
+    SlashingRecord, Vote,
 };
 use detta_core::{
     Block, BlockError, ChainId, DeTTaState, MempoolError, Transaction, ValidatorNode,
@@ -48,6 +48,7 @@ pub enum NodeError {
     DuplicateValidatorKey(String),
     ValidatorMetadataKeyNotFound(String),
     ValidatorSetMetadataUpdateAlreadyApplied(String),
+    ValidatorSetMetadataUpdateMismatch,
     ValidatorSetChainMismatch {
         expected: String,
         actual: String,
@@ -183,6 +184,10 @@ impl PersistentValidatorNode {
         self.applied_validator_set_updates.contains(update_id)
     }
 
+    pub fn validator_set_metadata_quorum(&self) -> usize {
+        quorum_for(self.validator_keys.len()).max(1)
+    }
+
     pub fn persist_validator_set_metadata(
         &mut self,
         network_id: impl Into<String>,
@@ -204,14 +209,12 @@ impl PersistentValidatorNode {
         Ok(())
     }
 
-    pub fn apply_signed_validator_set_metadata_update(
-        &mut self,
+    pub fn verified_validator_set_metadata_update(
+        &self,
         signed: &SignedValidatorMessage,
-    ) -> Result<(), NodeError> {
+    ) -> Result<ValidatorSetMetadataUpdate, NodeError> {
         match self.verified_signed_validator_message(signed)? {
-            NetworkMessage::ValidatorSetMetadataUpdate(update) => {
-                self.apply_validator_set_metadata_update(update)
-            }
+            NetworkMessage::ValidatorSetMetadataUpdate(update) => Ok(update),
             other => Err(NodeError::UnexpectedSignedMessage {
                 expected: ProtocolMessageKind::ValidatorSetMetadataUpdate,
                 actual: other.kind(),
@@ -219,7 +222,63 @@ impl PersistentValidatorNode {
         }
     }
 
-    pub fn apply_validator_set_metadata_update(
+    pub fn apply_quorum_authorized_validator_set_metadata_update(
+        &mut self,
+        messages: &[NetworkMessage],
+    ) -> Result<(), NodeError> {
+        self.apply_quorum_authorized_validator_set_metadata_update_with_quorum(
+            messages,
+            self.validator_set_metadata_quorum(),
+        )
+    }
+
+    pub fn apply_quorum_authorized_validator_set_metadata_update_with_quorum(
+        &mut self,
+        messages: &[NetworkMessage],
+        quorum: usize,
+    ) -> Result<(), NodeError> {
+        let mut authorized_update = None;
+        let mut authorizers = BTreeSet::new();
+
+        for message in messages {
+            let NetworkMessage::SignedValidator(signed) = message else {
+                return Err(NodeError::UnexpectedSignedMessage {
+                    expected: ProtocolMessageKind::ValidatorSetMetadataUpdate,
+                    actual: message.kind(),
+                });
+            };
+            let update = self.verified_validator_set_metadata_update(signed)?;
+            if self.has_applied_validator_set_update(&update.update_id) {
+                return Err(NodeError::ValidatorSetMetadataUpdateAlreadyApplied(
+                    update.update_id,
+                ));
+            }
+            if let Some(expected) = &authorized_update {
+                if expected != &update {
+                    return Err(NodeError::ValidatorSetMetadataUpdateMismatch);
+                }
+            } else {
+                authorized_update = Some(update);
+            }
+            authorizers.insert(signed.signer.clone());
+        }
+
+        if authorizers.len() < quorum {
+            return Err(NodeError::Consensus(ConsensusError::QuorumNotReached {
+                accepted: authorizers.len(),
+                required: quorum,
+            }));
+        }
+
+        let update =
+            authorized_update.ok_or(NodeError::Consensus(ConsensusError::QuorumNotReached {
+                accepted: 0,
+                required: quorum,
+            }))?;
+        self.apply_validator_set_metadata_update(update)
+    }
+
+    fn apply_validator_set_metadata_update(
         &mut self,
         update: ValidatorSetMetadataUpdate,
     ) -> Result<(), NodeError> {
@@ -448,8 +507,10 @@ impl PersistentValidatorNode {
             }
             NetworkMessage::SignedValidator(signed) => {
                 let message = self.verified_signed_validator_message(signed)?;
-                if let NetworkMessage::ValidatorSetMetadataUpdate(update) = message {
-                    self.apply_validator_set_metadata_update(update)?;
+                if let NetworkMessage::ValidatorSetMetadataUpdate(_) = message {
+                    self.apply_quorum_authorized_validator_set_metadata_update(
+                        std::slice::from_ref(&envelope.message),
+                    )?;
                     return Ok(NetworkIngestOutcome::ValidatorSetMetadataUpdated);
                 }
                 let signed_envelope = Envelope {
@@ -1259,7 +1320,7 @@ mod tests {
     }
 
     #[test]
-    fn persistent_node_applies_signed_validator_set_metadata_update_and_reloads() {
+    fn persistent_node_applies_quorum_authorized_validator_set_metadata_update_and_reloads() {
         let dir = temp_dir("validator-set-update");
         let signer_key = validator_key("validator-1", 7);
         let removed_key = validator_key("validator-2", 8);
@@ -1277,23 +1338,28 @@ mod tests {
             add_validators: vec![added_key.public_key()],
             remove_validators: vec!["validator-2".into()],
         };
-        let signed_update = signer_key
+        let signer_update = signer_key
+            .sign_message(
+                "detta-testnet",
+                node.chain_id().clone(),
+                NetworkMessage::ValidatorSetMetadataUpdate(update.clone()),
+            )
+            .unwrap();
+        let removed_validator_update = removed_key
             .sign_message(
                 "detta-testnet",
                 node.chain_id().clone(),
                 NetworkMessage::ValidatorSetMetadataUpdate(update),
             )
             .unwrap();
-        let envelope = Envelope {
-            from: "validator-1".into(),
-            to: "validator-2".into(),
-            message: NetworkMessage::SignedValidator(Box::new(signed_update.clone())),
-        };
+        let signed_updates = vec![
+            NetworkMessage::SignedValidator(Box::new(signer_update)),
+            NetworkMessage::SignedValidator(Box::new(removed_validator_update)),
+        ];
 
-        assert_eq!(
-            node.ingest_network_envelope(&envelope).unwrap(),
-            NetworkIngestOutcome::ValidatorSetMetadataUpdated
-        );
+        assert_eq!(node.validator_set_metadata_quorum(), 2);
+        node.apply_quorum_authorized_validator_set_metadata_update(&signed_updates)
+            .unwrap();
         assert!(node.has_applied_validator_set_update("validator-set-update-1"));
         assert!(node.trusted_validator_key("validator-1").is_some());
         assert!(node.trusted_validator_key("validator-2").is_none());
@@ -1306,9 +1372,112 @@ mod tests {
         assert!(restarted.trusted_validator_key("validator-3").is_some());
 
         assert_eq!(
-            node.ingest_network_envelope(&envelope).unwrap_err(),
+            node.apply_quorum_authorized_validator_set_metadata_update(&signed_updates)
+                .unwrap_err(),
             NodeError::ValidatorSetMetadataUpdateAlreadyApplied("validator-set-update-1".into())
         );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn persistent_node_rejects_single_validator_set_metadata_update_without_quorum() {
+        let dir = temp_dir("validator-set-single-update");
+        let signer_key = validator_key("validator-1", 7);
+        let peer_key = validator_key("validator-2", 8);
+        let added_key = validator_key("validator-3", 9);
+        let mut node = PersistentValidatorNode::bootstrap_with_validator_set(
+            "validator-2",
+            seeded_state(),
+            &dir,
+            "detta-testnet",
+            vec![signer_key.public_key(), peer_key.public_key()],
+        )
+        .unwrap();
+        let signed_update = signer_key
+            .sign_message(
+                "detta-testnet",
+                node.chain_id().clone(),
+                NetworkMessage::ValidatorSetMetadataUpdate(ValidatorSetMetadataUpdate {
+                    update_id: "validator-set-update-1".into(),
+                    add_validators: vec![added_key.public_key()],
+                    remove_validators: vec![],
+                }),
+            )
+            .unwrap();
+        let envelope = Envelope {
+            from: "validator-1".into(),
+            to: "validator-2".into(),
+            message: NetworkMessage::SignedValidator(Box::new(signed_update)),
+        };
+
+        assert_eq!(
+            node.ingest_network_envelope(&envelope).unwrap_err(),
+            NodeError::Consensus(ConsensusError::QuorumNotReached {
+                accepted: 1,
+                required: 2,
+            })
+        );
+        assert!(!node.has_applied_validator_set_update("validator-set-update-1"));
+        assert!(node.trusted_validator_key("validator-3").is_none());
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn persistent_node_rejects_mismatched_validator_set_metadata_update_quorum() {
+        let dir = temp_dir("validator-set-mismatch");
+        let signer_key = validator_key("validator-1", 7);
+        let peer_key = validator_key("validator-2", 8);
+        let added_key = validator_key("validator-3", 9);
+        let other_added_key = validator_key("validator-4", 10);
+        let mut node = PersistentValidatorNode::bootstrap_with_validator_set(
+            "validator-2",
+            seeded_state(),
+            &dir,
+            "detta-testnet",
+            vec![signer_key.public_key(), peer_key.public_key()],
+        )
+        .unwrap();
+        let first_update = ValidatorSetMetadataUpdate {
+            update_id: "validator-set-update-1".into(),
+            add_validators: vec![added_key.public_key()],
+            remove_validators: vec![],
+        };
+        let conflicting_update = ValidatorSetMetadataUpdate {
+            update_id: "validator-set-update-1".into(),
+            add_validators: vec![other_added_key.public_key()],
+            remove_validators: vec![],
+        };
+        let signed_updates = vec![
+            NetworkMessage::SignedValidator(Box::new(
+                signer_key
+                    .sign_message(
+                        "detta-testnet",
+                        node.chain_id().clone(),
+                        NetworkMessage::ValidatorSetMetadataUpdate(first_update),
+                    )
+                    .unwrap(),
+            )),
+            NetworkMessage::SignedValidator(Box::new(
+                peer_key
+                    .sign_message(
+                        "detta-testnet",
+                        node.chain_id().clone(),
+                        NetworkMessage::ValidatorSetMetadataUpdate(conflicting_update),
+                    )
+                    .unwrap(),
+            )),
+        ];
+
+        assert_eq!(
+            node.apply_quorum_authorized_validator_set_metadata_update(&signed_updates)
+                .unwrap_err(),
+            NodeError::ValidatorSetMetadataUpdateMismatch
+        );
+        assert!(!node.has_applied_validator_set_update("validator-set-update-1"));
+        assert!(node.trusted_validator_key("validator-3").is_none());
+        assert!(node.trusted_validator_key("validator-4").is_none());
 
         fs::remove_dir_all(dir).unwrap();
     }
