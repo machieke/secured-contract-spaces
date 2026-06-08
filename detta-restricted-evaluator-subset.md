@@ -19,7 +19,9 @@ The evaluator fixtures are versioned independently:
   `detta.restricted-evaluator-resource-exhaustion.v1`;
 - arithmetic overflow fixture schema:
   `detta.restricted-evaluator-arithmetic-overflow.v1`;
-- both schemas carry `schema_version: 1`.
+- fixture inventory schema:
+  `detta.restricted-evaluator-fixture-inventory.v1`;
+- all schemas carry `schema_version: 1`.
 
 Schema-compatible changes may add optional fields only after readers tolerate
 them. Field removal, renamed variants, changed enum encodings, or changed root
@@ -153,6 +155,10 @@ The expected result is `EvaluatorError::ArithmeticOverflow` and
 `committed_report: null`.
 
 ## Refresh Workflow
+
+`models/detta-restricted-evaluator-fixture-inventory.json` lists all evaluator
+fixture schemas, fixture roots, attestation roots, and proof-trace root
+attestation metadata.
 
 When evaluator behavior changes:
 

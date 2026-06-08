@@ -214,10 +214,11 @@ Completed production-plan slices:
 - [x] Formal runbook includes commands for evaluator runtime artifact
   attestations.
 - [x] Release-audit checklist covers proof manifest v2 evaluator artifacts.
+- [x] Stable evaluator fixture inventory is exported.
 
 Next implementation slices:
 
-- [ ] Add stable evaluator fixture inventory export.
+- [ ] Add SHA-256 attestation for evaluator fixture inventory.
 
 # 1. Production Objective
 

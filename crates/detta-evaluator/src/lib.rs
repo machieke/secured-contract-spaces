@@ -16,6 +16,9 @@ pub const RESTRICTED_EVALUATOR_RESOURCE_EXHAUSTION_SCHEMA_VERSION: u32 = 1;
 pub const RESTRICTED_EVALUATOR_ARITHMETIC_OVERFLOW_SCHEMA: &str =
     "detta.restricted-evaluator-arithmetic-overflow.v1";
 pub const RESTRICTED_EVALUATOR_ARITHMETIC_OVERFLOW_SCHEMA_VERSION: u32 = 1;
+pub const RESTRICTED_EVALUATOR_FIXTURE_INVENTORY_SCHEMA: &str =
+    "detta.restricted-evaluator-fixture-inventory.v1";
+pub const RESTRICTED_EVALUATOR_FIXTURE_INVENTORY_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Instruction {
@@ -119,6 +122,30 @@ pub struct RestrictedEvaluatorArithmeticOverflowFixture {
     pub cases: Vec<ArithmeticOverflowCase>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct EvaluatorFixtureInventoryEntry {
+    pub name: String,
+    pub fixture_schema: String,
+    pub fixture_path: String,
+    pub fixture_sha256: String,
+    pub attestation_path: String,
+    pub attestation_sha256: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trace_root: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trace_root_attestation_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trace_root_attestation_sha256: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct EvaluatorFixtureInventory {
+    pub schema: String,
+    pub schema_version: u32,
+    pub evaluator: String,
+    pub fixtures: Vec<EvaluatorFixtureInventoryEntry>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RestrictedScriptEvaluator {
     primitive_gate: RestrictedEvaluator,
@@ -201,8 +228,7 @@ impl RestrictedScriptEvaluator {
 
 pub fn trace_root(trace: &[TraceOp]) -> String {
     let bytes = serde_json::to_vec(trace).expect("trace serialization should not fail");
-    let digest = Sha256::digest(bytes);
-    hex_lower(&digest)
+    bytes_root(&bytes)
 }
 
 pub fn restricted_evaluator_proof_trace_fixture() -> RestrictedEvaluatorProofTraceFixture {
@@ -329,6 +355,83 @@ pub fn restricted_evaluator_arithmetic_overflow_fixture(
     }
 }
 
+pub fn restricted_evaluator_fixture_inventory() -> EvaluatorFixtureInventory {
+    EvaluatorFixtureInventory {
+        schema: RESTRICTED_EVALUATOR_FIXTURE_INVENTORY_SCHEMA.to_string(),
+        schema_version: RESTRICTED_EVALUATOR_FIXTURE_INVENTORY_SCHEMA_VERSION,
+        evaluator: "detta.restricted-script-evaluator".into(),
+        fixtures: vec![
+            EvaluatorFixtureInventoryEntry {
+                name: "proof-trace".into(),
+                fixture_schema: RESTRICTED_EVALUATOR_PROOF_TRACE_SCHEMA.into(),
+                fixture_path: "models/detta-restricted-evaluator-proof-trace.json".into(),
+                fixture_sha256: bytes_root(include_bytes!(
+                    "../../../models/detta-restricted-evaluator-proof-trace.json"
+                )),
+                attestation_path: "models/detta-restricted-evaluator-proof-trace.sha256".into(),
+                attestation_sha256: bytes_root(include_bytes!(
+                    "../../../models/detta-restricted-evaluator-proof-trace.sha256"
+                )),
+                trace_root: Some(restricted_evaluator_proof_trace_fixture().trace_root),
+                trace_root_attestation_path: Some(
+                    "models/detta-restricted-evaluator-proof-trace-root.sha256".into(),
+                ),
+                trace_root_attestation_sha256: Some(bytes_root(include_bytes!(
+                    "../../../models/detta-restricted-evaluator-proof-trace-root.sha256"
+                ))),
+            },
+            EvaluatorFixtureInventoryEntry {
+                name: "forbidden-primitives".into(),
+                fixture_schema: RESTRICTED_EVALUATOR_FORBIDDEN_PRIMITIVE_SCHEMA.into(),
+                fixture_path: "models/detta-restricted-evaluator-forbidden-primitives.json".into(),
+                fixture_sha256: bytes_root(include_bytes!(
+                    "../../../models/detta-restricted-evaluator-forbidden-primitives.json"
+                )),
+                attestation_path: "models/detta-restricted-evaluator-forbidden-primitives.sha256"
+                    .into(),
+                attestation_sha256: bytes_root(include_bytes!(
+                    "../../../models/detta-restricted-evaluator-forbidden-primitives.sha256"
+                )),
+                trace_root: None,
+                trace_root_attestation_path: None,
+                trace_root_attestation_sha256: None,
+            },
+            EvaluatorFixtureInventoryEntry {
+                name: "resource-exhaustion".into(),
+                fixture_schema: RESTRICTED_EVALUATOR_RESOURCE_EXHAUSTION_SCHEMA.into(),
+                fixture_path: "models/detta-restricted-evaluator-resource-exhaustion.json".into(),
+                fixture_sha256: bytes_root(include_bytes!(
+                    "../../../models/detta-restricted-evaluator-resource-exhaustion.json"
+                )),
+                attestation_path: "models/detta-restricted-evaluator-resource-exhaustion.sha256"
+                    .into(),
+                attestation_sha256: bytes_root(include_bytes!(
+                    "../../../models/detta-restricted-evaluator-resource-exhaustion.sha256"
+                )),
+                trace_root: None,
+                trace_root_attestation_path: None,
+                trace_root_attestation_sha256: None,
+            },
+            EvaluatorFixtureInventoryEntry {
+                name: "arithmetic-overflow".into(),
+                fixture_schema: RESTRICTED_EVALUATOR_ARITHMETIC_OVERFLOW_SCHEMA.into(),
+                fixture_path: "models/detta-restricted-evaluator-arithmetic-overflow.json".into(),
+                fixture_sha256: bytes_root(include_bytes!(
+                    "../../../models/detta-restricted-evaluator-arithmetic-overflow.json"
+                )),
+                attestation_path: "models/detta-restricted-evaluator-arithmetic-overflow.sha256"
+                    .into(),
+                attestation_sha256: bytes_root(include_bytes!(
+                    "../../../models/detta-restricted-evaluator-arithmetic-overflow.sha256"
+                )),
+                trace_root: None,
+                trace_root_attestation_path: None,
+                trace_root_attestation_sha256: None,
+            },
+        ],
+    }
+}
+
 fn allowed_contract_primitives() -> Vec<EvaluatorPrimitive> {
     vec![
         EvaluatorPrimitive::StateGet,
@@ -367,6 +470,11 @@ fn map_execution_error(error: ExecutionError) -> EvaluatorError {
         ExecutionError::ArithmeticOverflow => EvaluatorError::ArithmeticOverflow,
         _ => EvaluatorError::ForbiddenPrimitive,
     }
+}
+
+fn bytes_root(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    hex_lower(&digest)
 }
 
 fn hex_lower(bytes: &[u8]) -> String {
@@ -726,5 +834,71 @@ mod tests {
         assert_eq!(error, EvaluatorError::ArithmeticOverflow);
         assert_eq!(case.expected_error, EvaluatorError::ArithmeticOverflow);
         assert_eq!(case.committed_report, None);
+    }
+
+    #[test]
+    fn restricted_evaluator_fixture_inventory_matches_checked_in_json() {
+        let expected: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../models/detta-restricted-evaluator-fixture-inventory.json"
+        ))
+        .unwrap();
+        let actual = serde_json::to_value(restricted_evaluator_fixture_inventory()).unwrap();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn restricted_evaluator_fixture_inventory_json_is_stable() {
+        let actual = format!(
+            "{}\n",
+            serde_json::to_string_pretty(&restricted_evaluator_fixture_inventory()).unwrap()
+        );
+
+        assert_eq!(
+            actual,
+            include_str!("../../../models/detta-restricted-evaluator-fixture-inventory.json")
+        );
+    }
+
+    #[test]
+    fn restricted_evaluator_fixture_inventory_covers_all_fixture_schemas() {
+        let inventory = restricted_evaluator_fixture_inventory();
+        let fixture_names = inventory
+            .fixtures
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        let fixture_schemas = inventory
+            .fixtures
+            .iter()
+            .map(|entry| entry.fixture_schema.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+
+        assert_eq!(
+            inventory.schema,
+            RESTRICTED_EVALUATOR_FIXTURE_INVENTORY_SCHEMA
+        );
+        assert_eq!(
+            inventory.schema_version,
+            RESTRICTED_EVALUATOR_FIXTURE_INVENTORY_SCHEMA_VERSION
+        );
+        assert_eq!(
+            fixture_names,
+            std::collections::BTreeSet::from([
+                "proof-trace",
+                "forbidden-primitives",
+                "resource-exhaustion",
+                "arithmetic-overflow",
+            ])
+        );
+        assert_eq!(
+            fixture_schemas,
+            std::collections::BTreeSet::from([
+                RESTRICTED_EVALUATOR_PROOF_TRACE_SCHEMA,
+                RESTRICTED_EVALUATOR_FORBIDDEN_PRIMITIVE_SCHEMA,
+                RESTRICTED_EVALUATOR_RESOURCE_EXHAUSTION_SCHEMA,
+                RESTRICTED_EVALUATOR_ARITHMETIC_OVERFLOW_SCHEMA,
+            ])
+        );
     }
 }

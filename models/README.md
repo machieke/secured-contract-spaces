@@ -38,6 +38,9 @@ This directory contains formal-model artifacts for the DeTTa runtime.
   error, and absence of a committed execution report.
 - `detta-restricted-evaluator-arithmetic-overflow.sha256` records the release
   attestation root for the arithmetic overflow fixture.
+- `detta-restricted-evaluator-fixture-inventory.json` is a stable inventory of
+  restricted evaluator fixture schemas, fixture roots, attestation roots, and
+  trace-root attestation metadata.
 - `formal-model-checking-runbook.md` describes the repository checks, external
   model-checker preparation, and manifest refresh procedure.
 - `../detta-restricted-evaluator-subset.md` documents the implemented
