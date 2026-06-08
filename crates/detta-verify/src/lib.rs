@@ -666,6 +666,19 @@ mod tests {
     }
 
     #[test]
+    fn proof_artifact_manifest_json_fixture_is_stable() {
+        let actual = format!(
+            "{}\n",
+            serde_json::to_string_pretty(&proof_artifact_manifest()).unwrap()
+        );
+
+        assert_eq!(
+            actual,
+            include_str!("../../../models/detta-proof-artifact-manifest.json")
+        );
+    }
+
+    #[test]
     fn proof_artifact_manifest_root_matches_checked_in_attestation() {
         let attestation = include_str!("../../../models/detta-proof-artifact-manifest.sha256");
         let (root, file_name) = attestation.trim().split_once("  ").unwrap();

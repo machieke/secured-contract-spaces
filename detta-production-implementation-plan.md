@@ -175,10 +175,11 @@ Completed production-plan slices:
 - [x] Theorem evidence references are checked against concrete TLA model
   operators.
 - [x] A bounded TLC config artifact is included in the proof manifest.
+- [x] Proof-artifact manifest JSON serialization has a stable schema fixture.
 
 Next implementation slices:
 
-- [ ] Add proof-artifact manifest schema stability fixtures.
+- [ ] Add explicit proof-artifact manifest schema/version constants.
 
 # 1. Production Objective
 
