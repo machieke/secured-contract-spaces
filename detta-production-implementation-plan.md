@@ -356,6 +356,8 @@ Completed production-plan slices:
   manifest JSON bytes in verify.
 - [x] Proof manifest root attestation parser is checked against direct
   sha256sum splitting in verify.
+- [x] Local release gate script runs formatting, clippy, tests, verifier, and
+  proof artifact attestation checks.
 
 Next implementation slices:
 

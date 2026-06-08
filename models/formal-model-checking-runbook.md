@@ -7,19 +7,16 @@ This runbook keeps DeTTa proof artifacts reproducible for release review.
 Run these from the repository root:
 
 ```sh
+scripts/detta-release-gate.sh
+```
+
+The release gate script runs:
+
+```sh
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test
 cargo test -p detta-verify
-(
-  cd models
-  sha256sum -c detta-proof-artifact-manifest.sha256
-  sha256sum -c detta-restricted-evaluator-proof-trace.sha256
-  sha256sum -c detta-restricted-evaluator-forbidden-primitives.sha256
-  sha256sum -c detta-restricted-evaluator-resource-exhaustion.sha256
-  sha256sum -c detta-restricted-evaluator-arithmetic-overflow.sha256
-  sha256sum -c detta-restricted-evaluator-fixture-inventory.sha256
-  sha256sum DeTTaBlockExecution.tla
-  sha256sum DeTTaBlockExecution.cfg
-  sha256sum detta-restricted-evaluator-proof-trace-root.sha256
-)
 ```
 
 `cargo test -p detta-verify` checks that:
@@ -143,9 +140,11 @@ cargo test -p detta-verify
   splitting.
 
 The evaluator `sha256sum -c` commands verify fixture-file attestations. The
-final `sha256sum` command reports the file root of the compact-trace-root
-attestation, which is itself bound in the proof manifest. Rust tests recompute
-the compact trace root from `report.trace` and compare it with that attestation.
+release gate also runs the proof-artifact `sha256sum` commands listed in the
+script. The final `sha256sum` command reports the file root of the
+compact-trace-root attestation, which is itself bound in the proof manifest.
+Rust tests recompute the compact trace root from `report.trace` and compare it
+with that attestation.
 
 ## Proof Manifest v2 Runtime Artifacts
 
