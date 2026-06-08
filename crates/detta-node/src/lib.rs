@@ -3184,6 +3184,16 @@ mod tests {
             metadata_roots_verified: true,
         };
         let expected_sync_report = snapshot_sync_client_metrics_report(sync_metrics.clone());
+        let mut required_metadata_roots = BTreeMap::new();
+        required_metadata_roots.insert(
+            SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT.into(),
+            "required-validator-audit-root".into(),
+        );
+        required_metadata_roots.insert(
+            SNAPSHOT_METADATA_STATE_SYNC_CLIENT_METRICS_ROOT.into(),
+            "required-sync-metrics-root".into(),
+        );
+        let expected_required_metadata_roots = required_metadata_roots.clone();
         let handle = thread::spawn(move || {
             let mut node = PersistentValidatorNode::bootstrap_with_validator_set(
                 "validator-2",
@@ -3194,6 +3204,9 @@ mod tests {
             )
             .unwrap();
             node.persist_snapshot_sync_client_metrics(&sync_metrics)
+                .unwrap();
+            node.storage
+                .commit_required_snapshot_metadata_roots(&required_metadata_roots)
                 .unwrap();
             server
                 .serve_next_connection_with_handler(&mut node)
@@ -3213,6 +3226,13 @@ mod tests {
             RpcResponse::Ok(RpcResult::SnapshotSyncClientMetrics(Some(
                 expected_sync_report
             )))
+        );
+        write_rpc_request(&mut stream, &RpcRequest::GetRequiredSnapshotMetadataRoots);
+        assert_eq!(
+            read_rpc_response(&mut reader),
+            RpcResponse::Ok(RpcResult::RequiredSnapshotMetadataRoots(
+                expected_required_metadata_roots
+            ))
         );
 
         write_rpc_request(

@@ -110,11 +110,13 @@ Completed production-plan slices:
   used for the import and reload it after restart.
 - [x] Required snapshot metadata-root sets are exposed through node-aware RPC
   after verified import and after restart.
+- [x] Required snapshot metadata-root sets are served over the shared TCP JSON
+  RPC path.
 
 Next implementation slices:
 
-- [ ] Serve required snapshot metadata-root sets over the shared TCP JSON RPC
-  path.
+- [ ] Bind required snapshot metadata-root sets into persistent snapshot root
+  responses for audit discovery.
 
 # 1. Production Objective
 
