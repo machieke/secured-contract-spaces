@@ -1446,6 +1446,16 @@ mod tests {
         assert!(!file_name.ends_with(".sha256"));
     }
 
+    #[test]
+    fn proof_artifact_manifest_root_attestation_matches_target_bytes() {
+        let attestation = include_str!("../../../models/detta-proof-artifact-manifest.sha256");
+        let (root, file_name) = sha256sum_attestation_parts(attestation);
+        let target_bytes = include_bytes!("../../../models/detta-proof-artifact-manifest.json");
+
+        assert_eq!(file_name, "detta-proof-artifact-manifest.json");
+        assert_eq!(root, proof_artifact_manifest_root_bytes(target_bytes));
+    }
+
     struct ProofReleaseAttestationFixture {
         attestation: &'static str,
         file_name: &'static str,

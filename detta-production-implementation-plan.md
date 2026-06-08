@@ -352,10 +352,12 @@ Completed production-plan slices:
   separators in verify.
 - [x] Proof manifest root attestation filename is checked for the JSON suffix
   in verify.
+- [x] Proof manifest root attestation root is checked against the proof
+  manifest JSON bytes in verify.
 
 Next implementation slices:
 
-- [ ] Add proof manifest root attestation target byte checks in verify.
+- [ ] Add proof manifest root attestation parser consistency checks in verify.
 
 # 1. Production Objective
 
