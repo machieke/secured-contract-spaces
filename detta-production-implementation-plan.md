@@ -213,10 +213,11 @@ Completed production-plan slices:
   match fixture traces.
 - [x] Formal runbook includes commands for evaluator runtime artifact
   attestations.
+- [x] Release-audit checklist covers proof manifest v2 evaluator artifacts.
 
 Next implementation slices:
 
-- [ ] Add release-audit checklist for proof manifest v2 evaluator artifacts.
+- [ ] Add stable evaluator fixture inventory export.
 
 # 1. Production Objective
 

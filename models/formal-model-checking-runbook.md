@@ -56,6 +56,25 @@ that root authenticates the fixture document. For fixture `.sha256` files, that
 root authenticates the release attestation file itself. The evaluator crate also
 checks each attestation against the corresponding fixture bytes or trace root.
 
+## Evaluator Artifact Release Checklist
+
+Before accepting a release proof bundle, verify:
+
+- `cargo test -p detta-evaluator` passes, including fixture JSON and
+  attestation checks;
+- `cargo test -p detta-verify` passes, including proof manifest fixture,
+  theorem evidence, runtime artifact, and attestation consistency checks;
+- every restricted evaluator fixture JSON path appears in
+  `runtime_artifacts`;
+- every restricted evaluator fixture `.sha256` path appears in
+  `runtime_artifacts`;
+- every fixture evidence reference with `kind: "Fixture"` resolves to a
+  `runtime_artifacts` path;
+- `detta-restricted-evaluator-proof-trace-root.sha256` matches both the
+  fixture `trace_root` field and the recomputed root of `report.trace`;
+- `models/detta-proof-artifact-manifest.sha256` verifies after all fixture,
+  theorem, or runtime artifact changes.
+
 ## Current TLA Artifact
 
 `models/DeTTaBlockExecution.tla` is an abstract SCS block-execution model. The
