@@ -657,6 +657,13 @@ impl PersistentValidatorNode {
                 .map(RpcResult::SnapshotImportAuditRoot)
                 .map(RpcResponse::Ok)
                 .unwrap_or_else(node_rpc_error_response),
+            RpcRequest::GetSnapshotImportAuditConfigRoot => self
+                .storage
+                .snapshot_import_audit_config_root()
+                .map_err(NodeError::Storage)
+                .map(RpcResult::SnapshotImportAuditConfigRoot)
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(node_rpc_error_response),
             RpcRequest::GetSnapshotImportAuditConfig => RpcResponse::Ok(
                 RpcResult::SnapshotImportAuditConfig(self.snapshot_import_audit_config()),
             ),
@@ -3457,7 +3464,7 @@ mod tests {
         );
         assert_eq!(
             initial_snapshot.snapshot_import_audit_config_root,
-            Some(expected_snapshot_import_audit_config_root)
+            Some(expected_snapshot_import_audit_config_root.clone())
         );
         write_rpc_request(&mut stream, &RpcRequest::GetSnapshotSyncClientMetrics);
         assert_eq!(
@@ -3497,6 +3504,13 @@ mod tests {
             RpcResponse::Ok(RpcResult::SnapshotImportAuditRoot(
                 expected_snapshot_import_audit_root.clone()
             ))
+        );
+        write_rpc_request(&mut stream, &RpcRequest::GetSnapshotImportAuditConfigRoot);
+        assert_eq!(
+            read_rpc_response(&mut reader),
+            RpcResponse::Ok(RpcResult::SnapshotImportAuditConfigRoot(Some(
+                expected_snapshot_import_audit_config_root
+            )))
         );
         write_rpc_request(&mut stream, &RpcRequest::GetSnapshotImportAuditConfig);
         assert_eq!(
@@ -4033,6 +4047,12 @@ mod tests {
                 expected_snapshot_import_audit_config.clone()
             ))
         );
+        assert_eq!(
+            sink.handle_rpc_request(RpcRequest::GetSnapshotImportAuditConfigRoot),
+            RpcResponse::Ok(RpcResult::SnapshotImportAuditConfigRoot(Some(
+                snapshot_import_audit_config_root.clone()
+            )))
+        );
         let imported = sink
             .import_snapshot_chunk_set(&chunk_set, &required_metadata_roots)
             .unwrap();
@@ -4313,6 +4333,15 @@ mod tests {
             RpcResponse::Ok(RpcResult::SnapshotImportAuditConfig(
                 expected_snapshot_import_audit_config
             ))
+        );
+        assert_eq!(
+            restarted_sink.handle_rpc_request(RpcRequest::GetSnapshotImportAuditConfigRoot),
+            RpcResponse::Ok(RpcResult::SnapshotImportAuditConfigRoot(Some(
+                restarted_roots
+                    .snapshot_import_audit_config_root
+                    .clone()
+                    .unwrap()
+            )))
         );
         assert_eq!(
             restarted_sink

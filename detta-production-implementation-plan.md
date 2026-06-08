@@ -146,11 +146,13 @@ Completed production-plan slices:
   downstream imports can require them.
 - [x] Snapshot import audit configuration roots are included in persistent
   snapshot root responses for consolidated discovery.
+- [x] Snapshot import audit configuration roots are exposed through dedicated
+  node-aware and TCP JSON RPC for lightweight clients.
 
 Next implementation slices:
 
-- [ ] Expose snapshot import audit configuration roots through dedicated
-  node-aware RPC for lightweight clients.
+- [ ] Add snapshot import audit configuration root diagnostics to snapshot
+  metadata root status.
 
 # 1. Production Objective
 

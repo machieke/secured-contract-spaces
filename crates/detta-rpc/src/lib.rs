@@ -97,6 +97,7 @@ pub enum RpcRequest {
         limit: usize,
     },
     GetSnapshotImportAuditRoot,
+    GetSnapshotImportAuditConfigRoot,
     GetSnapshotImportAuditConfig,
 }
 
@@ -181,6 +182,7 @@ pub enum RpcResult {
     ValidatorSetMetadataAuditRecords(Vec<ValidatorSetMetadataAuditRecord>),
     SnapshotImportAuditRecords(Vec<SnapshotImportAuditRecord>),
     SnapshotImportAuditRoot(String),
+    SnapshotImportAuditConfigRoot(Option<String>),
     SnapshotImportAuditConfig(SnapshotImportAuditConfig),
 }
 
@@ -453,6 +455,7 @@ impl RpcService {
             | RpcRequest::GetValidatorSetMetadataAuditRecords { .. }
             | RpcRequest::GetSnapshotImportAuditRecords { .. }
             | RpcRequest::GetSnapshotImportAuditRoot
+            | RpcRequest::GetSnapshotImportAuditConfigRoot
             | RpcRequest::GetSnapshotImportAuditConfig
             | RpcRequest::GetPersistentNodeSnapshotRoots
             | RpcRequest::GetSnapshotMetadataRootStatus
@@ -815,6 +818,13 @@ mod tests {
         );
         assert_eq!(
             rpc.handle_request(RpcRequest::GetSnapshotImportAuditRoot),
+            RpcResponse::Error(RpcErrorBody {
+                code: "rpc.unsupported_node_method".into(),
+                message: "method must be handled by a persistent validator node".into(),
+            })
+        );
+        assert_eq!(
+            rpc.handle_request(RpcRequest::GetSnapshotImportAuditConfigRoot),
             RpcResponse::Error(RpcErrorBody {
                 code: "rpc.unsupported_node_method".into(),
                 message: "method must be handled by a persistent validator node".into(),
