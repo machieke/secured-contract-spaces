@@ -269,10 +269,12 @@ Completed production-plan slices:
   stability in verify.
 - [x] Proof manifest theorem coverage order is checked for deterministic
   stability in verify.
+- [x] Proof manifest theorem evidence order is checked for deterministic
+  stability in verify.
 
 Next implementation slices:
 
-- [ ] Add proof manifest theorem evidence order stability checks in verify.
+- [ ] Add proof manifest theorem evidence kind coverage checks in verify.
 
 # 1. Production Objective
 

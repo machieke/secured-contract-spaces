@@ -770,6 +770,187 @@ mod tests {
     }
 
     #[test]
+    fn scs_theorem_evidence_order_is_stable() {
+        use TheoremEvidenceKind::{Fixture, Model, RuntimeTest, Verifier};
+
+        let evidence_by_theorem: BTreeMap<_, Vec<_>> = scs_theorem_coverage()
+            .into_iter()
+            .map(|entry| {
+                (
+                    entry.id,
+                    entry
+                        .evidence
+                        .into_iter()
+                        .map(|evidence| (evidence.kind, evidence.reference))
+                        .collect(),
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            evidence_by_theorem,
+            BTreeMap::from([
+                (
+                    "THM-001",
+                    vec![
+                        (
+                            RuntimeTest,
+                            "detta_core::tests::missing_method_policy_is_denied",
+                        ),
+                        (
+                            Model,
+                            "models/DeTTaBlockExecution.tla::DispatcherOnlyMutation",
+                        ),
+                    ],
+                ),
+                (
+                    "THM-002",
+                    vec![
+                        (Verifier, "detta_verify::verify_kernel_trace"),
+                        (
+                            RuntimeTest,
+                            "detta_verify::tests::symbolic_trace_rejects_cross_contract_write",
+                        ),
+                    ],
+                ),
+                (
+                    "THM-003",
+                    vec![
+                        (Verifier, "detta_verify::verify_kernel_trace"),
+                        (
+                            RuntimeTest,
+                            "detta_verify::tests::symbolic_trace_rejects_out_of_scope_write",
+                        ),
+                        (
+                            Fixture,
+                            "models/detta-restricted-evaluator-proof-trace.json",
+                        ),
+                    ],
+                ),
+                (
+                    "THM-004",
+                    vec![(
+                        RuntimeTest,
+                        "detta_evaluator::tests::transfer_like_arguments_are_plain_data_not_authority",
+                    )],
+                ),
+                (
+                    "THM-005",
+                    vec![(
+                        RuntimeTest,
+                        "detta_core::tests::transfer_from_requires_live_registry_allowance",
+                    )],
+                ),
+                (
+                    "THM-006",
+                    vec![
+                        (
+                            RuntimeTest,
+                            "detta_core::tests::allowance_consumption_reverts_with_failed_transfer",
+                        ),
+                        (Model, "models/DeTTaBlockExecution.tla::AtomicRevert"),
+                    ],
+                ),
+                (
+                    "THM-007",
+                    vec![
+                        (
+                            RuntimeTest,
+                            "detta_core::tests::insufficient_balance_reverts_storage_registry_and_events",
+                        ),
+                        (Model, "models/DeTTaBlockExecution.tla::AtomicRevert"),
+                    ],
+                ),
+                (
+                    "THM-008",
+                    vec![
+                        (
+                            RuntimeTest,
+                            "detta_core::tests::transfer_preserves_supply_and_commits_event",
+                        ),
+                        (
+                            RuntimeTest,
+                            "detta_core::tests::invariant_failure_reverts_full_transition",
+                        ),
+                    ],
+                ),
+                (
+                    "THM-009",
+                    vec![
+                        (Verifier, "detta_verify::verify_differential_replay"),
+                        (
+                            RuntimeTest,
+                            "detta_core::tests::deterministic_replay_produces_identical_roots",
+                        ),
+                        (
+                            Fixture,
+                            "models/detta-restricted-evaluator-resource-exhaustion.json",
+                        ),
+                    ],
+                ),
+                (
+                    "THM-010",
+                    vec![
+                        (
+                            RuntimeTest,
+                            "detta_core::tests::replayed_nonce_is_rejected",
+                        ),
+                        (Model, "models/DeTTaBlockExecution.tla::ReplaySafety"),
+                    ],
+                ),
+                (
+                    "THM-011",
+                    vec![(
+                        RuntimeTest,
+                        "detta_core::tests::caller_identity_cannot_be_forged",
+                    )],
+                ),
+                (
+                    "THM-012",
+                    vec![
+                        (
+                            RuntimeTest,
+                            "detta_core::tests::router_cross_contract_call_does_not_inherit_user_allowance",
+                        ),
+                        (Model, "models/DeTTaBlockExecution.tla::WriteScopeSafety"),
+                    ],
+                ),
+                (
+                    "THM-013",
+                    vec![(RuntimeTest, "detta_core::tests::view_reads_are_read_only")],
+                ),
+                (
+                    "THM-014",
+                    vec![
+                        (
+                            RuntimeTest,
+                            "detta_core::tests::arithmetic_overflow_reverts_without_state_or_events",
+                        ),
+                        (
+                            Fixture,
+                            "models/detta-restricted-evaluator-arithmetic-overflow.json",
+                        ),
+                        (Model, "models/DeTTaBlockExecution.tla::TypeOK"),
+                    ],
+                ),
+                (
+                    "THM-015",
+                    vec![
+                        (
+                            RuntimeTest,
+                            "detta_evaluator::tests::evaluator_rejects_forbidden_primitive",
+                        ),
+                        (
+                            Fixture,
+                            "models/detta-restricted-evaluator-forbidden-primitives.json",
+                        ),
+                    ],
+                ),
+            ])
+        );
+    }
+
+    #[test]
     fn proof_artifact_manifest_matches_checked_in_json() {
         let expected: serde_json::Value = serde_json::from_str(include_str!(
             "../../../models/detta-proof-artifact-manifest.json"
