@@ -1,6 +1,6 @@
 {
-  "schema": "detta.proof-artifact-manifest.v1",
-  "schema_version": 1,
+  "schema": "detta.proof-artifact-manifest.v2",
+  "schema_version": 2,
   "project": "DeTTa",
   "scope": "Secured Contract Spaces runtime safety obligations",
   "model_artifacts": [
@@ -11,6 +11,16 @@
     {
       "path": "models/DeTTaBlockExecution.cfg",
       "sha256": "9149c3554fb6fb6971913c9ca7615c54289dbd04c9e612baae3b49bf203e6598"
+    }
+  ],
+  "runtime_artifacts": [
+    {
+      "path": "models/detta-restricted-evaluator-proof-trace.json",
+      "sha256": "513d919a2f2038b02519512b5416b35bdddf5158cb8dadb792c7b6ed61147a38"
+    },
+    {
+      "path": "models/detta-restricted-evaluator-forbidden-primitives.json",
+      "sha256": "8da9bb850bf189c0ce69753717a47c40173636f564710dcab288d8ee1ac2622c"
     }
   ],
   "theorem_count": 15,

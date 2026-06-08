@@ -10,8 +10,9 @@ This directory contains formal-model artifacts for the DeTTa runtime.
   block-execution model.
 - `detta-proof-artifact-manifest.json` is the stable proof-artifact manifest
   exported by `detta_verify::proof_artifact_manifest()`. It includes theorem
-  coverage and formal model artifact roots. The verify crate tests that the
-  checked-in JSON stays synchronized with theorem coverage and model files.
+  coverage, formal model artifact roots, and restricted evaluator runtime
+  fixture roots. The verify crate tests that the checked-in JSON stays
+  synchronized with theorem coverage, model files, and runtime fixtures.
 - `detta-proof-artifact-manifest.sha256` records the release-attestation root
   for the checked-in proof-artifact manifest.
 - `detta-restricted-evaluator-proof-trace.json` is a golden fixture for the

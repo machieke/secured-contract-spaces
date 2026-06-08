@@ -218,8 +218,8 @@ pub struct ModelArtifactRoot {
     pub sha256: String,
 }
 
-pub const PROOF_ARTIFACT_MANIFEST_SCHEMA: &str = "detta.proof-artifact-manifest.v1";
-pub const PROOF_ARTIFACT_MANIFEST_SCHEMA_VERSION: u32 = 1;
+pub const PROOF_ARTIFACT_MANIFEST_SCHEMA: &str = "detta.proof-artifact-manifest.v2";
+pub const PROOF_ARTIFACT_MANIFEST_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ProofArtifactManifest {
@@ -228,6 +228,7 @@ pub struct ProofArtifactManifest {
     pub project: &'static str,
     pub scope: &'static str,
     pub model_artifacts: Vec<ModelArtifactRoot>,
+    pub runtime_artifacts: Vec<ModelArtifactRoot>,
     pub theorem_count: usize,
     pub coverage: Vec<SafetyTheoremCoverage>,
 }
@@ -240,6 +241,7 @@ pub fn proof_artifact_manifest() -> ProofArtifactManifest {
         project: "DeTTa",
         scope: "Secured Contract Spaces runtime safety obligations",
         model_artifacts: proof_model_artifacts(),
+        runtime_artifacts: proof_runtime_artifacts(),
         theorem_count: coverage.len(),
         coverage,
     }
@@ -257,6 +259,23 @@ pub fn proof_model_artifacts() -> Vec<ModelArtifactRoot> {
             path: "models/DeTTaBlockExecution.cfg",
             sha256: proof_artifact_manifest_root_bytes(include_bytes!(
                 "../../../models/DeTTaBlockExecution.cfg"
+            )),
+        },
+    ]
+}
+
+pub fn proof_runtime_artifacts() -> Vec<ModelArtifactRoot> {
+    vec![
+        ModelArtifactRoot {
+            path: "models/detta-restricted-evaluator-proof-trace.json",
+            sha256: proof_artifact_manifest_root_bytes(include_bytes!(
+                "../../../models/detta-restricted-evaluator-proof-trace.json"
+            )),
+        },
+        ModelArtifactRoot {
+            path: "models/detta-restricted-evaluator-forbidden-primitives.json",
+            sha256: proof_artifact_manifest_root_bytes(include_bytes!(
+                "../../../models/detta-restricted-evaluator-forbidden-primitives.json"
             )),
         },
     ]
@@ -692,7 +711,7 @@ mod tests {
             manifest.schema_version,
             PROOF_ARTIFACT_MANIFEST_SCHEMA_VERSION
         );
-        assert_eq!(PROOF_ARTIFACT_MANIFEST_SCHEMA_VERSION, 1);
+        assert_eq!(PROOF_ARTIFACT_MANIFEST_SCHEMA_VERSION, 2);
     }
 
     #[test]
@@ -717,6 +736,25 @@ mod tests {
                 ModelArtifactRoot {
                     path: "models/DeTTaBlockExecution.cfg",
                     sha256: "9149c3554fb6fb6971913c9ca7615c54289dbd04c9e612baae3b49bf203e6598"
+                        .into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn proof_runtime_artifacts_include_evaluator_fixture_roots() {
+        assert_eq!(
+            proof_runtime_artifacts(),
+            vec![
+                ModelArtifactRoot {
+                    path: "models/detta-restricted-evaluator-proof-trace.json",
+                    sha256: "513d919a2f2038b02519512b5416b35bdddf5158cb8dadb792c7b6ed61147a38"
+                        .into(),
+                },
+                ModelArtifactRoot {
+                    path: "models/detta-restricted-evaluator-forbidden-primitives.json",
+                    sha256: "8da9bb850bf189c0ce69753717a47c40173636f564710dcab288d8ee1ac2622c"
                         .into(),
                 },
             ]
