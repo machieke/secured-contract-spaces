@@ -78,10 +78,12 @@ Completed production-plan slices:
   audit root that changes with audit records and survives restart.
 - [x] Persistent node snapshot metadata roots are exposed over the node-aware RPC
   path and the shared TCP JSON RPC server.
+- [x] Snapshot-sync manifests include persistent node metadata roots so chunk
+  verification authenticates the validator-set audit root.
 
 Next implementation slices:
 
-- [ ] Include persistent node metadata roots in snapshot-sync manifests.
+- [ ] Verify persistent node metadata roots during snapshot reconstruction/import.
 
 # 1. Production Objective
 

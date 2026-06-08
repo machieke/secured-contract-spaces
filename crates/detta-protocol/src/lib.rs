@@ -10,6 +10,7 @@ pub const CURRENT_PROTOCOL_VERSION: u16 = 1;
 pub const HEADER_LEN: usize = 10;
 pub const MAX_PAYLOAD_LEN: usize = 16 * 1024 * 1024;
 pub const VALIDATOR_SIGNATURE_PREFIX: &str = "detta.validator.protocol.v1";
+pub const SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT: &str = "validator_set_metadata_audit_root";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub enum ValidatorSignatureDomain {
@@ -73,6 +74,7 @@ pub struct SnapshotChunkRequest {
 pub struct SnapshotChunkManifest {
     pub snapshot_root: String,
     pub snapshot_hash: String,
+    pub metadata_roots: BTreeMap<String, String>,
     pub chunk_size: u32,
     pub total_bytes: u64,
     pub chunk_count: u32,
@@ -525,6 +527,14 @@ pub fn build_snapshot_chunks(
     snapshot: &StateSnapshot,
     max_chunk_bytes: usize,
 ) -> Result<SnapshotChunkSet, SnapshotSyncError> {
+    build_snapshot_chunks_with_metadata_roots(snapshot, max_chunk_bytes, BTreeMap::new())
+}
+
+pub fn build_snapshot_chunks_with_metadata_roots(
+    snapshot: &StateSnapshot,
+    max_chunk_bytes: usize,
+    metadata_roots: BTreeMap<String, String>,
+) -> Result<SnapshotChunkSet, SnapshotSyncError> {
     if max_chunk_bytes == 0 {
         return Err(SnapshotSyncError::InvalidChunkSize);
     }
@@ -549,6 +559,7 @@ pub fn build_snapshot_chunks(
     let manifest = SnapshotChunkManifest {
         snapshot_root: snapshot.global_state_root.clone(),
         snapshot_hash,
+        metadata_roots,
         chunk_size,
         total_bytes: snapshot_bytes.len() as u64,
         chunk_count,
@@ -941,8 +952,21 @@ mod tests {
 
         assert!(chunk_set.chunks.len() > 1);
         assert_eq!(chunk_set.manifest.snapshot_root, snapshot.global_state_root);
+        assert!(chunk_set.manifest.metadata_roots.is_empty());
         assert_eq!(chunk_set.reconstruct_snapshot().unwrap(), snapshot);
         chunk_set.verify().unwrap();
+
+        let mut metadata_roots = BTreeMap::new();
+        metadata_roots.insert(
+            SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT.into(),
+            "audit-root-1".into(),
+        );
+        let metadata_chunk_set =
+            build_snapshot_chunks_with_metadata_roots(&snapshot, 64, metadata_roots.clone())
+                .unwrap();
+        assert_eq!(metadata_chunk_set.manifest.metadata_roots, metadata_roots);
+        assert_eq!(metadata_chunk_set.reconstruct_snapshot().unwrap(), snapshot);
+        metadata_chunk_set.verify().unwrap();
 
         let messages = [
             ProtocolMessage::SnapshotChunkRequest(SnapshotChunkRequest {
@@ -990,6 +1014,16 @@ mod tests {
         assert!(matches!(
             wrong_manifest.reconstruct_snapshot(),
             Err(SnapshotSyncError::ChunkRootMismatch { .. })
+        ));
+
+        let mut wrong_metadata = build_snapshot_chunks(&snapshot, 64).unwrap();
+        wrong_metadata
+            .manifest
+            .metadata_roots
+            .insert("extra_root".into(), "tampered".into());
+        assert!(matches!(
+            wrong_metadata.reconstruct_snapshot(),
+            Err(SnapshotSyncError::ManifestHashMismatch { .. })
         ));
     }
 

@@ -7,9 +7,10 @@ use detta_core::{
 };
 use detta_network::{Envelope, InMemoryTransport, NetworkError, NetworkMessage};
 use detta_protocol::{
-    build_snapshot_chunks, ProtocolMessageKind, SignatureError, SignedValidatorMessage,
-    SnapshotChunkRequest, SnapshotSyncError, ValidatorPublicKey, ValidatorSetMetadata,
-    ValidatorSetMetadataUpdate, ValidatorSigningKey,
+    build_snapshot_chunks_with_metadata_roots, ProtocolMessageKind, SignatureError,
+    SignedValidatorMessage, SnapshotChunkRequest, SnapshotSyncError, ValidatorPublicKey,
+    ValidatorSetMetadata, ValidatorSetMetadataUpdate, ValidatorSigningKey,
+    SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT,
 };
 use detta_rpc::{
     json_rpc_response_for_request, JsonRpcHandler, PersistentNodeSnapshotRoots, RpcError,
@@ -980,8 +981,16 @@ impl PersistentValidatorNode {
             });
         }
 
+        let mut metadata_roots = BTreeMap::new();
+        metadata_roots.insert(
+            SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT.into(),
+            self.storage
+                .validator_set_metadata_audit_root()
+                .map_err(NodeError::Storage)?,
+        );
         let chunk_set =
-            build_snapshot_chunks(&snapshot, max_chunk_bytes).map_err(NodeError::SnapshotSync)?;
+            build_snapshot_chunks_with_metadata_roots(&snapshot, max_chunk_bytes, metadata_roots)
+                .map_err(NodeError::SnapshotSync)?;
         let start = request.start_index as usize;
         let limit = request.max_chunks as usize;
         let mut messages = vec![NetworkMessage::SnapshotChunkManifest(
@@ -3049,7 +3058,18 @@ mod tests {
         let node_dir = temp_dir("state-sync-source");
         let node =
             PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &node_dir).unwrap();
+        node.record_validator_set_metadata_audit(
+            "validator-set-update-1".into(),
+            ValidatorSetMetadataAuditOutcome::Applied,
+            vec!["validator-1".into()],
+            "applied".into(),
+        )
+        .unwrap();
         let snapshot_root = node.rpc().get_state_root();
+        let expected_audit_root = node
+            .node_snapshot()
+            .unwrap()
+            .validator_set_metadata_audit_root;
         let mut all_chunks = Vec::new();
         let mut manifest = None;
         let mut start_index = 0;
@@ -3068,6 +3088,12 @@ mod tests {
 
             match &response[0] {
                 NetworkMessage::SnapshotChunkManifest(next_manifest) => {
+                    assert_eq!(
+                        next_manifest
+                            .metadata_roots
+                            .get(SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT),
+                        Some(&expected_audit_root)
+                    );
                     if let Some(manifest) = &manifest {
                         assert_eq!(manifest, next_manifest);
                     } else {
