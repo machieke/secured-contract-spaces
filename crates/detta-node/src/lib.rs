@@ -14,9 +14,10 @@ use detta_protocol::{
     SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT,
 };
 use detta_rpc::{
-    json_rpc_response_for_request, JsonRpcHandler, PersistentNodeSnapshotRoots, RpcError,
-    RpcErrorBody, RpcRequest, RpcResponse, RpcResult, RpcService, RpcTransportError,
-    SnapshotMetadataRootStatus, SnapshotSyncClientMetricsReport, ValidatorSetMetadataUpdateStatus,
+    json_rpc_response_for_request, JsonRpcHandler, PersistentNodeSnapshotRoots,
+    RequiredSnapshotMetadataRootsReport, RpcError, RpcErrorBody, RpcRequest, RpcResponse,
+    RpcResult, RpcService, RpcTransportError, SnapshotMetadataRootStatus,
+    SnapshotSyncClientMetricsReport, ValidatorSetMetadataUpdateStatus,
 };
 use detta_storage::{
     FileStorage, StorageError, ValidatorSetMetadataAuditOutcome, ValidatorSetMetadataAuditRecord,
@@ -427,6 +428,7 @@ impl PersistentValidatorNode {
     pub fn node_snapshot_roots(&self) -> Result<PersistentNodeSnapshotRoots, NodeError> {
         let snapshot = self.node_snapshot()?;
         let required_snapshot_metadata_roots = self.load_required_snapshot_metadata_roots()?;
+        let required_snapshot_metadata_roots_root = self.required_snapshot_metadata_roots_root()?;
         let snapshot_sync_client_metrics = self
             .load_snapshot_sync_client_metrics()?
             .map(snapshot_sync_client_metrics_report);
@@ -440,6 +442,7 @@ impl PersistentValidatorNode {
             global_state_root: snapshot.state_snapshot.global_state_root,
             validator_set_metadata_audit_root: snapshot.validator_set_metadata_audit_root,
             required_snapshot_metadata_roots,
+            required_snapshot_metadata_roots_root,
             snapshot_sync_client_metrics,
         })
     }
@@ -503,6 +506,21 @@ impl PersistentValidatorNode {
         self.storage
             .load_required_snapshot_metadata_roots()
             .map_err(NodeError::Storage)
+    }
+
+    pub fn required_snapshot_metadata_roots_root(&self) -> Result<String, NodeError> {
+        self.storage
+            .required_snapshot_metadata_roots_root()
+            .map_err(NodeError::Storage)
+    }
+
+    pub fn required_snapshot_metadata_roots_report(
+        &self,
+    ) -> Result<RequiredSnapshotMetadataRootsReport, NodeError> {
+        Ok(RequiredSnapshotMetadataRootsReport {
+            roots: self.load_required_snapshot_metadata_roots()?,
+            root: self.required_snapshot_metadata_roots_root()?,
+        })
     }
 
     fn effective_snapshot_metadata_roots(&self) -> Result<BTreeMap<String, String>, NodeError> {
@@ -584,7 +602,7 @@ impl PersistentValidatorNode {
                 .map(RpcResponse::Ok)
                 .unwrap_or_else(node_rpc_error_response),
             RpcRequest::GetRequiredSnapshotMetadataRoots => self
-                .load_required_snapshot_metadata_roots()
+                .required_snapshot_metadata_roots_report()
                 .map(RpcResult::RequiredSnapshotMetadataRoots)
                 .map(RpcResponse::Ok)
                 .unwrap_or_else(node_rpc_error_response),
@@ -1601,6 +1619,8 @@ mod tests {
             global_state_root: snapshot.state_snapshot.global_state_root.clone(),
             validator_set_metadata_audit_root: snapshot.validator_set_metadata_audit_root.clone(),
             required_snapshot_metadata_roots: BTreeMap::new(),
+            required_snapshot_metadata_roots_root:
+                FileStorage::required_snapshot_metadata_roots_root_for(&BTreeMap::new()).unwrap(),
             snapshot_sync_client_metrics: None,
         }
     }
@@ -3197,6 +3217,11 @@ mod tests {
             "required-sync-metrics-root".into(),
         );
         let expected_required_metadata_roots = required_metadata_roots.clone();
+        let expected_required_metadata_roots_root =
+            FileStorage::required_snapshot_metadata_roots_root_for(
+                &expected_required_metadata_roots,
+            )
+            .unwrap();
         let handle = thread::spawn(move || {
             let mut node = PersistentValidatorNode::bootstrap_with_validator_set(
                 "validator-2",
@@ -3227,6 +3252,10 @@ mod tests {
             initial_snapshot.required_snapshot_metadata_roots,
             expected_required_metadata_roots
         );
+        assert_eq!(
+            initial_snapshot.required_snapshot_metadata_roots_root,
+            expected_required_metadata_roots_root
+        );
         write_rpc_request(&mut stream, &RpcRequest::GetSnapshotSyncClientMetrics);
         assert_eq!(
             read_rpc_response(&mut reader),
@@ -3238,7 +3267,12 @@ mod tests {
         assert_eq!(
             read_rpc_response(&mut reader),
             RpcResponse::Ok(RpcResult::RequiredSnapshotMetadataRoots(
-                initial_snapshot.required_snapshot_metadata_roots.clone()
+                RequiredSnapshotMetadataRootsReport {
+                    roots: initial_snapshot.required_snapshot_metadata_roots.clone(),
+                    root: initial_snapshot
+                        .required_snapshot_metadata_roots_root
+                        .clone(),
+                }
             ))
         );
 
@@ -3754,10 +3788,14 @@ mod tests {
             sink.load_required_snapshot_metadata_roots().unwrap(),
             required_metadata_roots
         );
+        let required_metadata_roots_root = sink.required_snapshot_metadata_roots_root().unwrap();
         assert_eq!(
             sink.handle_rpc_request(RpcRequest::GetRequiredSnapshotMetadataRoots),
             RpcResponse::Ok(RpcResult::RequiredSnapshotMetadataRoots(
-                required_metadata_roots.clone()
+                RequiredSnapshotMetadataRootsReport {
+                    roots: required_metadata_roots.clone(),
+                    root: required_metadata_roots_root.clone(),
+                }
             ))
         );
         let mut wrong_diagnostics_roots = required_metadata_roots.clone();
@@ -3808,6 +3846,10 @@ mod tests {
             sink_roots.required_snapshot_metadata_roots,
             required_metadata_roots
         );
+        assert_eq!(
+            sink_roots.required_snapshot_metadata_roots_root,
+            required_metadata_roots_root
+        );
         let response = sink
             .serve_snapshot_chunk_request(
                 &SnapshotChunkRequest {
@@ -3845,7 +3887,10 @@ mod tests {
         assert_eq!(
             restarted_sink.handle_rpc_request(RpcRequest::GetRequiredSnapshotMetadataRoots),
             RpcResponse::Ok(RpcResult::RequiredSnapshotMetadataRoots(
-                required_metadata_roots.clone()
+                RequiredSnapshotMetadataRootsReport {
+                    roots: required_metadata_roots.clone(),
+                    root: required_metadata_roots_root.clone(),
+                }
             ))
         );
         assert_eq!(
@@ -3867,6 +3912,13 @@ mod tests {
                 .unwrap()
                 .required_snapshot_metadata_roots,
             required_metadata_roots
+        );
+        assert_eq!(
+            restarted_sink
+                .node_snapshot_roots()
+                .unwrap()
+                .required_snapshot_metadata_roots_root,
+            required_metadata_roots_root
         );
 
         drop(client);

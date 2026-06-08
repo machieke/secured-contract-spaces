@@ -95,6 +95,17 @@ impl FileStorage {
         read_json(&path)
     }
 
+    pub fn required_snapshot_metadata_roots_root(&self) -> Result<String, StorageError> {
+        let roots = self.load_required_snapshot_metadata_roots()?;
+        Self::required_snapshot_metadata_roots_root_for(&roots)
+    }
+
+    pub fn required_snapshot_metadata_roots_root_for(
+        roots: &BTreeMap<String, String>,
+    ) -> Result<String, StorageError> {
+        hash_bincode(roots)
+    }
+
     pub fn commit_snapshot_sync_client_metrics<T: Serialize>(
         &self,
         metrics: &T,
@@ -446,6 +457,10 @@ mod tests {
             "validator_set_metadata_audit_root".into(),
             "audit-root-1".into(),
         );
+        roots.insert(
+            "state_sync_client_metrics_root".into(),
+            "metrics-root-1".into(),
+        );
 
         assert_eq!(
             storage.load_snapshot_metadata_roots().unwrap(),
@@ -455,14 +470,33 @@ mod tests {
             storage.load_required_snapshot_metadata_roots().unwrap(),
             BTreeMap::new()
         );
+        let empty_required_roots_root = storage.required_snapshot_metadata_roots_root().unwrap();
         storage.commit_snapshot_metadata_roots(&roots).unwrap();
         storage
             .commit_required_snapshot_metadata_roots(&roots)
             .unwrap();
+        let required_roots_root = storage.required_snapshot_metadata_roots_root().unwrap();
+        assert_ne!(required_roots_root, empty_required_roots_root);
         assert_eq!(storage.load_snapshot_metadata_roots().unwrap(), roots);
         assert_eq!(
             storage.load_required_snapshot_metadata_roots().unwrap(),
             roots
+        );
+        let mut same_roots_different_insertion_order = BTreeMap::new();
+        same_roots_different_insertion_order.insert(
+            "state_sync_client_metrics_root".into(),
+            "metrics-root-1".into(),
+        );
+        same_roots_different_insertion_order.insert(
+            "validator_set_metadata_audit_root".into(),
+            "audit-root-1".into(),
+        );
+        storage
+            .commit_required_snapshot_metadata_roots(&same_roots_different_insertion_order)
+            .unwrap();
+        assert_eq!(
+            storage.required_snapshot_metadata_roots_root().unwrap(),
+            required_roots_root
         );
         assert_eq!(
             FileStorage::open(&dir)
@@ -477,6 +511,13 @@ mod tests {
                 .load_required_snapshot_metadata_roots()
                 .unwrap(),
             roots
+        );
+        assert_eq!(
+            FileStorage::open(&dir)
+                .unwrap()
+                .required_snapshot_metadata_roots_root()
+                .unwrap(),
+            required_roots_root
         );
 
         fs::remove_dir_all(dir).unwrap();

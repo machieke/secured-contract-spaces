@@ -111,7 +111,14 @@ pub struct PersistentNodeSnapshotRoots {
     pub global_state_root: String,
     pub validator_set_metadata_audit_root: String,
     pub required_snapshot_metadata_roots: BTreeMap<String, String>,
+    pub required_snapshot_metadata_roots_root: String,
     pub snapshot_sync_client_metrics: Option<SnapshotSyncClientMetricsReport>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RequiredSnapshotMetadataRootsReport {
+    pub roots: BTreeMap<String, String>,
+    pub root: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -147,7 +154,7 @@ pub enum RpcResult {
     PersistentNodeSnapshotRoots(Box<PersistentNodeSnapshotRoots>),
     SnapshotMetadataRootStatus(SnapshotMetadataRootStatus),
     SnapshotSyncClientMetrics(Option<SnapshotSyncClientMetricsReport>),
-    RequiredSnapshotMetadataRoots(BTreeMap<String, String>),
+    RequiredSnapshotMetadataRoots(RequiredSnapshotMetadataRootsReport),
     Amount(Amount),
     StorageProof(Box<StorageProof>),
     StorageNonInclusionProof(Box<StorageNonInclusionProof>),

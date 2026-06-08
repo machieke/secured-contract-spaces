@@ -114,11 +114,13 @@ Completed production-plan slices:
   RPC path.
 - [x] Required snapshot metadata-root sets are included in persistent snapshot
   root responses for audit discovery.
+- [x] Required snapshot metadata-root requirement sets have stable roots exposed
+  through dedicated RPC reports and persistent snapshot root responses.
 
 Next implementation slices:
 
-- [ ] Add a stable hash/root for required snapshot metadata-root requirement
-  sets.
+- [ ] Include required snapshot metadata-root requirement roots in state-sync
+  client diagnostics.
 
 # 1. Production Objective
 
