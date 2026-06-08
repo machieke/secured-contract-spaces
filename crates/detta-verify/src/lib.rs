@@ -1044,6 +1044,24 @@ mod tests {
     }
 
     #[test]
+    fn theorem_verifier_evidence_covers_expected_functions() {
+        let verifier_functions: BTreeSet<_> = scs_theorem_coverage()
+            .into_iter()
+            .flat_map(|entry| entry.evidence)
+            .filter(|evidence| matches!(evidence.kind, TheoremEvidenceKind::Verifier))
+            .map(|evidence| evidence.reference)
+            .collect();
+
+        assert_eq!(
+            verifier_functions,
+            BTreeSet::from([
+                "detta_verify::verify_kernel_trace",
+                "detta_verify::verify_differential_replay",
+            ])
+        );
+    }
+
+    #[test]
     fn theorem_model_evidence_uses_expected_namespace() {
         for entry in scs_theorem_coverage() {
             for evidence in entry

@@ -291,11 +291,12 @@ Completed production-plan slices:
   expected TLA operator coverage in verify.
 - [x] Proof manifest theorem runtime-test evidence references are checked for
   expected DeTTa crate coverage in verify.
+- [x] Proof manifest theorem verifier evidence references are checked for
+  expected verifier function coverage in verify.
 
 Next implementation slices:
 
-- [ ] Add proof manifest theorem verifier evidence function coverage checks in
-  verify.
+- [ ] Add proof manifest per-theorem duplicate evidence checks in verify.
 
 # 1. Production Objective
 
