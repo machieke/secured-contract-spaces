@@ -4,5 +4,6 @@ members = [
     "crates/detta-rpc",
     "crates/detta-verify",
     "crates/detta-consensus",
+    "crates/detta-storage",
 ]
 resolver = "2"
