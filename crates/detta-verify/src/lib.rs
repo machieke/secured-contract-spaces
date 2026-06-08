@@ -908,6 +908,40 @@ mod tests {
     }
 
     #[test]
+    fn proof_artifact_paths_are_models_namespace_relative() {
+        for artifact in proof_model_artifacts()
+            .into_iter()
+            .chain(proof_runtime_artifacts())
+        {
+            assert!(
+                artifact.path.starts_with("models/"),
+                "{} must stay under the models/ namespace",
+                artifact.path
+            );
+            assert!(
+                !artifact.path.starts_with('/'),
+                "{} must not be absolute",
+                artifact.path
+            );
+            assert!(
+                !artifact.path.contains(".."),
+                "{} must not contain parent traversal",
+                artifact.path
+            );
+            assert!(
+                !artifact.path.contains('\\'),
+                "{} must use forward slash separators",
+                artifact.path
+            );
+            assert!(
+                !artifact.path.contains("//"),
+                "{} must not contain empty path segments",
+                artifact.path
+            );
+        }
+    }
+
+    #[test]
     fn proof_runtime_artifacts_bind_all_evaluator_attestations() {
         let runtime_paths: BTreeSet<_> = proof_runtime_artifacts()
             .into_iter()
