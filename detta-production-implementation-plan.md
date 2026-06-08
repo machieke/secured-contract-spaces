@@ -348,10 +348,12 @@ Completed production-plan slices:
   verify.
 - [x] Proof manifest root attestation root is checked for lowercase hex in
   verify.
+- [x] Proof manifest root attestation filename is checked to reject path
+  separators in verify.
 
 Next implementation slices:
 
-- [ ] Add proof manifest root attestation filename separator checks in verify.
+- [ ] Add proof manifest root attestation filename suffix checks in verify.
 
 # 1. Production Objective
 

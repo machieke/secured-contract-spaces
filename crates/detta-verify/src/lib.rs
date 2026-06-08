@@ -1428,6 +1428,15 @@ mod tests {
             .all(|character| character.is_ascii_hexdigit() && !character.is_ascii_uppercase()));
     }
 
+    #[test]
+    fn proof_artifact_manifest_root_attestation_filename_has_no_path_separators() {
+        let attestation = include_str!("../../../models/detta-proof-artifact-manifest.sha256");
+        let (_, file_name) = sha256sum_attestation_parts(attestation);
+
+        assert!(!file_name.contains('/'));
+        assert!(!file_name.contains('\\'));
+    }
+
     struct ProofReleaseAttestationFixture {
         attestation: &'static str,
         file_name: &'static str,
