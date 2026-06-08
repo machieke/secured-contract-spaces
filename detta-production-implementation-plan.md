@@ -334,10 +334,12 @@ Completed production-plan slices:
   in verify.
 - [x] Proof release attestation lines are checked for a single sha256sum
   separator token in verify.
+- [x] Proof release attestation lines are checked for nonempty root and
+  filename parts in verify.
 
 Next implementation slices:
 
-- [ ] Add proof release attestation nonempty part checks in verify.
+- [ ] Add proof manifest root attestation newline checks in verify.
 
 # 1. Production Objective
 

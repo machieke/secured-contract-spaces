@@ -129,6 +129,7 @@ cargo test -p detta-verify
 - proof release attestation filenames contain no path separators.
 - proof release attestation files contain exactly one trailing newline.
 - proof release attestation lines use one `sha256sum` separator token.
+- proof release attestation root and filename parts are nonempty.
 
 The evaluator `sha256sum -c` commands verify fixture-file attestations. The
 final `sha256sum` command reports the file root of the compact-trace-root
@@ -274,6 +275,7 @@ Before accepting a release proof bundle, verify:
 - proof release attestation filenames contain no path separators;
 - proof release attestation files contain exactly one trailing newline;
 - proof release attestation lines use one `sha256sum` separator token;
+- proof release attestation root and filename parts are nonempty;
 - `detta-restricted-evaluator-proof-trace-root.sha256` matches both the
   fixture `trace_root` field and the recomputed root of `report.trace`;
 - `models/detta-proof-artifact-manifest.sha256` verifies after all fixture,

@@ -1587,6 +1587,16 @@ mod tests {
     }
 
     #[test]
+    fn proof_release_attestations_have_nonempty_parts() {
+        for fixture in proof_release_attestations_for_test() {
+            let (root, file_name) = sha256sum_attestation_parts(fixture.attestation);
+
+            assert!(!root.is_empty());
+            assert!(!file_name.is_empty());
+        }
+    }
+
+    #[test]
     fn proof_release_attestation_target_extensions_are_consistent() {
         for fixture in proof_release_attestations_for_test() {
             let target_extension = fixture.target_path.rsplit('.').next().unwrap();
