@@ -104,10 +104,12 @@ Completed production-plan slices:
   diagnostics when available.
 - [x] Persisted state-sync diagnostics are hashed into snapshot metadata roots
   so manifests can authenticate diagnostics for audit proofs.
+- [x] Verified snapshot imports can require state-sync diagnostics roots and
+  reject mismatched diagnostics roots before commit.
 
 Next implementation slices:
 
-- [ ] Require state-sync diagnostics roots during verified snapshot imports.
+- [ ] Persist required metadata-root sets used for verified snapshot imports.
 
 # 1. Production Objective
 

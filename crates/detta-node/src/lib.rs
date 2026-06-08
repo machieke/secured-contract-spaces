@@ -491,6 +491,10 @@ impl PersistentValidatorNode {
             .map_err(NodeError::Storage)
     }
 
+    pub fn snapshot_metadata_roots(&self) -> Result<BTreeMap<String, String>, NodeError> {
+        self.effective_snapshot_metadata_roots()
+    }
+
     fn effective_snapshot_metadata_roots(&self) -> Result<BTreeMap<String, String>, NodeError> {
         let mut metadata_roots = self
             .storage
@@ -3624,13 +3628,25 @@ mod tests {
                 "applied".into(),
             )
             .unwrap();
+        let source_metrics = SnapshotSyncClientMetrics {
+            retry_attempts: 1,
+            stream_failures: 0,
+            requests_sent: 2,
+            manifests_received: 2,
+            chunks_received: 4,
+            resume_requests: 1,
+            metadata_roots_verified: true,
+        };
+        source
+            .persist_snapshot_sync_client_metrics(&source_metrics)
+            .unwrap();
         let snapshot_root = source.rpc().get_state_root();
         let status = source.snapshot_metadata_root_status().unwrap();
-        let mut required_metadata_roots = BTreeMap::new();
-        required_metadata_roots.insert(
-            SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT.into(),
-            status.validator_set_metadata_audit_root.clone(),
-        );
+        let required_metadata_roots = source.snapshot_metadata_roots().unwrap();
+        let expected_metrics_root = required_metadata_roots
+            .get(SNAPSHOT_METADATA_STATE_SYNC_CLIENT_METRICS_ROOT)
+            .cloned()
+            .unwrap();
 
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
@@ -3665,6 +3681,13 @@ mod tests {
                 .get(SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT),
             Some(&status.validator_set_metadata_audit_root)
         );
+        assert_eq!(
+            chunk_set
+                .manifest
+                .metadata_roots
+                .get(SNAPSHOT_METADATA_STATE_SYNC_CLIENT_METRICS_ROOT),
+            Some(&expected_metrics_root)
+        );
         assert_eq!(metrics.chunks_received, chunk_set.chunks.len() as u32);
         assert_eq!(metrics.manifests_received, metrics.requests_sent);
         assert_eq!(
@@ -3684,6 +3707,20 @@ mod tests {
             .import_snapshot_chunk_set(&chunk_set, &required_metadata_roots)
             .unwrap();
         assert_eq!(imported.global_state_root, snapshot_root);
+        let mut wrong_diagnostics_roots = required_metadata_roots.clone();
+        wrong_diagnostics_roots.insert(
+            SNAPSHOT_METADATA_STATE_SYNC_CLIENT_METRICS_ROOT.into(),
+            "wrong-diagnostics-root".into(),
+        );
+        assert_eq!(
+            sink.import_snapshot_chunk_set(&chunk_set, &wrong_diagnostics_roots)
+                .unwrap_err(),
+            NodeError::SnapshotSync(SnapshotSyncError::MetadataRootMismatch {
+                key: SNAPSHOT_METADATA_STATE_SYNC_CLIENT_METRICS_ROOT.into(),
+                expected: "wrong-diagnostics-root".into(),
+                actual: Some(expected_metrics_root),
+            })
+        );
         assert_eq!(
             sink.handle_rpc_request(RpcRequest::GetSnapshotSyncClientMetrics),
             RpcResponse::Ok(RpcResult::SnapshotSyncClientMetrics(None))
