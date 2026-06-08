@@ -321,6 +321,18 @@ pub fn proof_runtime_artifacts() -> Vec<ModelArtifactRoot> {
                 "../../../models/detta-restricted-evaluator-arithmetic-overflow.sha256"
             )),
         },
+        ModelArtifactRoot {
+            path: "models/detta-restricted-evaluator-fixture-inventory.json",
+            sha256: proof_artifact_manifest_root_bytes(include_bytes!(
+                "../../../models/detta-restricted-evaluator-fixture-inventory.json"
+            )),
+        },
+        ModelArtifactRoot {
+            path: "models/detta-restricted-evaluator-fixture-inventory.sha256",
+            sha256: proof_artifact_manifest_root_bytes(include_bytes!(
+                "../../../models/detta-restricted-evaluator-fixture-inventory.sha256"
+            )),
+        },
     ]
 }
 
@@ -854,6 +866,16 @@ mod tests {
                     sha256: "d8f9f4c782699c7e56fe852968f82e54ddb0a1fe701add00dd986c300a2cb11d"
                         .into(),
                 },
+                ModelArtifactRoot {
+                    path: "models/detta-restricted-evaluator-fixture-inventory.json",
+                    sha256: "d50ccc0023d9bf691de61c2f4db609843645967a37e8df4e7c97097268f3e18f"
+                        .into(),
+                },
+                ModelArtifactRoot {
+                    path: "models/detta-restricted-evaluator-fixture-inventory.sha256",
+                    sha256: "40660cbc15f9d9b4a5b3081a0f9aa2c2a390b2043c26fef041333701b0da1a66"
+                        .into(),
+                },
             ]
         );
     }
@@ -871,6 +893,7 @@ mod tests {
             "models/detta-restricted-evaluator-forbidden-primitives.sha256",
             "models/detta-restricted-evaluator-resource-exhaustion.sha256",
             "models/detta-restricted-evaluator-arithmetic-overflow.sha256",
+            "models/detta-restricted-evaluator-fixture-inventory.sha256",
         ] {
             assert!(
                 runtime_paths.contains(required),
@@ -891,6 +914,7 @@ mod tests {
             "models/detta-restricted-evaluator-forbidden-primitives.json",
             "models/detta-restricted-evaluator-resource-exhaustion.json",
             "models/detta-restricted-evaluator-arithmetic-overflow.json",
+            "models/detta-restricted-evaluator-fixture-inventory.json",
         ] {
             assert!(
                 runtime_paths.contains(required),
@@ -928,6 +952,12 @@ mod tests {
             include_str!("../../../models/detta-restricted-evaluator-arithmetic-overflow.sha256"),
             "detta-restricted-evaluator-arithmetic-overflow.json",
             "models/detta-restricted-evaluator-arithmetic-overflow.json",
+            &runtime_roots,
+        );
+        assert_fixture_attestation_matches_runtime_root(
+            include_str!("../../../models/detta-restricted-evaluator-fixture-inventory.sha256"),
+            "detta-restricted-evaluator-fixture-inventory.json",
+            "models/detta-restricted-evaluator-fixture-inventory.json",
             &runtime_roots,
         );
     }

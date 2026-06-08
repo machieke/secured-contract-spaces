@@ -13,7 +13,7 @@ This directory contains formal-model artifacts for the DeTTa runtime.
   coverage, formal model artifact roots, and restricted evaluator runtime
   fixture and attestation roots. The verify crate tests that the checked-in JSON
   stays synchronized with theorem coverage, model files, runtime fixtures, and
-  runtime fixture attestations.
+  runtime fixture attestations, including the evaluator fixture inventory.
 - `detta-proof-artifact-manifest.sha256` records the release-attestation root
   for the checked-in proof-artifact manifest.
 - `detta-restricted-evaluator-proof-trace.json` is a golden fixture for the

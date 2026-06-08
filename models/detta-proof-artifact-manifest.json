@@ -49,6 +49,14 @@
     {
       "path": "models/detta-restricted-evaluator-arithmetic-overflow.sha256",
       "sha256": "d8f9f4c782699c7e56fe852968f82e54ddb0a1fe701add00dd986c300a2cb11d"
+    },
+    {
+      "path": "models/detta-restricted-evaluator-fixture-inventory.json",
+      "sha256": "d50ccc0023d9bf691de61c2f4db609843645967a37e8df4e7c97097268f3e18f"
+    },
+    {
+      "path": "models/detta-restricted-evaluator-fixture-inventory.sha256",
+      "sha256": "40660cbc15f9d9b4a5b3081a0f9aa2c2a390b2043c26fef041333701b0da1a66"
     }
   ],
   "theorem_count": 15,
