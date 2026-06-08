@@ -20,6 +20,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 pub const DEFAULT_NODE_NETWORK_ID: &str = "detta-localnet";
+pub const DEFAULT_MAX_PENDING_VALIDATOR_SET_METADATA_UPDATES: usize = 128;
+pub const DEFAULT_MAX_PENDING_VALIDATOR_SET_METADATA_AUTHORIZATIONS_PER_VALIDATOR: usize = 32;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NodeError {
@@ -58,6 +60,15 @@ pub enum NodeError {
         expires_at_height: u64,
         current_height: u64,
     },
+    ValidatorSetMetadataAuthorizationPoolFull {
+        pending_updates: usize,
+        max_pending_updates: usize,
+    },
+    ValidatorSetMetadataAuthorizationRateLimited {
+        signer: String,
+        pending_authorizations: usize,
+        max_pending_authorizations: usize,
+    },
     ValidatorSetChainMismatch {
         expected: String,
         actual: String,
@@ -85,6 +96,8 @@ pub struct PersistentValidatorNode {
     applied_validator_set_updates: BTreeSet<String>,
     pending_validator_set_metadata_authorizations:
         BTreeMap<String, BTreeMap<String, SignedValidatorMessage>>,
+    max_pending_validator_set_metadata_updates: usize,
+    max_pending_validator_set_metadata_authorizations_per_validator: usize,
     rpc: RpcService,
     storage: FileStorage,
 }
@@ -112,6 +125,10 @@ impl PersistentValidatorNode {
             validator_keys: BTreeMap::new(),
             applied_validator_set_updates: BTreeSet::new(),
             pending_validator_set_metadata_authorizations: BTreeMap::new(),
+            max_pending_validator_set_metadata_updates:
+                DEFAULT_MAX_PENDING_VALIDATOR_SET_METADATA_UPDATES,
+            max_pending_validator_set_metadata_authorizations_per_validator:
+                DEFAULT_MAX_PENDING_VALIDATOR_SET_METADATA_AUTHORIZATIONS_PER_VALIDATOR,
         })
     }
 
@@ -150,6 +167,10 @@ impl PersistentValidatorNode {
             validator_keys: BTreeMap::new(),
             applied_validator_set_updates: BTreeSet::new(),
             pending_validator_set_metadata_authorizations: BTreeMap::new(),
+            max_pending_validator_set_metadata_updates:
+                DEFAULT_MAX_PENDING_VALIDATOR_SET_METADATA_UPDATES,
+            max_pending_validator_set_metadata_authorizations_per_validator:
+                DEFAULT_MAX_PENDING_VALIDATOR_SET_METADATA_AUTHORIZATIONS_PER_VALIDATOR,
         };
         if let Some(metadata) = node
             .storage
@@ -233,6 +254,16 @@ impl PersistentValidatorNode {
 
     pub fn current_height(&self) -> u64 {
         self.rpc.node().state().height()
+    }
+
+    pub fn set_validator_set_metadata_authorization_limits(
+        &mut self,
+        max_pending_updates: usize,
+        max_pending_authorizations_per_validator: usize,
+    ) {
+        self.max_pending_validator_set_metadata_updates = max_pending_updates;
+        self.max_pending_validator_set_metadata_authorizations_per_validator =
+            max_pending_authorizations_per_validator;
     }
 
     pub fn validator_set_metadata_quorum(&self) -> usize {
@@ -372,6 +403,37 @@ impl PersistentValidatorNode {
             return Err(NodeError::ValidatorSetMetadataUpdateAlreadyApplied(
                 update.update_id,
             ));
+        }
+        let signer = signed.signer.clone();
+        let existing_update_authorizations = self
+            .pending_validator_set_metadata_authorizations
+            .get(&update.update_id);
+        let replacing_existing_authorization = existing_update_authorizations
+            .is_some_and(|authorizations| authorizations.contains_key(&signer));
+        if existing_update_authorizations.is_none()
+            && self.pending_validator_set_metadata_authorizations.len()
+                >= self.max_pending_validator_set_metadata_updates
+        {
+            return Err(NodeError::ValidatorSetMetadataAuthorizationPoolFull {
+                pending_updates: self.pending_validator_set_metadata_authorizations.len(),
+                max_pending_updates: self.max_pending_validator_set_metadata_updates,
+            });
+        }
+        let pending_authorizations_for_signer = self
+            .pending_validator_set_metadata_authorizations
+            .values()
+            .filter(|authorizations| authorizations.contains_key(&signer))
+            .count();
+        if !replacing_existing_authorization
+            && pending_authorizations_for_signer
+                >= self.max_pending_validator_set_metadata_authorizations_per_validator
+        {
+            return Err(NodeError::ValidatorSetMetadataAuthorizationRateLimited {
+                signer,
+                pending_authorizations: pending_authorizations_for_signer,
+                max_pending_authorizations: self
+                    .max_pending_validator_set_metadata_authorizations_per_validator,
+            });
         }
         if let Some(existing_authorizations) = self
             .pending_validator_set_metadata_authorizations
@@ -948,6 +1010,12 @@ fn node_rpc_error_code(error: &NodeError) -> &'static str {
         }
         NodeError::ValidatorSetMetadataUpdateExpired { .. } => {
             "node.validator_set_metadata_update_expired"
+        }
+        NodeError::ValidatorSetMetadataAuthorizationPoolFull { .. } => {
+            "node.validator_set_metadata_authorization_pool_full"
+        }
+        NodeError::ValidatorSetMetadataAuthorizationRateLimited { .. } => {
+            "node.validator_set_metadata_authorization_rate_limited"
         }
         NodeError::UnsignedValidatorSetMetadataUpdate => {
             "node.unsigned_validator_set_metadata_update"
@@ -2039,6 +2107,153 @@ mod tests {
         assert_eq!(
             restarted.pending_validator_set_metadata_authorization_count("validator-set-update-1"),
             0
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn persistent_node_bounds_pending_validator_set_metadata_update_pool() {
+        let dir = temp_dir("validator-set-pool-limit");
+        let signer_key = validator_key("validator-1", 7);
+        let peer_key = validator_key("validator-2", 8);
+        let added_key = validator_key("validator-3", 9);
+        let other_added_key = validator_key("validator-4", 10);
+        let mut node = PersistentValidatorNode::bootstrap_with_validator_set(
+            "validator-2",
+            seeded_state(),
+            &dir,
+            "detta-testnet",
+            vec![signer_key.public_key(), peer_key.public_key()],
+        )
+        .unwrap();
+        node.set_validator_set_metadata_authorization_limits(1, 10);
+        let first_update = ValidatorSetMetadataUpdate {
+            update_id: "validator-set-update-1".into(),
+            add_validators: vec![added_key.public_key()],
+            remove_validators: vec![],
+            expires_at_height: None,
+        };
+        let second_update = ValidatorSetMetadataUpdate {
+            update_id: "validator-set-update-2".into(),
+            add_validators: vec![other_added_key.public_key()],
+            remove_validators: vec![],
+            expires_at_height: None,
+        };
+        let first_authorization = signer_key
+            .sign_message(
+                "detta-testnet",
+                node.chain_id().clone(),
+                NetworkMessage::ValidatorSetMetadataUpdate(first_update),
+            )
+            .unwrap();
+        let second_authorization = peer_key
+            .sign_message(
+                "detta-testnet",
+                node.chain_id().clone(),
+                NetworkMessage::ValidatorSetMetadataUpdate(second_update),
+            )
+            .unwrap();
+
+        assert_eq!(
+            node.record_pending_validator_set_metadata_authorization(
+                NetworkMessage::SignedValidator(Box::new(first_authorization)),
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            node.record_pending_validator_set_metadata_authorization(
+                NetworkMessage::SignedValidator(Box::new(second_authorization)),
+            )
+            .unwrap_err(),
+            NodeError::ValidatorSetMetadataAuthorizationPoolFull {
+                pending_updates: 1,
+                max_pending_updates: 1,
+            }
+        );
+        assert_eq!(
+            node.pending_validator_set_metadata_authorization_count("validator-set-update-2"),
+            0
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn persistent_node_rate_limits_pending_validator_set_metadata_authorizations_by_signer() {
+        let dir = temp_dir("validator-set-rate-limit");
+        let signer_key = validator_key("validator-1", 7);
+        let peer_key = validator_key("validator-2", 8);
+        let added_key = validator_key("validator-3", 9);
+        let other_added_key = validator_key("validator-4", 10);
+        let mut node = PersistentValidatorNode::bootstrap_with_validator_set(
+            "validator-2",
+            seeded_state(),
+            &dir,
+            "detta-testnet",
+            vec![signer_key.public_key(), peer_key.public_key()],
+        )
+        .unwrap();
+        node.set_validator_set_metadata_authorization_limits(10, 1);
+        let first_update = ValidatorSetMetadataUpdate {
+            update_id: "validator-set-update-1".into(),
+            add_validators: vec![added_key.public_key()],
+            remove_validators: vec![],
+            expires_at_height: None,
+        };
+        let second_update = ValidatorSetMetadataUpdate {
+            update_id: "validator-set-update-2".into(),
+            add_validators: vec![other_added_key.public_key()],
+            remove_validators: vec![],
+            expires_at_height: None,
+        };
+        let first_authorization = signer_key
+            .sign_message(
+                "detta-testnet",
+                node.chain_id().clone(),
+                NetworkMessage::ValidatorSetMetadataUpdate(first_update.clone()),
+            )
+            .unwrap();
+        let replacement_authorization = signer_key
+            .sign_message(
+                "detta-testnet",
+                node.chain_id().clone(),
+                NetworkMessage::ValidatorSetMetadataUpdate(first_update),
+            )
+            .unwrap();
+        let second_authorization = signer_key
+            .sign_message(
+                "detta-testnet",
+                node.chain_id().clone(),
+                NetworkMessage::ValidatorSetMetadataUpdate(second_update),
+            )
+            .unwrap();
+
+        assert_eq!(
+            node.record_pending_validator_set_metadata_authorization(
+                NetworkMessage::SignedValidator(Box::new(first_authorization)),
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            node.record_pending_validator_set_metadata_authorization(
+                NetworkMessage::SignedValidator(Box::new(replacement_authorization)),
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            node.record_pending_validator_set_metadata_authorization(
+                NetworkMessage::SignedValidator(Box::new(second_authorization)),
+            )
+            .unwrap_err(),
+            NodeError::ValidatorSetMetadataAuthorizationRateLimited {
+                signer: "validator-1".into(),
+                pending_authorizations: 1,
+                max_pending_authorizations: 1,
+            }
         );
 
         fs::remove_dir_all(dir).unwrap();

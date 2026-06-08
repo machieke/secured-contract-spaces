@@ -66,10 +66,12 @@ Completed production-plan slices:
   status methods over the shared TCP JSON RPC server path.
 - [x] Validator-set metadata updates carry optional expiry heights, and nodes
   reject or prune stale pending authorizations from durable storage.
+- [x] Pending validator-set metadata authorization pools are bounded, with
+  per-validator limits to prevent one signer from occupying unbounded updates.
 
 Next implementation slices:
 
-- [ ] Add bounded authorization-pool limits and per-validator metadata update rate limiting.
+- [ ] Add signed validator-set metadata update audit records for applied, pruned, and rejected updates.
 
 # 1. Production Objective
 
