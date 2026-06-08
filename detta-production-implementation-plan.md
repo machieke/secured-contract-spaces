@@ -231,10 +231,12 @@ Completed production-plan slices:
   artifacts.
 - [x] Proof manifest release attestation roots are checked against target
   bytes.
+- [x] Proof manifest evaluator release attestations are checked against
+  inventory coverage.
 
 Next implementation slices:
 
-- [ ] Add proof manifest release attestation inventory coverage checks.
+- [ ] Add proof manifest evaluator fixture inventory path coverage checks.
 
 # 1. Production Objective
 

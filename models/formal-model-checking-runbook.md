@@ -49,6 +49,8 @@ cargo test -p detta-verify
   or compact trace target name.
 - every release attestation root matches the target artifact bytes or compact
   proof-trace bytes.
+- every evaluator release attestation in `runtime_artifacts` is covered by the
+  evaluator fixture inventory, except the inventory self-attestation.
 
 The evaluator `sha256sum -c` commands verify fixture-file attestations. The
 final `sha256sum` command reports the file root of the compact-trace-root
@@ -105,6 +107,8 @@ Before accepting a release proof bundle, verify:
 - every release attestation filename matches the target artifact basename or
   compact trace target name;
 - every release attestation root recomputes from its target bytes;
+- every evaluator release attestation is listed by the evaluator fixture
+  inventory or is the inventory self-attestation;
 - every root listed inside the evaluator fixture inventory matches the
   corresponding `runtime_artifacts` entry;
 - `detta-restricted-evaluator-fixture-inventory.sha256` verifies against the

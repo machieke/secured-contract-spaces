@@ -1149,6 +1149,35 @@ mod tests {
     }
 
     #[test]
+    fn proof_runtime_evaluator_attestations_are_covered_by_inventory() {
+        let inventory: EvaluatorFixtureInventoryForTest = serde_json::from_str(include_str!(
+            "../../../models/detta-restricted-evaluator-fixture-inventory.json"
+        ))
+        .unwrap();
+        let mut inventory_attestation_paths = BTreeSet::new();
+        for entry in inventory.fixtures {
+            inventory_attestation_paths.insert(entry.attestation_path);
+            if let Some(path) = entry.trace_root_attestation_path {
+                inventory_attestation_paths.insert(path);
+            }
+        }
+
+        for artifact in proof_runtime_artifacts().into_iter().filter(|artifact| {
+            artifact
+                .path
+                .starts_with("models/detta-restricted-evaluator-")
+                && artifact.path.ends_with(".sha256")
+        }) {
+            assert!(
+                artifact.path == "models/detta-restricted-evaluator-fixture-inventory.sha256"
+                    || inventory_attestation_paths.contains(artifact.path),
+                "{} is not covered by the evaluator fixture inventory",
+                artifact.path
+            );
+        }
+    }
+
+    #[test]
     fn proof_runtime_artifacts_bind_all_evaluator_fixture_json() {
         let runtime_paths: BTreeSet<_> = proof_runtime_artifacts()
             .into_iter()
