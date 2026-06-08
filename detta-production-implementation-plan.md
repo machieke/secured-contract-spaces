@@ -80,10 +80,12 @@ Completed production-plan slices:
   path and the shared TCP JSON RPC server.
 - [x] Snapshot-sync manifests include persistent node metadata roots so chunk
   verification authenticates the validator-set audit root.
+- [x] Snapshot reconstruction/import can require persistent metadata roots and
+  rejects mismatched validator-set audit roots before committing snapshots.
 
 Next implementation slices:
 
-- [ ] Verify persistent node metadata roots during snapshot reconstruction/import.
+- [ ] Persist verified snapshot metadata roots alongside imported snapshots.
 
 # 1. Production Objective
 

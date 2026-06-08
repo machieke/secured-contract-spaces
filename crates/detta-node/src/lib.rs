@@ -8,8 +8,8 @@ use detta_core::{
 use detta_network::{Envelope, InMemoryTransport, NetworkError, NetworkMessage};
 use detta_protocol::{
     build_snapshot_chunks_with_metadata_roots, ProtocolMessageKind, SignatureError,
-    SignedValidatorMessage, SnapshotChunkRequest, SnapshotSyncError, ValidatorPublicKey,
-    ValidatorSetMetadata, ValidatorSetMetadataUpdate, ValidatorSigningKey,
+    SignedValidatorMessage, SnapshotChunkRequest, SnapshotChunkSet, SnapshotSyncError,
+    ValidatorPublicKey, ValidatorSetMetadata, ValidatorSetMetadataUpdate, ValidatorSigningKey,
     SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT,
 };
 use detta_rpc::{
@@ -1005,6 +1005,20 @@ impl PersistentValidatorNode {
                 .map(NetworkMessage::SnapshotChunk),
         );
         Ok(messages)
+    }
+
+    pub fn import_snapshot_chunk_set(
+        &self,
+        chunk_set: &SnapshotChunkSet,
+        required_metadata_roots: &BTreeMap<String, String>,
+    ) -> Result<StateSnapshot, NodeError> {
+        let snapshot = chunk_set
+            .reconstruct_snapshot_with_metadata_roots(required_metadata_roots)
+            .map_err(NodeError::SnapshotSync)?;
+        self.storage
+            .commit_snapshot(&snapshot)
+            .map_err(NodeError::Storage)?;
+        Ok(snapshot)
     }
 
     pub fn verified_consensus_vote(&self, message: &NetworkMessage) -> Result<Vote, NodeError> {
@@ -3124,6 +3138,39 @@ mod tests {
         let reconstructed = chunk_set.reconstruct_snapshot().unwrap();
         assert_eq!(reconstructed.global_state_root, snapshot_root);
 
+        let mut required_metadata_roots = BTreeMap::new();
+        required_metadata_roots.insert(
+            SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT.into(),
+            expected_audit_root.clone(),
+        );
+        let sink_dir = temp_dir("state-sync-sink");
+        let sink = PersistentValidatorNode::bootstrap(
+            "validator-2",
+            DeTTaState::new("detta-local"),
+            &sink_dir,
+        )
+        .unwrap();
+        let imported = sink
+            .import_snapshot_chunk_set(&chunk_set, &required_metadata_roots)
+            .unwrap();
+        assert_eq!(imported.global_state_root, snapshot_root);
+
+        let mut wrong_metadata_roots = required_metadata_roots;
+        wrong_metadata_roots.insert(
+            SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT.into(),
+            "wrong-audit-root".into(),
+        );
+        assert_eq!(
+            sink.import_snapshot_chunk_set(&chunk_set, &wrong_metadata_roots)
+                .unwrap_err(),
+            NodeError::SnapshotSync(SnapshotSyncError::MetadataRootMismatch {
+                key: SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT.into(),
+                expected: "wrong-audit-root".into(),
+                actual: Some(expected_audit_root),
+            })
+        );
+
+        fs::remove_dir_all(sink_dir).unwrap();
         fs::remove_dir_all(node_dir).unwrap();
     }
 

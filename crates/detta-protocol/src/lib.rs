@@ -398,6 +398,32 @@ impl SnapshotChunkSet {
         self.reconstruct_snapshot().map(|_| ())
     }
 
+    pub fn verify_with_metadata_roots(
+        &self,
+        required_metadata_roots: &BTreeMap<String, String>,
+    ) -> Result<(), SnapshotSyncError> {
+        self.reconstruct_snapshot_with_metadata_roots(required_metadata_roots)
+            .map(|_| ())
+    }
+
+    pub fn reconstruct_snapshot_with_metadata_roots(
+        &self,
+        required_metadata_roots: &BTreeMap<String, String>,
+    ) -> Result<StateSnapshot, SnapshotSyncError> {
+        let snapshot = self.reconstruct_snapshot()?;
+        for (key, expected) in required_metadata_roots {
+            let actual = self.manifest.metadata_roots.get(key);
+            if actual != Some(expected) {
+                return Err(SnapshotSyncError::MetadataRootMismatch {
+                    key: key.clone(),
+                    expected: expected.clone(),
+                    actual: actual.cloned(),
+                });
+            }
+        }
+        Ok(snapshot)
+    }
+
     pub fn reconstruct_snapshot(&self) -> Result<StateSnapshot, SnapshotSyncError> {
         if self.manifest.chunk_count as usize != self.manifest.chunk_hashes.len() {
             return Err(SnapshotSyncError::ManifestChunkCountMismatch {
@@ -483,16 +509,48 @@ pub enum SnapshotSyncError {
     InvalidChunkSize,
     EncodeFailed,
     DecodeFailed,
-    ManifestChunkCountMismatch { declared: u32, actual: u32 },
-    ManifestHashMismatch { expected: String, actual: String },
-    ChunkHashMismatch { index: u32 },
-    ChunkRootMismatch { expected: String, actual: String },
-    DuplicateChunk { index: u32 },
-    MissingChunk { index: u32 },
-    UnexpectedChunk { index: u32, chunk_count: u32 },
-    TotalBytesMismatch { expected: u64, actual: u64 },
-    SnapshotHashMismatch { expected: String, actual: String },
-    SnapshotRootMismatch { expected: String, actual: String },
+    ManifestChunkCountMismatch {
+        declared: u32,
+        actual: u32,
+    },
+    ManifestHashMismatch {
+        expected: String,
+        actual: String,
+    },
+    ChunkHashMismatch {
+        index: u32,
+    },
+    ChunkRootMismatch {
+        expected: String,
+        actual: String,
+    },
+    DuplicateChunk {
+        index: u32,
+    },
+    MissingChunk {
+        index: u32,
+    },
+    UnexpectedChunk {
+        index: u32,
+        chunk_count: u32,
+    },
+    TotalBytesMismatch {
+        expected: u64,
+        actual: u64,
+    },
+    SnapshotHashMismatch {
+        expected: String,
+        actual: String,
+    },
+    SnapshotRootMismatch {
+        expected: String,
+        actual: String,
+    },
+    MetadataRootMismatch {
+        key: String,
+        expected: String,
+        actual: Option<String>,
+    },
     InvalidSnapshot(SnapshotError),
 }
 
@@ -965,8 +1023,40 @@ mod tests {
             build_snapshot_chunks_with_metadata_roots(&snapshot, 64, metadata_roots.clone())
                 .unwrap();
         assert_eq!(metadata_chunk_set.manifest.metadata_roots, metadata_roots);
-        assert_eq!(metadata_chunk_set.reconstruct_snapshot().unwrap(), snapshot);
-        metadata_chunk_set.verify().unwrap();
+        assert_eq!(
+            metadata_chunk_set
+                .reconstruct_snapshot_with_metadata_roots(&metadata_roots)
+                .unwrap(),
+            snapshot
+        );
+        metadata_chunk_set
+            .verify_with_metadata_roots(&metadata_roots)
+            .unwrap();
+
+        let mut wrong_metadata_roots = metadata_roots.clone();
+        wrong_metadata_roots.insert(
+            SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT.into(),
+            "wrong-root".into(),
+        );
+        assert_eq!(
+            metadata_chunk_set.reconstruct_snapshot_with_metadata_roots(&wrong_metadata_roots),
+            Err(SnapshotSyncError::MetadataRootMismatch {
+                key: SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT.into(),
+                expected: "wrong-root".into(),
+                actual: Some("audit-root-1".into()),
+            })
+        );
+
+        let mut missing_metadata_roots = BTreeMap::new();
+        missing_metadata_roots.insert("missing_root".into(), "expected-root".into());
+        assert_eq!(
+            metadata_chunk_set.reconstruct_snapshot_with_metadata_roots(&missing_metadata_roots),
+            Err(SnapshotSyncError::MetadataRootMismatch {
+                key: "missing_root".into(),
+                expected: "expected-root".into(),
+                actual: None,
+            })
+        );
 
         let messages = [
             ProtocolMessage::SnapshotChunkRequest(SnapshotChunkRequest {
