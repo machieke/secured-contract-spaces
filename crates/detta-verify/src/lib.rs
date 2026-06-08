@@ -1376,6 +1376,14 @@ mod tests {
         assert_eq!(checked_in_proof_artifact_manifest_root(), root);
     }
 
+    #[test]
+    fn proof_artifact_manifest_root_attestation_has_single_trailing_newline() {
+        let attestation = include_str!("../../../models/detta-proof-artifact-manifest.sha256");
+
+        assert!(attestation.ends_with('\n'));
+        assert_eq!(attestation.matches('\n').count(), 1);
+    }
+
     struct ProofReleaseAttestationFixture {
         attestation: &'static str,
         file_name: &'static str,

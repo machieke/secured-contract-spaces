@@ -336,10 +336,12 @@ Completed production-plan slices:
   separator token in verify.
 - [x] Proof release attestation lines are checked for nonempty root and
   filename parts in verify.
+- [x] Proof manifest root attestation file is checked for a single trailing
+  newline in verify.
 
 Next implementation slices:
 
-- [ ] Add proof manifest root attestation newline checks in verify.
+- [ ] Add proof manifest root attestation separator checks in verify.
 
 # 1. Production Objective
 
