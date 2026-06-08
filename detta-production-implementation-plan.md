@@ -98,10 +98,12 @@ Completed production-plan slices:
   restart for sync diagnostics.
 - [x] Persisted TCP state-sync diagnostics are exposed through node-aware RPC,
   including the empty-before-sync state.
+- [x] Persisted TCP state-sync diagnostics are served over the shared TCP JSON
+  RPC path.
 
 Next implementation slices:
 
-- [ ] Expose persisted TCP state-sync diagnostics through the TCP JSON RPC path.
+- [ ] Include state-sync diagnostics in persistent node snapshot root responses.
 
 # 1. Production Objective
 

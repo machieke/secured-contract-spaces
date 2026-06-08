@@ -3138,6 +3138,16 @@ mod tests {
             .unwrap();
         let server = JsonRpcServer::bind("127.0.0.1:0").unwrap();
         let addr = server.local_addr().unwrap();
+        let sync_metrics = SnapshotSyncClientMetrics {
+            retry_attempts: 1,
+            stream_failures: 0,
+            requests_sent: 3,
+            manifests_received: 3,
+            chunks_received: 5,
+            resume_requests: 2,
+            metadata_roots_verified: true,
+        };
+        let expected_sync_report = snapshot_sync_client_metrics_report(sync_metrics.clone());
         let handle = thread::spawn(move || {
             let mut node = PersistentValidatorNode::bootstrap_with_validator_set(
                 "validator-2",
@@ -3147,6 +3157,8 @@ mod tests {
                 vec![signer_key.public_key(), peer_key.public_key()],
             )
             .unwrap();
+            node.persist_snapshot_sync_client_metrics(&sync_metrics)
+                .unwrap();
             server
                 .serve_next_connection_with_handler(&mut node)
                 .unwrap();
@@ -3159,6 +3171,13 @@ mod tests {
         write_rpc_request(&mut stream, &RpcRequest::GetPersistentNodeSnapshotRoots);
         let initial_snapshot =
             expect_persistent_node_snapshot_roots(read_rpc_response(&mut reader));
+        write_rpc_request(&mut stream, &RpcRequest::GetSnapshotSyncClientMetrics);
+        assert_eq!(
+            read_rpc_response(&mut reader),
+            RpcResponse::Ok(RpcResult::SnapshotSyncClientMetrics(Some(
+                expected_sync_report
+            )))
+        );
 
         write_rpc_request(
             &mut stream,
