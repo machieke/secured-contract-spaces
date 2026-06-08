@@ -10,6 +10,9 @@ pub const RESTRICTED_EVALUATOR_PROOF_TRACE_SCHEMA_VERSION: u32 = 1;
 pub const RESTRICTED_EVALUATOR_FORBIDDEN_PRIMITIVE_SCHEMA: &str =
     "detta.restricted-evaluator-forbidden-primitive.v1";
 pub const RESTRICTED_EVALUATOR_FORBIDDEN_PRIMITIVE_SCHEMA_VERSION: u32 = 1;
+pub const RESTRICTED_EVALUATOR_RESOURCE_EXHAUSTION_SCHEMA: &str =
+    "detta.restricted-evaluator-resource-exhaustion.v1";
+pub const RESTRICTED_EVALUATOR_RESOURCE_EXHAUSTION_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Instruction {
@@ -76,6 +79,23 @@ pub struct RestrictedEvaluatorForbiddenPrimitiveFixture {
     pub max_steps: u64,
     pub allowed_primitives: Vec<EvaluatorPrimitive>,
     pub forbidden_cases: Vec<ForbiddenPrimitiveCase>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ResourceExhaustionCase {
+    pub name: String,
+    pub max_steps: u64,
+    pub script: Vec<Instruction>,
+    pub expected_error: EvaluatorError,
+    pub committed_report: Option<ExecutionReport>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RestrictedEvaluatorResourceExhaustionFixture {
+    pub schema: String,
+    pub schema_version: u32,
+    pub evaluator: String,
+    pub cases: Vec<ResourceExhaustionCase>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -230,6 +250,36 @@ pub fn restricted_evaluator_forbidden_primitive_fixture(
         max_steps,
         allowed_primitives: allowed_contract_primitives(),
         forbidden_cases,
+    }
+}
+
+pub fn restricted_evaluator_resource_exhaustion_fixture(
+) -> RestrictedEvaluatorResourceExhaustionFixture {
+    let alice_balance = StateKey::Balance {
+        contract: "TokenA".into(),
+        owner: "Alice".into(),
+        asset: "USDC".into(),
+    };
+    let max_steps = 1;
+    let script = vec![
+        Instruction::StateSet(alice_balance, StateValue::UInt(90)),
+        Instruction::UsePrimitive(EvaluatorPrimitive::PureData),
+    ];
+    let expected_error = RestrictedScriptEvaluator::new(max_steps)
+        .execute(&script)
+        .expect_err("golden resource exhaustion script should fail");
+
+    RestrictedEvaluatorResourceExhaustionFixture {
+        schema: RESTRICTED_EVALUATOR_RESOURCE_EXHAUSTION_SCHEMA.to_string(),
+        schema_version: RESTRICTED_EVALUATOR_RESOURCE_EXHAUSTION_SCHEMA_VERSION,
+        evaluator: "detta.restricted-script-evaluator".into(),
+        cases: vec![ResourceExhaustionCase {
+            name: "step-budget-exhaustion-discards-emitted-trace".into(),
+            max_steps,
+            script,
+            expected_error,
+            committed_report: None,
+        }],
     }
 }
 
@@ -510,5 +560,52 @@ mod tests {
         let expected = format!("{}  {}\n", hex_lower(&digest), expected_filename);
 
         assert_eq!(attestation, expected);
+    }
+
+    #[test]
+    fn restricted_evaluator_resource_exhaustion_fixture_matches_checked_in_json() {
+        let expected: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../models/detta-restricted-evaluator-resource-exhaustion.json"
+        ))
+        .unwrap();
+        let actual =
+            serde_json::to_value(restricted_evaluator_resource_exhaustion_fixture()).unwrap();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn restricted_evaluator_resource_exhaustion_fixture_json_is_stable() {
+        let actual = format!(
+            "{}\n",
+            serde_json::to_string_pretty(&restricted_evaluator_resource_exhaustion_fixture())
+                .unwrap()
+        );
+
+        assert_eq!(
+            actual,
+            include_str!("../../../models/detta-restricted-evaluator-resource-exhaustion.json")
+        );
+    }
+
+    #[test]
+    fn restricted_evaluator_resource_exhaustion_fixture_reverts_report() {
+        let fixture = restricted_evaluator_resource_exhaustion_fixture();
+        let case = fixture.cases.first().unwrap();
+        let error = RestrictedScriptEvaluator::new(case.max_steps)
+            .execute(&case.script)
+            .unwrap_err();
+
+        assert_eq!(
+            fixture.schema,
+            RESTRICTED_EVALUATOR_RESOURCE_EXHAUSTION_SCHEMA
+        );
+        assert_eq!(
+            fixture.schema_version,
+            RESTRICTED_EVALUATOR_RESOURCE_EXHAUSTION_SCHEMA_VERSION
+        );
+        assert_eq!(error, EvaluatorError::StepBudgetExceeded);
+        assert_eq!(case.expected_error, EvaluatorError::StepBudgetExceeded);
+        assert_eq!(case.committed_report, None);
     }
 }

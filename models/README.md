@@ -25,6 +25,9 @@ This directory contains formal-model artifacts for the DeTTa runtime.
   contract primitives and every forbidden escape hatch with the expected trap.
 - `detta-restricted-evaluator-forbidden-primitives.sha256` records the release
   attestation root for the forbidden primitive fixture.
+- `detta-restricted-evaluator-resource-exhaustion.json` is a golden fixture for
+  step-budget exhaustion. It records the failing script, expected error, and
+  absence of a committed execution report.
 - `formal-model-checking-runbook.md` describes the repository checks, external
   model-checker preparation, and manifest refresh procedure.
 - `../detta-restricted-evaluator-subset.md` documents the implemented

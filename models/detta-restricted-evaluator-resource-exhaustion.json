@@ -1,0 +1,32 @@
+{
+  "schema": "detta.restricted-evaluator-resource-exhaustion.v1",
+  "schema_version": 1,
+  "evaluator": "detta.restricted-script-evaluator",
+  "cases": [
+    {
+      "name": "step-budget-exhaustion-discards-emitted-trace",
+      "max_steps": 1,
+      "script": [
+        {
+          "StateSet": [
+            {
+              "Balance": {
+                "contract": "TokenA",
+                "owner": "Alice",
+                "asset": "USDC"
+              }
+            },
+            {
+              "UInt": 90
+            }
+          ]
+        },
+        {
+          "UsePrimitive": "PureData"
+        }
+      ],
+      "expected_error": "StepBudgetExceeded",
+      "committed_report": null
+    }
+  ]
+}
