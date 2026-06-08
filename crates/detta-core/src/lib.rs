@@ -19,6 +19,7 @@ pub enum Method {
     AddLiquidity,
     Swap,
     SubmitPrice,
+    QueueBridgeMessage,
     RedeemBridgeMessage,
     PauseContract,
     UnpauseContract,
@@ -227,6 +228,19 @@ pub struct ScheduledUpgrade {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CrossShardMessage {
+    pub source_chain: ChainId,
+    pub source_contract: ContractId,
+    pub source_height: u64,
+    pub destination_chain: ChainId,
+    pub destination_contract: ContractId,
+    pub message_id: String,
+    pub recipient: Principal,
+    pub asset: AssetId,
+    pub amount: Amount,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ContractKind {
     Token,
     AmmPool {
@@ -302,7 +316,10 @@ impl ContractRecord {
             contract_id,
             code_hash,
             kind: ContractKind::Bridge { source_chain },
-            exported_methods: BTreeSet::from([Method::RedeemBridgeMessage]),
+            exported_methods: BTreeSet::from([
+                Method::QueueBridgeMessage,
+                Method::RedeemBridgeMessage,
+            ]),
         }
     }
 
@@ -424,6 +441,14 @@ pub enum EventPayload {
         asset: AssetId,
         amount: Amount,
     },
+    CrossShardMessageQueued {
+        message_id: String,
+        destination_chain: ChainId,
+        destination_contract: ContractId,
+        recipient: Principal,
+        asset: AssetId,
+        amount: Amount,
+    },
     ContractPaused {
         contract: ContractId,
         admin: Principal,
@@ -505,6 +530,7 @@ pub enum ExecutionError {
     StaleOraclePrice,
     InvalidBridgeMessage,
     BridgeMessageReplay,
+    OutboundMessageReplay,
     UnauthorizedGovernance,
     ContractPaused,
     UpgradeAlreadyScheduled,
@@ -534,6 +560,7 @@ pub enum BlockError {
     RegistryRootMismatch,
     EventRootMismatch,
     NonceRootMismatch,
+    OutboxRootMismatch,
     GlobalStateRootMismatch,
 }
 
@@ -599,6 +626,7 @@ pub enum SnapshotError {
     RegistryRootMismatch,
     EventRootMismatch,
     NonceRootMismatch,
+    OutboxRootMismatch,
     GlobalStateRootMismatch,
 }
 
@@ -609,6 +637,7 @@ pub struct StateSnapshot {
     pub registry_root: String,
     pub event_root: String,
     pub nonce_root: String,
+    pub outbox_root: String,
     pub global_state_root: String,
 }
 
@@ -700,6 +729,7 @@ pub struct BlockHeader {
     pub registry_root: String,
     pub event_root: String,
     pub nonce_root: String,
+    pub outbox_root: String,
     pub timestamp: u64,
     pub proposer: String,
     pub consensus_certificate: String,
@@ -887,6 +917,18 @@ impl ReceiptProof {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct OutboxMessageProof {
+    pub message: CrossShardMessage,
+    pub proof: MerkleProof,
+}
+
+impl OutboxMessageProof {
+    pub fn verify(&self) -> bool {
+        self.proof.verify(&self.message)
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatorNode {
     validator_id: String,
@@ -971,6 +1013,8 @@ pub struct DeTTaState {
     used_certificate_nonces: BTreeSet<String>,
     paused_contracts: BTreeSet<ContractId>,
     scheduled_upgrades: BTreeMap<String, ScheduledUpgrade>,
+    outbound_message_ids: BTreeSet<String>,
+    cross_shard_outbox: Vec<CrossShardMessage>,
     events: Vec<Event>,
 }
 
@@ -987,6 +1031,8 @@ impl DeTTaState {
             used_certificate_nonces: BTreeSet::new(),
             paused_contracts: BTreeSet::new(),
             scheduled_upgrades: BTreeMap::new(),
+            outbound_message_ids: BTreeSet::new(),
+            cross_shard_outbox: Vec::new(),
             events: Vec::new(),
         }
     }
@@ -1004,6 +1050,9 @@ impl DeTTaState {
         if snapshot.nonce_root != snapshot.state.nonce_root() {
             return Err(SnapshotError::NonceRootMismatch);
         }
+        if snapshot.outbox_root != snapshot.state.outbox_root() {
+            return Err(SnapshotError::OutboxRootMismatch);
+        }
         if snapshot.global_state_root != snapshot.state.global_state_root() {
             return Err(SnapshotError::GlobalStateRootMismatch);
         }
@@ -1017,6 +1066,7 @@ impl DeTTaState {
             registry_root: self.registry_root(),
             event_root: self.event_root(),
             nonce_root: self.nonce_root(),
+            outbox_root: self.outbox_root(),
             global_state_root: self.global_state_root(),
         }
     }
@@ -1311,6 +1361,8 @@ impl DeTTaState {
         let checkpoint_paused_contracts = self.paused_contracts.clone();
         let checkpoint_contracts = self.contracts.clone();
         let checkpoint_scheduled_upgrades = self.scheduled_upgrades.clone();
+        let checkpoint_outbound_message_ids = self.outbound_message_ids.clone();
+        let checkpoint_cross_shard_outbox = self.cross_shard_outbox.clone();
 
         let msg_sender = tx.sender.clone();
         match self.execute_call(&tx, msg_sender) {
@@ -1323,6 +1375,8 @@ impl DeTTaState {
                 self.used_certificate_nonces = checkpoint_certificate_nonces;
                 self.paused_contracts = checkpoint_paused_contracts;
                 self.scheduled_upgrades = checkpoint_scheduled_upgrades;
+                self.outbound_message_ids = checkpoint_outbound_message_ids;
+                self.cross_shard_outbox = checkpoint_cross_shard_outbox;
                 self.reverted_receipt(tx.tx_hash, error)
             }
         }
@@ -1356,6 +1410,7 @@ impl DeTTaState {
             registry_root: working_state.registry_root(),
             event_root: working_state.event_root(),
             nonce_root: working_state.nonce_root(),
+            outbox_root: working_state.outbox_root(),
             timestamp,
             proposer: proposer.into(),
             consensus_certificate: consensus_certificate.into(),
@@ -1408,6 +1463,9 @@ impl DeTTaState {
         }
         if block.header.nonce_root != working_state.nonce_root() {
             return Err(BlockError::NonceRootMismatch);
+        }
+        if block.header.outbox_root != working_state.outbox_root() {
+            return Err(BlockError::OutboxRootMismatch);
         }
         if block.header.global_state_root != working_state.global_state_root() {
             return Err(BlockError::GlobalStateRootMismatch);
@@ -1618,6 +1676,10 @@ impl DeTTaState {
         &self.events
     }
 
+    pub fn cross_shard_outbox(&self) -> &[CrossShardMessage] {
+        &self.cross_shard_outbox
+    }
+
     pub fn storage_proof(&self, key: &StateKey) -> Option<StorageProof> {
         let entries = self.storage_entries();
         let index = entries.iter().position(|(entry_key, _)| entry_key == key)?;
@@ -1703,6 +1765,12 @@ impl DeTTaState {
         Some(EventProof { event, proof })
     }
 
+    pub fn outbox_message_proof(&self, index: usize) -> Option<OutboxMessageProof> {
+        let message = self.cross_shard_outbox.get(index)?.clone();
+        let proof = merkle_proof(&self.cross_shard_outbox, index)?;
+        Some(OutboxMessageProof { message, proof })
+    }
+
     pub fn storage_root(&self) -> String {
         merkle_root(&self.storage_entries())
     }
@@ -1713,6 +1781,10 @@ impl DeTTaState {
 
     pub fn event_root(&self) -> String {
         merkle_root(&self.events)
+    }
+
+    pub fn outbox_root(&self) -> String {
+        merkle_root(&self.cross_shard_outbox)
     }
 
     pub fn nonce_root(&self) -> String {
@@ -1733,6 +1805,8 @@ impl DeTTaState {
             &self.used_certificate_nonces,
             &self.paused_contracts,
             &self.scheduled_upgrades,
+            &self.outbound_message_ids,
+            self.outbox_root(),
             self.event_root(),
         ))
     }
@@ -1788,6 +1862,7 @@ impl DeTTaState {
                 _ => Err(ExecutionError::PolicyMissing),
             },
             ContractKind::Bridge { source_chain } => match tx.method {
+                Method::QueueBridgeMessage => self.queue_bridge_message(tx, msg_sender),
                 Method::RedeemBridgeMessage => {
                     self.redeem_bridge_message(tx, msg_sender, source_chain)
                 }
@@ -2241,6 +2316,53 @@ impl DeTTaState {
                 asset,
                 price,
                 timestamp,
+            },
+        );
+        Ok(ReturnValue::Unit)
+    }
+
+    fn queue_bridge_message(
+        &mut self,
+        tx: &Transaction,
+        _msg_sender: Principal,
+    ) -> Result<ReturnValue, ExecutionError> {
+        let [destination_chain, destination_contract, message_id, recipient, asset, amount] =
+            expect_args(&tx.args)?;
+        let destination_chain = expect_text(destination_chain)?;
+        let destination_contract = expect_text(destination_contract)?;
+        let message_id = expect_text(message_id)?;
+        let recipient = expect_principal(recipient)?;
+        let asset = expect_asset(asset)?;
+        let amount = expect_amount(amount)?;
+
+        if self.outbound_message_ids.contains(&message_id) {
+            return Err(ExecutionError::OutboundMessageReplay);
+        }
+
+        let message = CrossShardMessage {
+            source_chain: self.chain_id.clone(),
+            source_contract: tx.target.clone(),
+            source_height: self.height,
+            destination_chain: destination_chain.clone(),
+            destination_contract: destination_contract.clone(),
+            message_id: message_id.clone(),
+            recipient: recipient.clone(),
+            asset: asset.clone(),
+            amount,
+        };
+        self.outbound_message_ids.insert(message_id.clone());
+        self.cross_shard_outbox.push(message);
+
+        self.emit(
+            &tx.target,
+            &tx.tx_hash,
+            EventPayload::CrossShardMessageQueued {
+                message_id,
+                destination_chain,
+                destination_contract,
+                recipient,
+                asset,
+                amount,
             },
         );
         Ok(ReturnValue::Unit)
@@ -4199,6 +4321,97 @@ mod tests {
 
         assert_eq!(receipt.status, TxStatus::Reverted);
         assert_eq!(receipt.error, Some(ExecutionError::InvalidBridgeMessage));
+    }
+
+    #[test]
+    fn bridge_queues_cross_shard_message_with_proof() {
+        let mut state = DeTTaState::new("ShardA");
+        state.deploy_bridge("BridgeA", "ShardB").unwrap();
+        let storage_before = state.storage_root();
+        let registry_before = state.registry_root();
+
+        let txs = vec![Transaction {
+            chain_id: "ShardA".into(),
+            tx_hash: "tx1".into(),
+            sender: "Alice".into(),
+            nonce: 1,
+            target: "BridgeA".into(),
+            method: Method::QueueBridgeMessage,
+            args: vec![
+                text("ShardB"),
+                text("BridgeB"),
+                text("msg-1"),
+                principal("Bob"),
+                asset("USDC"),
+                amount(100),
+            ],
+            signature_ok: true,
+            budget: 1_000_000,
+        }];
+        let (block, next_state) = state.build_block(1, txs, 1_000, "validator-1", "cert-1");
+
+        assert_eq!(block.receipts[0].status, TxStatus::Committed);
+        assert_eq!(next_state.cross_shard_outbox().len(), 1);
+        assert_eq!(next_state.storage_root(), storage_before);
+        assert_eq!(next_state.registry_root(), registry_before);
+        assert_eq!(block.header.outbox_root, next_state.outbox_root());
+
+        let proof = next_state.outbox_message_proof(0).unwrap();
+        assert!(proof.verify());
+        assert_eq!(proof.proof.root, block.header.outbox_root);
+        assert_eq!(proof.message.destination_chain, "ShardB");
+        assert_eq!(proof.message.destination_contract, "BridgeB");
+    }
+
+    #[test]
+    fn bridge_rejects_duplicate_outbound_message_id() {
+        let mut state = DeTTaState::new("ShardA");
+        state.deploy_bridge("BridgeA", "ShardB").unwrap();
+
+        let first = state.apply_transaction(Transaction {
+            chain_id: "ShardA".into(),
+            tx_hash: "tx1".into(),
+            sender: "Alice".into(),
+            nonce: 1,
+            target: "BridgeA".into(),
+            method: Method::QueueBridgeMessage,
+            args: vec![
+                text("ShardB"),
+                text("BridgeB"),
+                text("msg-1"),
+                principal("Bob"),
+                asset("USDC"),
+                amount(100),
+            ],
+            signature_ok: true,
+            budget: 1_000_000,
+        });
+        let outbox_root = state.outbox_root();
+
+        let duplicate = state.apply_transaction(Transaction {
+            chain_id: "ShardA".into(),
+            tx_hash: "tx2".into(),
+            sender: "Alice".into(),
+            nonce: 2,
+            target: "BridgeA".into(),
+            method: Method::QueueBridgeMessage,
+            args: vec![
+                text("ShardB"),
+                text("BridgeB"),
+                text("msg-1"),
+                principal("Bob"),
+                asset("USDC"),
+                amount(100),
+            ],
+            signature_ok: true,
+            budget: 1_000_000,
+        });
+
+        assert_eq!(first.status, TxStatus::Committed);
+        assert_eq!(duplicate.status, TxStatus::Reverted);
+        assert_eq!(duplicate.error, Some(ExecutionError::OutboundMessageReplay));
+        assert_eq!(state.outbox_root(), outbox_root);
+        assert_eq!(state.cross_shard_outbox().len(), 1);
     }
 
     #[test]
