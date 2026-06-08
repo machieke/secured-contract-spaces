@@ -1613,6 +1613,15 @@ mod tests {
     }
 
     #[test]
+    fn proof_release_attestation_roots_are_lowercase_hex() {
+        for fixture in proof_release_attestations_for_test() {
+            let (root, file_name) = sha256sum_attestation_parts(fixture.attestation);
+
+            assert_lowercase_sha256_hex(root, file_name);
+        }
+    }
+
+    #[test]
     fn proof_release_attestation_filenames_bind_target_artifacts() {
         for fixture in proof_release_attestations_for_test() {
             assert_sha256sum_attestation_filename_binds_artifact(

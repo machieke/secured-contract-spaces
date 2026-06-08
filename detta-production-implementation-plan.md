@@ -327,10 +327,11 @@ Completed production-plan slices:
   in verify.
 - [x] Proof release attestation target paths are checked for expected models
   path depth in verify.
+- [x] Proof release attestation roots are checked for lowercase hex in verify.
 
 Next implementation slices:
 
-- [ ] Add proof release attestation root lowercase checks in verify.
+- [ ] Add proof release attestation filename slash checks in verify.
 
 # 1. Production Objective
 
