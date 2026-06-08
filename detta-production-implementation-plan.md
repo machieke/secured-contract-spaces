@@ -372,6 +372,8 @@ Completed production-plan slices:
   windows and rejects incompatible windows over manager and TCP handshakes.
 - [x] Staking contracts support configured rewards and delayed unbonding with
   aggregate pending-unbond invariants and block-height tests.
+- [x] Node health RPC reports chain/network identity, height, mempool size,
+  validator-key counts, pending validator-set updates, and authenticated roots.
 
 Next implementation slices:
 

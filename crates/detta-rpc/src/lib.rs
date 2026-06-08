@@ -48,6 +48,7 @@ pub enum RpcRequest {
     GetBlock {
         height: u64,
     },
+    GetNodeHealth,
     GetStateRoot,
     GetSnapshot,
     GetPersistentNodeSnapshotRoots,
@@ -177,6 +178,24 @@ pub struct SnapshotSyncClientMetricsReport {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct NodeHealthReport {
+    pub chain_id: String,
+    pub network_id: Option<String>,
+    pub validator_id: Option<String>,
+    pub height: u64,
+    pub pending_mempool_transactions: usize,
+    pub trusted_validator_keys: Option<usize>,
+    pub pending_validator_set_metadata_updates: Option<usize>,
+    pub storage_root: String,
+    pub registry_root: String,
+    pub policy_root: String,
+    pub event_root: String,
+    pub nonce_root: String,
+    pub outbox_root: String,
+    pub global_state_root: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "result", content = "data", rename_all = "snake_case")]
 pub enum RpcResult {
     Submitted,
@@ -184,6 +203,7 @@ pub enum RpcResult {
     Block(Box<Block>),
     Transaction(Box<Transaction>),
     Receipt(Box<Receipt>),
+    NodeHealth(Box<NodeHealthReport>),
     StateRoot(String),
     Snapshot(Box<StateSnapshot>),
     PersistentNodeSnapshotRoots(Box<PersistentNodeSnapshotRoots>),
@@ -326,6 +346,26 @@ impl RpcService {
         self.node.state().global_state_root()
     }
 
+    pub fn node_health(&self) -> NodeHealthReport {
+        let state = self.node.state();
+        NodeHealthReport {
+            chain_id: state.chain_id().clone(),
+            network_id: None,
+            validator_id: None,
+            height: state.height(),
+            pending_mempool_transactions: self.node.pending_len(),
+            trusted_validator_keys: None,
+            pending_validator_set_metadata_updates: None,
+            storage_root: state.storage_root(),
+            registry_root: state.registry_root(),
+            policy_root: state.policy_root(),
+            event_root: state.event_root(),
+            nonce_root: state.nonce_root(),
+            outbox_root: state.outbox_root(),
+            global_state_root: state.global_state_root(),
+        }
+    }
+
     pub fn snapshot(&self) -> StateSnapshot {
         self.node.state().snapshot()
     }
@@ -429,6 +469,9 @@ impl RpcService {
                 .get_block(height)
                 .map(|block| RpcResult::Block(Box::new(block)))
                 .into(),
+            RpcRequest::GetNodeHealth => {
+                RpcResponse::Ok(RpcResult::NodeHealth(Box::new(self.node_health())))
+            }
             RpcRequest::GetStateRoot => {
                 RpcResponse::Ok(RpcResult::StateRoot(self.get_state_root()))
             }
@@ -782,6 +825,43 @@ mod tests {
             r#""persisted_snapshot_sync_client_metrics_root":"metrics-imported-root","#,
             r#""using_imported_snapshot_sync_client_metrics_root":false,"#,
             r#""persisted_matches_local_snapshot_sync_client_metrics_root":false}}}"#,
+        );
+
+        assert_eq!(serde_json::to_string(&response).unwrap(), fixture);
+        assert_eq!(
+            serde_json::from_str::<RpcResponse>(fixture).unwrap(),
+            response
+        );
+    }
+
+    #[test]
+    fn node_health_json_fixture_is_stable() {
+        let response = RpcResponse::Ok(RpcResult::NodeHealth(Box::new(NodeHealthReport {
+            chain_id: "detta-local".into(),
+            network_id: Some("detta-localnet".into()),
+            validator_id: Some("validator-1".into()),
+            height: 7,
+            pending_mempool_transactions: 2,
+            trusted_validator_keys: Some(4),
+            pending_validator_set_metadata_updates: Some(1),
+            storage_root: "storage-root".into(),
+            registry_root: "registry-root".into(),
+            policy_root: "policy-root".into(),
+            event_root: "event-root".into(),
+            nonce_root: "nonce-root".into(),
+            outbox_root: "outbox-root".into(),
+            global_state_root: "global-root".into(),
+        })));
+        let fixture = concat!(
+            r#"{"status":"ok","body":{"result":"node_health","data":{"#,
+            r#""chain_id":"detta-local","network_id":"detta-localnet","#,
+            r#""validator_id":"validator-1","height":7,"#,
+            r#""pending_mempool_transactions":2,"trusted_validator_keys":4,"#,
+            r#""pending_validator_set_metadata_updates":1,"#,
+            r#""storage_root":"storage-root","registry_root":"registry-root","#,
+            r#""policy_root":"policy-root","event_root":"event-root","#,
+            r#""nonce_root":"nonce-root","outbox_root":"outbox-root","#,
+            r#""global_state_root":"global-root"}}}"#,
         );
 
         assert_eq!(serde_json::to_string(&response).unwrap(), fixture);

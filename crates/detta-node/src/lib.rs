@@ -16,7 +16,7 @@ use detta_protocol::{
     SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT,
 };
 use detta_rpc::{
-    json_rpc_response_for_request, JsonRpcHandler, PersistentNodeSnapshotRoots,
+    json_rpc_response_for_request, JsonRpcHandler, NodeHealthReport, PersistentNodeSnapshotRoots,
     RequiredSnapshotMetadataRootsReport, RpcError, RpcErrorBody, RpcRequest, RpcResponse,
     RpcResult, RpcService, RpcTransportError, SnapshotMetadataRootStatus,
     SnapshotSyncClientMetricsReport, ValidatorSetMetadataUpdateStatus,
@@ -735,6 +735,9 @@ impl PersistentValidatorNode {
 
     pub fn handle_rpc_request(&mut self, request: RpcRequest) -> RpcResponse {
         match request {
+            RpcRequest::GetNodeHealth => RpcResponse::Ok(RpcResult::NodeHealth(Box::new(
+                self.persistent_node_health(),
+            ))),
             RpcRequest::ProposeValidatorSetMetadataUpdate { authorization } => self
                 .propose_validator_set_metadata_update_authorization(authorization)
                 .map(RpcResult::ValidatorSetMetadataUpdateStatus)
@@ -796,6 +799,16 @@ impl PersistentValidatorNode {
                 .unwrap_or_else(node_rpc_error_response),
             request => self.rpc.handle_request(request),
         }
+    }
+
+    pub fn persistent_node_health(&self) -> NodeHealthReport {
+        let mut health = self.rpc.node_health();
+        health.network_id = Some(self.network_id.clone());
+        health.validator_id = Some(self.validator_id.clone());
+        health.trusted_validator_keys = Some(self.validator_keys.len());
+        health.pending_validator_set_metadata_updates =
+            Some(self.pending_validator_set_metadata_authorizations.len());
+        health
     }
 
     pub fn network_id(&self) -> &str {
@@ -1956,6 +1969,38 @@ mod tests {
             restarted.rpc().call_balance_view("TokenA", "Bob", "USDC"),
             60
         );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn persistent_node_reports_operational_health() {
+        let dir = temp_dir("node-health");
+        let mut node =
+            PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &dir).unwrap();
+        node.trust_validator_key(validator_key("validator-2", 8).public_key());
+        node.submit_transaction(transfer_tx()).unwrap();
+
+        let response = node.handle_rpc_request(RpcRequest::GetNodeHealth);
+
+        let RpcResponse::Ok(RpcResult::NodeHealth(health)) = response else {
+            panic!("expected node health response");
+        };
+        assert_eq!(health.network_id.as_deref(), Some(DEFAULT_NODE_NETWORK_ID));
+        assert_eq!(health.validator_id.as_deref(), Some("validator-1"));
+        assert_eq!(health.chain_id, "detta-local");
+        assert_eq!(health.height, 0);
+        assert_eq!(health.pending_mempool_transactions, 1);
+        assert_eq!(health.trusted_validator_keys, Some(1));
+        assert_eq!(health.pending_validator_set_metadata_updates, Some(0));
+        assert_eq!(
+            health.global_state_root,
+            node.rpc().node().state().global_state_root()
+        );
+        assert_eq!(
+            health.storage_root,
+            node.rpc().node().state().storage_root()
+        );
+
         fs::remove_dir_all(dir).unwrap();
     }
 
