@@ -354,10 +354,13 @@ Completed production-plan slices:
   in verify.
 - [x] Proof manifest root attestation root is checked against the proof
   manifest JSON bytes in verify.
+- [x] Proof manifest root attestation parser is checked against direct
+  sha256sum splitting in verify.
 
 Next implementation slices:
 
-- [ ] Add proof manifest root attestation parser consistency checks in verify.
+No pending implementation slices are listed. Add the next slice here when a
+new production acceptance gap is identified.
 
 # 1. Production Objective
 

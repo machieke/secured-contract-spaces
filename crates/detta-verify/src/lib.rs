@@ -1456,6 +1456,15 @@ mod tests {
         assert_eq!(root, proof_artifact_manifest_root_bytes(target_bytes));
     }
 
+    #[test]
+    fn proof_artifact_manifest_root_attestation_parser_is_consistent() {
+        let attestation = include_str!("../../../models/detta-proof-artifact-manifest.sha256");
+        let helper_parts = sha256sum_attestation_parts(attestation);
+        let direct_parts = attestation.trim().split_once("  ").unwrap();
+
+        assert_eq!(helper_parts, direct_parts);
+    }
+
     struct ProofReleaseAttestationFixture {
         attestation: &'static str,
         file_name: &'static str,
