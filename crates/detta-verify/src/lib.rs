@@ -274,6 +274,12 @@ pub fn proof_runtime_artifacts() -> Vec<ModelArtifactRoot> {
             )),
         },
         ModelArtifactRoot {
+            path: "models/detta-restricted-evaluator-proof-trace.sha256",
+            sha256: proof_artifact_manifest_root_bytes(include_bytes!(
+                "../../../models/detta-restricted-evaluator-proof-trace.sha256"
+            )),
+        },
+        ModelArtifactRoot {
             path: "models/detta-restricted-evaluator-proof-trace-root.sha256",
             sha256: proof_artifact_manifest_root_bytes(include_bytes!(
                 "../../../models/detta-restricted-evaluator-proof-trace-root.sha256"
@@ -286,15 +292,33 @@ pub fn proof_runtime_artifacts() -> Vec<ModelArtifactRoot> {
             )),
         },
         ModelArtifactRoot {
+            path: "models/detta-restricted-evaluator-forbidden-primitives.sha256",
+            sha256: proof_artifact_manifest_root_bytes(include_bytes!(
+                "../../../models/detta-restricted-evaluator-forbidden-primitives.sha256"
+            )),
+        },
+        ModelArtifactRoot {
             path: "models/detta-restricted-evaluator-resource-exhaustion.json",
             sha256: proof_artifact_manifest_root_bytes(include_bytes!(
                 "../../../models/detta-restricted-evaluator-resource-exhaustion.json"
             )),
         },
         ModelArtifactRoot {
+            path: "models/detta-restricted-evaluator-resource-exhaustion.sha256",
+            sha256: proof_artifact_manifest_root_bytes(include_bytes!(
+                "../../../models/detta-restricted-evaluator-resource-exhaustion.sha256"
+            )),
+        },
+        ModelArtifactRoot {
             path: "models/detta-restricted-evaluator-arithmetic-overflow.json",
             sha256: proof_artifact_manifest_root_bytes(include_bytes!(
                 "../../../models/detta-restricted-evaluator-arithmetic-overflow.json"
+            )),
+        },
+        ModelArtifactRoot {
+            path: "models/detta-restricted-evaluator-arithmetic-overflow.sha256",
+            sha256: proof_artifact_manifest_root_bytes(include_bytes!(
+                "../../../models/detta-restricted-evaluator-arithmetic-overflow.sha256"
             )),
         },
     ]
@@ -790,6 +814,11 @@ mod tests {
                         .into(),
                 },
                 ModelArtifactRoot {
+                    path: "models/detta-restricted-evaluator-proof-trace.sha256",
+                    sha256: "6e94330e7034919bd12ad6b03b4acf785dc923ae32dca9b110eb024541a8926b"
+                        .into(),
+                },
+                ModelArtifactRoot {
                     path: "models/detta-restricted-evaluator-proof-trace-root.sha256",
                     sha256: "962954607a2b57634bebd9f634f04d0e4206d35c948257398c198d3fe8a7febc"
                         .into(),
@@ -800,8 +829,18 @@ mod tests {
                         .into(),
                 },
                 ModelArtifactRoot {
+                    path: "models/detta-restricted-evaluator-forbidden-primitives.sha256",
+                    sha256: "b5f1a047ea11a03a17a574a3835e8b63bf681f3ee4c655462f9e448c97865648"
+                        .into(),
+                },
+                ModelArtifactRoot {
                     path: "models/detta-restricted-evaluator-resource-exhaustion.json",
                     sha256: "ba6a1a61581be50de96532e86e3f3e2c9c8792a9506c4149a58fe2a7be9e1806"
+                        .into(),
+                },
+                ModelArtifactRoot {
+                    path: "models/detta-restricted-evaluator-resource-exhaustion.sha256",
+                    sha256: "0b0f0f62127febf4108114beeb10ba383adcf2582cbb5f263038cba960f8a0d0"
                         .into(),
                 },
                 ModelArtifactRoot {
@@ -809,8 +848,34 @@ mod tests {
                     sha256: "8135d0a60e36e5369d80ca85985311745b3f3172bbc84a639cf3ec4cef602f2f"
                         .into(),
                 },
+                ModelArtifactRoot {
+                    path: "models/detta-restricted-evaluator-arithmetic-overflow.sha256",
+                    sha256: "d8f9f4c782699c7e56fe852968f82e54ddb0a1fe701add00dd986c300a2cb11d"
+                        .into(),
+                },
             ]
         );
+    }
+
+    #[test]
+    fn proof_runtime_artifacts_bind_all_evaluator_attestations() {
+        let runtime_paths: BTreeSet<_> = proof_runtime_artifacts()
+            .into_iter()
+            .map(|artifact| artifact.path)
+            .collect();
+
+        for required in [
+            "models/detta-restricted-evaluator-proof-trace.sha256",
+            "models/detta-restricted-evaluator-proof-trace-root.sha256",
+            "models/detta-restricted-evaluator-forbidden-primitives.sha256",
+            "models/detta-restricted-evaluator-resource-exhaustion.sha256",
+            "models/detta-restricted-evaluator-arithmetic-overflow.sha256",
+        ] {
+            assert!(
+                runtime_paths.contains(required),
+                "{required} is not bound in the proof manifest runtime artifacts"
+            );
+        }
     }
 
     #[test]

@@ -202,10 +202,12 @@ Completed production-plan slices:
   attestation.
 - [x] Restricted evaluator proof trace root attestation is bound into the
   proof-artifact manifest.
+- [x] Proof-manifest tests ensure every checked-in evaluator attestation is
+  bound.
 
 Next implementation slices:
 
-- [ ] Add proof-manifest tests that every checked-in evaluator attestation is
+- [ ] Add proof-manifest tests that every checked-in evaluator fixture JSON is
   bound.
 
 # 1. Production Objective
