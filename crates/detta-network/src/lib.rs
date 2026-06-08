@@ -1,6 +1,6 @@
 use detta_protocol::{
-    decode_message, encode_message, PeerHello, ProtocolError, ProtocolMessage, HEADER_LEN,
-    MAX_PAYLOAD_LEN,
+    decode_message, encode_message, negotiate_protocol_version, PeerHello, ProtocolError,
+    ProtocolMessage, HEADER_LEN, MAX_PAYLOAD_LEN,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -138,6 +138,7 @@ impl PeerReconnectQueue {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PeerConnection {
     pub hello: PeerHello,
+    pub negotiated_protocol_version: u16,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -181,18 +182,27 @@ impl PeerConnectionManager {
                 hello.network_id
             )));
         }
-        if hello.protocol_version != self.local.protocol_version {
+        let Some(negotiated_protocol_version) = negotiate_protocol_version(&self.local, &hello)
+        else {
             return Err(NetworkError::PeerRejected(format!(
-                "protocol version mismatch: {}",
+                "protocol version mismatch: local {}-{}, remote {}-{}",
+                self.local.min_protocol_version,
+                self.local.protocol_version,
+                hello.min_protocol_version,
                 hello.protocol_version
             )));
-        }
+        };
         if self.peers.contains_key(&hello.peer_id) {
             return Err(NetworkError::DuplicatePeer(hello.peer_id));
         }
 
-        self.peers
-            .insert(hello.peer_id.clone(), PeerConnection { hello });
+        self.peers.insert(
+            hello.peer_id.clone(),
+            PeerConnection {
+                hello,
+                negotiated_protocol_version,
+            },
+        );
         Ok(())
     }
 
@@ -288,7 +298,7 @@ impl TcpProtocolStream {
 
     pub fn handshake(&mut self, local: PeerHello) -> Result<PeerHello, NetworkError> {
         let expected_network = local.network_id.clone();
-        let expected_version = local.protocol_version;
+        let local_hello = local.clone();
         self.send(&NetworkMessage::PeerHello(local))?;
 
         match self.receive()? {
@@ -299,9 +309,12 @@ impl TcpProtocolStream {
                         remote.network_id
                     )));
                 }
-                if remote.protocol_version != expected_version {
+                if negotiate_protocol_version(&local_hello, &remote).is_none() {
                     return Err(NetworkError::PeerRejected(format!(
-                        "protocol version mismatch: {}",
+                        "protocol version mismatch: local {}-{}, remote {}-{}",
+                        local_hello.min_protocol_version,
+                        local_hello.protocol_version,
+                        remote.min_protocol_version,
                         remote.protocol_version
                     )));
                 }
@@ -540,6 +553,13 @@ mod tests {
         assert_eq!(manager.peer_count(), 1);
         assert_eq!(manager.peer("full-node-1").unwrap().hello, remote);
         assert_eq!(
+            manager
+                .peer("full-node-1")
+                .unwrap()
+                .negotiated_protocol_version,
+            remote.protocol_version
+        );
+        assert_eq!(
             manager.register_peer(PeerHello::new(
                 "full-node-1",
                 "detta-testnet",
@@ -557,6 +577,41 @@ mod tests {
         ));
         assert!(matches!(
             manager.register_peer(validator_hello("validator-1")),
+            Err(NetworkError::PeerRejected(_))
+        ));
+    }
+
+    #[test]
+    fn peer_connection_manager_negotiates_adjacent_protocol_versions() {
+        let local = PeerHello::new("validator-1", "detta-testnet", [PeerRole::Validator]);
+        let mut manager = PeerConnectionManager::new(local.clone(), 16);
+        let future_compatible = PeerHello::with_protocol_window(
+            "validator-2",
+            "detta-testnet",
+            local.protocol_version,
+            local.protocol_version + 1,
+            [PeerRole::Validator],
+        );
+
+        manager.register_peer(future_compatible.clone()).unwrap();
+
+        assert_eq!(
+            manager
+                .peer("validator-2")
+                .unwrap()
+                .negotiated_protocol_version,
+            local.protocol_version
+        );
+
+        let incompatible = PeerHello::with_protocol_window(
+            "validator-3",
+            "detta-testnet",
+            local.protocol_version + 1,
+            local.protocol_version + 2,
+            [PeerRole::Validator],
+        );
+        assert!(matches!(
+            manager.register_peer(incompatible),
             Err(NetworkError::PeerRejected(_))
         ));
     }
@@ -857,9 +912,11 @@ mod tests {
             let (stream, _) = listener.accept().unwrap();
             let mut server = TcpProtocolStream::from_stream(stream);
             let remote = server
-                .handshake(PeerHello::new(
+                .handshake(PeerHello::with_protocol_window(
                     "validator-1",
                     "detta-testnet",
+                    1,
+                    2,
                     [PeerRole::Validator],
                 ))
                 .unwrap();
@@ -878,6 +935,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(remote.peer_id, "validator-1");
+        assert_eq!(remote.min_protocol_version, 1);
+        assert_eq!(remote.protocol_version, 2);
         assert!(remote.roles.contains(&PeerRole::Validator));
         server.join().unwrap();
     }

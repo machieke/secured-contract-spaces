@@ -368,6 +368,8 @@ Completed production-plan slices:
 - [x] Local release gate and CI run the checked-in TLA+ bounded simulation job.
 - [x] Durable mempool admission enforces deterministic budget, byte-size,
   global-pending, and per-sender pending limits with stable RPC errors.
+- [x] Peer protocol-version negotiation accepts adjacent compatible version
+  windows and rejects incompatible windows over manager and TCP handshakes.
 
 Next implementation slices:
 

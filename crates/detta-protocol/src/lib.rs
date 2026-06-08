@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub const PROTOCOL_MAGIC: [u8; 4] = *b"DTTA";
 pub const CURRENT_PROTOCOL_VERSION: u16 = 1;
+pub const MIN_SUPPORTED_PROTOCOL_VERSION: u16 = CURRENT_PROTOCOL_VERSION;
 pub const HEADER_LEN: usize = 10;
 pub const MAX_PAYLOAD_LEN: usize = 16 * 1024 * 1024;
 pub const VALIDATOR_SIGNATURE_PREFIX: &str = "detta.validator.protocol.v1";
@@ -150,6 +151,7 @@ pub struct PeerHello {
     pub peer_id: String,
     pub network_id: String,
     pub protocol_version: u16,
+    pub min_protocol_version: u16,
     pub roles: BTreeSet<PeerRole>,
 }
 
@@ -163,9 +165,38 @@ impl PeerHello {
             peer_id: peer_id.into(),
             network_id: network_id.into(),
             protocol_version: CURRENT_PROTOCOL_VERSION,
+            min_protocol_version: MIN_SUPPORTED_PROTOCOL_VERSION,
             roles: roles.into_iter().collect(),
         }
     }
+
+    pub fn with_protocol_window(
+        peer_id: impl Into<String>,
+        network_id: impl Into<String>,
+        min_protocol_version: u16,
+        protocol_version: u16,
+        roles: impl IntoIterator<Item = PeerRole>,
+    ) -> Self {
+        Self {
+            peer_id: peer_id.into(),
+            network_id: network_id.into(),
+            protocol_version,
+            min_protocol_version,
+            roles: roles.into_iter().collect(),
+        }
+    }
+}
+
+pub fn negotiate_protocol_version(local: &PeerHello, remote: &PeerHello) -> Option<u16> {
+    if local.min_protocol_version > local.protocol_version
+        || remote.min_protocol_version > remote.protocol_version
+    {
+        return None;
+    }
+
+    let min_common = local.min_protocol_version.max(remote.min_protocol_version);
+    let max_common = local.protocol_version.min(remote.protocol_version);
+    (min_common <= max_common).then_some(max_common)
 }
 
 impl ProtocolMessage {
@@ -878,7 +909,44 @@ mod tests {
 
         assert_eq!(decode_message(&encoded), Ok(message));
         assert_eq!(hello.protocol_version, CURRENT_PROTOCOL_VERSION);
+        assert_eq!(hello.min_protocol_version, MIN_SUPPORTED_PROTOCOL_VERSION);
         assert!(hello.roles.contains(&PeerRole::Validator));
+    }
+
+    #[test]
+    fn peer_protocol_version_negotiation_selects_highest_common_version() {
+        let local = PeerHello::with_protocol_window(
+            "validator-1",
+            "detta-testnet",
+            1,
+            2,
+            [PeerRole::Validator],
+        );
+        let adjacent = PeerHello::with_protocol_window(
+            "validator-2",
+            "detta-testnet",
+            2,
+            3,
+            [PeerRole::Validator],
+        );
+        let incompatible = PeerHello::with_protocol_window(
+            "validator-3",
+            "detta-testnet",
+            3,
+            4,
+            [PeerRole::Validator],
+        );
+        let invalid = PeerHello::with_protocol_window(
+            "validator-4",
+            "detta-testnet",
+            4,
+            3,
+            [PeerRole::Validator],
+        );
+
+        assert_eq!(negotiate_protocol_version(&local, &adjacent), Some(2));
+        assert_eq!(negotiate_protocol_version(&local, &incompatible), None);
+        assert_eq!(negotiate_protocol_version(&local, &invalid), None);
     }
 
     #[test]
