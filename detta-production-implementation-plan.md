@@ -287,10 +287,12 @@ Completed production-plan slices:
   expected evaluator fixture schema coverage in verify.
 - [x] Proof manifest theorem fixture evidence references are checked for
   expected evaluator fixture name coverage in verify.
+- [x] Proof manifest theorem model evidence references are checked for
+  expected TLA operator coverage in verify.
 
 Next implementation slices:
 
-- [ ] Add proof manifest theorem model evidence operator coverage checks in
+- [ ] Add proof manifest theorem runtime-test evidence crate coverage checks in
   verify.
 
 # 1. Production Objective

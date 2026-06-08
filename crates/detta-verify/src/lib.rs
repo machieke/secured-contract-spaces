@@ -2341,6 +2341,30 @@ mod tests {
         }
     }
 
+    #[test]
+    fn theorem_model_evidence_covers_expected_tla_operators() {
+        let evidence_operators: BTreeSet<_> = scs_theorem_coverage()
+            .into_iter()
+            .flat_map(|theorem| theorem.evidence)
+            .filter_map(|evidence| {
+                evidence
+                    .reference
+                    .strip_prefix("models/DeTTaBlockExecution.tla::")
+            })
+            .collect();
+
+        assert_eq!(
+            evidence_operators,
+            BTreeSet::from([
+                "DispatcherOnlyMutation",
+                "AtomicRevert",
+                "ReplaySafety",
+                "WriteScopeSafety",
+                "TypeOK",
+            ])
+        );
+    }
+
     fn tla_operator_names(source: &str) -> BTreeSet<String> {
         source
             .lines()
