@@ -91,6 +91,8 @@ cargo test -p detta-verify
   `detta_verify::verify_*` namespace.
 - theorem model evidence references use the expected
   `models/DeTTaBlockExecution.tla::*` namespace.
+- theorem fixture evidence references use the restricted evaluator JSON
+  fixture namespace.
 
 The evaluator `sha256sum -c` commands verify fixture-file attestations. The
 final `sha256sum` command reports the file root of the compact-trace-root
@@ -198,6 +200,8 @@ Before accepting a release proof bundle, verify:
   `detta_verify::verify_*` namespace;
 - theorem model evidence references use the expected
   `models/DeTTaBlockExecution.tla::*` namespace;
+- theorem fixture evidence references use the restricted evaluator JSON
+  fixture namespace;
 - `detta-restricted-evaluator-proof-trace-root.sha256` matches both the
   fixture `trace_root` field and the recomputed root of `report.trace`;
 - `models/detta-proof-artifact-manifest.sha256` verifies after all fixture,

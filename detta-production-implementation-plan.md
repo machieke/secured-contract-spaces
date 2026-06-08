@@ -279,10 +279,13 @@ Completed production-plan slices:
   expected `detta_verify::verify_*` namespace in verify.
 - [x] Proof manifest theorem model evidence references are checked for the
   expected `models/DeTTaBlockExecution.tla::*` namespace in verify.
+- [x] Proof manifest theorem fixture evidence references are checked for the
+  expected restricted evaluator JSON fixture namespace in verify.
 
 Next implementation slices:
 
-- [ ] Add proof manifest theorem fixture evidence namespace checks in verify.
+- [ ] Add proof manifest theorem fixture evidence inventory coverage checks in
+  verify.
 
 # 1. Production Objective
 

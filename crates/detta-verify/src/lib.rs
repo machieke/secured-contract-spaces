@@ -1054,6 +1054,31 @@ mod tests {
     }
 
     #[test]
+    fn theorem_fixture_evidence_uses_expected_namespace() {
+        for entry in scs_theorem_coverage() {
+            for evidence in entry
+                .evidence
+                .iter()
+                .filter(|evidence| matches!(evidence.kind, TheoremEvidenceKind::Fixture))
+            {
+                assert!(
+                    evidence
+                        .reference
+                        .starts_with("models/detta-restricted-evaluator-"),
+                    "{} fixture evidence uses an unexpected namespace: {}",
+                    entry.id,
+                    evidence.reference
+                );
+                assert!(
+                    evidence.reference.ends_with(".json"),
+                    "{} fixture evidence must reference JSON fixtures",
+                    entry.id
+                );
+            }
+        }
+    }
+
+    #[test]
     fn proof_artifact_manifest_matches_checked_in_json() {
         let expected: serde_json::Value = serde_json::from_str(include_str!(
             "../../../models/detta-proof-artifact-manifest.json"
