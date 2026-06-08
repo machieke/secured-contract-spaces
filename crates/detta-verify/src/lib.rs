@@ -1476,6 +1476,35 @@ mod tests {
     }
 
     #[test]
+    fn proof_release_attestation_filenames_match_expected_set() {
+        let filenames: BTreeSet<_> = [
+            include_str!("../../../models/detta-proof-artifact-manifest.sha256"),
+            include_str!("../../../models/detta-restricted-evaluator-proof-trace.sha256"),
+            include_str!("../../../models/detta-restricted-evaluator-proof-trace-root.sha256"),
+            include_str!("../../../models/detta-restricted-evaluator-forbidden-primitives.sha256"),
+            include_str!("../../../models/detta-restricted-evaluator-resource-exhaustion.sha256"),
+            include_str!("../../../models/detta-restricted-evaluator-arithmetic-overflow.sha256"),
+            include_str!("../../../models/detta-restricted-evaluator-fixture-inventory.sha256"),
+        ]
+        .into_iter()
+        .map(|attestation| sha256sum_attestation_parts(attestation).1)
+        .collect();
+
+        assert_eq!(
+            filenames,
+            BTreeSet::from([
+                "detta-proof-artifact-manifest.json",
+                "detta-restricted-evaluator-arithmetic-overflow.json",
+                "detta-restricted-evaluator-fixture-inventory.json",
+                "detta-restricted-evaluator-forbidden-primitives.json",
+                "detta-restricted-evaluator-proof-trace.json",
+                "detta-restricted-evaluator-proof-trace.trace",
+                "detta-restricted-evaluator-resource-exhaustion.json",
+            ])
+        );
+    }
+
+    #[test]
     fn proof_release_attestation_roots_have_sha256_hex_length() {
         for attestation in [
             include_str!("../../../models/detta-proof-artifact-manifest.sha256"),

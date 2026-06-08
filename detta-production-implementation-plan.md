@@ -311,10 +311,12 @@ Completed production-plan slices:
 - [x] Proof release attestation filenames are checked for uniqueness in verify.
 - [x] Proof release attestation filenames are checked for expected suffixes in
   verify.
+- [x] Proof release attestation filenames are checked against the expected set
+  in verify.
 
 Next implementation slices:
 
-- [ ] Add proof release attestation expected filename set checks in verify.
+- [ ] Add proof release attestation helper consolidation in verify.
 
 # 1. Production Objective
 
