@@ -86,10 +86,12 @@ Completed production-plan slices:
   survive restart for later RPC/state-sync reporting.
 - [x] Local validator-set audit writes replace stale imported snapshot metadata
   roots after retention pruning.
+- [x] Snapshot metadata root status is exposed over node-aware RPC, including
+  imported-vs-local replacement state.
 
 Next implementation slices:
 
-- [ ] Expose snapshot metadata root replacement status over RPC.
+- [ ] Require snapshot metadata root status checks in TCP state-sync client flows.
 
 # 1. Production Objective
 

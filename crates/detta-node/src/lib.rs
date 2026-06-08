@@ -15,7 +15,7 @@ use detta_protocol::{
 use detta_rpc::{
     json_rpc_response_for_request, JsonRpcHandler, PersistentNodeSnapshotRoots, RpcError,
     RpcErrorBody, RpcRequest, RpcResponse, RpcResult, RpcService, RpcTransportError,
-    ValidatorSetMetadataUpdateStatus,
+    SnapshotMetadataRootStatus, ValidatorSetMetadataUpdateStatus,
 };
 use detta_storage::{
     FileStorage, StorageError, ValidatorSetMetadataAuditOutcome, ValidatorSetMetadataAuditRecord,
@@ -238,6 +238,38 @@ impl PersistentValidatorNode {
         })
     }
 
+    pub fn snapshot_metadata_root_status(&self) -> Result<SnapshotMetadataRootStatus, NodeError> {
+        let persisted_metadata_roots = self
+            .storage
+            .load_snapshot_metadata_roots()
+            .map_err(NodeError::Storage)?;
+        let local_validator_set_metadata_audit_root = self
+            .storage
+            .validator_set_metadata_audit_root()
+            .map_err(NodeError::Storage)?;
+        let persisted_validator_set_metadata_audit_root = persisted_metadata_roots
+            .get(SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT)
+            .cloned();
+        let validator_set_metadata_audit_root = persisted_validator_set_metadata_audit_root
+            .clone()
+            .unwrap_or_else(|| local_validator_set_metadata_audit_root.clone());
+        let persisted_matches_local_validator_set_metadata_audit_root =
+            persisted_validator_set_metadata_audit_root
+                .as_ref()
+                .is_some_and(|root| root == &local_validator_set_metadata_audit_root);
+        let using_imported_validator_set_metadata_audit_root =
+            persisted_validator_set_metadata_audit_root
+                .as_ref()
+                .is_some_and(|root| root != &local_validator_set_metadata_audit_root);
+        Ok(SnapshotMetadataRootStatus {
+            validator_set_metadata_audit_root,
+            local_validator_set_metadata_audit_root,
+            persisted_validator_set_metadata_audit_root,
+            using_imported_validator_set_metadata_audit_root,
+            persisted_matches_local_validator_set_metadata_audit_root,
+        })
+    }
+
     fn effective_snapshot_metadata_roots(&self) -> Result<BTreeMap<String, String>, NodeError> {
         let mut metadata_roots = self
             .storage
@@ -290,6 +322,11 @@ impl PersistentValidatorNode {
             RpcRequest::GetPersistentNodeSnapshotRoots => self
                 .node_snapshot_roots()
                 .map(|snapshot| RpcResult::PersistentNodeSnapshotRoots(Box::new(snapshot)))
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(node_rpc_error_response),
+            RpcRequest::GetSnapshotMetadataRootStatus => self
+                .snapshot_metadata_root_status()
+                .map(RpcResult::SnapshotMetadataRootStatus)
                 .map(RpcResponse::Ok)
                 .unwrap_or_else(node_rpc_error_response),
             request => self.rpc.handle_request(request),
@@ -1308,6 +1345,13 @@ mod tests {
         match response {
             RpcResponse::Ok(RpcResult::PersistentNodeSnapshotRoots(snapshot)) => *snapshot,
             response => panic!("expected persistent node snapshot roots, got {response:?}"),
+        }
+    }
+
+    fn expect_snapshot_metadata_root_status(response: RpcResponse) -> SnapshotMetadataRootStatus {
+        match response {
+            RpcResponse::Ok(RpcResult::SnapshotMetadataRootStatus(status)) => status,
+            response => panic!("expected snapshot metadata root status, got {response:?}"),
         }
     }
 
@@ -2689,6 +2733,18 @@ mod tests {
             Some(&retained_root)
         );
         assert_eq!(
+            node.handle_rpc_request(RpcRequest::GetSnapshotMetadataRootStatus),
+            RpcResponse::Ok(RpcResult::SnapshotMetadataRootStatus(
+                SnapshotMetadataRootStatus {
+                    validator_set_metadata_audit_root: retained_root.clone(),
+                    local_validator_set_metadata_audit_root: retained_root.clone(),
+                    persisted_validator_set_metadata_audit_root: Some(retained_root.clone()),
+                    using_imported_validator_set_metadata_audit_root: false,
+                    persisted_matches_local_validator_set_metadata_audit_root: true,
+                },
+            ))
+        );
+        assert_eq!(
             node.handle_rpc_request(RpcRequest::GetValidatorSetMetadataAuditRecords {
                 offset: 0,
                 limit: 10,
@@ -2944,6 +3000,18 @@ mod tests {
             updated_snapshot.validator_set_metadata_audit_root,
             initial_snapshot.validator_set_metadata_audit_root
         );
+        write_rpc_request(&mut stream, &RpcRequest::GetSnapshotMetadataRootStatus);
+        let status = expect_snapshot_metadata_root_status(read_rpc_response(&mut reader));
+        assert_eq!(
+            status.validator_set_metadata_audit_root,
+            updated_snapshot.validator_set_metadata_audit_root
+        );
+        assert_eq!(
+            status.persisted_validator_set_metadata_audit_root,
+            Some(updated_snapshot.validator_set_metadata_audit_root)
+        );
+        assert!(!status.using_imported_validator_set_metadata_audit_root);
+        assert!(status.persisted_matches_local_validator_set_metadata_audit_root);
 
         stream.shutdown(Shutdown::Write).unwrap();
         handle.join().unwrap();
@@ -3204,7 +3272,7 @@ mod tests {
             expected_audit_root.clone(),
         );
         let sink_dir = temp_dir("state-sync-sink");
-        let sink = PersistentValidatorNode::bootstrap(
+        let mut sink = PersistentValidatorNode::bootstrap(
             "validator-2",
             DeTTaState::new("detta-local"),
             &sink_dir,
@@ -3214,6 +3282,19 @@ mod tests {
             .import_snapshot_chunk_set(&chunk_set, &required_metadata_roots)
             .unwrap();
         assert_eq!(imported.global_state_root, snapshot_root);
+        let sink_local_audit_root = sink.storage.validator_set_metadata_audit_root().unwrap();
+        assert_eq!(
+            sink.handle_rpc_request(RpcRequest::GetSnapshotMetadataRootStatus),
+            RpcResponse::Ok(RpcResult::SnapshotMetadataRootStatus(
+                SnapshotMetadataRootStatus {
+                    validator_set_metadata_audit_root: expected_audit_root.clone(),
+                    local_validator_set_metadata_audit_root: sink_local_audit_root,
+                    persisted_validator_set_metadata_audit_root: Some(expected_audit_root.clone()),
+                    using_imported_validator_set_metadata_audit_root: true,
+                    persisted_matches_local_validator_set_metadata_audit_root: false,
+                },
+            ))
+        );
         assert_eq!(
             sink.node_snapshot_roots()
                 .unwrap()

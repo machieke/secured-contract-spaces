@@ -48,6 +48,7 @@ pub enum RpcRequest {
     GetStateRoot,
     GetSnapshot,
     GetPersistentNodeSnapshotRoots,
+    GetSnapshotMetadataRootStatus,
     GetBalance {
         contract: ContractId,
         owner: Principal,
@@ -109,6 +110,15 @@ pub struct PersistentNodeSnapshotRoots {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SnapshotMetadataRootStatus {
+    pub validator_set_metadata_audit_root: String,
+    pub local_validator_set_metadata_audit_root: String,
+    pub persisted_validator_set_metadata_audit_root: Option<String>,
+    pub using_imported_validator_set_metadata_audit_root: bool,
+    pub persisted_matches_local_validator_set_metadata_audit_root: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "result", content = "data", rename_all = "snake_case")]
 pub enum RpcResult {
     Submitted,
@@ -119,6 +129,7 @@ pub enum RpcResult {
     StateRoot(String),
     Snapshot(Box<StateSnapshot>),
     PersistentNodeSnapshotRoots(Box<PersistentNodeSnapshotRoots>),
+    SnapshotMetadataRootStatus(SnapshotMetadataRootStatus),
     Amount(Amount),
     StorageProof(Box<StorageProof>),
     StorageNonInclusionProof(Box<StorageNonInclusionProof>),
@@ -398,7 +409,8 @@ impl RpcService {
             RpcRequest::ProposeValidatorSetMetadataUpdate { .. }
             | RpcRequest::GetValidatorSetMetadataUpdateStatus { .. }
             | RpcRequest::GetValidatorSetMetadataAuditRecords { .. }
-            | RpcRequest::GetPersistentNodeSnapshotRoots => {
+            | RpcRequest::GetPersistentNodeSnapshotRoots
+            | RpcRequest::GetSnapshotMetadataRootStatus => {
                 Err(RpcError::UnsupportedNodeMethod).into()
             }
         }
@@ -718,6 +730,13 @@ mod tests {
         );
         assert_eq!(
             rpc.handle_request(RpcRequest::GetPersistentNodeSnapshotRoots),
+            RpcResponse::Error(RpcErrorBody {
+                code: "rpc.unsupported_node_method".into(),
+                message: "method must be handled by a persistent validator node".into(),
+            })
+        );
+        assert_eq!(
+            rpc.handle_request(RpcRequest::GetSnapshotMetadataRootStatus),
             RpcResponse::Error(RpcErrorBody {
                 code: "rpc.unsupported_node_method".into(),
                 message: "method must be handled by a persistent validator node".into(),
