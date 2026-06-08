@@ -1,0 +1,89 @@
+{
+  "schema": "detta.restricted-evaluator-proof-trace.v1",
+  "schema_version": 1,
+  "evaluator": "detta.restricted-script-evaluator",
+  "max_steps": 10,
+  "script": [
+    {
+      "StateGet": {
+        "Balance": {
+          "contract": "TokenA",
+          "owner": "Alice",
+          "asset": "USDC"
+        }
+      }
+    },
+    {
+      "StateSet": [
+        {
+          "Balance": {
+            "contract": "TokenA",
+            "owner": "Alice",
+            "asset": "USDC"
+          }
+        },
+        {
+          "UInt": 90
+        }
+      ]
+    },
+    {
+      "CallContract": {
+        "contract": "AMM",
+        "method": "Swap"
+      }
+    },
+    {
+      "PureAdd": {
+        "left": 40,
+        "right": 2
+      }
+    }
+  ],
+  "report": {
+    "trace": [
+      {
+        "StateGet": {
+          "Balance": {
+            "contract": "TokenA",
+            "owner": "Alice",
+            "asset": "USDC"
+          }
+        }
+      },
+      {
+        "StateSet": {
+          "Balance": {
+            "contract": "TokenA",
+            "owner": "Alice",
+            "asset": "USDC"
+          }
+        }
+      },
+      {
+        "CallContract": {
+          "contract": "AMM",
+          "method": "Swap"
+        }
+      }
+    ],
+    "values": [
+      42
+    ],
+    "steps_used": 4
+  },
+  "trace_root": "a90c256f6a8f5f16dcf5bc3cc063aca87f8cfaff4c17196f0d9fcebac70c4947",
+  "symbolic_verifier": {
+    "contract": "TokenA",
+    "allowed_write_scope": [
+      {
+        "Balance": {
+          "contract": "TokenA",
+          "owner": "Alice",
+          "asset": "USDC"
+        }
+      }
+    ],
+    "errors": []
+  }
+}

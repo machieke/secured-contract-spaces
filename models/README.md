@@ -14,6 +14,9 @@ This directory contains formal-model artifacts for the DeTTa runtime.
   checked-in JSON stays synchronized with theorem coverage and model files.
 - `detta-proof-artifact-manifest.sha256` records the release-attestation root
   for the checked-in proof-artifact manifest.
+- `detta-restricted-evaluator-proof-trace.json` is a golden fixture for the
+  restricted evaluator. It binds a representative script, emitted kernel trace,
+  trace root, and symbolic verifier result.
 - `formal-model-checking-runbook.md` describes the repository checks, external
   model-checker preparation, and manifest refresh procedure.
 

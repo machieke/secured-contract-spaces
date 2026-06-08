@@ -1,7 +1,12 @@
 use detta_core::{EvaluatorPrimitive, ExecutionError, RestrictedEvaluator, StateKey, StateValue};
-use detta_verify::TraceOp;
+use detta_verify::{verify_kernel_trace, TraceError, TraceOp};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
+
+pub const RESTRICTED_EVALUATOR_PROOF_TRACE_SCHEMA: &str =
+    "detta.restricted-evaluator-proof-trace.v1";
+pub const RESTRICTED_EVALUATOR_PROOF_TRACE_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Instruction {
@@ -24,6 +29,25 @@ pub struct ExecutionReport {
     pub trace: Vec<TraceOp>,
     pub values: Vec<u128>,
     pub steps_used: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SymbolicVerifierReport {
+    pub contract: String,
+    pub allowed_write_scope: Vec<StateKey>,
+    pub errors: Vec<TraceError>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RestrictedEvaluatorProofTraceFixture {
+    pub schema: String,
+    pub schema_version: u32,
+    pub evaluator: String,
+    pub max_steps: u64,
+    pub script: Vec<Instruction>,
+    pub report: ExecutionReport,
+    pub trace_root: String,
+    pub symbolic_verifier: SymbolicVerifierReport,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -120,6 +144,46 @@ pub fn trace_root(trace: &[TraceOp]) -> String {
     hex_lower(&digest)
 }
 
+pub fn restricted_evaluator_proof_trace_fixture() -> RestrictedEvaluatorProofTraceFixture {
+    let max_steps = 10;
+    let evaluator = RestrictedScriptEvaluator::new(max_steps);
+    let alice_balance = StateKey::Balance {
+        contract: "TokenA".into(),
+        owner: "Alice".into(),
+        asset: "USDC".into(),
+    };
+    let script = vec![
+        Instruction::StateGet(alice_balance.clone()),
+        Instruction::StateSet(alice_balance.clone(), StateValue::UInt(90)),
+        Instruction::CallContract {
+            contract: "AMM".into(),
+            method: detta_core::Method::Swap,
+        },
+        Instruction::PureAdd { left: 40, right: 2 },
+    ];
+    let report = evaluator
+        .execute(&script)
+        .expect("golden restricted evaluator script should execute");
+    let allowed_write_scope = vec![alice_balance];
+    let write_scope = allowed_write_scope.iter().cloned().collect::<BTreeSet<_>>();
+    let errors = verify_kernel_trace("TokenA", &write_scope, &report.trace);
+
+    RestrictedEvaluatorProofTraceFixture {
+        schema: RESTRICTED_EVALUATOR_PROOF_TRACE_SCHEMA.to_string(),
+        schema_version: RESTRICTED_EVALUATOR_PROOF_TRACE_SCHEMA_VERSION,
+        evaluator: "detta.restricted-script-evaluator".into(),
+        max_steps,
+        trace_root: trace_root(&report.trace),
+        script,
+        report,
+        symbolic_verifier: SymbolicVerifierReport {
+            contract: "TokenA".into(),
+            allowed_write_scope,
+            errors,
+        },
+    }
+}
+
 fn map_execution_error(error: ExecutionError) -> EvaluatorError {
     match error {
         ExecutionError::ForbiddenPrimitive => EvaluatorError::ForbiddenPrimitive,
@@ -142,8 +206,6 @@ fn hex_lower(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use detta_core::{Amount, Argument, Method};
-    use detta_verify::verify_kernel_trace;
-    use std::collections::BTreeSet;
 
     fn balance_key(owner: &str) -> StateKey {
         StateKey::Balance {
@@ -258,5 +320,47 @@ mod tests {
             Argument::Asset("USDC".into()),
             Argument::Amount(10),
         ];
+    }
+
+    #[test]
+    fn restricted_evaluator_proof_trace_fixture_matches_checked_in_json() {
+        let expected: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../models/detta-restricted-evaluator-proof-trace.json"
+        ))
+        .unwrap();
+        let actual = serde_json::to_value(restricted_evaluator_proof_trace_fixture()).unwrap();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn restricted_evaluator_proof_trace_fixture_json_is_stable() {
+        let actual = format!(
+            "{}\n",
+            serde_json::to_string_pretty(&restricted_evaluator_proof_trace_fixture()).unwrap()
+        );
+
+        assert_eq!(
+            actual,
+            include_str!("../../../models/detta-restricted-evaluator-proof-trace.json")
+        );
+    }
+
+    #[test]
+    fn restricted_evaluator_proof_trace_fixture_verifies_trace() {
+        let fixture = restricted_evaluator_proof_trace_fixture();
+
+        assert_eq!(fixture.schema, RESTRICTED_EVALUATOR_PROOF_TRACE_SCHEMA);
+        assert_eq!(
+            fixture.schema_version,
+            RESTRICTED_EVALUATOR_PROOF_TRACE_SCHEMA_VERSION
+        );
+        assert_eq!(fixture.report.steps_used, 4);
+        assert_eq!(fixture.report.values, vec![42]);
+        assert_eq!(
+            fixture.trace_root,
+            "a90c256f6a8f5f16dcf5bc3cc063aca87f8cfaff4c17196f0d9fcebac70c4947"
+        );
+        assert!(fixture.symbolic_verifier.errors.is_empty());
     }
 }
