@@ -338,6 +338,7 @@ mod tests {
                     public_key_hex: "bb".repeat(32),
                 },
             ],
+            applied_updates: vec!["genesis-validator-set".into()],
         };
 
         assert_eq!(storage.maybe_load_validator_set_metadata().unwrap(), None);

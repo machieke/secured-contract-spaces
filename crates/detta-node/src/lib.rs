@@ -9,11 +9,11 @@ use detta_network::{Envelope, InMemoryTransport, NetworkError, NetworkMessage};
 use detta_protocol::{
     build_snapshot_chunks, ProtocolMessageKind, SignatureError, SignedValidatorMessage,
     SnapshotChunkRequest, SnapshotSyncError, ValidatorPublicKey, ValidatorSetMetadata,
-    ValidatorSigningKey,
+    ValidatorSetMetadataUpdate, ValidatorSigningKey,
 };
 use detta_rpc::{RpcError, RpcService};
 use detta_storage::{FileStorage, StorageError};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 pub const DEFAULT_NODE_NETWORK_ID: &str = "detta-localnet";
@@ -46,10 +46,13 @@ pub enum NodeError {
         actual: ProtocolMessageKind,
     },
     DuplicateValidatorKey(String),
+    ValidatorMetadataKeyNotFound(String),
+    ValidatorSetMetadataUpdateAlreadyApplied(String),
     ValidatorSetChainMismatch {
         expected: String,
         actual: String,
     },
+    UnsignedValidatorSetMetadataUpdate,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -59,6 +62,7 @@ pub enum NetworkIngestOutcome {
     VoteReceived,
     FinalityCertificateReceived,
     EquivocationEvidencePersisted,
+    ValidatorSetMetadataUpdated,
     IgnoredControlMessage,
 }
 
@@ -67,6 +71,7 @@ pub struct PersistentValidatorNode {
     network_id: String,
     chain_id: ChainId,
     validator_keys: BTreeMap<String, ValidatorPublicKey>,
+    applied_validator_set_updates: BTreeSet<String>,
     rpc: RpcService,
     storage: FileStorage,
 }
@@ -92,6 +97,7 @@ impl PersistentValidatorNode {
             network_id: DEFAULT_NODE_NETWORK_ID.into(),
             chain_id,
             validator_keys: BTreeMap::new(),
+            applied_validator_set_updates: BTreeSet::new(),
         })
     }
 
@@ -128,6 +134,7 @@ impl PersistentValidatorNode {
             network_id: DEFAULT_NODE_NETWORK_ID.into(),
             chain_id,
             validator_keys: BTreeMap::new(),
+            applied_validator_set_updates: BTreeSet::new(),
         };
         if let Some(metadata) = node
             .storage
@@ -172,6 +179,10 @@ impl PersistentValidatorNode {
         self.validator_keys.get(validator_id)
     }
 
+    pub fn has_applied_validator_set_update(&self, update_id: &str) -> bool {
+        self.applied_validator_set_updates.contains(update_id)
+    }
+
     pub fn persist_validator_set_metadata(
         &mut self,
         network_id: impl Into<String>,
@@ -181,6 +192,7 @@ impl PersistentValidatorNode {
             network_id: network_id.into(),
             chain_id: self.chain_id.clone(),
             validators: validator_keys,
+            applied_updates: Vec::new(),
         };
         let keyring = keyring_from_metadata(&metadata)?;
         self.storage
@@ -188,6 +200,66 @@ impl PersistentValidatorNode {
             .map_err(NodeError::Storage)?;
         self.network_id = metadata.network_id;
         self.validator_keys = keyring;
+        self.applied_validator_set_updates = metadata.applied_updates.into_iter().collect();
+        Ok(())
+    }
+
+    pub fn apply_signed_validator_set_metadata_update(
+        &mut self,
+        signed: &SignedValidatorMessage,
+    ) -> Result<(), NodeError> {
+        match self.verified_signed_validator_message(signed)? {
+            NetworkMessage::ValidatorSetMetadataUpdate(update) => {
+                self.apply_validator_set_metadata_update(update)
+            }
+            other => Err(NodeError::UnexpectedSignedMessage {
+                expected: ProtocolMessageKind::ValidatorSetMetadataUpdate,
+                actual: other.kind(),
+            }),
+        }
+    }
+
+    pub fn apply_validator_set_metadata_update(
+        &mut self,
+        update: ValidatorSetMetadataUpdate,
+    ) -> Result<(), NodeError> {
+        if self
+            .applied_validator_set_updates
+            .contains(&update.update_id)
+        {
+            return Err(NodeError::ValidatorSetMetadataUpdateAlreadyApplied(
+                update.update_id,
+            ));
+        }
+
+        let mut next_keyring = self.validator_keys.clone();
+        for validator_id in &update.remove_validators {
+            if next_keyring.remove(validator_id).is_none() {
+                return Err(NodeError::ValidatorMetadataKeyNotFound(
+                    validator_id.clone(),
+                ));
+            }
+        }
+        for public_key in update.add_validators {
+            if next_keyring.contains_key(&public_key.validator_id) {
+                return Err(NodeError::DuplicateValidatorKey(public_key.validator_id));
+            }
+            next_keyring.insert(public_key.validator_id.clone(), public_key);
+        }
+
+        let mut applied_updates = self.applied_validator_set_updates.clone();
+        applied_updates.insert(update.update_id);
+        let metadata = ValidatorSetMetadata {
+            network_id: self.network_id.clone(),
+            chain_id: self.chain_id.clone(),
+            validators: next_keyring.values().cloned().collect(),
+            applied_updates: applied_updates.iter().cloned().collect(),
+        };
+        self.storage
+            .commit_validator_set_metadata(&metadata)
+            .map_err(NodeError::Storage)?;
+        self.validator_keys = next_keyring;
+        self.applied_validator_set_updates = applied_updates;
         Ok(())
     }
 
@@ -371,8 +443,15 @@ impl PersistentValidatorNode {
                 self.persist_equivocation_evidence(evidence.clone())?;
                 Ok(NetworkIngestOutcome::EquivocationEvidencePersisted)
             }
+            NetworkMessage::ValidatorSetMetadataUpdate(_) => {
+                Err(NodeError::UnsignedValidatorSetMetadataUpdate)
+            }
             NetworkMessage::SignedValidator(signed) => {
                 let message = self.verified_signed_validator_message(signed)?;
+                if let NetworkMessage::ValidatorSetMetadataUpdate(update) = message {
+                    self.apply_validator_set_metadata_update(update)?;
+                    return Ok(NetworkIngestOutcome::ValidatorSetMetadataUpdated);
+                }
                 let signed_envelope = Envelope {
                     from: envelope.from.clone(),
                     to: envelope.to.clone(),
@@ -507,6 +586,7 @@ impl PersistentValidatorNode {
         let keyring = keyring_from_metadata(&metadata)?;
         self.network_id = metadata.network_id;
         self.validator_keys = keyring;
+        self.applied_validator_set_updates = metadata.applied_updates.into_iter().collect();
         Ok(())
     }
 }
@@ -535,7 +615,7 @@ mod tests {
     use detta_network::{InMemoryTransport, TcpProtocolStream};
     use detta_protocol::{
         ProtocolMessage, SignatureError, SnapshotChunkRequest, SnapshotChunkSet,
-        ValidatorSigningKey,
+        ValidatorSetMetadataUpdate, ValidatorSigningKey,
     };
     use std::fs;
     use std::net::TcpListener;
@@ -1174,6 +1254,86 @@ mod tests {
             NodeError::DuplicateValidatorKey("validator-1".into())
         );
         assert_eq!(node.validator_key_count(), 0);
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn persistent_node_applies_signed_validator_set_metadata_update_and_reloads() {
+        let dir = temp_dir("validator-set-update");
+        let signer_key = validator_key("validator-1", 7);
+        let removed_key = validator_key("validator-2", 8);
+        let added_key = validator_key("validator-3", 9);
+        let mut node = PersistentValidatorNode::bootstrap_with_validator_set(
+            "validator-2",
+            seeded_state(),
+            &dir,
+            "detta-testnet",
+            vec![signer_key.public_key(), removed_key.public_key()],
+        )
+        .unwrap();
+        let update = ValidatorSetMetadataUpdate {
+            update_id: "validator-set-update-1".into(),
+            add_validators: vec![added_key.public_key()],
+            remove_validators: vec!["validator-2".into()],
+        };
+        let signed_update = signer_key
+            .sign_message(
+                "detta-testnet",
+                node.chain_id().clone(),
+                NetworkMessage::ValidatorSetMetadataUpdate(update),
+            )
+            .unwrap();
+        let envelope = Envelope {
+            from: "validator-1".into(),
+            to: "validator-2".into(),
+            message: NetworkMessage::SignedValidator(Box::new(signed_update.clone())),
+        };
+
+        assert_eq!(
+            node.ingest_network_envelope(&envelope).unwrap(),
+            NetworkIngestOutcome::ValidatorSetMetadataUpdated
+        );
+        assert!(node.has_applied_validator_set_update("validator-set-update-1"));
+        assert!(node.trusted_validator_key("validator-1").is_some());
+        assert!(node.trusted_validator_key("validator-2").is_none());
+        assert!(node.trusted_validator_key("validator-3").is_some());
+
+        let restarted = PersistentValidatorNode::restart("validator-2", &dir).unwrap();
+        assert_eq!(restarted.network_id(), "detta-testnet");
+        assert!(restarted.has_applied_validator_set_update("validator-set-update-1"));
+        assert!(restarted.trusted_validator_key("validator-2").is_none());
+        assert!(restarted.trusted_validator_key("validator-3").is_some());
+
+        assert_eq!(
+            node.ingest_network_envelope(&envelope).unwrap_err(),
+            NodeError::ValidatorSetMetadataUpdateAlreadyApplied("validator-set-update-1".into())
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn persistent_node_rejects_unsigned_validator_set_metadata_update() {
+        let dir = temp_dir("validator-set-unsigned-update");
+        let added_key = validator_key("validator-3", 9);
+        let mut node =
+            PersistentValidatorNode::bootstrap("validator-2", seeded_state(), &dir).unwrap();
+        let envelope = Envelope {
+            from: "validator-1".into(),
+            to: "validator-2".into(),
+            message: NetworkMessage::ValidatorSetMetadataUpdate(ValidatorSetMetadataUpdate {
+                update_id: "validator-set-update-1".into(),
+                add_validators: vec![added_key.public_key()],
+                remove_validators: vec![],
+            }),
+        };
+
+        assert_eq!(
+            node.ingest_network_envelope(&envelope).unwrap_err(),
+            NodeError::UnsignedValidatorSetMetadataUpdate
+        );
+        assert!(node.trusted_validator_key("validator-3").is_none());
 
         fs::remove_dir_all(dir).unwrap();
     }

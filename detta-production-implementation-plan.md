@@ -52,10 +52,12 @@ Completed production-plan slices:
   persisted as durable slashing records.
 - [x] Validator-set metadata persists network, chain, and validator public keys
   and reloads the node keyring on restart.
+- [x] Signed validator-set metadata updates apply to durable metadata and
+  replay-protected node keyrings.
 
 Next implementation slices:
 
-- [ ] Apply signed validator-set updates to durable metadata and keyrings.
+- [ ] Add quorum authorization checks for validator-set metadata updates.
 
 # 1. Production Objective
 

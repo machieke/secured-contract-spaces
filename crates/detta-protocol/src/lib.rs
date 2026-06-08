@@ -18,6 +18,7 @@ pub enum ValidatorSignatureDomain {
     FinalityCertificate,
     ValidatorSetUpdate,
     EquivocationEvidence,
+    ValidatorSetMetadataUpdate,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -32,6 +33,14 @@ pub struct ValidatorSetMetadata {
     pub network_id: String,
     pub chain_id: String,
     pub validators: Vec<ValidatorPublicKey>,
+    pub applied_updates: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ValidatorSetMetadataUpdate {
+    pub update_id: String,
+    pub add_validators: Vec<ValidatorPublicKey>,
+    pub remove_validators: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -98,6 +107,7 @@ pub enum ProtocolMessage {
     SnapshotChunkRequest(SnapshotChunkRequest),
     SnapshotChunkManifest(SnapshotChunkManifest),
     SnapshotChunk(SnapshotChunk),
+    ValidatorSetMetadataUpdate(ValidatorSetMetadataUpdate),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -114,6 +124,7 @@ pub enum ProtocolMessageKind {
     SnapshotChunkRequest,
     SnapshotChunkManifest,
     SnapshotChunk,
+    ValidatorSetMetadataUpdate,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -156,6 +167,9 @@ impl ProtocolMessage {
             ProtocolMessage::Vote(_) => ProtocolMessageKind::Vote,
             ProtocolMessage::FinalityCertificate(_) => ProtocolMessageKind::FinalityCertificate,
             ProtocolMessage::ValidatorSetUpdate(_) => ProtocolMessageKind::ValidatorSetUpdate,
+            ProtocolMessage::ValidatorSetMetadataUpdate(_) => {
+                ProtocolMessageKind::ValidatorSetMetadataUpdate
+            }
             ProtocolMessage::EquivocationEvidence(_) => ProtocolMessageKind::EquivocationEvidence,
             ProtocolMessage::StateSnapshot(_) => ProtocolMessageKind::StateSnapshot,
             ProtocolMessage::PeerHello(_) => ProtocolMessageKind::PeerHello,
@@ -335,6 +349,9 @@ pub fn expected_signature_domain(
             Ok(ValidatorSignatureDomain::FinalityCertificate)
         }
         ProtocolMessage::ValidatorSetUpdate(_) => Ok(ValidatorSignatureDomain::ValidatorSetUpdate),
+        ProtocolMessage::ValidatorSetMetadataUpdate(_) => {
+            Ok(ValidatorSignatureDomain::ValidatorSetMetadataUpdate)
+        }
         ProtocolMessage::EquivocationEvidence(_) => {
             Ok(ValidatorSignatureDomain::EquivocationEvidence)
         }
@@ -348,6 +365,7 @@ fn claimed_message_signer(message: &ProtocolMessage) -> Option<&str> {
         ProtocolMessage::Vote(vote) => Some(&vote.validator_id),
         ProtocolMessage::FinalityCertificate(_)
         | ProtocolMessage::ValidatorSetUpdate(_)
+        | ProtocolMessage::ValidatorSetMetadataUpdate(_)
         | ProtocolMessage::EquivocationEvidence(_)
         | ProtocolMessage::Transaction(_)
         | ProtocolMessage::StateSnapshot(_)
@@ -587,6 +605,7 @@ fn signature_domain_name(domain: ValidatorSignatureDomain) -> &'static str {
         ValidatorSignatureDomain::Vote => "vote",
         ValidatorSignatureDomain::FinalityCertificate => "finality_certificate",
         ValidatorSignatureDomain::ValidatorSetUpdate => "validator_set_update",
+        ValidatorSignatureDomain::ValidatorSetMetadataUpdate => "validator_set_metadata_update",
         ValidatorSignatureDomain::EquivocationEvidence => "equivocation_evidence",
     }
 }
