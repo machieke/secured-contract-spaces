@@ -222,10 +222,11 @@ Completed production-plan slices:
 - [x] Proof manifest runtime artifact paths are checked for uniqueness.
 - [x] Proof manifest artifact roots are checked for lowercase SHA-256 format.
 - [x] Proof manifest artifact paths are checked for the `models/` namespace.
+- [x] Proof manifest artifact paths are checked against an extension allow-list.
 
 Next implementation slices:
 
-- [ ] Add proof manifest artifact extension allow-list checks.
+- [ ] Add proof manifest model/runtime artifact disjointness checks.
 
 # 1. Production Objective
 

@@ -942,6 +942,24 @@ mod tests {
     }
 
     #[test]
+    fn proof_artifact_paths_use_allowed_extensions() {
+        let allowed_suffixes = [".tla", ".cfg", ".json", ".sha256"];
+
+        for artifact in proof_model_artifacts()
+            .into_iter()
+            .chain(proof_runtime_artifacts())
+        {
+            assert!(
+                allowed_suffixes
+                    .iter()
+                    .any(|suffix| artifact.path.ends_with(suffix)),
+                "{} must use an allowed proof artifact suffix",
+                artifact.path
+            );
+        }
+    }
+
+    #[test]
     fn proof_runtime_artifacts_bind_all_evaluator_attestations() {
         let runtime_paths: BTreeSet<_> = proof_runtime_artifacts()
             .into_iter()

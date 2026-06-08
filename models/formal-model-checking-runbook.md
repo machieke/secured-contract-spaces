@@ -39,6 +39,8 @@ cargo test -p detta-verify
   hex digest.
 - every model and runtime artifact path is repository-relative under
   `models/` without parent traversal or platform-specific separators.
+- every model and runtime artifact path uses an allowed proof artifact suffix:
+  `.tla`, `.cfg`, `.json`, or `.sha256`.
 
 The evaluator `sha256sum -c` commands verify fixture-file attestations. The
 final `sha256sum` command reports the file root of the compact-trace-root
@@ -87,6 +89,7 @@ Before accepting a release proof bundle, verify:
 - every `runtime_artifacts` path is unique;
 - every model and runtime artifact root is lowercase SHA-256 hex;
 - every model and runtime artifact path stays under `models/`;
+- every model and runtime artifact path uses an allowed suffix;
 - every root listed inside the evaluator fixture inventory matches the
   corresponding `runtime_artifacts` entry;
 - `detta-restricted-evaluator-fixture-inventory.sha256` verifies against the
