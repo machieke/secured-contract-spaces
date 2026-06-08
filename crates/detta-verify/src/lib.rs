@@ -483,6 +483,10 @@ pub fn scs_theorem_coverage() -> Vec<SafetyTheoremCoverage> {
                     reference: "detta_core::tests::arithmetic_overflow_reverts_without_state_or_events",
                 },
                 TheoremEvidence {
+                    kind: Fixture,
+                    reference: "models/detta-restricted-evaluator-arithmetic-overflow.json",
+                },
+                TheoremEvidence {
                     kind: Model,
                     reference: "models/DeTTaBlockExecution.tla::TypeOK",
                 },
@@ -817,6 +821,7 @@ mod tests {
                 "models/detta-restricted-evaluator-proof-trace.json",
                 "models/detta-restricted-evaluator-forbidden-primitives.json",
                 "models/detta-restricted-evaluator-resource-exhaustion.json",
+                "models/detta-restricted-evaluator-arithmetic-overflow.json",
             ])
         );
         for reference in fixture_references {

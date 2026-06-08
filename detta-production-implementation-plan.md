@@ -196,11 +196,12 @@ Completed production-plan slices:
   attestation.
 - [x] Restricted evaluator arithmetic overflow fixture root is bound into the
   proof-artifact manifest.
+- [x] Restricted evaluator arithmetic overflow fixture is referenced by theorem
+  evidence.
 
 Next implementation slices:
 
-- [ ] Reference the restricted evaluator arithmetic overflow fixture in theorem
-  evidence.
+- [ ] Add restricted evaluator trace-root attestation for golden proof traces.
 
 # 1. Production Objective
 

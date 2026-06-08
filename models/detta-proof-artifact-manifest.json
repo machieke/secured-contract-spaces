@@ -216,6 +216,10 @@
           "reference": "detta_core::tests::arithmetic_overflow_reverts_without_state_or_events"
         },
         {
+          "kind": "Fixture",
+          "reference": "models/detta-restricted-evaluator-arithmetic-overflow.json"
+        },
+        {
           "kind": "Model",
           "reference": "models/DeTTaBlockExecution.tla::TypeOK"
         }
