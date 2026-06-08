@@ -20,6 +20,8 @@ pub enum Method {
     Swap,
     SubmitPrice,
     RedeemBridgeMessage,
+    PauseContract,
+    UnpauseContract,
     Other(String),
 }
 
@@ -100,6 +102,7 @@ impl StateValue {
 pub enum GrantRight {
     SpendAllowance,
     UpdateOracle,
+    GovernanceAdmin,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -111,6 +114,10 @@ pub enum GrantKey {
         asset: AssetId,
     },
     OracleUpdater {
+        contract: ContractId,
+        subject: Principal,
+    },
+    GovernanceAdmin {
         contract: ContractId,
         subject: Principal,
     },
@@ -152,6 +159,18 @@ impl Grant {
         }
     }
 
+    fn governance_admin(subject: Principal) -> Self {
+        Self {
+            issuer: subject.clone(),
+            subject,
+            rights: BTreeSet::from([GrantRight::GovernanceAdmin]),
+            limit: None,
+            spent: 0,
+            active: true,
+            revoked: false,
+        }
+    }
+
     fn remaining(&self) -> Amount {
         self.limit
             .map(|limit| limit.saturating_sub(self.spent))
@@ -173,6 +192,7 @@ pub enum ContractKind {
     AmmPool { asset_a: AssetId, asset_b: AssetId },
     Oracle { asset: AssetId, max_age: u64 },
     Bridge { source_chain: ChainId },
+    Governance { governed_contract: ContractId },
 }
 
 impl ContractRecord {
@@ -219,6 +239,19 @@ impl ContractRecord {
             code_hash,
             kind: ContractKind::Bridge { source_chain },
             exported_methods: BTreeSet::from([Method::RedeemBridgeMessage]),
+        }
+    }
+
+    fn governance(
+        contract_id: ContractId,
+        code_hash: String,
+        governed_contract: ContractId,
+    ) -> Self {
+        Self {
+            contract_id,
+            code_hash,
+            kind: ContractKind::Governance { governed_contract },
+            exported_methods: BTreeSet::from([Method::PauseContract, Method::UnpauseContract]),
         }
     }
 }
@@ -277,6 +310,14 @@ pub enum EventPayload {
         asset: AssetId,
         amount: Amount,
     },
+    ContractPaused {
+        contract: ContractId,
+        admin: Principal,
+    },
+    ContractUnpaused {
+        contract: ContractId,
+        admin: Principal,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -316,6 +357,8 @@ pub enum ExecutionError {
     StaleOraclePrice,
     InvalidBridgeMessage,
     BridgeMessageReplay,
+    UnauthorizedGovernance,
+    ContractPaused,
     ArithmeticOverflow,
     WriteScopeViolation,
     ContractIsolationViolation,
@@ -762,6 +805,7 @@ pub struct DeTTaState {
     registry: BTreeMap<GrantKey, Grant>,
     used_nonces: BTreeSet<(Principal, Nonce)>,
     used_certificate_nonces: BTreeSet<String>,
+    paused_contracts: BTreeSet<ContractId>,
     events: Vec<Event>,
 }
 
@@ -776,6 +820,7 @@ impl DeTTaState {
             registry: BTreeMap::new(),
             used_nonces: BTreeSet::new(),
             used_certificate_nonces: BTreeSet::new(),
+            paused_contracts: BTreeSet::new(),
             events: Vec::new(),
         }
     }
@@ -962,6 +1007,30 @@ impl DeTTaState {
         Ok(())
     }
 
+    pub fn deploy_governance(
+        &mut self,
+        contract: impl Into<ContractId>,
+        governed_contract: impl Into<ContractId>,
+        admin: impl Into<Principal>,
+    ) -> Result<(), ExecutionError> {
+        let contract = contract.into();
+        let governed_contract = governed_contract.into();
+        let admin = admin.into();
+        let code_hash = root_of(&("detta-governance-v1", &contract, &governed_contract));
+        self.contracts.insert(
+            contract.clone(),
+            ContractRecord::governance(contract.clone(), code_hash, governed_contract),
+        );
+        self.registry.insert(
+            GrantKey::GovernanceAdmin {
+                contract,
+                subject: admin.clone(),
+            },
+            Grant::governance_admin(admin),
+        );
+        Ok(())
+    }
+
     pub fn apply_transaction(&mut self, tx: Transaction) -> Receipt {
         if tx.chain_id != self.chain_id {
             return self.rejected_receipt(tx.tx_hash, ExecutionError::ChainMismatch);
@@ -982,6 +1051,7 @@ impl DeTTaState {
         let checkpoint_registry = self.registry.clone();
         let checkpoint_events = self.events.clone();
         let checkpoint_certificate_nonces = self.used_certificate_nonces.clone();
+        let checkpoint_paused_contracts = self.paused_contracts.clone();
 
         match self.execute_call(&tx) {
             Ok(return_value) => self.committed_receipt(tx.tx_hash, return_value),
@@ -990,6 +1060,7 @@ impl DeTTaState {
                 self.registry = checkpoint_registry;
                 self.events = checkpoint_events;
                 self.used_certificate_nonces = checkpoint_certificate_nonces;
+                self.paused_contracts = checkpoint_paused_contracts;
                 self.reverted_receipt(tx.tx_hash, error)
             }
         }
@@ -1184,6 +1255,10 @@ impl DeTTaState {
             .unwrap_or_default()
     }
 
+    pub fn is_paused(&self, contract: impl Into<ContractId>) -> bool {
+        self.paused_contracts.contains(&contract.into())
+    }
+
     pub fn allowance_remaining(
         &self,
         contract: impl Into<ContractId>,
@@ -1317,6 +1392,7 @@ impl DeTTaState {
             self.registry_root(),
             &self.used_nonces,
             &self.used_certificate_nonces,
+            &self.paused_contracts,
             self.event_root(),
         ))
     }
@@ -1346,6 +1422,10 @@ impl DeTTaState {
             return Err(ExecutionError::MethodNotExported);
         }
 
+        if self.paused_contracts.contains(&tx.target) {
+            return Err(ExecutionError::ContractPaused);
+        }
+
         match contract.kind {
             ContractKind::Token => match tx.method {
                 Method::Transfer => self.transfer(tx),
@@ -1365,6 +1445,11 @@ impl DeTTaState {
             },
             ContractKind::Bridge { source_chain } => match tx.method {
                 Method::RedeemBridgeMessage => self.redeem_bridge_message(tx, source_chain),
+                _ => Err(ExecutionError::PolicyMissing),
+            },
+            ContractKind::Governance { governed_contract } => match tx.method {
+                Method::PauseContract => self.pause_contract(tx, governed_contract),
+                Method::UnpauseContract => self.unpause_contract(tx, governed_contract),
                 _ => Err(ExecutionError::PolicyMissing),
             },
         }
@@ -1808,6 +1893,42 @@ impl DeTTaState {
         Ok(ReturnValue::Unit)
     }
 
+    fn pause_contract(
+        &mut self,
+        tx: &Transaction,
+        governed_contract: ContractId,
+    ) -> Result<ReturnValue, ExecutionError> {
+        self.require_governance_admin(&tx.target, &tx.sender)?;
+        self.paused_contracts.insert(governed_contract.clone());
+        self.emit(
+            &tx.target,
+            &tx.tx_hash,
+            EventPayload::ContractPaused {
+                contract: governed_contract,
+                admin: tx.sender.clone(),
+            },
+        );
+        Ok(ReturnValue::Unit)
+    }
+
+    fn unpause_contract(
+        &mut self,
+        tx: &Transaction,
+        governed_contract: ContractId,
+    ) -> Result<ReturnValue, ExecutionError> {
+        self.require_governance_admin(&tx.target, &tx.sender)?;
+        self.paused_contracts.remove(&governed_contract);
+        self.emit(
+            &tx.target,
+            &tx.tx_hash,
+            EventPayload::ContractUnpaused {
+                contract: governed_contract,
+                admin: tx.sender.clone(),
+            },
+        );
+        Ok(ReturnValue::Unit)
+    }
+
     fn consume_allowance(
         &mut self,
         contract: &ContractId,
@@ -1872,6 +1993,29 @@ impl DeTTaState {
         }
         if !grant.rights.contains(&GrantRight::UpdateOracle) {
             return Err(ExecutionError::UnauthorizedOracleUpdater);
+        }
+        Ok(())
+    }
+
+    fn require_governance_admin(
+        &self,
+        contract: &ContractId,
+        admin: &Principal,
+    ) -> Result<(), ExecutionError> {
+        let key = GrantKey::GovernanceAdmin {
+            contract: contract.clone(),
+            subject: admin.clone(),
+        };
+        let grant = self
+            .registry
+            .get(&key)
+            .ok_or(ExecutionError::UnauthorizedGovernance)?;
+
+        if !grant.active || grant.revoked || grant.subject != *admin {
+            return Err(ExecutionError::UnauthorizedGovernance);
+        }
+        if !grant.rights.contains(&GrantRight::GovernanceAdmin) {
+            return Err(ExecutionError::UnauthorizedGovernance);
         }
         Ok(())
     }
@@ -3193,5 +3337,73 @@ mod tests {
 
         assert_eq!(receipt.status, TxStatus::Reverted);
         assert_eq!(receipt.error, Some(ExecutionError::InvalidBridgeMessage));
+    }
+
+    #[test]
+    fn governance_admin_can_pause_and_unpause_contract() {
+        let mut state = seeded_state();
+        state.deploy_governance("GovA", "TokenA", "Admin").unwrap();
+
+        let pause = state.apply_transaction(tx_to(
+            "GovA",
+            "tx1",
+            "Admin",
+            1,
+            Method::PauseContract,
+            vec![],
+        ));
+        assert_eq!(pause.status, TxStatus::Committed);
+        assert!(state.is_paused("TokenA"));
+
+        let blocked = state.apply_transaction(tx(
+            "tx2",
+            "Alice",
+            1,
+            Method::Transfer,
+            vec![principal("Bob"), asset("USDC"), amount(10)],
+        ));
+        assert_eq!(blocked.status, TxStatus::Reverted);
+        assert_eq!(blocked.error, Some(ExecutionError::ContractPaused));
+        assert_eq!(state.balance("TokenA", "Alice", "USDC"), 100);
+
+        let unpause = state.apply_transaction(tx_to(
+            "GovA",
+            "tx3",
+            "Admin",
+            2,
+            Method::UnpauseContract,
+            vec![],
+        ));
+        assert_eq!(unpause.status, TxStatus::Committed);
+        assert!(!state.is_paused("TokenA"));
+
+        let transfer = state.apply_transaction(tx(
+            "tx4",
+            "Alice",
+            2,
+            Method::Transfer,
+            vec![principal("Bob"), asset("USDC"), amount(10)],
+        ));
+        assert_eq!(transfer.status, TxStatus::Committed);
+        assert_eq!(state.balance("TokenA", "Alice", "USDC"), 90);
+    }
+
+    #[test]
+    fn governance_rejects_non_admin_pause() {
+        let mut state = seeded_state();
+        state.deploy_governance("GovA", "TokenA", "Admin").unwrap();
+
+        let pause = state.apply_transaction(tx_to(
+            "GovA",
+            "tx1",
+            "Mallory",
+            1,
+            Method::PauseContract,
+            vec![],
+        ));
+
+        assert_eq!(pause.status, TxStatus::Reverted);
+        assert_eq!(pause.error, Some(ExecutionError::UnauthorizedGovernance));
+        assert!(!state.is_paused("TokenA"));
     }
 }
