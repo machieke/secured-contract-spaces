@@ -25,6 +25,8 @@ pub enum Method {
     UnpauseContract,
     ScheduleUpgrade,
     ExecuteUpgrade,
+    SchedulePolicyUpdate,
+    ExecutePolicyUpdate,
     DepositCollateral,
     Borrow,
     Stake,
@@ -230,6 +232,17 @@ pub struct ScheduledUpgrade {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ScheduledPolicyUpdate {
+    pub update_id: String,
+    pub governance_contract: ContractId,
+    pub target_contract: ContractId,
+    pub method: Method,
+    pub effect: PolicyEffect,
+    pub execute_after_height: u64,
+    pub executed: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CrossShardMessage {
     pub source_chain: ChainId,
     pub source_contract: ContractId,
@@ -321,6 +334,8 @@ pub enum PolicyEffect {
     ContractPause,
     UpgradeSchedule,
     ContractCodeUpgrade,
+    PolicyUpdateSchedule,
+    MethodPolicyUpdate,
     CrossContractCall,
     CrossShardOutboxAppend,
 }
@@ -559,6 +574,28 @@ impl ContractRecord {
                         ],
                     ),
                 ),
+                (
+                    Method::SchedulePolicyUpdate,
+                    method_policy(
+                        PolicyAuthority::GovernanceAdminGrant,
+                        [PolicyEffect::PolicyUpdateSchedule, PolicyEffect::EventEmit],
+                        [
+                            ContractInvariant::GovernanceChangesRequireAdminGrant,
+                            ContractInvariant::GovernanceUpgradesRespectTimelock,
+                        ],
+                    ),
+                ),
+                (
+                    Method::ExecutePolicyUpdate,
+                    method_policy(
+                        PolicyAuthority::GovernanceAdminGrant,
+                        [PolicyEffect::MethodPolicyUpdate, PolicyEffect::EventEmit],
+                        [
+                            ContractInvariant::GovernanceChangesRequireAdminGrant,
+                            ContractInvariant::GovernanceUpgradesRespectTimelock,
+                        ],
+                    ),
+                ),
             ]),
             BTreeSet::from([
                 ContractInvariant::GovernanceChangesRequireAdminGrant,
@@ -751,6 +788,23 @@ pub enum EventPayload {
         new_code_hash: String,
         admin: Principal,
     },
+    PolicyUpdateScheduled {
+        update_id: String,
+        contract: ContractId,
+        method: Method,
+        effect: PolicyEffect,
+        execute_after_height: u64,
+        admin: Principal,
+    },
+    PolicyUpdateExecuted {
+        update_id: String,
+        contract: ContractId,
+        method: Method,
+        effect: PolicyEffect,
+        old_policy_root: String,
+        new_policy_root: String,
+        admin: Principal,
+    },
     CollateralDeposited {
         borrower: Principal,
         asset: AssetId,
@@ -818,6 +872,9 @@ pub enum ExecutionError {
     UpgradeAlreadyExecuted,
     TimelockNotReady,
     MigrationInvariantViolation,
+    PolicyUpdateAlreadyScheduled,
+    PolicyUpdateNotFound,
+    PolicyUpdateAlreadyExecuted,
     InsufficientCollateral,
     InsufficientStake,
     ArithmeticOverflow,
@@ -1377,6 +1434,7 @@ pub struct DeTTaState {
     used_certificate_nonces: BTreeSet<String>,
     paused_contracts: BTreeSet<ContractId>,
     scheduled_upgrades: BTreeMap<String, ScheduledUpgrade>,
+    scheduled_policy_updates: BTreeMap<String, ScheduledPolicyUpdate>,
     outbound_message_ids: BTreeSet<String>,
     cross_shard_outbox: Vec<CrossShardMessage>,
     events: Vec<Event>,
@@ -1395,6 +1453,7 @@ impl DeTTaState {
             used_certificate_nonces: BTreeSet::new(),
             paused_contracts: BTreeSet::new(),
             scheduled_upgrades: BTreeMap::new(),
+            scheduled_policy_updates: BTreeMap::new(),
             outbound_message_ids: BTreeSet::new(),
             cross_shard_outbox: Vec::new(),
             events: Vec::new(),
@@ -1729,6 +1788,7 @@ impl DeTTaState {
         let checkpoint_paused_contracts = self.paused_contracts.clone();
         let checkpoint_contracts = self.contracts.clone();
         let checkpoint_scheduled_upgrades = self.scheduled_upgrades.clone();
+        let checkpoint_scheduled_policy_updates = self.scheduled_policy_updates.clone();
         let checkpoint_outbound_message_ids = self.outbound_message_ids.clone();
         let checkpoint_cross_shard_outbox = self.cross_shard_outbox.clone();
 
@@ -1744,6 +1804,7 @@ impl DeTTaState {
                 self.used_certificate_nonces = checkpoint_certificate_nonces;
                 self.paused_contracts = checkpoint_paused_contracts;
                 self.scheduled_upgrades = checkpoint_scheduled_upgrades;
+                self.scheduled_policy_updates = checkpoint_scheduled_policy_updates;
                 self.outbound_message_ids = checkpoint_outbound_message_ids;
                 self.cross_shard_outbox = checkpoint_cross_shard_outbox;
                 self.reverted_receipt(tx.tx_hash, error)
@@ -1991,6 +2052,14 @@ impl DeTTaState {
         self.scheduled_upgrades.values()
     }
 
+    pub fn scheduled_policy_update(&self, update_id: &str) -> Option<&ScheduledPolicyUpdate> {
+        self.scheduled_policy_updates.get(update_id)
+    }
+
+    pub fn scheduled_policy_updates(&self) -> impl Iterator<Item = &ScheduledPolicyUpdate> {
+        self.scheduled_policy_updates.values()
+    }
+
     pub fn paused_contracts(&self) -> impl Iterator<Item = &ContractId> {
         self.paused_contracts.iter()
     }
@@ -2215,6 +2284,7 @@ impl DeTTaState {
             &self.used_certificate_nonces,
             &self.paused_contracts,
             &self.scheduled_upgrades,
+            &self.scheduled_policy_updates,
             &self.outbound_message_ids,
             self.outbox_root(),
             self.event_root(),
@@ -2316,6 +2386,15 @@ impl DeTTaState {
                     }
                     Method::ExecuteUpgrade => {
                         self.execute_upgrade(tx, msg_sender, governed_contract)
+                    }
+                    Method::SchedulePolicyUpdate => self.schedule_policy_update(
+                        tx,
+                        msg_sender,
+                        governed_contract,
+                        timelock_delay,
+                    ),
+                    Method::ExecutePolicyUpdate => {
+                        self.execute_policy_update(tx, msg_sender, governed_contract)
                     }
                     _ => Err(ExecutionError::PolicyMissing),
                 },
@@ -2998,6 +3077,130 @@ impl DeTTaState {
         Ok(ReturnValue::Unit)
     }
 
+    fn schedule_policy_update(
+        &mut self,
+        tx: &Transaction,
+        msg_sender: Principal,
+        governed_contract: ContractId,
+        timelock_delay: u64,
+    ) -> Result<ReturnValue, ExecutionError> {
+        let [update_id, method, effect] = expect_args(&tx.args)?;
+        let update_id = expect_text(update_id)?;
+        let method = parse_policy_method(&expect_text(method)?)?;
+        let effect = parse_policy_effect(&expect_text(effect)?)?;
+
+        self.require_governance_admin(&tx.target, &msg_sender)?;
+        if self.scheduled_policy_updates.contains_key(&update_id) {
+            return Err(ExecutionError::PolicyUpdateAlreadyScheduled);
+        }
+
+        let target = self
+            .contracts
+            .get(&governed_contract)
+            .ok_or(ExecutionError::ContractNotFound)?;
+        if target.method_policy(&method).is_none() {
+            return Err(ExecutionError::PolicyMissing);
+        }
+
+        let execute_after_height = self
+            .height
+            .checked_add(timelock_delay)
+            .ok_or(ExecutionError::ArithmeticOverflow)?;
+        let update = ScheduledPolicyUpdate {
+            update_id: update_id.clone(),
+            governance_contract: tx.target.clone(),
+            target_contract: governed_contract.clone(),
+            method: method.clone(),
+            effect: effect.clone(),
+            execute_after_height,
+            executed: false,
+        };
+        self.scheduled_policy_updates
+            .insert(update_id.clone(), update);
+
+        self.emit(
+            &tx.target,
+            &tx.tx_hash,
+            EventPayload::PolicyUpdateScheduled {
+                update_id,
+                contract: governed_contract,
+                method,
+                effect,
+                execute_after_height,
+                admin: msg_sender,
+            },
+        );
+        Ok(ReturnValue::Unit)
+    }
+
+    fn execute_policy_update(
+        &mut self,
+        tx: &Transaction,
+        msg_sender: Principal,
+        governed_contract: ContractId,
+    ) -> Result<ReturnValue, ExecutionError> {
+        let [update_id] = expect_args(&tx.args)?;
+        let update_id = expect_text(update_id)?;
+
+        self.require_governance_admin(&tx.target, &msg_sender)?;
+
+        let storage_root_before = self.storage_root();
+        let registry_root_before = self.registry_root();
+        let old_policy_root = self.policy_root();
+        let update = self
+            .scheduled_policy_updates
+            .get(&update_id)
+            .cloned()
+            .ok_or(ExecutionError::PolicyUpdateNotFound)?;
+
+        if update.executed {
+            return Err(ExecutionError::PolicyUpdateAlreadyExecuted);
+        }
+        if update.governance_contract != tx.target || update.target_contract != governed_contract {
+            return Err(ExecutionError::PolicyUpdateNotFound);
+        }
+        if self.height < update.execute_after_height {
+            return Err(ExecutionError::TimelockNotReady);
+        }
+
+        let target = self
+            .contracts
+            .get_mut(&governed_contract)
+            .ok_or(ExecutionError::ContractNotFound)?;
+        let policy = target
+            .method_policies
+            .get_mut(&update.method)
+            .ok_or(ExecutionError::PolicyMissing)?;
+        policy.effects.insert(update.effect.clone());
+
+        self.scheduled_policy_updates
+            .get_mut(&update_id)
+            .ok_or(ExecutionError::PolicyUpdateNotFound)?
+            .executed = true;
+
+        if self.storage_root() != storage_root_before
+            || self.registry_root() != registry_root_before
+        {
+            return Err(ExecutionError::MigrationInvariantViolation);
+        }
+
+        let new_policy_root = self.policy_root();
+        self.emit(
+            &tx.target,
+            &tx.tx_hash,
+            EventPayload::PolicyUpdateExecuted {
+                update_id,
+                contract: governed_contract,
+                method: update.method,
+                effect: update.effect,
+                old_policy_root,
+                new_policy_root,
+                admin: msg_sender,
+            },
+        );
+        Ok(ReturnValue::Unit)
+    }
+
     fn deposit_collateral(
         &mut self,
         tx: &Transaction,
@@ -3616,6 +3819,48 @@ fn expect_amount(arg: &Argument) -> Result<Amount, ExecutionError> {
 fn expect_text(arg: &Argument) -> Result<String, ExecutionError> {
     match arg {
         Argument::Text(value) => Ok(value.clone()),
+        _ => Err(ExecutionError::InvalidArguments),
+    }
+}
+
+fn parse_policy_method(value: &str) -> Result<Method, ExecutionError> {
+    match value {
+        "transfer" => Ok(Method::Transfer),
+        "approve" => Ok(Method::Approve),
+        "transferFrom" => Ok(Method::TransferFrom),
+        "permit" => Ok(Method::Permit),
+        "addLiquidity" => Ok(Method::AddLiquidity),
+        "swap" => Ok(Method::Swap),
+        "submitPrice" => Ok(Method::SubmitPrice),
+        "queueBridgeMessage" => Ok(Method::QueueBridgeMessage),
+        "redeemBridgeMessage" => Ok(Method::RedeemBridgeMessage),
+        "pauseContract" => Ok(Method::PauseContract),
+        "unpauseContract" => Ok(Method::UnpauseContract),
+        "scheduleUpgrade" => Ok(Method::ScheduleUpgrade),
+        "executeUpgrade" => Ok(Method::ExecuteUpgrade),
+        "schedulePolicyUpdate" => Ok(Method::SchedulePolicyUpdate),
+        "executePolicyUpdate" => Ok(Method::ExecutePolicyUpdate),
+        "depositCollateral" => Ok(Method::DepositCollateral),
+        "borrow" => Ok(Method::Borrow),
+        "stake" => Ok(Method::Stake),
+        "unstake" => Ok(Method::Unstake),
+        "routeTransferFrom" => Ok(Method::RouteTransferFrom),
+        _ => Err(ExecutionError::InvalidArguments),
+    }
+}
+
+fn parse_policy_effect(value: &str) -> Result<PolicyEffect, ExecutionError> {
+    match value {
+        "storageWrite" => Ok(PolicyEffect::StorageWrite),
+        "registryWrite" => Ok(PolicyEffect::RegistryWrite),
+        "eventEmit" => Ok(PolicyEffect::EventEmit),
+        "contractPause" => Ok(PolicyEffect::ContractPause),
+        "upgradeSchedule" => Ok(PolicyEffect::UpgradeSchedule),
+        "contractCodeUpgrade" => Ok(PolicyEffect::ContractCodeUpgrade),
+        "policyUpdateSchedule" => Ok(PolicyEffect::PolicyUpdateSchedule),
+        "methodPolicyUpdate" => Ok(PolicyEffect::MethodPolicyUpdate),
+        "crossContractCall" => Ok(PolicyEffect::CrossContractCall),
+        "crossShardOutboxAppend" => Ok(PolicyEffect::CrossShardOutboxAppend),
         _ => Err(ExecutionError::InvalidArguments),
     }
 }
@@ -5279,6 +5524,122 @@ mod tests {
         assert_eq!(schedule.status, TxStatus::Reverted);
         assert_eq!(schedule.error, Some(ExecutionError::UnauthorizedGovernance));
         assert!(state.scheduled_upgrade("upgrade-1").is_none());
+    }
+
+    #[test]
+    fn governance_schedules_and_executes_timelocked_policy_update() {
+        let mut state = seeded_state();
+        state
+            .deploy_governance_with_timelock("GovA", "TokenA", "Admin", 2)
+            .unwrap();
+        let policy_root_before = state.policy_root();
+        let storage_before = state.storage_root();
+        let registry_before = state.registry_root();
+
+        let schedule = state.apply_transaction(tx_to(
+            "GovA",
+            "tx1",
+            "Admin",
+            1,
+            Method::SchedulePolicyUpdate,
+            vec![
+                text("policy-update-1"),
+                text("transfer"),
+                text("registryWrite"),
+            ],
+        ));
+        assert_eq!(schedule.status, TxStatus::Committed);
+        assert_eq!(state.policy_root(), policy_root_before);
+        assert_eq!(
+            state
+                .scheduled_policy_update("policy-update-1")
+                .unwrap()
+                .execute_after_height,
+            2
+        );
+
+        let early_state = state.clone();
+        let (early_block, _) = early_state.build_block(
+            1,
+            vec![tx_to(
+                "GovA",
+                "tx2",
+                "Admin",
+                2,
+                Method::ExecutePolicyUpdate,
+                vec![text("policy-update-1")],
+            )],
+            1_000,
+            "validator-1",
+            "cert-1",
+        );
+        assert_eq!(early_block.receipts[0].status, TxStatus::Reverted);
+        assert_eq!(
+            early_block.receipts[0].error,
+            Some(ExecutionError::TimelockNotReady)
+        );
+
+        let (block, next_state) = state.build_block(
+            2,
+            vec![tx_to(
+                "GovA",
+                "tx3",
+                "Admin",
+                2,
+                Method::ExecutePolicyUpdate,
+                vec![text("policy-update-1")],
+            )],
+            2_000,
+            "validator-1",
+            "cert-2",
+        );
+
+        assert_eq!(block.receipts[0].status, TxStatus::Committed);
+        assert!(next_state
+            .contract("TokenA")
+            .unwrap()
+            .method_policy(&Method::Transfer)
+            .unwrap()
+            .effects
+            .contains(&PolicyEffect::RegistryWrite));
+        assert_ne!(next_state.policy_root(), policy_root_before);
+        assert!(
+            next_state
+                .scheduled_policy_update("policy-update-1")
+                .unwrap()
+                .executed
+        );
+        assert_eq!(next_state.storage_root(), storage_before);
+        assert_eq!(next_state.registry_root(), registry_before);
+        assert!(matches!(
+            next_state.events().last().unwrap().payload,
+            EventPayload::PolicyUpdateExecuted { .. }
+        ));
+    }
+
+    #[test]
+    fn governance_rejects_non_admin_policy_update_schedule() {
+        let mut state = seeded_state();
+        state
+            .deploy_governance_with_timelock("GovA", "TokenA", "Admin", 2)
+            .unwrap();
+
+        let schedule = state.apply_transaction(tx_to(
+            "GovA",
+            "tx1",
+            "Mallory",
+            1,
+            Method::SchedulePolicyUpdate,
+            vec![
+                text("policy-update-1"),
+                text("transfer"),
+                text("registryWrite"),
+            ],
+        ));
+
+        assert_eq!(schedule.status, TxStatus::Reverted);
+        assert_eq!(schedule.error, Some(ExecutionError::UnauthorizedGovernance));
+        assert!(state.scheduled_policy_update("policy-update-1").is_none());
     }
 
     #[test]

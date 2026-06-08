@@ -37,6 +37,19 @@ pub enum LintError {
         upgrade_id: String,
         governance: String,
     },
+    ScheduledPolicyUpdateTargetMissing {
+        update_id: String,
+        target: String,
+    },
+    ScheduledPolicyUpdateGovernanceMissing {
+        update_id: String,
+        governance: String,
+    },
+    ScheduledPolicyUpdateMethodMissing {
+        update_id: String,
+        target: String,
+        method: Method,
+    },
     PausedContractMissing {
         contract: String,
     },
@@ -109,6 +122,29 @@ pub fn lint_state(state: &DeTTaState) -> Vec<LintError> {
             errors.push(LintError::ScheduledUpgradeGovernanceMissing {
                 upgrade_id: upgrade.upgrade_id.clone(),
                 governance: upgrade.governance_contract.clone(),
+            });
+        }
+    }
+
+    for update in state.scheduled_policy_updates() {
+        if !contract_ids.contains(&update.target_contract) {
+            errors.push(LintError::ScheduledPolicyUpdateTargetMissing {
+                update_id: update.update_id.clone(),
+                target: update.target_contract.clone(),
+            });
+        } else if let Some(target) = state.contract(&update.target_contract) {
+            if target.method_policy(&update.method).is_none() {
+                errors.push(LintError::ScheduledPolicyUpdateMethodMissing {
+                    update_id: update.update_id.clone(),
+                    target: update.target_contract.clone(),
+                    method: update.method.clone(),
+                });
+            }
+        }
+        if !contract_ids.contains(&update.governance_contract) {
+            errors.push(LintError::ScheduledPolicyUpdateGovernanceMissing {
+                update_id: update.update_id.clone(),
+                governance: update.governance_contract.clone(),
             });
         }
     }
