@@ -254,6 +254,22 @@ impl PersistentValidatorNode {
         Ok(metadata_roots)
     }
 
+    fn persist_current_snapshot_metadata_roots(&self) -> Result<(), NodeError> {
+        let mut metadata_roots = self
+            .storage
+            .load_snapshot_metadata_roots()
+            .map_err(NodeError::Storage)?;
+        metadata_roots.insert(
+            SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT.into(),
+            self.storage
+                .validator_set_metadata_audit_root()
+                .map_err(NodeError::Storage)?,
+        );
+        self.storage
+            .commit_snapshot_metadata_roots(&metadata_roots)
+            .map_err(NodeError::Storage)
+    }
+
     pub fn handle_rpc_request(&mut self, request: RpcRequest) -> RpcResponse {
         match request {
             RpcRequest::ProposeValidatorSetMetadataUpdate { authorization } => self
@@ -837,7 +853,8 @@ impl PersistentValidatorNode {
                 },
                 self.max_validator_set_metadata_audit_records,
             )
-            .map_err(NodeError::Storage)
+            .map_err(NodeError::Storage)?;
+        self.persist_current_snapshot_metadata_roots()
     }
 
     pub fn persist_and_gossip_signed_equivocation_evidence(
@@ -2598,6 +2615,20 @@ mod tests {
         let mut node =
             PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &dir).unwrap();
         node.set_validator_set_metadata_audit_limits(2, 1);
+        let mut imported_roots = BTreeMap::new();
+        imported_roots.insert(
+            SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT.into(),
+            "imported-audit-root".into(),
+        );
+        node.storage
+            .commit_snapshot_metadata_roots(&imported_roots)
+            .unwrap();
+        assert_eq!(
+            node.node_snapshot_roots()
+                .unwrap()
+                .validator_set_metadata_audit_root,
+            "imported-audit-root"
+        );
 
         for (update_id, outcome) in [
             (
@@ -2641,6 +2672,21 @@ mod tests {
         assert_eq!(
             node.load_validator_set_metadata_audit_records().unwrap(),
             retained
+        );
+        let retained_root = node.storage.validator_set_metadata_audit_root().unwrap();
+        assert_ne!(retained_root, "imported-audit-root");
+        assert_eq!(
+            node.node_snapshot_roots()
+                .unwrap()
+                .validator_set_metadata_audit_root,
+            retained_root
+        );
+        assert_eq!(
+            node.storage
+                .load_snapshot_metadata_roots()
+                .unwrap()
+                .get(SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT),
+            Some(&retained_root)
         );
         assert_eq!(
             node.handle_rpc_request(RpcRequest::GetValidatorSetMetadataAuditRecords {

@@ -84,10 +84,12 @@ Completed production-plan slices:
   rejects mismatched validator-set audit roots before committing snapshots.
 - [x] Verified snapshot metadata roots persist alongside imported snapshots and
   survive restart for later RPC/state-sync reporting.
+- [x] Local validator-set audit writes replace stale imported snapshot metadata
+  roots after retention pruning.
 
 Next implementation slices:
 
-- [ ] Add durable snapshot metadata root pruning/replacement semantics.
+- [ ] Expose snapshot metadata root replacement status over RPC.
 
 # 1. Production Objective
 
