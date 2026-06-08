@@ -152,11 +152,13 @@ Completed production-plan slices:
   snapshot import audit configuration roots.
 - [x] Snapshot metadata root status reports local, persisted, and effective
   snapshot import audit roots.
+- [x] Snapshot metadata root status reports local, persisted, and effective
+  required snapshot metadata-root set roots.
 
 Next implementation slices:
 
-- [ ] Add required snapshot metadata-root set diagnostics to snapshot metadata
-  root status.
+- [ ] Add state-sync client metrics root diagnostics to snapshot metadata root
+  status.
 
 # 1. Production Objective
 

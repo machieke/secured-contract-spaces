@@ -152,6 +152,11 @@ pub struct SnapshotMetadataRootStatus {
     pub persisted_snapshot_import_audit_root: Option<String>,
     pub using_imported_snapshot_import_audit_root: bool,
     pub persisted_matches_local_snapshot_import_audit_root: bool,
+    pub required_snapshot_metadata_roots_root: Option<String>,
+    pub local_required_snapshot_metadata_roots_root: Option<String>,
+    pub persisted_required_snapshot_metadata_roots_root: Option<String>,
+    pub using_imported_required_snapshot_metadata_roots_root: bool,
+    pub persisted_matches_local_required_snapshot_metadata_roots_root: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -177,7 +182,7 @@ pub enum RpcResult {
     StateRoot(String),
     Snapshot(Box<StateSnapshot>),
     PersistentNodeSnapshotRoots(Box<PersistentNodeSnapshotRoots>),
-    SnapshotMetadataRootStatus(SnapshotMetadataRootStatus),
+    SnapshotMetadataRootStatus(Box<SnapshotMetadataRootStatus>),
     SnapshotSyncClientMetrics(Option<SnapshotSyncClientMetricsReport>),
     RequiredSnapshotMetadataRoots(RequiredSnapshotMetadataRootsReport),
     Amount(Amount),
