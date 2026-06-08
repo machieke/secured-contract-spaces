@@ -680,6 +680,7 @@ fn owner_of_key(key: &StateKey) -> &str {
 mod tests {
     use super::*;
     use detta_core::{Argument, DeTTaState, Method, Transaction};
+    use std::collections::BTreeMap;
 
     fn seeded_state() -> DeTTaState {
         let mut state = DeTTaState::new("detta-local");
@@ -896,6 +897,54 @@ mod tests {
                 "{required} is not bound in the proof manifest runtime artifacts"
             );
         }
+    }
+
+    #[test]
+    fn proof_runtime_evaluator_attestations_match_fixture_roots() {
+        let runtime_roots: BTreeMap<_, _> = proof_runtime_artifacts()
+            .into_iter()
+            .map(|artifact| (artifact.path, artifact.sha256))
+            .collect();
+
+        assert_fixture_attestation_matches_runtime_root(
+            include_str!("../../../models/detta-restricted-evaluator-proof-trace.sha256"),
+            "detta-restricted-evaluator-proof-trace.json",
+            "models/detta-restricted-evaluator-proof-trace.json",
+            &runtime_roots,
+        );
+        assert_fixture_attestation_matches_runtime_root(
+            include_str!("../../../models/detta-restricted-evaluator-forbidden-primitives.sha256"),
+            "detta-restricted-evaluator-forbidden-primitives.json",
+            "models/detta-restricted-evaluator-forbidden-primitives.json",
+            &runtime_roots,
+        );
+        assert_fixture_attestation_matches_runtime_root(
+            include_str!("../../../models/detta-restricted-evaluator-resource-exhaustion.sha256"),
+            "detta-restricted-evaluator-resource-exhaustion.json",
+            "models/detta-restricted-evaluator-resource-exhaustion.json",
+            &runtime_roots,
+        );
+        assert_fixture_attestation_matches_runtime_root(
+            include_str!("../../../models/detta-restricted-evaluator-arithmetic-overflow.sha256"),
+            "detta-restricted-evaluator-arithmetic-overflow.json",
+            "models/detta-restricted-evaluator-arithmetic-overflow.json",
+            &runtime_roots,
+        );
+    }
+
+    fn assert_fixture_attestation_matches_runtime_root(
+        attestation: &str,
+        expected_file_name: &str,
+        runtime_artifact_path: &str,
+        runtime_roots: &BTreeMap<&'static str, String>,
+    ) {
+        let (root, file_name) = attestation.trim().split_once("  ").unwrap();
+
+        assert_eq!(file_name, expected_file_name);
+        assert_eq!(
+            runtime_roots.get(runtime_artifact_path).map(String::as_str),
+            Some(root)
+        );
     }
 
     #[test]

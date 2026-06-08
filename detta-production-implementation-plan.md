@@ -207,10 +207,12 @@ Completed production-plan slices:
 - [x] Proof-manifest tests ensure every checked-in evaluator fixture JSON is
   bound.
 - [x] Proof manifest v2 runtime artifact semantics are documented.
+- [x] Proof-manifest refresh checks ensure evaluator fixture attestations match
+  bound runtime artifact roots.
 
 Next implementation slices:
 
-- [ ] Add proof-manifest refresh checks for evaluator runtime artifacts.
+- [ ] Add proof-manifest refresh checks for evaluator trace-root attestations.
 
 # 1. Production Objective
 
