@@ -24,10 +24,18 @@ pub struct EquivocationEvidence {
     pub second_block_hash: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SlashingRecord {
+    pub validator_id: String,
+    pub slashed_at_height: u64,
+    pub evidence: EquivocationEvidence,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ConsensusError {
     UnknownProposer,
     UnknownValidator(String),
+    SlashedValidator(String),
     DuplicateValidator(String),
     EmptyValidatorSet,
     QuorumNotReached {
@@ -43,7 +51,7 @@ pub enum ConsensusError {
 
 pub struct ConsensusCluster {
     validators: BTreeMap<String, ValidatorNode>,
-    quorum: usize,
+    slashing_records: BTreeMap<String, SlashingRecord>,
 }
 
 impl ConsensusCluster {
@@ -52,7 +60,6 @@ impl ConsensusCluster {
             return Err(ConsensusError::EmptyValidatorSet);
         }
 
-        let quorum = (validators.len() * 2 / 3) + 1;
         let mut nodes = BTreeMap::new();
         for (validator_id, state) in validators {
             if nodes.contains_key(&validator_id) {
@@ -66,7 +73,7 @@ impl ConsensusCluster {
 
         Ok(Self {
             validators: nodes,
-            quorum,
+            slashing_records: BTreeMap::new(),
         })
     }
 
@@ -74,12 +81,49 @@ impl ConsensusCluster {
         self.validators.len()
     }
 
+    pub fn active_validator_count(&self) -> usize {
+        self.validators.len() - self.slashing_records.len()
+    }
+
     pub fn quorum(&self) -> usize {
-        self.quorum
+        quorum_for(self.active_validator_count())
     }
 
     pub fn validator(&self, validator_id: &str) -> Option<&ValidatorNode> {
         self.validators.get(validator_id)
+    }
+
+    pub fn is_slashed(&self, validator_id: &str) -> bool {
+        self.slashing_records.contains_key(validator_id)
+    }
+
+    pub fn slashing_record(&self, validator_id: &str) -> Option<&SlashingRecord> {
+        self.slashing_records.get(validator_id)
+    }
+
+    pub fn slashing_records(&self) -> impl Iterator<Item = &SlashingRecord> {
+        self.slashing_records.values()
+    }
+
+    pub fn record_equivocation(
+        &mut self,
+        evidence: EquivocationEvidence,
+    ) -> Result<&SlashingRecord, ConsensusError> {
+        if !self.validators.contains_key(&evidence.validator_id) {
+            return Err(ConsensusError::UnknownValidator(evidence.validator_id));
+        }
+        let validator_id = evidence.validator_id.clone();
+        self.slashing_records
+            .entry(validator_id.clone())
+            .or_insert_with(|| SlashingRecord {
+                validator_id: validator_id.clone(),
+                slashed_at_height: evidence.height,
+                evidence,
+            });
+        Ok(self
+            .slashing_records
+            .get(&validator_id)
+            .expect("record inserted above"))
     }
 
     pub fn propose_block(
@@ -93,14 +137,26 @@ impl ConsensusCluster {
             .validators
             .get(proposer_id)
             .ok_or(ConsensusError::UnknownProposer)?;
+        if self.is_slashed(proposer_id) {
+            return Err(ConsensusError::SlashedValidator(proposer_id.to_string()));
+        }
         Ok(proposer.propose_block(height, transactions, timestamp))
     }
 
     pub fn finalize_block(&mut self, block: &Block) -> Result<FinalityCertificate, ConsensusError> {
+        if self.is_slashed(&block.header.proposer) {
+            return Err(ConsensusError::SlashedValidator(
+                block.header.proposer.clone(),
+            ));
+        }
+
         let mut votes = Vec::new();
         let block_hash = block.block_hash();
 
         for (validator_id, validator) in &mut self.validators {
+            if self.slashing_records.contains_key(validator_id) {
+                continue;
+            }
             match validator.validate_and_apply(block) {
                 Ok(()) => votes.push(Vote {
                     validator_id: validator_id.clone(),
@@ -116,7 +172,25 @@ impl ConsensusCluster {
             }
         }
 
-        Self::certificate_from_votes(block.header.height, &block_hash, votes, self.quorum)
+        self.certificate_from_active_votes(block.header.height, &block_hash, votes)
+    }
+
+    pub fn certificate_from_active_votes(
+        &mut self,
+        height: u64,
+        block_hash: &str,
+        votes: Vec<Vote>,
+    ) -> Result<FinalityCertificate, ConsensusError> {
+        if let Some(evidence) = Self::detect_equivocation(&votes) {
+            self.record_equivocation(evidence.clone())?;
+            return Err(ConsensusError::Equivocation(evidence));
+        }
+
+        let active_votes: Vec<_> = votes
+            .into_iter()
+            .filter(|vote| !self.is_slashed(&vote.validator_id))
+            .collect();
+        Self::certificate_from_votes(height, block_hash, active_votes, self.quorum())
     }
 
     pub fn certificate_from_votes(
@@ -181,6 +255,14 @@ fn ordered_hash_pair(left: &str, right: &str) -> (String, String) {
     }
 }
 
+fn quorum_for(active_validators: usize) -> usize {
+    if active_validators == 0 {
+        0
+    } else {
+        (active_validators * 2 / 3) + 1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,6 +306,9 @@ mod tests {
             ("v3".into(), seeded_state()),
         ])
         .unwrap();
+        assert_eq!(cluster.validator_count(), 3);
+        assert_eq!(cluster.active_validator_count(), 3);
+        assert_eq!(cluster.quorum(), 3);
         let block = cluster
             .propose_block("v1", 1, vec![transfer_tx()], 1_000)
             .unwrap();
@@ -355,5 +440,129 @@ mod tests {
                 second_block_hash: "hash-b".into(),
             })
         );
+    }
+
+    #[test]
+    fn cluster_records_slashing_for_equivocation() {
+        let mut cluster = ConsensusCluster::new(vec![
+            ("v1".into(), seeded_state()),
+            ("v2".into(), seeded_state()),
+            ("v3".into(), seeded_state()),
+        ])
+        .unwrap();
+        let votes = vec![
+            Vote {
+                validator_id: "v1".into(),
+                height: 1,
+                block_hash: "hash-a".into(),
+            },
+            Vote {
+                validator_id: "v1".into(),
+                height: 1,
+                block_hash: "hash-b".into(),
+            },
+            Vote {
+                validator_id: "v2".into(),
+                height: 1,
+                block_hash: "hash-a".into(),
+            },
+        ];
+
+        let error = cluster
+            .certificate_from_active_votes(1, "hash-a", votes)
+            .unwrap_err();
+
+        assert!(matches!(error, ConsensusError::Equivocation(_)));
+        assert!(cluster.is_slashed("v1"));
+        assert_eq!(cluster.active_validator_count(), 2);
+        assert_eq!(cluster.quorum(), 2);
+        assert_eq!(
+            cluster.slashing_record("v1").unwrap(),
+            &SlashingRecord {
+                validator_id: "v1".into(),
+                slashed_at_height: 1,
+                evidence: EquivocationEvidence {
+                    validator_id: "v1".into(),
+                    height: 1,
+                    first_block_hash: "hash-a".into(),
+                    second_block_hash: "hash-b".into(),
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn slashed_validator_cannot_propose_or_count_toward_finality() {
+        let mut cluster = ConsensusCluster::new(vec![
+            ("v1".into(), seeded_state()),
+            ("v2".into(), seeded_state()),
+            ("v3".into(), seeded_state()),
+            ("v4".into(), seeded_state()),
+        ])
+        .unwrap();
+        cluster
+            .record_equivocation(EquivocationEvidence {
+                validator_id: "v1".into(),
+                height: 1,
+                first_block_hash: "hash-a".into(),
+                second_block_hash: "hash-b".into(),
+            })
+            .unwrap();
+
+        let propose = cluster.propose_block("v1", 1, vec![transfer_tx()], 1_000);
+        assert_eq!(
+            propose.unwrap_err(),
+            ConsensusError::SlashedValidator("v1".into())
+        );
+
+        let insufficient_votes = vec![
+            Vote {
+                validator_id: "v1".into(),
+                height: 2,
+                block_hash: "hash-c".into(),
+            },
+            Vote {
+                validator_id: "v2".into(),
+                height: 2,
+                block_hash: "hash-c".into(),
+            },
+            Vote {
+                validator_id: "v3".into(),
+                height: 2,
+                block_hash: "hash-c".into(),
+            },
+        ];
+        let error = cluster
+            .certificate_from_active_votes(2, "hash-c", insufficient_votes)
+            .unwrap_err();
+        assert_eq!(
+            error,
+            ConsensusError::QuorumNotReached {
+                accepted: 2,
+                required: 3,
+            }
+        );
+
+        let enough_active_votes = vec![
+            Vote {
+                validator_id: "v2".into(),
+                height: 2,
+                block_hash: "hash-c".into(),
+            },
+            Vote {
+                validator_id: "v3".into(),
+                height: 2,
+                block_hash: "hash-c".into(),
+            },
+            Vote {
+                validator_id: "v4".into(),
+                height: 2,
+                block_hash: "hash-c".into(),
+            },
+        ];
+        let certificate = cluster
+            .certificate_from_active_votes(2, "hash-c", enough_active_votes)
+            .unwrap();
+        assert_eq!(certificate.signers, vec!["v2", "v3", "v4"]);
     }
 }
