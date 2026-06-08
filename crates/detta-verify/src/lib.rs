@@ -10,6 +10,14 @@ pub enum LintError {
     ContractHasNoDeclaredInvariants {
         contract: String,
     },
+    ContractExportMissingPolicy {
+        contract: String,
+        method: Method,
+    },
+    ContractPolicyWithoutExport {
+        contract: String,
+        method: Method,
+    },
     GovernanceTargetMissing {
         governance: String,
         target: String,
@@ -48,6 +56,22 @@ pub fn lint_state(state: &DeTTaState) -> Vec<LintError> {
             errors.push(LintError::ContractHasNoDeclaredInvariants {
                 contract: contract.contract_id.clone(),
             });
+        }
+        for method in contract.exported_methods() {
+            if !contract.method_policies().contains_key(method) {
+                errors.push(LintError::ContractExportMissingPolicy {
+                    contract: contract.contract_id.clone(),
+                    method: method.clone(),
+                });
+            }
+        }
+        for method in contract.method_policies().keys() {
+            if !contract.exported_methods().contains(method) {
+                errors.push(LintError::ContractPolicyWithoutExport {
+                    contract: contract.contract_id.clone(),
+                    method: method.clone(),
+                });
+            }
         }
 
         match &contract.kind {

@@ -215,6 +215,7 @@ mod tests {
         assert!(proof.verify());
         assert_eq!(proof.proof.root, block.header.storage_root);
         assert_eq!(contract.contract_id, "TokenA");
+        assert!(contract.method_policy(&Method::Transfer).is_some());
         assert!(contract
             .declared_invariants()
             .contains(&ContractInvariant::TokenSupplyMatchesBalances));

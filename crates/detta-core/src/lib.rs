@@ -215,6 +215,7 @@ pub struct ContractRecord {
     pub code_hash: String,
     pub kind: ContractKind,
     exported_methods: BTreeSet<Method>,
+    method_policies: BTreeMap<Method, MethodPolicy>,
     declared_invariants: BTreeSet<ContractInvariant>,
 }
 
@@ -290,28 +291,128 @@ pub enum ContractInvariant {
     RouterDoesNotInheritCallerWriteScope,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+pub struct PolicyKey {
+    pub contract: ContractId,
+    pub method: Method,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+pub enum PolicyAuthority {
+    TxSender,
+    LiveAllowanceGrant,
+    PermitCertificate,
+    OracleUpdaterGrant,
+    BridgeCertificate,
+    GovernanceAdminGrant,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+pub enum PolicyEffect {
+    StorageWrite,
+    RegistryWrite,
+    EventEmit,
+    ContractPause,
+    UpgradeSchedule,
+    ContractCodeUpgrade,
+    CrossContractCall,
+    CrossShardOutboxAppend,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+pub enum ReentrancyMode {
+    NonReentrant,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MethodPolicy {
+    pub authority: PolicyAuthority,
+    pub reentrancy: ReentrancyMode,
+    pub effects: BTreeSet<PolicyEffect>,
+    pub invariants: BTreeSet<ContractInvariant>,
+}
+
 impl ContractRecord {
     pub fn exported_methods(&self) -> &BTreeSet<Method> {
         &self.exported_methods
+    }
+
+    pub fn method_policies(&self) -> &BTreeMap<Method, MethodPolicy> {
+        &self.method_policies
+    }
+
+    pub fn method_policy(&self, method: &Method) -> Option<&MethodPolicy> {
+        self.method_policies.get(method)
     }
 
     pub fn declared_invariants(&self) -> &BTreeSet<ContractInvariant> {
         &self.declared_invariants
     }
 
-    fn token(contract_id: ContractId, code_hash: String) -> Self {
+    fn with_policy_manifest(
+        contract_id: ContractId,
+        code_hash: String,
+        kind: ContractKind,
+        method_policies: BTreeMap<Method, MethodPolicy>,
+        declared_invariants: BTreeSet<ContractInvariant>,
+    ) -> Self {
+        let exported_methods = method_policies.keys().cloned().collect();
         Self {
             contract_id,
             code_hash,
-            kind: ContractKind::Token,
-            exported_methods: BTreeSet::from([
-                Method::Transfer,
-                Method::Approve,
-                Method::TransferFrom,
-                Method::Permit,
-            ]),
-            declared_invariants: BTreeSet::from([ContractInvariant::TokenSupplyMatchesBalances]),
+            kind,
+            exported_methods,
+            method_policies,
+            declared_invariants,
         }
+    }
+
+    fn token(contract_id: ContractId, code_hash: String) -> Self {
+        let invariant = ContractInvariant::TokenSupplyMatchesBalances;
+        Self::with_policy_manifest(
+            contract_id,
+            code_hash,
+            ContractKind::Token,
+            BTreeMap::from([
+                (
+                    Method::Transfer,
+                    method_policy(
+                        PolicyAuthority::TxSender,
+                        [PolicyEffect::StorageWrite, PolicyEffect::EventEmit],
+                        [invariant.clone()],
+                    ),
+                ),
+                (
+                    Method::Approve,
+                    method_policy(
+                        PolicyAuthority::TxSender,
+                        [PolicyEffect::RegistryWrite, PolicyEffect::EventEmit],
+                        [],
+                    ),
+                ),
+                (
+                    Method::TransferFrom,
+                    method_policy(
+                        PolicyAuthority::LiveAllowanceGrant,
+                        [
+                            PolicyEffect::StorageWrite,
+                            PolicyEffect::RegistryWrite,
+                            PolicyEffect::EventEmit,
+                        ],
+                        [invariant.clone()],
+                    ),
+                ),
+                (
+                    Method::Permit,
+                    method_policy(
+                        PolicyAuthority::PermitCertificate,
+                        [PolicyEffect::RegistryWrite, PolicyEffect::EventEmit],
+                        [],
+                    ),
+                ),
+            ]),
+            BTreeSet::from([invariant]),
+        )
     }
 
     fn amm_pool(
@@ -320,45 +421,84 @@ impl ContractRecord {
         asset_a: AssetId,
         asset_b: AssetId,
     ) -> Self {
-        Self {
+        let lp_invariant = ContractInvariant::AmmLpSupplyMatchesBalances;
+        Self::with_policy_manifest(
             contract_id,
             code_hash,
-            kind: ContractKind::AmmPool { asset_a, asset_b },
-            exported_methods: BTreeSet::from([Method::AddLiquidity, Method::Swap]),
-            declared_invariants: BTreeSet::from([
-                ContractInvariant::AmmPoolAssetsDistinct,
-                ContractInvariant::AmmLpSupplyMatchesBalances,
+            ContractKind::AmmPool { asset_a, asset_b },
+            BTreeMap::from([
+                (
+                    Method::AddLiquidity,
+                    method_policy(
+                        PolicyAuthority::TxSender,
+                        [PolicyEffect::StorageWrite, PolicyEffect::EventEmit],
+                        [lp_invariant.clone()],
+                    ),
+                ),
+                (
+                    Method::Swap,
+                    method_policy(
+                        PolicyAuthority::TxSender,
+                        [PolicyEffect::StorageWrite, PolicyEffect::EventEmit],
+                        [lp_invariant.clone()],
+                    ),
+                ),
             ]),
-        }
+            BTreeSet::from([ContractInvariant::AmmPoolAssetsDistinct, lp_invariant]),
+        )
     }
 
     fn oracle(contract_id: ContractId, code_hash: String, asset: AssetId, max_age: u64) -> Self {
-        Self {
+        Self::with_policy_manifest(
             contract_id,
             code_hash,
-            kind: ContractKind::Oracle { asset, max_age },
-            exported_methods: BTreeSet::from([Method::SubmitPrice]),
-            declared_invariants: BTreeSet::from([
+            ContractKind::Oracle { asset, max_age },
+            BTreeMap::from([(
+                Method::SubmitPrice,
+                method_policy(
+                    PolicyAuthority::OracleUpdaterGrant,
+                    [PolicyEffect::StorageWrite, PolicyEffect::EventEmit],
+                    [ContractInvariant::OracleUpdatesRequireLiveGrant],
+                ),
+            )]),
+            BTreeSet::from([
                 ContractInvariant::OracleUpdatesRequireLiveGrant,
                 ContractInvariant::OracleFreshnessCheckedByConsumers,
             ]),
-        }
+        )
     }
 
     fn bridge(contract_id: ContractId, code_hash: String, source_chain: ChainId) -> Self {
-        Self {
+        Self::with_policy_manifest(
             contract_id,
             code_hash,
-            kind: ContractKind::Bridge { source_chain },
-            exported_methods: BTreeSet::from([
-                Method::QueueBridgeMessage,
-                Method::RedeemBridgeMessage,
+            ContractKind::Bridge { source_chain },
+            BTreeMap::from([
+                (
+                    Method::QueueBridgeMessage,
+                    method_policy(
+                        PolicyAuthority::TxSender,
+                        [
+                            PolicyEffect::CrossShardOutboxAppend,
+                            PolicyEffect::EventEmit,
+                        ],
+                        [ContractInvariant::BridgeOutboundMessageIdsUnique],
+                    ),
+                ),
+                (
+                    Method::RedeemBridgeMessage,
+                    method_policy(
+                        PolicyAuthority::BridgeCertificate,
+                        [PolicyEffect::StorageWrite, PolicyEffect::EventEmit],
+                        [ContractInvariant::BridgeInboundMessagesConsumedOnce],
+                    ),
+                ),
             ]),
-            declared_invariants: BTreeSet::from([
+            BTreeSet::from([
                 ContractInvariant::BridgeInboundMessagesConsumedOnce,
                 ContractInvariant::BridgeOutboundMessageIdsUnique,
             ]),
-        }
+        )
     }
 
     fn governance(
@@ -367,24 +507,58 @@ impl ContractRecord {
         governed_contract: ContractId,
         timelock_delay: u64,
     ) -> Self {
-        Self {
+        Self::with_policy_manifest(
             contract_id,
             code_hash,
-            kind: ContractKind::Governance {
+            ContractKind::Governance {
                 governed_contract,
                 timelock_delay,
             },
-            exported_methods: BTreeSet::from([
-                Method::PauseContract,
-                Method::UnpauseContract,
-                Method::ScheduleUpgrade,
-                Method::ExecuteUpgrade,
+            BTreeMap::from([
+                (
+                    Method::PauseContract,
+                    method_policy(
+                        PolicyAuthority::GovernanceAdminGrant,
+                        [PolicyEffect::ContractPause, PolicyEffect::EventEmit],
+                        [ContractInvariant::GovernanceChangesRequireAdminGrant],
+                    ),
+                ),
+                (
+                    Method::UnpauseContract,
+                    method_policy(
+                        PolicyAuthority::GovernanceAdminGrant,
+                        [PolicyEffect::ContractPause, PolicyEffect::EventEmit],
+                        [ContractInvariant::GovernanceChangesRequireAdminGrant],
+                    ),
+                ),
+                (
+                    Method::ScheduleUpgrade,
+                    method_policy(
+                        PolicyAuthority::GovernanceAdminGrant,
+                        [PolicyEffect::UpgradeSchedule, PolicyEffect::EventEmit],
+                        [
+                            ContractInvariant::GovernanceChangesRequireAdminGrant,
+                            ContractInvariant::GovernanceUpgradesRespectTimelock,
+                        ],
+                    ),
+                ),
+                (
+                    Method::ExecuteUpgrade,
+                    method_policy(
+                        PolicyAuthority::GovernanceAdminGrant,
+                        [PolicyEffect::ContractCodeUpgrade, PolicyEffect::EventEmit],
+                        [
+                            ContractInvariant::GovernanceChangesRequireAdminGrant,
+                            ContractInvariant::GovernanceUpgradesRespectTimelock,
+                        ],
+                    ),
+                ),
             ]),
-            declared_invariants: BTreeSet::from([
+            BTreeSet::from([
                 ContractInvariant::GovernanceChangesRequireAdminGrant,
                 ContractInvariant::GovernanceUpgradesRespectTimelock,
             ]),
-        }
+        )
     }
 
     fn lending_vault(
@@ -396,43 +570,94 @@ impl ContractRecord {
         ltv_bps: u64,
         max_oracle_age: u64,
     ) -> Self {
-        Self {
+        Self::with_policy_manifest(
             contract_id,
             code_hash,
-            kind: ContractKind::LendingVault {
+            ContractKind::LendingVault {
                 collateral_asset,
                 debt_asset,
                 oracle_contract,
                 ltv_bps,
                 max_oracle_age,
             },
-            exported_methods: BTreeSet::from([Method::DepositCollateral, Method::Borrow]),
-            declared_invariants: BTreeSet::from([
-                ContractInvariant::LendingBorrowWithinCollateralLimit,
+            BTreeMap::from([
+                (
+                    Method::DepositCollateral,
+                    method_policy(
+                        PolicyAuthority::TxSender,
+                        [PolicyEffect::StorageWrite, PolicyEffect::EventEmit],
+                        [],
+                    ),
+                ),
+                (
+                    Method::Borrow,
+                    method_policy(
+                        PolicyAuthority::TxSender,
+                        [PolicyEffect::StorageWrite, PolicyEffect::EventEmit],
+                        [ContractInvariant::LendingBorrowWithinCollateralLimit],
+                    ),
+                ),
             ]),
-        }
+            BTreeSet::from([ContractInvariant::LendingBorrowWithinCollateralLimit]),
+        )
     }
 
     fn staking(contract_id: ContractId, code_hash: String, asset: AssetId) -> Self {
-        Self {
+        let invariant = ContractInvariant::StakingTotalMatchesBalances;
+        Self::with_policy_manifest(
             contract_id,
             code_hash,
-            kind: ContractKind::Staking { asset },
-            exported_methods: BTreeSet::from([Method::Stake, Method::Unstake]),
-            declared_invariants: BTreeSet::from([ContractInvariant::StakingTotalMatchesBalances]),
-        }
+            ContractKind::Staking { asset },
+            BTreeMap::from([
+                (
+                    Method::Stake,
+                    method_policy(
+                        PolicyAuthority::TxSender,
+                        [PolicyEffect::StorageWrite, PolicyEffect::EventEmit],
+                        [invariant.clone()],
+                    ),
+                ),
+                (
+                    Method::Unstake,
+                    method_policy(
+                        PolicyAuthority::TxSender,
+                        [PolicyEffect::StorageWrite, PolicyEffect::EventEmit],
+                        [invariant.clone()],
+                    ),
+                ),
+            ]),
+            BTreeSet::from([invariant]),
+        )
     }
 
     fn router(contract_id: ContractId, code_hash: String, token_contract: ContractId) -> Self {
-        Self {
+        Self::with_policy_manifest(
             contract_id,
             code_hash,
-            kind: ContractKind::Router { token_contract },
-            exported_methods: BTreeSet::from([Method::RouteTransferFrom]),
-            declared_invariants: BTreeSet::from([
-                ContractInvariant::RouterDoesNotInheritCallerWriteScope,
-            ]),
-        }
+            ContractKind::Router { token_contract },
+            BTreeMap::from([(
+                Method::RouteTransferFrom,
+                method_policy(
+                    PolicyAuthority::TxSender,
+                    [PolicyEffect::CrossContractCall],
+                    [ContractInvariant::RouterDoesNotInheritCallerWriteScope],
+                ),
+            )]),
+            BTreeSet::from([ContractInvariant::RouterDoesNotInheritCallerWriteScope]),
+        )
+    }
+}
+
+fn method_policy<const E: usize, const I: usize>(
+    authority: PolicyAuthority,
+    effects: [PolicyEffect; E],
+    invariants: [ContractInvariant; I],
+) -> MethodPolicy {
+    MethodPolicy {
+        authority,
+        reentrancy: ReentrancyMode::NonReentrant,
+        effects: BTreeSet::from(effects),
+        invariants: BTreeSet::from(invariants),
     }
 }
 
@@ -608,6 +833,7 @@ pub enum BlockError {
     ReceiptMismatch,
     StorageRootMismatch,
     RegistryRootMismatch,
+    PolicyRootMismatch,
     EventRootMismatch,
     NonceRootMismatch,
     OutboxRootMismatch,
@@ -674,6 +900,7 @@ impl Mempool {
 pub enum SnapshotError {
     StorageRootMismatch,
     RegistryRootMismatch,
+    PolicyRootMismatch,
     EventRootMismatch,
     NonceRootMismatch,
     OutboxRootMismatch,
@@ -685,6 +912,7 @@ pub struct StateSnapshot {
     pub state: DeTTaState,
     pub storage_root: String,
     pub registry_root: String,
+    pub policy_root: String,
     pub event_root: String,
     pub nonce_root: String,
     pub outbox_root: String,
@@ -762,6 +990,7 @@ pub struct Receipt {
     pub return_value: Option<ReturnValue>,
     pub storage_root_after: String,
     pub registry_root_after: String,
+    pub policy_root_after: String,
     pub event_root_after: String,
     pub nonce_root_after: String,
     pub global_state_root_after: String,
@@ -777,6 +1006,7 @@ pub struct BlockHeader {
     pub global_state_root: String,
     pub storage_root: String,
     pub registry_root: String,
+    pub policy_root: String,
     pub event_root: String,
     pub nonce_root: String,
     pub outbox_root: String,
@@ -1172,6 +1402,9 @@ impl DeTTaState {
         if snapshot.registry_root != snapshot.state.registry_root() {
             return Err(SnapshotError::RegistryRootMismatch);
         }
+        if snapshot.policy_root != snapshot.state.policy_root() {
+            return Err(SnapshotError::PolicyRootMismatch);
+        }
         if snapshot.event_root != snapshot.state.event_root() {
             return Err(SnapshotError::EventRootMismatch);
         }
@@ -1192,6 +1425,7 @@ impl DeTTaState {
             state: self.clone(),
             storage_root: self.storage_root(),
             registry_root: self.registry_root(),
+            policy_root: self.policy_root(),
             event_root: self.event_root(),
             nonce_root: self.nonce_root(),
             outbox_root: self.outbox_root(),
@@ -1537,6 +1771,7 @@ impl DeTTaState {
             global_state_root: working_state.global_state_root(),
             storage_root: working_state.storage_root(),
             registry_root: working_state.registry_root(),
+            policy_root: working_state.policy_root(),
             event_root: working_state.event_root(),
             nonce_root: working_state.nonce_root(),
             outbox_root: working_state.outbox_root(),
@@ -1586,6 +1821,9 @@ impl DeTTaState {
         }
         if block.header.registry_root != working_state.registry_root() {
             return Err(BlockError::RegistryRootMismatch);
+        }
+        if block.header.policy_root != working_state.policy_root() {
+            return Err(BlockError::PolicyRootMismatch);
         }
         if block.header.event_root != working_state.event_root() {
             return Err(BlockError::EventRootMismatch);
@@ -1925,6 +2163,10 @@ impl DeTTaState {
         merkle_root(&self.registry_entries())
     }
 
+    pub fn policy_root(&self) -> String {
+        merkle_root(&self.policy_entries())
+    }
+
     pub fn event_root(&self) -> String {
         merkle_root(&self.events)
     }
@@ -1947,6 +2189,7 @@ impl DeTTaState {
             &self.contracts,
             self.storage_root(),
             self.registry_root(),
+            self.policy_root(),
             &self.used_nonces,
             &self.used_certificate_nonces,
             &self.paused_contracts,
@@ -1971,6 +2214,22 @@ impl DeTTaState {
             .collect()
     }
 
+    fn policy_entries(&self) -> Vec<(PolicyKey, MethodPolicy)> {
+        let mut entries = Vec::new();
+        for (contract, record) in &self.contracts {
+            for (method, policy) in record.method_policies() {
+                entries.push((
+                    PolicyKey {
+                        contract: contract.clone(),
+                        method: method.clone(),
+                    },
+                    policy.clone(),
+                ));
+            }
+        }
+        entries
+    }
+
     fn execute_call(
         &mut self,
         tx: &Transaction,
@@ -1987,6 +2246,12 @@ impl DeTTaState {
 
             if !contract.exported_methods.contains(&tx.method) {
                 return Err(ExecutionError::MethodNotExported);
+            }
+            let policy = contract
+                .method_policy(&tx.method)
+                .ok_or(ExecutionError::PolicyMissing)?;
+            match &policy.reentrancy {
+                ReentrancyMode::NonReentrant => {}
             }
 
             if self.paused_contracts.contains(&tx.target) {
@@ -3152,6 +3417,7 @@ impl DeTTaState {
             return_value,
             storage_root_after: self.storage_root(),
             registry_root_after: self.registry_root(),
+            policy_root_after: self.policy_root(),
             event_root_after: self.event_root(),
             nonce_root_after: self.nonce_root(),
             global_state_root_after: self.global_state_root(),
@@ -4078,6 +4344,41 @@ mod tests {
 
         assert_eq!(error, BlockError::StorageRootMismatch);
         assert_eq!(validator_state.storage_root(), storage_before);
+    }
+
+    #[test]
+    fn block_with_wrong_policy_root_is_rejected() {
+        let proposer_state = seeded_state();
+        let txs = vec![tx(
+            "tx1",
+            "Alice",
+            1,
+            Method::Transfer,
+            vec![principal("Bob"), asset("USDC"), amount(10)],
+        )];
+        let (mut block, _) = proposer_state.build_block(1, txs, 1_000, "validator-1", "cert-1");
+        block.header.policy_root = "bad-root".into();
+
+        let mut validator_state = seeded_state();
+        let policy_before = validator_state.policy_root();
+        let error = validator_state.apply_block(&block).unwrap_err();
+
+        assert_eq!(error, BlockError::PolicyRootMismatch);
+        assert_eq!(validator_state.policy_root(), policy_before);
+    }
+
+    #[test]
+    fn block_header_authenticates_method_policy_root() {
+        let mut state = seeded_state();
+        state.deploy_router("RouterA", "TokenA").unwrap();
+        let (block, next_state) = state.build_block(1, Vec::new(), 1_000, "validator-1", "cert-1");
+
+        assert_eq!(block.header.policy_root, next_state.policy_root());
+        assert_eq!(next_state.snapshot().policy_root, next_state.policy_root());
+        assert_ne!(
+            block.header.policy_root,
+            merkle_root::<(PolicyKey, MethodPolicy)>(&[])
+        );
     }
 
     #[test]

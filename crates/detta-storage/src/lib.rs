@@ -157,6 +157,7 @@ mod tests {
 
         assert_eq!(loaded.global_state_root, snapshot.global_state_root);
         assert_eq!(loaded.storage_root, snapshot.storage_root);
+        assert_eq!(loaded.policy_root, snapshot.policy_root);
         fs::remove_dir_all(dir).unwrap();
     }
 
