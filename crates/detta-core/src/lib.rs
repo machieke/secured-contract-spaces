@@ -274,6 +274,10 @@ pub enum ContractKind {
 }
 
 impl ContractRecord {
+    pub fn exported_methods(&self) -> &BTreeSet<Method> {
+        &self.exported_methods
+    }
+
     fn token(contract_id: ContractId, code_hash: String) -> Self {
         Self {
             contract_id,
@@ -1620,6 +1624,18 @@ impl DeTTaState {
 
     pub fn scheduled_upgrade(&self, upgrade_id: &str) -> Option<&ScheduledUpgrade> {
         self.scheduled_upgrades.get(upgrade_id)
+    }
+
+    pub fn contract_records(&self) -> impl Iterator<Item = &ContractRecord> {
+        self.contracts.values()
+    }
+
+    pub fn scheduled_upgrades(&self) -> impl Iterator<Item = &ScheduledUpgrade> {
+        self.scheduled_upgrades.values()
+    }
+
+    pub fn paused_contracts(&self) -> impl Iterator<Item = &ContractId> {
+        self.paused_contracts.iter()
     }
 
     pub fn collateral(
