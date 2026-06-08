@@ -138,10 +138,13 @@ Completed production-plan slices:
   retention diagnostics: retained count, max records, and max page size.
 - [x] Snapshot import audit retention-limit configuration persists through
   storage and reloads after node restart.
+- [x] Snapshot import audit retention configuration is exposed through
+  node-aware RPC.
 
 Next implementation slices:
 
-- [ ] Expose snapshot import audit retention configuration over node-aware RPC.
+- [ ] Serve snapshot import audit retention configuration over the shared TCP
+  JSON RPC path.
 
 # 1. Production Objective
 

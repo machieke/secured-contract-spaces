@@ -640,6 +640,9 @@ impl PersistentValidatorNode {
                 .map(RpcResult::SnapshotImportAuditRoot)
                 .map(RpcResponse::Ok)
                 .unwrap_or_else(node_rpc_error_response),
+            RpcRequest::GetSnapshotImportAuditConfig => RpcResponse::Ok(
+                RpcResult::SnapshotImportAuditConfig(self.snapshot_import_audit_config()),
+            ),
             RpcRequest::GetPersistentNodeSnapshotRoots => self
                 .node_snapshot_roots()
                 .map(|snapshot| RpcResult::PersistentNodeSnapshotRoots(Box::new(snapshot)))
@@ -749,6 +752,13 @@ impl PersistentValidatorNode {
                 max_page_size,
             })
             .map_err(NodeError::Storage)
+    }
+
+    pub fn snapshot_import_audit_config(&self) -> SnapshotImportAuditConfig {
+        SnapshotImportAuditConfig {
+            max_records: self.max_snapshot_import_audit_records,
+            max_page_size: self.max_snapshot_import_audit_page_size,
+        }
     }
 
     pub fn validator_set_metadata_quorum(&self) -> usize {
@@ -3965,6 +3975,16 @@ mod tests {
         )
         .unwrap();
         sink.set_snapshot_import_audit_limits(1, 1).unwrap();
+        let expected_snapshot_import_audit_config = SnapshotImportAuditConfig {
+            max_records: 1,
+            max_page_size: 1,
+        };
+        assert_eq!(
+            sink.handle_rpc_request(RpcRequest::GetSnapshotImportAuditConfig),
+            RpcResponse::Ok(RpcResult::SnapshotImportAuditConfig(
+                expected_snapshot_import_audit_config.clone()
+            ))
+        );
         let imported = sink
             .import_snapshot_chunk_set(&chunk_set, &required_metadata_roots)
             .unwrap();
@@ -4207,6 +4227,12 @@ mod tests {
         assert_eq!(restarted_roots.snapshot_import_audit_record_count, 1);
         assert_eq!(restarted_roots.snapshot_import_audit_max_records, 1);
         assert_eq!(restarted_roots.snapshot_import_audit_max_page_size, 1);
+        assert_eq!(
+            restarted_sink.handle_rpc_request(RpcRequest::GetSnapshotImportAuditConfig),
+            RpcResponse::Ok(RpcResult::SnapshotImportAuditConfig(
+                expected_snapshot_import_audit_config
+            ))
+        );
         assert_eq!(
             restarted_sink
                 .load_required_snapshot_metadata_roots()
