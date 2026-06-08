@@ -194,11 +194,13 @@ Completed production-plan slices:
 - [x] Restricted evaluator arithmetic overflow has a stable golden fixture.
 - [x] Restricted evaluator arithmetic overflow fixture has a SHA-256
   attestation.
+- [x] Restricted evaluator arithmetic overflow fixture root is bound into the
+  proof-artifact manifest.
 
 Next implementation slices:
 
-- [ ] Bind restricted evaluator arithmetic overflow fixture root into the
-  proof-artifact manifest.
+- [ ] Reference the restricted evaluator arithmetic overflow fixture in theorem
+  evidence.
 
 # 1. Production Objective
 

@@ -285,6 +285,12 @@ pub fn proof_runtime_artifacts() -> Vec<ModelArtifactRoot> {
                 "../../../models/detta-restricted-evaluator-resource-exhaustion.json"
             )),
         },
+        ModelArtifactRoot {
+            path: "models/detta-restricted-evaluator-arithmetic-overflow.json",
+            sha256: proof_artifact_manifest_root_bytes(include_bytes!(
+                "../../../models/detta-restricted-evaluator-arithmetic-overflow.json"
+            )),
+        },
     ]
 }
 
@@ -781,6 +787,11 @@ mod tests {
                 ModelArtifactRoot {
                     path: "models/detta-restricted-evaluator-resource-exhaustion.json",
                     sha256: "ba6a1a61581be50de96532e86e3f3e2c9c8792a9506c4149a58fe2a7be9e1806"
+                        .into(),
+                },
+                ModelArtifactRoot {
+                    path: "models/detta-restricted-evaluator-arithmetic-overflow.json",
+                    sha256: "8135d0a60e36e5369d80ca85985311745b3f3172bbc84a639cf3ec4cef602f2f"
                         .into(),
                 },
             ]
