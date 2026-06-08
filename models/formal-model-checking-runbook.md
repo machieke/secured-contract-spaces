@@ -137,6 +137,7 @@ cargo test -p detta-verify
 - proof manifest root attestation root uses the 64-character SHA-256 hex length.
 - proof manifest root attestation root is lowercase hex.
 - proof manifest root attestation filename contains no path separators.
+- proof manifest root attestation filename uses the JSON suffix.
 
 The evaluator `sha256sum -c` commands verify fixture-file attestations. The
 final `sha256sum` command reports the file root of the compact-trace-root
@@ -290,6 +291,7 @@ Before accepting a release proof bundle, verify:
 - proof manifest root attestation root uses the 64-character SHA-256 hex length;
 - proof manifest root attestation root is lowercase hex;
 - proof manifest root attestation filename contains no path separators;
+- proof manifest root attestation filename uses the JSON suffix;
 - `detta-restricted-evaluator-proof-trace-root.sha256` matches both the
   fixture `trace_root` field and the recomputed root of `report.trace`;
 - `models/detta-proof-artifact-manifest.sha256` verifies after all fixture,

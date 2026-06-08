@@ -1437,6 +1437,15 @@ mod tests {
         assert!(!file_name.contains('\\'));
     }
 
+    #[test]
+    fn proof_artifact_manifest_root_attestation_filename_uses_json_suffix() {
+        let attestation = include_str!("../../../models/detta-proof-artifact-manifest.sha256");
+        let (_, file_name) = sha256sum_attestation_parts(attestation);
+
+        assert!(file_name.ends_with(".json"));
+        assert!(!file_name.ends_with(".sha256"));
+    }
+
     struct ProofReleaseAttestationFixture {
         attestation: &'static str,
         file_name: &'static str,
