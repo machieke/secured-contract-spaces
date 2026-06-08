@@ -120,12 +120,36 @@ pub struct PersistentNodeSnapshot {
     pub validator_set_metadata_audit_root: String,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SnapshotSyncClientMetrics {
+    pub requests_sent: u32,
+    pub manifests_received: u32,
+    pub chunks_received: u32,
+    pub resume_requests: u32,
+    pub metadata_roots_verified: bool,
+}
+
 pub fn fetch_verified_snapshot_chunk_set_over_tcp(
     stream: &mut TcpProtocolStream,
     snapshot_root: impl Into<String>,
     max_chunks_per_request: u32,
     required_metadata_roots: &BTreeMap<String, String>,
 ) -> Result<SnapshotChunkSet, NodeError> {
+    fetch_verified_snapshot_chunk_set_over_tcp_with_metrics(
+        stream,
+        snapshot_root,
+        max_chunks_per_request,
+        required_metadata_roots,
+    )
+    .map(|(chunk_set, _metrics)| chunk_set)
+}
+
+pub fn fetch_verified_snapshot_chunk_set_over_tcp_with_metrics(
+    stream: &mut TcpProtocolStream,
+    snapshot_root: impl Into<String>,
+    max_chunks_per_request: u32,
+    required_metadata_roots: &BTreeMap<String, String>,
+) -> Result<(SnapshotChunkSet, SnapshotSyncClientMetrics), NodeError> {
     if max_chunks_per_request == 0 {
         return Err(NodeError::SnapshotSync(SnapshotSyncError::InvalidChunkSize));
     }
@@ -134,8 +158,13 @@ pub fn fetch_verified_snapshot_chunk_set_over_tcp(
     let mut manifest: Option<SnapshotChunkManifest> = None;
     let mut chunks = Vec::new();
     let mut start_index = 0;
+    let mut metrics = SnapshotSyncClientMetrics::default();
 
     loop {
+        metrics.requests_sent += 1;
+        if start_index > 0 {
+            metrics.resume_requests += 1;
+        }
         stream
             .send(&NetworkMessage::SnapshotChunkRequest(
                 SnapshotChunkRequest {
@@ -153,6 +182,7 @@ pub fn fetch_verified_snapshot_chunk_set_over_tcp(
                 actual: manifest_message.kind(),
             });
         };
+        metrics.manifests_received += 1;
         if let Some(manifest) = &manifest {
             if manifest != &next_manifest {
                 let expected = manifest.manifest_hash().map_err(NodeError::SnapshotSync)?;
@@ -173,7 +203,10 @@ pub fn fetch_verified_snapshot_chunk_set_over_tcp(
         for _ in 0..expected_chunks {
             let chunk_message = stream.receive().map_err(NodeError::Network)?;
             match chunk_message {
-                NetworkMessage::SnapshotChunk(chunk) => chunks.push(chunk),
+                NetworkMessage::SnapshotChunk(chunk) => {
+                    metrics.chunks_received += 1;
+                    chunks.push(chunk);
+                }
                 message => {
                     return Err(NodeError::UnexpectedSnapshotSyncMessage {
                         expected: ProtocolMessageKind::SnapshotChunk,
@@ -191,7 +224,8 @@ pub fn fetch_verified_snapshot_chunk_set_over_tcp(
             chunk_set
                 .verify_with_metadata_roots(required_metadata_roots)
                 .map_err(NodeError::SnapshotSync)?;
-            return Ok(chunk_set);
+            metrics.metadata_roots_verified = true;
+            return Ok((chunk_set, metrics));
         }
         start_index += expected_chunks;
     }
@@ -3472,7 +3506,7 @@ mod tests {
         });
 
         let mut client = TcpProtocolStream::connect(addr).unwrap();
-        let chunk_set = fetch_verified_snapshot_chunk_set_over_tcp(
+        let (chunk_set, metrics) = fetch_verified_snapshot_chunk_set_over_tcp_with_metrics(
             &mut client,
             snapshot_root.clone(),
             2,
@@ -3486,6 +3520,13 @@ mod tests {
                 .get(SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT),
             Some(&status.validator_set_metadata_audit_root)
         );
+        assert_eq!(metrics.chunks_received, chunk_set.chunks.len() as u32);
+        assert_eq!(metrics.manifests_received, metrics.requests_sent);
+        assert_eq!(
+            metrics.resume_requests,
+            metrics.requests_sent.saturating_sub(1)
+        );
+        assert!(metrics.metadata_roots_verified);
 
         let sink_dir = temp_dir("tcp-state-sync-sink");
         let sink = PersistentValidatorNode::bootstrap(

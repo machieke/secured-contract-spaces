@@ -90,10 +90,12 @@ Completed production-plan slices:
   imported-vs-local replacement state.
 - [x] TCP state-sync client flows require snapshot metadata roots derived from
   source status before accepting and importing chunk sets.
+- [x] TCP state-sync clients report request, resume, chunk, and metadata-root
+  verification metrics for paged imports.
 
 Next implementation slices:
 
-- [ ] Add TCP state-sync retry/resume metrics for metadata-root-verified imports.
+- [ ] Add TCP state-sync retry handling for transient chunk-stream failures.
 
 # 1. Production Objective
 
