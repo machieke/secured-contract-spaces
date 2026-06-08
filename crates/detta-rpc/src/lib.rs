@@ -81,7 +81,10 @@ pub enum RpcRequest {
     GetValidatorSetMetadataUpdateStatus {
         update_id: String,
     },
-    GetValidatorSetMetadataAuditRecords,
+    GetValidatorSetMetadataAuditRecords {
+        offset: usize,
+        limit: usize,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -380,7 +383,7 @@ impl RpcService {
                 .into(),
             RpcRequest::ProposeValidatorSetMetadataUpdate { .. }
             | RpcRequest::GetValidatorSetMetadataUpdateStatus { .. }
-            | RpcRequest::GetValidatorSetMetadataAuditRecords => {
+            | RpcRequest::GetValidatorSetMetadataAuditRecords { .. } => {
                 Err(RpcError::UnsupportedNodeMethod).into()
             }
         }

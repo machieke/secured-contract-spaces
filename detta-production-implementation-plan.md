@@ -72,10 +72,12 @@ Completed production-plan slices:
   pruned, and rejected lifecycle outcomes with signer sets and reasons.
 - [x] Validator-set metadata audit records are exposed through the node-aware RPC
   request path.
+- [x] Validator-set metadata audit records support retention-bounded appends and
+  paginated node/RPC reads with a configured page-size cap.
 
 Next implementation slices:
 
-- [ ] Add validator-set metadata audit pagination and retention limits.
+- [ ] Add validator-set metadata audit integrity roots to node snapshots.
 
 # 1. Production Objective
 

@@ -136,8 +136,20 @@ impl FileStorage {
         &self,
         record: ValidatorSetMetadataAuditRecord,
     ) -> Result<(), StorageError> {
+        self.append_validator_set_metadata_audit_record_with_retention(record, usize::MAX)
+    }
+
+    pub fn append_validator_set_metadata_audit_record_with_retention(
+        &self,
+        record: ValidatorSetMetadataAuditRecord,
+        max_records: usize,
+    ) -> Result<(), StorageError> {
         let mut records = self.load_validator_set_metadata_audit_records()?;
         records.push(record);
+        if records.len() > max_records {
+            let remove_count = records.len() - max_records;
+            records.drain(0..remove_count);
+        }
         write_json_atomic(&self.validator_set_metadata_audit_path(), &records)
     }
 
@@ -149,6 +161,19 @@ impl FileStorage {
             return Ok(Vec::new());
         }
         read_json(&path)
+    }
+
+    pub fn load_validator_set_metadata_audit_records_page(
+        &self,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<ValidatorSetMetadataAuditRecord>, StorageError> {
+        Ok(self
+            .load_validator_set_metadata_audit_records()?
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .collect())
     }
 
     pub fn commit_mempool(&self, transactions: &[Transaction]) -> Result<(), StorageError> {
@@ -482,6 +507,13 @@ mod tests {
             signers: vec!["validator-3".into()],
             reason: "expired".into(),
         };
+        let pruned = ValidatorSetMetadataAuditRecord {
+            update_id: "validator-set-update-3".into(),
+            outcome: ValidatorSetMetadataAuditOutcome::Pruned,
+            height: 5,
+            signers: vec!["validator-4".into()],
+            reason: "retained".into(),
+        };
 
         assert_eq!(
             storage.load_validator_set_metadata_audit_records().unwrap(),
@@ -496,7 +528,21 @@ mod tests {
 
         assert_eq!(
             storage.load_validator_set_metadata_audit_records().unwrap(),
-            vec![applied, rejected]
+            vec![applied, rejected.clone()]
+        );
+        storage
+            .append_validator_set_metadata_audit_record_with_retention(pruned.clone(), 2)
+            .unwrap();
+
+        assert_eq!(
+            storage.load_validator_set_metadata_audit_records().unwrap(),
+            vec![rejected.clone(), pruned.clone()]
+        );
+        assert_eq!(
+            storage
+                .load_validator_set_metadata_audit_records_page(1, 1)
+                .unwrap(),
+            vec![pruned]
         );
         fs::remove_dir_all(dir).unwrap();
     }

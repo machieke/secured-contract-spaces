@@ -24,6 +24,8 @@ use std::path::PathBuf;
 pub const DEFAULT_NODE_NETWORK_ID: &str = "detta-localnet";
 pub const DEFAULT_MAX_PENDING_VALIDATOR_SET_METADATA_UPDATES: usize = 128;
 pub const DEFAULT_MAX_PENDING_VALIDATOR_SET_METADATA_AUTHORIZATIONS_PER_VALIDATOR: usize = 32;
+pub const DEFAULT_MAX_VALIDATOR_SET_METADATA_AUDIT_RECORDS: usize = 4_096;
+pub const DEFAULT_MAX_VALIDATOR_SET_METADATA_AUDIT_PAGE_SIZE: usize = 100;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NodeError {
@@ -100,6 +102,8 @@ pub struct PersistentValidatorNode {
         BTreeMap<String, BTreeMap<String, SignedValidatorMessage>>,
     max_pending_validator_set_metadata_updates: usize,
     max_pending_validator_set_metadata_authorizations_per_validator: usize,
+    max_validator_set_metadata_audit_records: usize,
+    max_validator_set_metadata_audit_page_size: usize,
     rpc: RpcService,
     storage: FileStorage,
 }
@@ -131,6 +135,10 @@ impl PersistentValidatorNode {
                 DEFAULT_MAX_PENDING_VALIDATOR_SET_METADATA_UPDATES,
             max_pending_validator_set_metadata_authorizations_per_validator:
                 DEFAULT_MAX_PENDING_VALIDATOR_SET_METADATA_AUTHORIZATIONS_PER_VALIDATOR,
+            max_validator_set_metadata_audit_records:
+                DEFAULT_MAX_VALIDATOR_SET_METADATA_AUDIT_RECORDS,
+            max_validator_set_metadata_audit_page_size:
+                DEFAULT_MAX_VALIDATOR_SET_METADATA_AUDIT_PAGE_SIZE,
         })
     }
 
@@ -173,6 +181,10 @@ impl PersistentValidatorNode {
                 DEFAULT_MAX_PENDING_VALIDATOR_SET_METADATA_UPDATES,
             max_pending_validator_set_metadata_authorizations_per_validator:
                 DEFAULT_MAX_PENDING_VALIDATOR_SET_METADATA_AUTHORIZATIONS_PER_VALIDATOR,
+            max_validator_set_metadata_audit_records:
+                DEFAULT_MAX_VALIDATOR_SET_METADATA_AUDIT_RECORDS,
+            max_validator_set_metadata_audit_page_size:
+                DEFAULT_MAX_VALIDATOR_SET_METADATA_AUDIT_PAGE_SIZE,
         };
         if let Some(metadata) = node
             .storage
@@ -205,8 +217,8 @@ impl PersistentValidatorNode {
                     self.validator_set_metadata_update_status(update_id),
                 ))
             }
-            RpcRequest::GetValidatorSetMetadataAuditRecords => self
-                .load_validator_set_metadata_audit_records()
+            RpcRequest::GetValidatorSetMetadataAuditRecords { offset, limit } => self
+                .load_validator_set_metadata_audit_records_page(offset, limit)
                 .map(RpcResult::ValidatorSetMetadataAuditRecords)
                 .map(RpcResponse::Ok)
                 .unwrap_or_else(node_rpc_error_response),
@@ -271,6 +283,15 @@ impl PersistentValidatorNode {
         self.max_pending_validator_set_metadata_updates = max_pending_updates;
         self.max_pending_validator_set_metadata_authorizations_per_validator =
             max_pending_authorizations_per_validator;
+    }
+
+    pub fn set_validator_set_metadata_audit_limits(
+        &mut self,
+        max_records: usize,
+        max_page_size: usize,
+    ) {
+        self.max_validator_set_metadata_audit_records = max_records;
+        self.max_validator_set_metadata_audit_page_size = max_page_size;
     }
 
     pub fn validator_set_metadata_quorum(&self) -> usize {
@@ -731,6 +752,19 @@ impl PersistentValidatorNode {
             .map_err(NodeError::Storage)
     }
 
+    pub fn load_validator_set_metadata_audit_records_page(
+        &self,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<ValidatorSetMetadataAuditRecord>, NodeError> {
+        self.storage
+            .load_validator_set_metadata_audit_records_page(
+                offset,
+                limit.min(self.max_validator_set_metadata_audit_page_size),
+            )
+            .map_err(NodeError::Storage)
+    }
+
     fn record_validator_set_metadata_audit(
         &self,
         update_id: String,
@@ -739,13 +773,16 @@ impl PersistentValidatorNode {
         reason: String,
     ) -> Result<(), NodeError> {
         self.storage
-            .append_validator_set_metadata_audit_record(ValidatorSetMetadataAuditRecord {
-                update_id,
-                outcome,
-                height: self.current_height(),
-                signers,
-                reason,
-            })
+            .append_validator_set_metadata_audit_record_with_retention(
+                ValidatorSetMetadataAuditRecord {
+                    update_id,
+                    outcome,
+                    height: self.current_height(),
+                    signers,
+                    reason,
+                },
+                self.max_validator_set_metadata_audit_records,
+            )
             .map_err(NodeError::Storage)
     }
 
@@ -2448,10 +2485,81 @@ mod tests {
             expected_records
         );
         assert_eq!(
-            node.handle_rpc_request(RpcRequest::GetValidatorSetMetadataAuditRecords),
+            node.handle_rpc_request(RpcRequest::GetValidatorSetMetadataAuditRecords {
+                offset: 0,
+                limit: 10,
+            }),
             RpcResponse::Ok(RpcResult::ValidatorSetMetadataAuditRecords(
                 expected_records
             ))
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn persistent_node_limits_validator_set_metadata_audit_retention_and_pages() {
+        let dir = temp_dir("validator-set-audit-limits");
+        let mut node =
+            PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &dir).unwrap();
+        node.set_validator_set_metadata_audit_limits(2, 1);
+
+        for (update_id, outcome) in [
+            (
+                "validator-set-update-1",
+                ValidatorSetMetadataAuditOutcome::Applied,
+            ),
+            (
+                "validator-set-update-2",
+                ValidatorSetMetadataAuditOutcome::Pruned,
+            ),
+            (
+                "validator-set-update-3",
+                ValidatorSetMetadataAuditOutcome::Rejected,
+            ),
+        ] {
+            node.record_validator_set_metadata_audit(
+                update_id.into(),
+                outcome,
+                vec!["validator-1".into()],
+                "test".into(),
+            )
+            .unwrap();
+        }
+
+        let retained = vec![
+            ValidatorSetMetadataAuditRecord {
+                update_id: "validator-set-update-2".into(),
+                outcome: ValidatorSetMetadataAuditOutcome::Pruned,
+                height: 0,
+                signers: vec!["validator-1".into()],
+                reason: "test".into(),
+            },
+            ValidatorSetMetadataAuditRecord {
+                update_id: "validator-set-update-3".into(),
+                outcome: ValidatorSetMetadataAuditOutcome::Rejected,
+                height: 0,
+                signers: vec!["validator-1".into()],
+                reason: "test".into(),
+            },
+        ];
+        assert_eq!(
+            node.load_validator_set_metadata_audit_records().unwrap(),
+            retained
+        );
+        assert_eq!(
+            node.handle_rpc_request(RpcRequest::GetValidatorSetMetadataAuditRecords {
+                offset: 0,
+                limit: 10,
+            }),
+            RpcResponse::Ok(RpcResult::ValidatorSetMetadataAuditRecords(vec![retained
+                [0]
+            .clone()]))
+        );
+        assert_eq!(
+            node.load_validator_set_metadata_audit_records_page(1, 10)
+                .unwrap(),
+            vec![retained[1].clone()]
         );
 
         fs::remove_dir_all(dir).unwrap();
