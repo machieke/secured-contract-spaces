@@ -553,6 +553,11 @@ mod tests {
             include_str!("../../../models/detta-restricted-evaluator-forbidden-primitives.sha256"),
             "detta-restricted-evaluator-forbidden-primitives.json",
         );
+        assert_attested_fixture_root(
+            include_bytes!("../../../models/detta-restricted-evaluator-resource-exhaustion.json"),
+            include_str!("../../../models/detta-restricted-evaluator-resource-exhaustion.sha256"),
+            "detta-restricted-evaluator-resource-exhaustion.json",
+        );
     }
 
     fn assert_attested_fixture_root(bytes: &[u8], attestation: &str, expected_filename: &str) {

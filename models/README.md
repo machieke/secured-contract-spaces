@@ -28,6 +28,8 @@ This directory contains formal-model artifacts for the DeTTa runtime.
 - `detta-restricted-evaluator-resource-exhaustion.json` is a golden fixture for
   step-budget exhaustion. It records the failing script, expected error, and
   absence of a committed execution report.
+- `detta-restricted-evaluator-resource-exhaustion.sha256` records the release
+  attestation root for the resource exhaustion fixture.
 - `formal-model-checking-runbook.md` describes the repository checks, external
   model-checker preparation, and manifest refresh procedure.
 - `../detta-restricted-evaluator-subset.md` documents the implemented
