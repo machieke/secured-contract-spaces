@@ -120,19 +120,43 @@ mod tests {
         state
     }
 
+    fn seeded_defi_state() -> DeTTaState {
+        let mut state = seeded_state();
+        state.deploy_amm_pool("PoolA", "USDC", "ETH").unwrap();
+        state
+    }
+
     fn transfer_tx() -> Transaction {
-        Transaction {
-            chain_id: "detta-local".into(),
-            tx_hash: "tx1".into(),
-            sender: "Alice".into(),
-            nonce: 1,
-            target: "TokenA".into(),
-            method: Method::Transfer,
-            args: vec![
+        tx_to(
+            "TokenA",
+            "tx1",
+            "Alice",
+            1,
+            Method::Transfer,
+            vec![
                 Argument::Principal("Bob".into()),
                 Argument::Asset("USDC".into()),
                 Argument::Amount(10),
             ],
+        )
+    }
+
+    fn tx_to(
+        target: &str,
+        tx_hash: &str,
+        sender: &str,
+        nonce: u64,
+        method: Method,
+        args: Vec<Argument>,
+    ) -> Transaction {
+        Transaction {
+            chain_id: "detta-local".into(),
+            tx_hash: tx_hash.into(),
+            sender: sender.into(),
+            nonce,
+            target: target.into(),
+            method,
+            args,
             signature_ok: true,
             budget: 1_000_000,
         }
@@ -194,5 +218,85 @@ mod tests {
 
         fs::remove_dir_all(validator_dir).unwrap();
         fs::remove_dir_all(full_node_dir).unwrap();
+    }
+
+    #[test]
+    fn three_independent_nodes_replay_token_and_amm_blocks() {
+        let validator_dir = temp_dir("mvp-validator");
+        let full_node_dirs = [
+            temp_dir("mvp-full-node-1"),
+            temp_dir("mvp-full-node-2"),
+            temp_dir("mvp-full-node-3"),
+        ];
+        let mut validator =
+            PersistentValidatorNode::bootstrap("validator-1", seeded_defi_state(), &validator_dir)
+                .unwrap();
+
+        validator.submit_transaction(transfer_tx()).unwrap();
+        validator
+            .submit_transaction(tx_to(
+                "PoolA",
+                "tx2",
+                "Alice",
+                2,
+                Method::AddLiquidity,
+                vec![Argument::Amount(100), Argument::Amount(50)],
+            ))
+            .unwrap();
+        let block_1 = validator.produce_block(1, 1_000).unwrap();
+
+        validator
+            .submit_transaction(tx_to(
+                "PoolA",
+                "tx3",
+                "Bob",
+                1,
+                Method::Swap,
+                vec![
+                    Argument::Asset("USDC".into()),
+                    Argument::Amount(10),
+                    Argument::Amount(4),
+                ],
+            ))
+            .unwrap();
+        let block_2 = validator.produce_block(2, 2_000).unwrap();
+        let expected_root = block_2.header.global_state_root.clone();
+
+        for (index, dir) in full_node_dirs.iter().enumerate() {
+            let mut full_node = PersistentValidatorNode::bootstrap(
+                format!("full-node-{}", index + 1),
+                seeded_defi_state(),
+                dir,
+            )
+            .unwrap();
+            full_node.import_block(&block_1).unwrap();
+            full_node.import_block(&block_2).unwrap();
+        }
+
+        let replayed_roots: Vec<_> = full_node_dirs
+            .iter()
+            .enumerate()
+            .map(|(index, dir)| {
+                PersistentValidatorNode::restart(format!("full-node-{}", index + 1), dir)
+                    .unwrap()
+                    .rpc()
+                    .get_state_root()
+            })
+            .collect();
+
+        assert_eq!(replayed_roots, vec![expected_root.clone(); 3]);
+
+        let reloaded = PersistentValidatorNode::restart("full-node-1", &full_node_dirs[0]).unwrap();
+        let state = reloaded.rpc().node().state();
+        assert_eq!(state.balance("TokenA", "Bob", "USDC"), 60);
+        assert_eq!(state.reserve("PoolA", "USDC"), 110);
+        assert_eq!(state.reserve("PoolA", "ETH"), 46);
+        assert_eq!(state.lp_supply("PoolA"), 150);
+        assert_eq!(state.lp_balance("PoolA", "Alice"), 150);
+
+        fs::remove_dir_all(validator_dir).unwrap();
+        for dir in full_node_dirs {
+            fs::remove_dir_all(dir).unwrap();
+        }
     }
 }
