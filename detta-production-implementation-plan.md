@@ -50,10 +50,12 @@ Completed production-plan slices:
   long-running validator processes.
 - [x] Signed equivocation evidence can be gossiped by trusted reporters and
   persisted as durable slashing records.
+- [x] Validator-set metadata persists network, chain, and validator public keys
+  and reloads the node keyring on restart.
 
 Next implementation slices:
 
-- [ ] Add durable validator-set metadata and keyring reload on node restart.
+- [ ] Apply signed validator-set updates to durable metadata and keyrings.
 
 # 1. Production Objective
 

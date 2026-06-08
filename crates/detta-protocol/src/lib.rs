@@ -27,6 +27,13 @@ pub struct ValidatorPublicKey {
     pub public_key_hex: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ValidatorSetMetadata {
+    pub network_id: String,
+    pub chain_id: String,
+    pub validators: Vec<ValidatorPublicKey>,
+}
+
 #[derive(Clone, Debug)]
 pub struct ValidatorSigningKey {
     validator_id: String,

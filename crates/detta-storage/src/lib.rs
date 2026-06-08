@@ -1,6 +1,7 @@
 use bincode::Options;
 use detta_consensus::{FinalityCertificate, SlashingRecord};
 use detta_core::{Block, DeTTaState, SnapshotError, StateSnapshot, Transaction};
+use detta_protocol::ValidatorSetMetadata;
 use serde::{de::DeserializeOwned, Serialize};
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter};
@@ -74,6 +75,27 @@ impl FileStorage {
         read_json(&self.slashing_path(validator_id))
     }
 
+    pub fn commit_validator_set_metadata(
+        &self,
+        metadata: &ValidatorSetMetadata,
+    ) -> Result<(), StorageError> {
+        write_json_atomic(&self.validator_set_path(), metadata)
+    }
+
+    pub fn load_validator_set_metadata(&self) -> Result<ValidatorSetMetadata, StorageError> {
+        read_json(&self.validator_set_path())
+    }
+
+    pub fn maybe_load_validator_set_metadata(
+        &self,
+    ) -> Result<Option<ValidatorSetMetadata>, StorageError> {
+        let path = self.validator_set_path();
+        if !path.exists() {
+            return Ok(None);
+        }
+        read_json(&path).map(Some)
+    }
+
     pub fn commit_mempool(&self, transactions: &[Transaction]) -> Result<(), StorageError> {
         write_json_atomic(&self.mempool_path(), &transactions)
     }
@@ -102,6 +124,10 @@ impl FileStorage {
         self.root
             .join("slashings")
             .join(format!("{}.bin", file_safe_id(validator_id)))
+    }
+
+    fn validator_set_path(&self) -> PathBuf {
+        self.root.join("validator_set.bin")
     }
 
     fn mempool_path(&self) -> PathBuf {
@@ -290,6 +316,38 @@ mod tests {
         let loaded = storage.load_slashing_record("validator/1").unwrap();
 
         assert_eq!(loaded, record);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn persists_and_optionally_loads_validator_set_metadata() {
+        let dir = temp_dir("validator-set");
+        let storage = FileStorage::open(&dir).unwrap();
+        let metadata = ValidatorSetMetadata {
+            network_id: "detta-testnet".into(),
+            chain_id: "detta-local".into(),
+            validators: vec![
+                detta_protocol::ValidatorPublicKey {
+                    validator_id: "validator-1".into(),
+                    key_id: "consensus-key-1".into(),
+                    public_key_hex: "aa".repeat(32),
+                },
+                detta_protocol::ValidatorPublicKey {
+                    validator_id: "validator-2".into(),
+                    key_id: "consensus-key-1".into(),
+                    public_key_hex: "bb".repeat(32),
+                },
+            ],
+        };
+
+        assert_eq!(storage.maybe_load_validator_set_metadata().unwrap(), None);
+        storage.commit_validator_set_metadata(&metadata).unwrap();
+
+        assert_eq!(storage.load_validator_set_metadata().unwrap(), metadata);
+        assert!(storage
+            .maybe_load_validator_set_metadata()
+            .unwrap()
+            .is_some());
         fs::remove_dir_all(dir).unwrap();
     }
 

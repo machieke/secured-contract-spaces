@@ -8,7 +8,8 @@ use detta_core::{
 use detta_network::{Envelope, InMemoryTransport, NetworkError, NetworkMessage};
 use detta_protocol::{
     build_snapshot_chunks, ProtocolMessageKind, SignatureError, SignedValidatorMessage,
-    SnapshotChunkRequest, SnapshotSyncError, ValidatorPublicKey, ValidatorSigningKey,
+    SnapshotChunkRequest, SnapshotSyncError, ValidatorPublicKey, ValidatorSetMetadata,
+    ValidatorSigningKey,
 };
 use detta_rpc::{RpcError, RpcService};
 use detta_storage::{FileStorage, StorageError};
@@ -43,6 +44,11 @@ pub enum NodeError {
     UnexpectedSignedMessage {
         expected: ProtocolMessageKind,
         actual: ProtocolMessageKind,
+    },
+    DuplicateValidatorKey(String),
+    ValidatorSetChainMismatch {
+        expected: String,
+        actual: String,
     },
 }
 
@@ -89,6 +95,18 @@ impl PersistentValidatorNode {
         })
     }
 
+    pub fn bootstrap_with_validator_set(
+        validator_id: impl Into<String>,
+        state: DeTTaState,
+        storage_root: impl Into<PathBuf>,
+        network_id: impl Into<String>,
+        validator_keys: Vec<ValidatorPublicKey>,
+    ) -> Result<Self, NodeError> {
+        let mut node = Self::bootstrap(validator_id, state, storage_root)?;
+        node.persist_validator_set_metadata(network_id, validator_keys)?;
+        Ok(node)
+    }
+
     pub fn restart(
         validator_id: impl Into<String>,
         storage_root: impl Into<PathBuf>,
@@ -103,14 +121,22 @@ impl PersistentValidatorNode {
         let node = ValidatorNode::with_pending_transactions(validator_id.clone(), state, pending)
             .map_err(NodeError::Mempool)?;
 
-        Ok(Self {
+        let mut node = Self {
             rpc: RpcService::new(node),
             storage,
             validator_id,
             network_id: DEFAULT_NODE_NETWORK_ID.into(),
             chain_id,
             validator_keys: BTreeMap::new(),
-        })
+        };
+        if let Some(metadata) = node
+            .storage
+            .maybe_load_validator_set_metadata()
+            .map_err(NodeError::Storage)?
+        {
+            node.apply_validator_set_metadata(metadata)?;
+        }
+        Ok(node)
     }
 
     pub fn validator_id(&self) -> &str {
@@ -136,6 +162,33 @@ impl PersistentValidatorNode {
     pub fn trust_validator_key(&mut self, public_key: ValidatorPublicKey) {
         self.validator_keys
             .insert(public_key.validator_id.clone(), public_key);
+    }
+
+    pub fn validator_key_count(&self) -> usize {
+        self.validator_keys.len()
+    }
+
+    pub fn trusted_validator_key(&self, validator_id: &str) -> Option<&ValidatorPublicKey> {
+        self.validator_keys.get(validator_id)
+    }
+
+    pub fn persist_validator_set_metadata(
+        &mut self,
+        network_id: impl Into<String>,
+        validator_keys: Vec<ValidatorPublicKey>,
+    ) -> Result<(), NodeError> {
+        let metadata = ValidatorSetMetadata {
+            network_id: network_id.into(),
+            chain_id: self.chain_id.clone(),
+            validators: validator_keys,
+        };
+        let keyring = keyring_from_metadata(&metadata)?;
+        self.storage
+            .commit_validator_set_metadata(&metadata)
+            .map_err(NodeError::Storage)?;
+        self.network_id = metadata.network_id;
+        self.validator_keys = keyring;
+        Ok(())
     }
 
     pub fn pending_len(&self) -> usize {
@@ -440,6 +493,39 @@ impl PersistentValidatorNode {
         self.verify_signed_validator_message(signed)?;
         Ok(signed.message.as_ref().clone())
     }
+
+    fn apply_validator_set_metadata(
+        &mut self,
+        metadata: ValidatorSetMetadata,
+    ) -> Result<(), NodeError> {
+        if metadata.chain_id != self.chain_id {
+            return Err(NodeError::ValidatorSetChainMismatch {
+                expected: self.chain_id.clone(),
+                actual: metadata.chain_id,
+            });
+        }
+        let keyring = keyring_from_metadata(&metadata)?;
+        self.network_id = metadata.network_id;
+        self.validator_keys = keyring;
+        Ok(())
+    }
+}
+
+fn keyring_from_metadata(
+    metadata: &ValidatorSetMetadata,
+) -> Result<BTreeMap<String, ValidatorPublicKey>, NodeError> {
+    let mut keyring = BTreeMap::new();
+    for public_key in &metadata.validators {
+        if keyring
+            .insert(public_key.validator_id.clone(), public_key.clone())
+            .is_some()
+        {
+            return Err(NodeError::DuplicateValidatorKey(
+                public_key.validator_id.clone(),
+            ));
+        }
+    }
+    Ok(keyring)
 }
 
 #[cfg(test)]
@@ -1026,6 +1112,70 @@ mod tests {
 
         fs::remove_dir_all(reporter_dir).unwrap();
         fs::remove_dir_all(peer_dir).unwrap();
+    }
+
+    #[test]
+    fn persistent_node_reloads_validator_set_keyring_on_restart() {
+        let peer_dir = temp_dir("validator-set-restart");
+        let key = validator_key("validator-1", 7);
+        let node = PersistentValidatorNode::bootstrap_with_validator_set(
+            "validator-2",
+            seeded_state(),
+            &peer_dir,
+            "detta-testnet",
+            vec![key.public_key()],
+        )
+        .unwrap();
+        assert_eq!(node.network_id(), "detta-testnet");
+        assert_eq!(node.validator_key_count(), 1);
+        assert!(node.trusted_validator_key("validator-1").is_some());
+
+        let mut restarted = PersistentValidatorNode::restart("validator-2", &peer_dir).unwrap();
+        assert_eq!(restarted.network_id(), "detta-testnet");
+        assert_eq!(restarted.validator_key_count(), 1);
+        assert!(restarted.trusted_validator_key("validator-1").is_some());
+
+        let vote = Vote {
+            validator_id: "validator-1".into(),
+            height: 1,
+            block_hash: "block-a".into(),
+        };
+        let signed = key
+            .sign_message(
+                "detta-testnet",
+                restarted.chain_id().clone(),
+                NetworkMessage::Vote(vote),
+            )
+            .unwrap();
+        let envelope = Envelope {
+            from: "validator-1".into(),
+            to: "validator-2".into(),
+            message: NetworkMessage::SignedValidator(Box::new(signed)),
+        };
+
+        assert_eq!(
+            restarted.ingest_network_envelope(&envelope).unwrap(),
+            NetworkIngestOutcome::VoteReceived
+        );
+
+        fs::remove_dir_all(peer_dir).unwrap();
+    }
+
+    #[test]
+    fn persistent_node_rejects_duplicate_validator_key_metadata() {
+        let dir = temp_dir("validator-set-duplicate");
+        let key = validator_key("validator-1", 7).public_key();
+        let mut node =
+            PersistentValidatorNode::bootstrap("validator-2", seeded_state(), &dir).unwrap();
+
+        assert_eq!(
+            node.persist_validator_set_metadata("detta-testnet", vec![key.clone(), key.clone()],)
+                .unwrap_err(),
+            NodeError::DuplicateValidatorKey("validator-1".into())
+        );
+        assert_eq!(node.validator_key_count(), 0);
+
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
