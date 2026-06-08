@@ -1391,6 +1391,15 @@ mod tests {
         assert_eq!(attestation.matches("  ").count(), 1);
     }
 
+    #[test]
+    fn proof_artifact_manifest_root_attestation_has_nonempty_parts() {
+        let attestation = include_str!("../../../models/detta-proof-artifact-manifest.sha256");
+        let (root, file_name) = sha256sum_attestation_parts(attestation);
+
+        assert!(!root.is_empty());
+        assert!(!file_name.is_empty());
+    }
+
     struct ProofReleaseAttestationFixture {
         attestation: &'static str,
         file_name: &'static str,

@@ -340,10 +340,12 @@ Completed production-plan slices:
   newline in verify.
 - [x] Proof manifest root attestation line is checked for a single sha256sum
   separator token in verify.
+- [x] Proof manifest root attestation line is checked for nonempty root and
+  filename parts in verify.
 
 Next implementation slices:
 
-- [ ] Add proof manifest root attestation nonempty part checks in verify.
+- [ ] Add proof manifest root attestation filename binding checks in verify.
 
 # 1. Production Objective
 
