@@ -1,0 +1,10 @@
+[package]
+name = "detta-network"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+detta-consensus = { path = "../detta-consensus" }
+detta-core = { path = "../detta-core" }
+serde = { version = "1.0", features = ["derive"] }

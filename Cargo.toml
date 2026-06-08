@@ -7,5 +7,6 @@ members = [
     "crates/detta-storage",
     "crates/detta-evaluator",
     "crates/detta-node",
+    "crates/detta-network",
 ]
 resolver = "2"
