@@ -325,10 +325,12 @@ Completed production-plan slices:
   verify.
 - [x] Proof release attestation target extensions are checked for consistency
   in verify.
+- [x] Proof release attestation target paths are checked for expected models
+  path depth in verify.
 
 Next implementation slices:
 
-- [ ] Add proof release attestation target path depth checks in verify.
+- [ ] Add proof release attestation root lowercase checks in verify.
 
 # 1. Production Objective
 

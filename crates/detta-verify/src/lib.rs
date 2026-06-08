@@ -1586,6 +1586,20 @@ mod tests {
     }
 
     #[test]
+    fn proof_release_attestation_target_paths_have_expected_depth() {
+        for fixture in proof_release_attestations_for_test() {
+            assert_eq!(
+                fixture.target_path.matches('/').count(),
+                1,
+                "{} must be a direct models/ child",
+                fixture.target_path
+            );
+            assert_eq!(fixture.target_path.split('/').count(), 2);
+            assert!(!fixture.file_name.contains('/'));
+        }
+    }
+
+    #[test]
     fn proof_release_attestation_roots_have_sha256_hex_length() {
         for fixture in proof_release_attestations_for_test() {
             let (root, file_name) = sha256sum_attestation_parts(fixture.attestation);
