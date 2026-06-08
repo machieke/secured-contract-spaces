@@ -1590,6 +1590,10 @@ impl DeTTaState {
         &self.chain_id
     }
 
+    pub fn height(&self) -> u64 {
+        self.height
+    }
+
     pub fn from_snapshot(snapshot: StateSnapshot) -> Result<Self, SnapshotError> {
         if snapshot.storage_root != snapshot.state.storage_root() {
             return Err(SnapshotError::StorageRootMismatch);

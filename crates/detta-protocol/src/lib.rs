@@ -41,6 +41,7 @@ pub struct ValidatorSetMetadataUpdate {
     pub update_id: String,
     pub add_validators: Vec<ValidatorPublicKey>,
     pub remove_validators: Vec<String>,
+    pub expires_at_height: Option<u64>,
 }
 
 #[derive(Clone, Debug)]

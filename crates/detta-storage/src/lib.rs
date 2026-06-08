@@ -392,6 +392,7 @@ mod tests {
                 public_key_hex: "cc".repeat(32),
             }],
             remove_validators: vec![],
+            expires_at_height: None,
         };
         let authorization = SignedValidatorMessage {
             signer: "validator-1".into(),

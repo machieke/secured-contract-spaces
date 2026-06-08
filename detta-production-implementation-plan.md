@@ -64,10 +64,12 @@ Completed production-plan slices:
   update proposal authorizations and quorum status queries.
 - [x] Persistent validator nodes serve validator-set metadata proposal and
   status methods over the shared TCP JSON RPC server path.
+- [x] Validator-set metadata updates carry optional expiry heights, and nodes
+  reject or prune stale pending authorizations from durable storage.
 
 Next implementation slices:
 
-- [ ] Add validator-set metadata authorization pruning and stale-update expiry.
+- [ ] Add bounded authorization-pool limits and per-validator metadata update rate limiting.
 
 # 1. Production Objective
 

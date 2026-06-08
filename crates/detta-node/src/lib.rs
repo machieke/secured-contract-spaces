@@ -53,6 +53,11 @@ pub enum NodeError {
     ValidatorSetMetadataUpdateAlreadyApplied(String),
     ValidatorSetMetadataUpdateMismatch,
     ValidatorSetMetadataUpdateNotFound(String),
+    ValidatorSetMetadataUpdateExpired {
+        update_id: String,
+        expires_at_height: u64,
+        current_height: u64,
+    },
     ValidatorSetChainMismatch {
         expected: String,
         actual: String,
@@ -226,6 +231,10 @@ impl PersistentValidatorNode {
         }
     }
 
+    pub fn current_height(&self) -> u64 {
+        self.rpc.node().state().height()
+    }
+
     pub fn validator_set_metadata_quorum(&self) -> usize {
         quorum_for(self.validator_keys.len()).max(1)
     }
@@ -358,6 +367,7 @@ impl PersistentValidatorNode {
         signed: SignedValidatorMessage,
     ) -> Result<usize, NodeError> {
         let update = self.verified_validator_set_metadata_update(&signed)?;
+        self.reject_expired_validator_set_metadata_update(&update)?;
         if self.has_applied_validator_set_update(&update.update_id) {
             return Err(NodeError::ValidatorSetMetadataUpdateAlreadyApplied(
                 update.update_id,
@@ -383,6 +393,33 @@ impl PersistentValidatorNode {
         Ok(entry.len())
     }
 
+    pub fn prune_validator_set_metadata_authorizations(&mut self) -> Result<usize, NodeError> {
+        let current_height = self.current_height();
+        let mut pruned_update_ids = Vec::new();
+        for (update_id, authorizations) in &self.pending_validator_set_metadata_authorizations {
+            let Some(signed) = authorizations.values().next() else {
+                pruned_update_ids.push(update_id.clone());
+                continue;
+            };
+            let update = self.verified_validator_set_metadata_update(signed)?;
+            if self.has_applied_validator_set_update(update_id)
+                || validator_set_metadata_update_expired(&update, current_height)
+            {
+                pruned_update_ids.push(update_id.clone());
+            }
+        }
+
+        let pruned = pruned_update_ids.len();
+        if pruned > 0 {
+            for update_id in pruned_update_ids {
+                self.pending_validator_set_metadata_authorizations
+                    .remove(&update_id);
+            }
+            self.persist_pending_validator_set_metadata_authorizations()?;
+        }
+        Ok(pruned)
+    }
+
     fn persist_pending_validator_set_metadata_authorizations(&self) -> Result<(), NodeError> {
         let authorizations = self
             .pending_validator_set_metadata_authorizations
@@ -402,7 +439,9 @@ impl PersistentValidatorNode {
         self.pending_validator_set_metadata_authorizations.clear();
         for signed in authorizations {
             let update = self.verified_validator_set_metadata_update(&signed)?;
-            if self.has_applied_validator_set_update(&update.update_id) {
+            if self.has_applied_validator_set_update(&update.update_id)
+                || validator_set_metadata_update_expired(&update, self.current_height())
+            {
                 continue;
             }
             self.insert_pending_validator_set_metadata_authorization(signed)?;
@@ -844,6 +883,34 @@ impl JsonRpcHandler for PersistentValidatorNode {
     }
 }
 
+impl PersistentValidatorNode {
+    fn reject_expired_validator_set_metadata_update(
+        &self,
+        update: &ValidatorSetMetadataUpdate,
+    ) -> Result<(), NodeError> {
+        let current_height = self.current_height();
+        if let Some(expires_at_height) = update.expires_at_height {
+            if current_height >= expires_at_height {
+                return Err(NodeError::ValidatorSetMetadataUpdateExpired {
+                    update_id: update.update_id.clone(),
+                    expires_at_height,
+                    current_height,
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+fn validator_set_metadata_update_expired(
+    update: &ValidatorSetMetadataUpdate,
+    current_height: u64,
+) -> bool {
+    update
+        .expires_at_height
+        .is_some_and(|expires_at_height| current_height >= expires_at_height)
+}
+
 fn keyring_from_metadata(
     metadata: &ValidatorSetMetadata,
 ) -> Result<BTreeMap<String, ValidatorPublicKey>, NodeError> {
@@ -878,6 +945,9 @@ fn node_rpc_error_code(error: &NodeError) -> &'static str {
         }
         NodeError::ValidatorSetMetadataUpdateNotFound(_) => {
             "node.validator_set_metadata_update_not_found"
+        }
+        NodeError::ValidatorSetMetadataUpdateExpired { .. } => {
+            "node.validator_set_metadata_update_expired"
         }
         NodeError::UnsignedValidatorSetMetadataUpdate => {
             "node.unsigned_validator_set_metadata_update"
@@ -1171,6 +1241,7 @@ mod tests {
             update_id: "validator-set-update-1".into(),
             add_validators: vec![added_key.public_key()],
             remove_validators: vec![],
+            expires_at_height: None,
         };
 
         assert_eq!(
@@ -1439,6 +1510,7 @@ mod tests {
             update_id: "validator-set-update-1".into(),
             add_validators: vec![added_key.public_key()],
             remove_validators: vec![],
+            expires_at_height: None,
         };
         let coordinator_authorization = coordinator
             .sign_validator_set_metadata_update_authorization(update.clone(), &coordinator_key)
@@ -1718,6 +1790,7 @@ mod tests {
             update_id: "validator-set-update-1".into(),
             add_validators: vec![added_key.public_key()],
             remove_validators: vec!["validator-2".into()],
+            expires_at_height: None,
         };
         let signer_update = signer_key
             .sign_message(
@@ -1783,6 +1856,7 @@ mod tests {
                     update_id: "validator-set-update-1".into(),
                     add_validators: vec![added_key.public_key()],
                     remove_validators: vec![],
+                    expires_at_height: None,
                 }),
             )
             .unwrap();
@@ -1824,6 +1898,7 @@ mod tests {
             update_id: "validator-set-update-1".into(),
             add_validators: vec![added_key.public_key()],
             remove_validators: vec![],
+            expires_at_height: None,
         };
         let signer_authorization = signer_key
             .sign_message(
@@ -1886,6 +1961,90 @@ mod tests {
     }
 
     #[test]
+    fn persistent_node_prunes_expired_validator_set_metadata_authorizations() {
+        let dir = temp_dir("validator-set-expiry");
+        let signer_key = validator_key("validator-1", 7);
+        let peer_key = validator_key("validator-2", 8);
+        let added_key = validator_key("validator-3", 9);
+        let mut node = PersistentValidatorNode::bootstrap_with_validator_set(
+            "validator-2",
+            seeded_state(),
+            &dir,
+            "detta-testnet",
+            vec![signer_key.public_key(), peer_key.public_key()],
+        )
+        .unwrap();
+        let update = ValidatorSetMetadataUpdate {
+            update_id: "validator-set-update-1".into(),
+            add_validators: vec![added_key.public_key()],
+            remove_validators: vec![],
+            expires_at_height: Some(1),
+        };
+        let signer_authorization = signer_key
+            .sign_message(
+                "detta-testnet",
+                node.chain_id().clone(),
+                NetworkMessage::ValidatorSetMetadataUpdate(update.clone()),
+            )
+            .unwrap();
+        let signer_envelope = Envelope {
+            from: "validator-1".into(),
+            to: "validator-2".into(),
+            message: NetworkMessage::SignedValidator(Box::new(signer_authorization)),
+        };
+
+        assert_eq!(
+            node.ingest_network_envelope(&signer_envelope).unwrap(),
+            NetworkIngestOutcome::ValidatorSetMetadataAuthorizationStored
+        );
+        assert_eq!(
+            node.pending_validator_set_metadata_authorization_count("validator-set-update-1"),
+            1
+        );
+
+        node.produce_block(1, 1_000).unwrap();
+        assert_eq!(node.current_height(), 1);
+        assert_eq!(
+            node.prune_validator_set_metadata_authorizations().unwrap(),
+            1
+        );
+        assert_eq!(
+            node.pending_validator_set_metadata_authorization_count("validator-set-update-1"),
+            0
+        );
+
+        let peer_authorization = peer_key
+            .sign_message(
+                "detta-testnet",
+                node.chain_id().clone(),
+                NetworkMessage::ValidatorSetMetadataUpdate(update),
+            )
+            .unwrap();
+        let peer_envelope = Envelope {
+            from: "validator-2".into(),
+            to: "validator-2".into(),
+            message: NetworkMessage::SignedValidator(Box::new(peer_authorization)),
+        };
+        assert_eq!(
+            node.ingest_network_envelope(&peer_envelope).unwrap_err(),
+            NodeError::ValidatorSetMetadataUpdateExpired {
+                update_id: "validator-set-update-1".into(),
+                expires_at_height: 1,
+                current_height: 1,
+            }
+        );
+        assert!(node.trusted_validator_key("validator-3").is_none());
+
+        let restarted = PersistentValidatorNode::restart("validator-2", &dir).unwrap();
+        assert_eq!(
+            restarted.pending_validator_set_metadata_authorization_count("validator-set-update-1"),
+            0
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn persistent_node_rpc_proposes_validator_set_metadata_update_and_reports_status() {
         let dir = temp_dir("validator-set-rpc");
         let signer_key = validator_key("validator-1", 7);
@@ -1903,6 +2062,7 @@ mod tests {
             update_id: "validator-set-update-1".into(),
             add_validators: vec![added_key.public_key()],
             remove_validators: vec![],
+            expires_at_height: None,
         };
         let signer_authorization = signer_key
             .sign_message(
@@ -1974,6 +2134,7 @@ mod tests {
             update_id: "validator-set-update-1".into(),
             add_validators: vec![added_key.public_key()],
             remove_validators: vec![],
+            expires_at_height: None,
         };
         let signer_authorization = signer_key
             .sign_message(
@@ -2086,11 +2247,13 @@ mod tests {
             update_id: "validator-set-update-1".into(),
             add_validators: vec![added_key.public_key()],
             remove_validators: vec![],
+            expires_at_height: None,
         };
         let conflicting_update = ValidatorSetMetadataUpdate {
             update_id: "validator-set-update-1".into(),
             add_validators: vec![other_added_key.public_key()],
             remove_validators: vec![],
+            expires_at_height: None,
         };
         let signed_updates = vec![
             NetworkMessage::SignedValidator(Box::new(
@@ -2138,6 +2301,7 @@ mod tests {
                 update_id: "validator-set-update-1".into(),
                 add_validators: vec![added_key.public_key()],
                 remove_validators: vec![],
+                expires_at_height: None,
             }),
         };
 

@@ -680,6 +680,7 @@ mod tests {
                     update_id: "validator-set-update-1".into(),
                     add_validators: vec![],
                     remove_validators: vec![],
+                    expires_at_height: None,
                 },
             )),
             signature_hex: "aa".repeat(64),
