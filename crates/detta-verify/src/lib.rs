@@ -881,6 +881,14 @@ mod tests {
     }
 
     #[test]
+    fn proof_runtime_artifact_paths_are_unique() {
+        let artifacts = proof_runtime_artifacts();
+        let paths: BTreeSet<_> = artifacts.iter().map(|artifact| artifact.path).collect();
+
+        assert_eq!(paths.len(), artifacts.len());
+    }
+
+    #[test]
     fn proof_runtime_artifacts_bind_all_evaluator_attestations() {
         let runtime_paths: BTreeSet<_> = proof_runtime_artifacts()
             .into_iter()

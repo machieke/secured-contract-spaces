@@ -219,10 +219,11 @@ Completed production-plan slices:
 - [x] Evaluator fixture inventory is bound into the proof manifest.
 - [x] Evaluator fixture inventory entries are validated against proof manifest
   roots.
+- [x] Proof manifest runtime artifact paths are checked for uniqueness.
 
 Next implementation slices:
 
-- [ ] Add proof manifest runtime artifact path uniqueness checks.
+- [ ] Add proof manifest artifact SHA-256 format checks.
 
 # 1. Production Objective
 

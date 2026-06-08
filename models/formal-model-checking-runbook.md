@@ -33,6 +33,8 @@ cargo test -p detta-verify
   evaluator fixture attestation file, including the fixture inventory.
 - each evaluator fixture inventory entry matches the corresponding manifest
   `runtime_artifacts` root.
+- runtime artifact paths are unique, so a duplicate path cannot shadow an
+  earlier root.
 
 The evaluator `sha256sum -c` commands verify fixture-file attestations. The
 final `sha256sum` command reports the file root of the compact-trace-root
@@ -78,6 +80,7 @@ Before accepting a release proof bundle, verify:
   `runtime_artifacts`;
 - the evaluator fixture inventory JSON and `.sha256` paths appear in
   `runtime_artifacts`;
+- every `runtime_artifacts` path is unique;
 - every root listed inside the evaluator fixture inventory matches the
   corresponding `runtime_artifacts` entry;
 - `detta-restricted-evaluator-fixture-inventory.sha256` verifies against the
