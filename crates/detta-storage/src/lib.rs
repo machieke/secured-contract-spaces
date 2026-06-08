@@ -39,6 +39,17 @@ pub struct ValidatorSetMetadataAuditRecord {
     pub reason: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SnapshotImportAuditRecord {
+    pub snapshot_root: String,
+    pub manifest_hash: String,
+    pub required_metadata_roots_root: String,
+    pub required_metadata_roots_count: usize,
+    pub manifest_metadata_roots_count: usize,
+    pub chunk_count: u32,
+    pub metadata_roots_verified: bool,
+}
+
 impl FileStorage {
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, StorageError> {
         let root = root.into();
@@ -251,6 +262,43 @@ impl FileStorage {
         hash_bincode(&records)
     }
 
+    pub fn append_snapshot_import_audit_record(
+        &self,
+        record: SnapshotImportAuditRecord,
+    ) -> Result<(), StorageError> {
+        let mut records = self.load_snapshot_import_audit_records()?;
+        records.push(record);
+        write_json_atomic(&self.snapshot_import_audit_path(), &records)
+    }
+
+    pub fn load_snapshot_import_audit_records(
+        &self,
+    ) -> Result<Vec<SnapshotImportAuditRecord>, StorageError> {
+        let path = self.snapshot_import_audit_path();
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        read_json(&path)
+    }
+
+    pub fn load_snapshot_import_audit_records_page(
+        &self,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<SnapshotImportAuditRecord>, StorageError> {
+        Ok(self
+            .load_snapshot_import_audit_records()?
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .collect())
+    }
+
+    pub fn snapshot_import_audit_root(&self) -> Result<String, StorageError> {
+        let records = self.load_snapshot_import_audit_records()?;
+        hash_bincode(&records)
+    }
+
     pub fn commit_mempool(&self, transactions: &[Transaction]) -> Result<(), StorageError> {
         write_json_atomic(&self.mempool_path(), &transactions)
     }
@@ -305,6 +353,10 @@ impl FileStorage {
 
     fn validator_set_metadata_audit_path(&self) -> PathBuf {
         self.root.join("validator_set_metadata_audit.bin")
+    }
+
+    fn snapshot_import_audit_path(&self) -> PathBuf {
+        self.root.join("snapshot_import_audit.bin")
     }
 
     fn mempool_path(&self) -> PathBuf {
@@ -787,6 +839,63 @@ mod tests {
                 .load_validator_set_metadata_audit_records_page(1, 1)
                 .unwrap(),
             vec![pruned]
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn appends_snapshot_import_audit_records() {
+        let dir = temp_dir("snapshot-import-audit");
+        let storage = FileStorage::open(&dir).unwrap();
+        let first = SnapshotImportAuditRecord {
+            snapshot_root: "snapshot-root-1".into(),
+            manifest_hash: "manifest-hash-1".into(),
+            required_metadata_roots_root: "required-roots-root-1".into(),
+            required_metadata_roots_count: 2,
+            manifest_metadata_roots_count: 3,
+            chunk_count: 4,
+            metadata_roots_verified: true,
+        };
+        let second = SnapshotImportAuditRecord {
+            snapshot_root: "snapshot-root-2".into(),
+            manifest_hash: "manifest-hash-2".into(),
+            required_metadata_roots_root: "required-roots-root-2".into(),
+            required_metadata_roots_count: 1,
+            manifest_metadata_roots_count: 2,
+            chunk_count: 3,
+            metadata_roots_verified: true,
+        };
+
+        assert_eq!(
+            storage.load_snapshot_import_audit_records().unwrap(),
+            vec![]
+        );
+        let empty_root = storage.snapshot_import_audit_root().unwrap();
+        storage
+            .append_snapshot_import_audit_record(first.clone())
+            .unwrap();
+        storage
+            .append_snapshot_import_audit_record(second.clone())
+            .unwrap();
+
+        assert_eq!(
+            storage.load_snapshot_import_audit_records().unwrap(),
+            vec![first.clone(), second.clone()]
+        );
+        assert_eq!(
+            storage
+                .load_snapshot_import_audit_records_page(1, 1)
+                .unwrap(),
+            vec![second]
+        );
+        let populated_root = storage.snapshot_import_audit_root().unwrap();
+        assert_ne!(populated_root, empty_root);
+        assert_eq!(
+            FileStorage::open(&dir)
+                .unwrap()
+                .snapshot_import_audit_root()
+                .unwrap(),
+            populated_root
         );
         fs::remove_dir_all(dir).unwrap();
     }

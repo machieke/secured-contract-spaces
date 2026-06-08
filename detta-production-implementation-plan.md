@@ -120,11 +120,12 @@ Completed production-plan slices:
   metadata-root set verified by successful sync attempts.
 - [x] Snapshot manifests bind persisted required metadata-root requirement roots
   for downstream state-sync audit proofs.
+- [x] Verified snapshot imports append persistent audit records with snapshot
+  root, manifest hash, required-root-set root, root counts, and chunk count.
 
 Next implementation slices:
 
-- [ ] Add explicit import-time audit records for required metadata-root set
-  verification.
+- [ ] Expose snapshot import audit records and roots over node-aware RPC.
 
 # 1. Production Objective
 

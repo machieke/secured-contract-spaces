@@ -20,7 +20,8 @@ use detta_rpc::{
     SnapshotSyncClientMetricsReport, ValidatorSetMetadataUpdateStatus,
 };
 use detta_storage::{
-    FileStorage, StorageError, ValidatorSetMetadataAuditOutcome, ValidatorSetMetadataAuditRecord,
+    FileStorage, SnapshotImportAuditRecord, StorageError, ValidatorSetMetadataAuditOutcome,
+    ValidatorSetMetadataAuditRecord,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -1166,6 +1167,24 @@ impl PersistentValidatorNode {
             .map_err(NodeError::Storage)
     }
 
+    pub fn load_snapshot_import_audit_records(
+        &self,
+    ) -> Result<Vec<SnapshotImportAuditRecord>, NodeError> {
+        self.storage
+            .load_snapshot_import_audit_records()
+            .map_err(NodeError::Storage)
+    }
+
+    pub fn load_snapshot_import_audit_records_page(
+        &self,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<SnapshotImportAuditRecord>, NodeError> {
+        self.storage
+            .load_snapshot_import_audit_records_page(offset, limit)
+            .map_err(NodeError::Storage)
+    }
+
     fn record_validator_set_metadata_audit(
         &self,
         update_id: String,
@@ -1382,6 +1401,23 @@ impl PersistentValidatorNode {
             .map_err(NodeError::Storage)?;
         self.storage
             .commit_required_snapshot_metadata_roots(required_metadata_roots)
+            .map_err(NodeError::Storage)?;
+        let required_metadata_roots_root =
+            FileStorage::required_snapshot_metadata_roots_root_for(required_metadata_roots)
+                .map_err(NodeError::Storage)?;
+        self.storage
+            .append_snapshot_import_audit_record(SnapshotImportAuditRecord {
+                snapshot_root: snapshot.global_state_root.clone(),
+                manifest_hash: chunk_set
+                    .manifest
+                    .manifest_hash()
+                    .map_err(NodeError::SnapshotSync)?,
+                required_metadata_roots_root,
+                required_metadata_roots_count: required_metadata_roots.len(),
+                manifest_metadata_roots_count: chunk_set.manifest.metadata_roots.len(),
+                chunk_count: chunk_set.manifest.chunk_count,
+                metadata_roots_verified: true,
+            })
             .map_err(NodeError::Storage)?;
         Ok(snapshot)
     }
@@ -3821,6 +3857,19 @@ mod tests {
             required_metadata_roots_root,
             expected_required_metadata_roots_root
         );
+        let expected_import_audit_record = SnapshotImportAuditRecord {
+            snapshot_root: snapshot_root.clone(),
+            manifest_hash: chunk_set.manifest.manifest_hash().unwrap(),
+            required_metadata_roots_root: required_metadata_roots_root.clone(),
+            required_metadata_roots_count: required_metadata_roots.len(),
+            manifest_metadata_roots_count: chunk_set.manifest.metadata_roots.len(),
+            chunk_count: chunk_set.manifest.chunk_count,
+            metadata_roots_verified: true,
+        };
+        assert_eq!(
+            sink.load_snapshot_import_audit_records().unwrap(),
+            vec![expected_import_audit_record.clone()]
+        );
         assert_eq!(
             sink.handle_rpc_request(RpcRequest::GetRequiredSnapshotMetadataRoots),
             RpcResponse::Ok(RpcResult::RequiredSnapshotMetadataRoots(
@@ -3843,6 +3892,10 @@ mod tests {
                 expected: "wrong-diagnostics-root".into(),
                 actual: Some(expected_metrics_root),
             })
+        );
+        assert_eq!(
+            sink.load_snapshot_import_audit_records().unwrap(),
+            vec![expected_import_audit_record.clone()]
         );
         assert_eq!(
             sink.handle_rpc_request(RpcRequest::GetSnapshotSyncClientMetrics),
@@ -3915,6 +3968,10 @@ mod tests {
         assert_eq!(
             restarted_sink.load_snapshot_sync_client_metrics().unwrap(),
             Some(metrics.clone())
+        );
+        assert_eq!(
+            restarted_sink.load_snapshot_import_audit_records().unwrap(),
+            vec![expected_import_audit_record]
         );
         assert_eq!(
             restarted_sink
