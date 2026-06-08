@@ -9,8 +9,13 @@ Run these from the repository root:
 ```sh
 cargo test -p detta-verify
 sha256sum -c models/detta-proof-artifact-manifest.sha256
+sha256sum -c models/detta-restricted-evaluator-proof-trace.sha256
+sha256sum -c models/detta-restricted-evaluator-forbidden-primitives.sha256
+sha256sum -c models/detta-restricted-evaluator-resource-exhaustion.sha256
+sha256sum -c models/detta-restricted-evaluator-arithmetic-overflow.sha256
 sha256sum models/DeTTaBlockExecution.tla
 sha256sum models/DeTTaBlockExecution.cfg
+sha256sum models/detta-restricted-evaluator-proof-trace-root.sha256
 ```
 
 `cargo test -p detta-verify` checks that:
@@ -22,6 +27,11 @@ sha256sum models/DeTTaBlockExecution.cfg
 - the manifest includes the current `models/DeTTaBlockExecution.tla` SHA-256.
 - the manifest binds every checked-in restricted evaluator fixture JSON and
   evaluator fixture attestation file.
+
+The evaluator `sha256sum -c` commands verify fixture-file attestations. The
+final `sha256sum` command reports the file root of the compact-trace-root
+attestation, which is itself bound in the proof manifest. Rust tests recompute
+the compact trace root from `report.trace` and compare it with that attestation.
 
 ## Proof Manifest v2 Runtime Artifacts
 

@@ -211,10 +211,12 @@ Completed production-plan slices:
   bound runtime artifact roots.
 - [x] Proof-manifest refresh checks ensure evaluator trace-root attestations
   match fixture traces.
+- [x] Formal runbook includes commands for evaluator runtime artifact
+  attestations.
 
 Next implementation slices:
 
-- [ ] Add formal runbook commands for evaluator runtime artifact attestations.
+- [ ] Add release-audit checklist for proof manifest v2 evaluator artifacts.
 
 # 1. Production Objective
 
