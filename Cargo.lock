@@ -207,6 +207,7 @@ dependencies = [
  "detta-core",
  "detta-protocol",
  "serde",
+ "sha2",
 ]
 
 [[package]]

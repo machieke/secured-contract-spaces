@@ -3,6 +3,7 @@ use detta_consensus::{FinalityCertificate, SlashingRecord};
 use detta_core::{Block, DeTTaState, SnapshotError, StateSnapshot, Transaction};
 use detta_protocol::{SignedValidatorMessage, ValidatorSetMetadata};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
@@ -176,6 +177,11 @@ impl FileStorage {
             .collect())
     }
 
+    pub fn validator_set_metadata_audit_root(&self) -> Result<String, StorageError> {
+        let records = self.load_validator_set_metadata_audit_records()?;
+        hash_bincode(&records)
+    }
+
     pub fn commit_mempool(&self, transactions: &[Transaction]) -> Result<(), StorageError> {
         write_json_atomic(&self.mempool_path(), &transactions)
     }
@@ -265,6 +271,25 @@ fn data_error(error: bincode::Error) -> StorageError {
 
 fn bincode_options() -> impl Options {
     bincode::DefaultOptions::new().with_limit(MAX_ENCODED_BYTES)
+}
+
+fn hash_bincode<T: Serialize>(value: &T) -> Result<String, StorageError> {
+    let bytes = bincode_options().serialize(value).map_err(data_error)?;
+    let mut hasher = Sha256::new();
+    hasher.update(b"detta-storage-root");
+    hasher.update((bytes.len() as u64).to_be_bytes());
+    hasher.update(bytes);
+    Ok(hex_lower(&hasher.finalize()))
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
 }
 
 fn file_safe_id(value: &str) -> String {
@@ -519,6 +544,7 @@ mod tests {
             storage.load_validator_set_metadata_audit_records().unwrap(),
             vec![]
         );
+        let empty_root = storage.validator_set_metadata_audit_root().unwrap();
         storage
             .append_validator_set_metadata_audit_record(applied.clone())
             .unwrap();
@@ -529,6 +555,15 @@ mod tests {
         assert_eq!(
             storage.load_validator_set_metadata_audit_records().unwrap(),
             vec![applied, rejected.clone()]
+        );
+        let populated_root = storage.validator_set_metadata_audit_root().unwrap();
+        assert_ne!(populated_root, empty_root);
+        assert_eq!(
+            FileStorage::open(&dir)
+                .unwrap()
+                .validator_set_metadata_audit_root()
+                .unwrap(),
+            populated_root
         );
         storage
             .append_validator_set_metadata_audit_record_with_retention(pruned.clone(), 2)

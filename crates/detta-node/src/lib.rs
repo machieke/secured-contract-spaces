@@ -3,7 +3,7 @@ use detta_consensus::{
     SlashingRecord, Vote,
 };
 use detta_core::{
-    Block, BlockError, ChainId, DeTTaState, MempoolError, Transaction, ValidatorNode,
+    Block, BlockError, ChainId, DeTTaState, MempoolError, StateSnapshot, Transaction, ValidatorNode,
 };
 use detta_network::{Envelope, InMemoryTransport, NetworkError, NetworkMessage};
 use detta_protocol::{
@@ -108,6 +108,12 @@ pub struct PersistentValidatorNode {
     storage: FileStorage,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PersistentNodeSnapshot {
+    pub state_snapshot: StateSnapshot,
+    pub validator_set_metadata_audit_root: String,
+}
+
 impl PersistentValidatorNode {
     pub fn bootstrap(
         validator_id: impl Into<String>,
@@ -203,6 +209,16 @@ impl PersistentValidatorNode {
 
     pub fn rpc(&self) -> &RpcService {
         &self.rpc
+    }
+
+    pub fn node_snapshot(&self) -> Result<PersistentNodeSnapshot, NodeError> {
+        Ok(PersistentNodeSnapshot {
+            state_snapshot: self.rpc.snapshot(),
+            validator_set_metadata_audit_root: self
+                .storage
+                .validator_set_metadata_audit_root()
+                .map_err(NodeError::Storage)?,
+        })
     }
 
     pub fn handle_rpc_request(&mut self, request: RpcRequest) -> RpcResponse {
@@ -2560,6 +2576,42 @@ mod tests {
             node.load_validator_set_metadata_audit_records_page(1, 10)
                 .unwrap(),
             vec![retained[1].clone()]
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn persistent_node_snapshot_includes_validator_set_metadata_audit_root() {
+        let dir = temp_dir("validator-set-audit-root");
+        let node = PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &dir).unwrap();
+        let empty_snapshot = node.node_snapshot().unwrap();
+
+        node.record_validator_set_metadata_audit(
+            "validator-set-update-1".into(),
+            ValidatorSetMetadataAuditOutcome::Applied,
+            vec!["validator-1".into()],
+            "applied".into(),
+        )
+        .unwrap();
+        let populated_snapshot = node.node_snapshot().unwrap();
+
+        assert_eq!(
+            populated_snapshot.state_snapshot.global_state_root,
+            empty_snapshot.state_snapshot.global_state_root
+        );
+        assert_ne!(
+            populated_snapshot.validator_set_metadata_audit_root,
+            empty_snapshot.validator_set_metadata_audit_root
+        );
+
+        let restarted = PersistentValidatorNode::restart("validator-1", &dir).unwrap();
+        assert_eq!(
+            restarted
+                .node_snapshot()
+                .unwrap()
+                .validator_set_metadata_audit_root,
+            populated_snapshot.validator_set_metadata_audit_root
         );
 
         fs::remove_dir_all(dir).unwrap();

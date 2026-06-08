@@ -74,10 +74,12 @@ Completed production-plan slices:
   request path.
 - [x] Validator-set metadata audit records support retention-bounded appends and
   paginated node/RPC reads with a configured page-size cap.
+- [x] Persistent node snapshots include a deterministic validator-set metadata
+  audit root that changes with audit records and survives restart.
 
 Next implementation slices:
 
-- [ ] Add validator-set metadata audit integrity roots to node snapshots.
+- [ ] Expose persistent node snapshot metadata roots over RPC.
 
 # 1. Production Objective
 
