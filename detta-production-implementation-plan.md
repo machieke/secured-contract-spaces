@@ -154,6 +154,8 @@ Completed production-plan slices:
   snapshot import audit roots.
 - [x] Snapshot metadata root status reports local, persisted, and effective
   required snapshot metadata-root set roots.
+- [x] Snapshot metadata root status effective-root precedence matches snapshot
+  manifest metadata-root emission precedence.
 
 Next implementation slices:
 

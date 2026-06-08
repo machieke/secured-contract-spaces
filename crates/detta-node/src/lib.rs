@@ -507,9 +507,9 @@ impl PersistentValidatorNode {
         let persisted_snapshot_import_audit_config_root = persisted_metadata_roots
             .get(SNAPSHOT_METADATA_SNAPSHOT_IMPORT_AUDIT_CONFIG_ROOT)
             .cloned();
-        let snapshot_import_audit_config_root = persisted_snapshot_import_audit_config_root
+        let snapshot_import_audit_config_root = local_snapshot_import_audit_config_root
             .clone()
-            .or_else(|| local_snapshot_import_audit_config_root.clone());
+            .or_else(|| persisted_snapshot_import_audit_config_root.clone());
         let snapshot_import_audit_records = self.load_snapshot_import_audit_records()?;
         let local_snapshot_import_audit_root = if snapshot_import_audit_records.is_empty() {
             None
@@ -522,9 +522,9 @@ impl PersistentValidatorNode {
         let persisted_snapshot_import_audit_root = persisted_metadata_roots
             .get(SNAPSHOT_METADATA_SNAPSHOT_IMPORT_AUDIT_ROOT)
             .cloned();
-        let snapshot_import_audit_root = persisted_snapshot_import_audit_root
+        let snapshot_import_audit_root = local_snapshot_import_audit_root
             .clone()
-            .or_else(|| local_snapshot_import_audit_root.clone());
+            .or_else(|| persisted_snapshot_import_audit_root.clone());
         let required_snapshot_metadata_roots = self.load_required_snapshot_metadata_roots()?;
         let local_required_snapshot_metadata_roots_root =
             if required_snapshot_metadata_roots.is_empty() {
@@ -540,9 +540,9 @@ impl PersistentValidatorNode {
         let persisted_required_snapshot_metadata_roots_root = persisted_metadata_roots
             .get(SNAPSHOT_METADATA_REQUIRED_METADATA_ROOTS_ROOT)
             .cloned();
-        let required_snapshot_metadata_roots_root = persisted_required_snapshot_metadata_roots_root
+        let required_snapshot_metadata_roots_root = local_required_snapshot_metadata_roots_root
             .clone()
-            .or_else(|| local_required_snapshot_metadata_roots_root.clone());
+            .or_else(|| persisted_required_snapshot_metadata_roots_root.clone());
         let persisted_matches_local_validator_set_metadata_audit_root =
             persisted_validator_set_metadata_audit_root
                 .as_ref()
@@ -556,16 +556,15 @@ impl PersistentValidatorNode {
                 .as_ref()
                 .is_some_and(|root| Some(root) == local_snapshot_import_audit_config_root.as_ref());
         let using_imported_snapshot_import_audit_config_root =
-            persisted_snapshot_import_audit_config_root
-                .as_ref()
-                .is_some_and(|root| Some(root) != local_snapshot_import_audit_config_root.as_ref());
+            local_snapshot_import_audit_config_root.is_none()
+                && persisted_snapshot_import_audit_config_root.is_some();
         let persisted_matches_local_snapshot_import_audit_root =
             persisted_snapshot_import_audit_root
                 .as_ref()
                 .is_some_and(|root| Some(root) == local_snapshot_import_audit_root.as_ref());
         let using_imported_snapshot_import_audit_root = persisted_snapshot_import_audit_root
-            .as_ref()
-            .is_some_and(|root| Some(root) != local_snapshot_import_audit_root.as_ref());
+            .is_some()
+            && local_snapshot_import_audit_root.is_none();
         let persisted_matches_local_required_snapshot_metadata_roots_root =
             persisted_required_snapshot_metadata_roots_root
                 .as_ref()
@@ -573,11 +572,8 @@ impl PersistentValidatorNode {
                     Some(root) == local_required_snapshot_metadata_roots_root.as_ref()
                 });
         let using_imported_required_snapshot_metadata_roots_root =
-            persisted_required_snapshot_metadata_roots_root
-                .as_ref()
-                .is_some_and(|root| {
-                    Some(root) != local_required_snapshot_metadata_roots_root.as_ref()
-                });
+            local_required_snapshot_metadata_roots_root.is_none()
+                && persisted_required_snapshot_metadata_roots_root.is_some();
         Ok(SnapshotMetadataRootStatus {
             validator_set_metadata_audit_root,
             local_validator_set_metadata_audit_root,
@@ -4457,7 +4453,7 @@ mod tests {
         );
         assert_eq!(
             downstream_metadata_status.snapshot_import_audit_root,
-            Some(snapshot_import_audit_root.clone())
+            Some(downstream_local_import_audit_root.clone())
         );
         assert_eq!(
             downstream_metadata_status.local_snapshot_import_audit_root,
@@ -4467,11 +4463,11 @@ mod tests {
             downstream_metadata_status.persisted_snapshot_import_audit_root,
             Some(snapshot_import_audit_root.clone())
         );
-        assert!(downstream_metadata_status.using_imported_snapshot_import_audit_root);
+        assert!(!downstream_metadata_status.using_imported_snapshot_import_audit_root);
         assert!(!downstream_metadata_status.persisted_matches_local_snapshot_import_audit_root);
         assert_eq!(
             downstream_metadata_status.required_snapshot_metadata_roots_root,
-            Some(required_metadata_roots_root.clone())
+            Some(downstream_required_metadata_roots_root.clone())
         );
         assert_eq!(
             downstream_metadata_status.local_required_snapshot_metadata_roots_root,
@@ -4481,7 +4477,7 @@ mod tests {
             downstream_metadata_status.persisted_required_snapshot_metadata_roots_root,
             Some(required_metadata_roots_root.clone())
         );
-        assert!(downstream_metadata_status.using_imported_required_snapshot_metadata_roots_root);
+        assert!(!downstream_metadata_status.using_imported_required_snapshot_metadata_roots_root);
         assert!(
             !downstream_metadata_status
                 .persisted_matches_local_required_snapshot_metadata_roots_root
