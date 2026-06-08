@@ -301,10 +301,11 @@ Completed production-plan slices:
 - [x] Proof manifest theorem IDs are checked for fixed format and sequence in
   verify.
 - [x] Proof manifest theorem count is checked against coverage in verify.
+- [x] Proof manifest project and scope metadata are checked in verify.
 
 Next implementation slices:
 
-- [ ] Add proof manifest project and scope metadata checks in verify.
+- [ ] Add proof manifest artifact count checks in verify.
 
 # 1. Production Objective
 

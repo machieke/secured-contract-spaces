@@ -221,6 +221,9 @@ pub struct ModelArtifactRoot {
 
 pub const PROOF_ARTIFACT_MANIFEST_SCHEMA: &str = "detta.proof-artifact-manifest.v2";
 pub const PROOF_ARTIFACT_MANIFEST_SCHEMA_VERSION: u32 = 2;
+pub const PROOF_ARTIFACT_MANIFEST_PROJECT: &str = "DeTTa";
+pub const PROOF_ARTIFACT_MANIFEST_SCOPE: &str =
+    "Secured Contract Spaces runtime safety obligations";
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ProofArtifactManifest {
@@ -239,8 +242,8 @@ pub fn proof_artifact_manifest() -> ProofArtifactManifest {
     ProofArtifactManifest {
         schema: PROOF_ARTIFACT_MANIFEST_SCHEMA,
         schema_version: PROOF_ARTIFACT_MANIFEST_SCHEMA_VERSION,
-        project: "DeTTa",
-        scope: "Secured Contract Spaces runtime safety obligations",
+        project: PROOF_ARTIFACT_MANIFEST_PROJECT,
+        scope: PROOF_ARTIFACT_MANIFEST_SCOPE,
         model_artifacts: proof_model_artifacts(),
         runtime_artifacts: proof_runtime_artifacts(),
         theorem_count: coverage.len(),
@@ -1316,6 +1319,19 @@ mod tests {
             PROOF_ARTIFACT_MANIFEST_SCHEMA_VERSION
         );
         assert_eq!(PROOF_ARTIFACT_MANIFEST_SCHEMA_VERSION, 2);
+    }
+
+    #[test]
+    fn proof_artifact_manifest_project_and_scope_are_explicit() {
+        let manifest = proof_artifact_manifest();
+
+        assert_eq!(manifest.project, PROOF_ARTIFACT_MANIFEST_PROJECT);
+        assert_eq!(manifest.scope, PROOF_ARTIFACT_MANIFEST_SCOPE);
+        assert_eq!(manifest.project, "DeTTa");
+        assert_eq!(
+            manifest.scope,
+            "Secured Contract Spaces runtime safety obligations"
+        );
     }
 
     #[test]
