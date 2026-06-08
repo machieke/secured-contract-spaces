@@ -6,6 +6,33 @@
 **Inputs:** `secured-contract-spaces.md`, `scs-formal.md`,
 `detta-implementation-plan.md`
 
+# 0. Implementation Progress
+
+Updated: 2026-06-08
+
+Completed production-plan slices:
+
+- [x] Production implementation plan created.
+- [x] Versioned DeTTa protocol envelope crate added.
+- [x] Protocol golden fixtures added for transaction and vote envelopes.
+- [x] Network transport routes messages through protocol envelope encoding and
+  decoding.
+- [x] Corrupt protocol envelope rejection is covered by tests.
+- [x] Pending mempool transactions persist across node restart.
+- [x] Persistent nodes ingest decoded transaction and block network envelopes.
+- [x] Blocking TCP protocol stream can round-trip DeTTa protocol messages over
+  local sockets.
+
+Next implementation slices:
+
+- [ ] Add peer identity handshake and network peer metadata.
+- [ ] Add durable peer connection manager and bounded receive loops.
+- [ ] Add transaction gossip from RPC admission through validator peers.
+- [ ] Add consensus vote/certificate propagation over the network transport.
+- [ ] Add externally served RPC transport instead of only in-process RPC.
+- [ ] Add signed validator protocol messages and signature-domain checks.
+- [ ] Add chunked snapshot state sync over protocol envelopes.
+
 # 1. Production Objective
 
 DeTTa is a production distributed Atomspace for DeFi where all durable state
