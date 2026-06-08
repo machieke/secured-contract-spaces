@@ -947,6 +947,34 @@ mod tests {
         );
     }
 
+    #[derive(serde::Deserialize)]
+    struct ProofTraceFixtureForTest {
+        trace_root: String,
+        report: ProofTraceReportForTest,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct ProofTraceReportForTest {
+        trace: Vec<TraceOp>,
+    }
+
+    #[test]
+    fn proof_runtime_trace_root_attestation_matches_fixture_trace() {
+        let fixture: ProofTraceFixtureForTest = serde_json::from_str(include_str!(
+            "../../../models/detta-restricted-evaluator-proof-trace.json"
+        ))
+        .unwrap();
+        let trace_bytes = serde_json::to_vec(&fixture.report.trace).unwrap();
+        let trace_root = proof_artifact_manifest_root_bytes(&trace_bytes);
+        let attestation =
+            include_str!("../../../models/detta-restricted-evaluator-proof-trace-root.sha256");
+        let (attested_root, file_name) = attestation.trim().split_once("  ").unwrap();
+
+        assert_eq!(file_name, "detta-restricted-evaluator-proof-trace.trace");
+        assert_eq!(fixture.trace_root, trace_root);
+        assert_eq!(attested_root, trace_root);
+    }
+
     #[test]
     fn theorem_fixture_evidence_references_runtime_artifacts() {
         let runtime_artifacts: BTreeSet<_> = proof_runtime_artifacts()

@@ -209,10 +209,12 @@ Completed production-plan slices:
 - [x] Proof manifest v2 runtime artifact semantics are documented.
 - [x] Proof-manifest refresh checks ensure evaluator fixture attestations match
   bound runtime artifact roots.
+- [x] Proof-manifest refresh checks ensure evaluator trace-root attestations
+  match fixture traces.
 
 Next implementation slices:
 
-- [ ] Add proof-manifest refresh checks for evaluator trace-root attestations.
+- [ ] Add formal runbook commands for evaluator runtime artifact attestations.
 
 # 1. Production Objective
 
