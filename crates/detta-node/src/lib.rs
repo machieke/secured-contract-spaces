@@ -11,7 +11,10 @@ use detta_protocol::{
     SnapshotChunkRequest, SnapshotSyncError, ValidatorPublicKey, ValidatorSetMetadata,
     ValidatorSetMetadataUpdate, ValidatorSigningKey,
 };
-use detta_rpc::{RpcError, RpcService};
+use detta_rpc::{
+    RpcError, RpcErrorBody, RpcRequest, RpcResponse, RpcResult, RpcService,
+    ValidatorSetMetadataUpdateStatus,
+};
 use detta_storage::{FileStorage, StorageError};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -162,6 +165,22 @@ impl PersistentValidatorNode {
         &self.rpc
     }
 
+    pub fn handle_rpc_request(&mut self, request: RpcRequest) -> RpcResponse {
+        match request {
+            RpcRequest::ProposeValidatorSetMetadataUpdate { authorization } => self
+                .propose_validator_set_metadata_update_authorization(authorization)
+                .map(RpcResult::ValidatorSetMetadataUpdateStatus)
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(node_rpc_error_response),
+            RpcRequest::GetValidatorSetMetadataUpdateStatus { update_id } => {
+                RpcResponse::Ok(RpcResult::ValidatorSetMetadataUpdateStatus(
+                    self.validator_set_metadata_update_status(update_id),
+                ))
+            }
+            request => self.rpc.handle_request(request),
+        }
+    }
+
     pub fn network_id(&self) -> &str {
         &self.network_id
     }
@@ -189,6 +208,22 @@ impl PersistentValidatorNode {
 
     pub fn has_applied_validator_set_update(&self, update_id: &str) -> bool {
         self.applied_validator_set_updates.contains(update_id)
+    }
+
+    pub fn validator_set_metadata_update_status(
+        &self,
+        update_id: impl Into<String>,
+    ) -> ValidatorSetMetadataUpdateStatus {
+        let update_id = update_id.into();
+        ValidatorSetMetadataUpdateStatus {
+            pending_authorizations: self
+                .pending_validator_set_metadata_authorizations
+                .get(&update_id)
+                .map_or(0, BTreeMap::len),
+            required_quorum: self.validator_set_metadata_quorum(),
+            applied: self.has_applied_validator_set_update(&update_id),
+            update_id,
+        }
     }
 
     pub fn validator_set_metadata_quorum(&self) -> usize {
@@ -301,6 +336,21 @@ impl PersistentValidatorNode {
         let count = self.insert_pending_validator_set_metadata_authorization(*signed)?;
         self.persist_pending_validator_set_metadata_authorizations()?;
         Ok(count)
+    }
+
+    pub fn propose_validator_set_metadata_update_authorization(
+        &mut self,
+        authorization: SignedValidatorMessage,
+    ) -> Result<ValidatorSetMetadataUpdateStatus, NodeError> {
+        let update = self.verified_validator_set_metadata_update(&authorization)?;
+        let update_id = update.update_id;
+        let authorization_count = self.record_pending_validator_set_metadata_authorization(
+            NetworkMessage::SignedValidator(Box::new(authorization)),
+        )?;
+        if authorization_count >= self.validator_set_metadata_quorum() {
+            self.apply_pending_validator_set_metadata_update(&update_id)?;
+        }
+        Ok(self.validator_set_metadata_update_status(update_id))
     }
 
     fn insert_pending_validator_set_metadata_authorization(
@@ -803,6 +853,36 @@ fn keyring_from_metadata(
         }
     }
     Ok(keyring)
+}
+
+fn node_rpc_error_response(error: NodeError) -> RpcResponse {
+    RpcResponse::Error(RpcErrorBody {
+        code: node_rpc_error_code(&error).into(),
+        message: format!("{error:?}"),
+    })
+}
+
+fn node_rpc_error_code(error: &NodeError) -> &'static str {
+    match error {
+        NodeError::ValidatorSetMetadataUpdateAlreadyApplied(_) => {
+            "node.validator_set_metadata_update_already_applied"
+        }
+        NodeError::ValidatorSetMetadataUpdateMismatch => {
+            "node.validator_set_metadata_update_mismatch"
+        }
+        NodeError::ValidatorSetMetadataUpdateNotFound(_) => {
+            "node.validator_set_metadata_update_not_found"
+        }
+        NodeError::UnsignedValidatorSetMetadataUpdate => {
+            "node.unsigned_validator_set_metadata_update"
+        }
+        NodeError::Signature(_) => "node.validator_signature_error",
+        NodeError::ValidatorKeyNotFound(_) => "node.validator_key_not_found",
+        NodeError::Consensus(ConsensusError::QuorumNotReached { .. }) => {
+            "node.validator_quorum_not_reached"
+        }
+        _ => "node.error",
+    }
 }
 
 #[cfg(test)]
@@ -1780,6 +1860,85 @@ mod tests {
         );
         assert!(reloaded.has_applied_validator_set_update("validator-set-update-1"));
         assert!(reloaded.trusted_validator_key("validator-3").is_some());
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn persistent_node_rpc_proposes_validator_set_metadata_update_and_reports_status() {
+        let dir = temp_dir("validator-set-rpc");
+        let signer_key = validator_key("validator-1", 7);
+        let peer_key = validator_key("validator-2", 8);
+        let added_key = validator_key("validator-3", 9);
+        let mut node = PersistentValidatorNode::bootstrap_with_validator_set(
+            "validator-2",
+            seeded_state(),
+            &dir,
+            "detta-testnet",
+            vec![signer_key.public_key(), peer_key.public_key()],
+        )
+        .unwrap();
+        let update = ValidatorSetMetadataUpdate {
+            update_id: "validator-set-update-1".into(),
+            add_validators: vec![added_key.public_key()],
+            remove_validators: vec![],
+        };
+        let signer_authorization = signer_key
+            .sign_message(
+                "detta-testnet",
+                node.chain_id().clone(),
+                NetworkMessage::ValidatorSetMetadataUpdate(update.clone()),
+            )
+            .unwrap();
+
+        assert_eq!(
+            node.handle_rpc_request(RpcRequest::ProposeValidatorSetMetadataUpdate {
+                authorization: signer_authorization,
+            }),
+            RpcResponse::Ok(RpcResult::ValidatorSetMetadataUpdateStatus(
+                ValidatorSetMetadataUpdateStatus {
+                    update_id: "validator-set-update-1".into(),
+                    pending_authorizations: 1,
+                    required_quorum: 2,
+                    applied: false,
+                },
+            ))
+        );
+        assert_eq!(
+            node.handle_rpc_request(RpcRequest::GetValidatorSetMetadataUpdateStatus {
+                update_id: "validator-set-update-1".into(),
+            }),
+            RpcResponse::Ok(RpcResult::ValidatorSetMetadataUpdateStatus(
+                ValidatorSetMetadataUpdateStatus {
+                    update_id: "validator-set-update-1".into(),
+                    pending_authorizations: 1,
+                    required_quorum: 2,
+                    applied: false,
+                },
+            ))
+        );
+
+        let peer_authorization = peer_key
+            .sign_message(
+                "detta-testnet",
+                node.chain_id().clone(),
+                NetworkMessage::ValidatorSetMetadataUpdate(update),
+            )
+            .unwrap();
+        assert_eq!(
+            node.handle_rpc_request(RpcRequest::ProposeValidatorSetMetadataUpdate {
+                authorization: peer_authorization,
+            }),
+            RpcResponse::Ok(RpcResult::ValidatorSetMetadataUpdateStatus(
+                ValidatorSetMetadataUpdateStatus {
+                    update_id: "validator-set-update-1".into(),
+                    pending_authorizations: 0,
+                    required_quorum: 3,
+                    applied: true,
+                },
+            ))
+        );
+        assert!(node.trusted_validator_key("validator-3").is_some());
 
         fs::remove_dir_all(dir).unwrap();
     }

@@ -3,6 +3,7 @@ use detta_core::{
     OutboxMessageProof, Principal, Receipt, RegistryNonInclusionProof, RegistryProof, StateKey,
     StateSnapshot, StorageNonInclusionProof, StorageProof, Transaction, ValidatorNode,
 };
+use detta_protocol::SignedValidatorMessage;
 use serde::{Deserialize, Serialize};
 use std::io::{self, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, ToSocketAddrs};
@@ -18,6 +19,7 @@ pub enum RpcError {
     TransactionNotFound,
     ContractNotFound,
     ProofNotFound,
+    UnsupportedNodeMethod,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -72,6 +74,20 @@ pub enum RpcRequest {
     GetContract {
         contract: ContractId,
     },
+    ProposeValidatorSetMetadataUpdate {
+        authorization: SignedValidatorMessage,
+    },
+    GetValidatorSetMetadataUpdateStatus {
+        update_id: String,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ValidatorSetMetadataUpdateStatus {
+    pub update_id: String,
+    pub pending_authorizations: usize,
+    pub required_quorum: usize,
+    pub applied: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -92,6 +108,7 @@ pub enum RpcResult {
     OutboxMessageProof(Box<OutboxMessageProof>),
     Events(Vec<Event>),
     Contract(Box<ContractRecord>),
+    ValidatorSetMetadataUpdateStatus(ValidatorSetMetadataUpdateStatus),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -347,6 +364,10 @@ impl RpcService {
                 .get_contract(contract)
                 .map(|contract| RpcResult::Contract(Box::new(contract)))
                 .into(),
+            RpcRequest::ProposeValidatorSetMetadataUpdate { .. }
+            | RpcRequest::GetValidatorSetMetadataUpdateStatus { .. } => {
+                Err(RpcError::UnsupportedNodeMethod).into()
+            }
         }
     }
 
@@ -453,6 +474,7 @@ fn rpc_error_code(error: &RpcError) -> &'static str {
         RpcError::TransactionNotFound => "rpc.transaction_not_found",
         RpcError::ContractNotFound => "rpc.contract_not_found",
         RpcError::ProofNotFound => "rpc.proof_not_found",
+        RpcError::UnsupportedNodeMethod => "rpc.unsupported_node_method",
     }
 }
 
@@ -489,6 +511,7 @@ fn rpc_error_message(error: &RpcError) -> &'static str {
         RpcError::TransactionNotFound => "transaction was not found",
         RpcError::ContractNotFound => "contract was not found",
         RpcError::ProofNotFound => "proof was not found",
+        RpcError::UnsupportedNodeMethod => "method must be handled by a persistent validator node",
     }
 }
 
@@ -496,6 +519,7 @@ fn rpc_error_message(error: &RpcError) -> &'static str {
 mod tests {
     use super::*;
     use detta_core::{Argument, ContractInvariant, DeTTaState, Method, TxStatus};
+    use detta_protocol::{ProtocolMessage, ValidatorSetMetadataUpdate, ValidatorSignatureDomain};
     use std::io::{BufRead, BufReader, Write};
     use std::net::{Shutdown, TcpStream};
 
@@ -612,6 +636,31 @@ mod tests {
             RpcResponse::Error(error) => assert_eq!(error.code, "rpc.decode_error"),
             response => panic!("expected decode error, got {response:?}"),
         }
+
+        let authorization = SignedValidatorMessage {
+            signer: "validator-1".into(),
+            key_id: "consensus-key-1".into(),
+            network_id: "detta-testnet".into(),
+            chain_id: "detta-local".into(),
+            domain: ValidatorSignatureDomain::ValidatorSetMetadataUpdate,
+            message: Box::new(ProtocolMessage::ValidatorSetMetadataUpdate(
+                ValidatorSetMetadataUpdate {
+                    update_id: "validator-set-update-1".into(),
+                    add_validators: vec![],
+                    remove_validators: vec![],
+                },
+            )),
+            signature_hex: "aa".repeat(64),
+        };
+        let unsupported_response =
+            rpc.handle_request(RpcRequest::ProposeValidatorSetMetadataUpdate { authorization });
+        assert_eq!(
+            unsupported_response,
+            RpcResponse::Error(RpcErrorBody {
+                code: "rpc.unsupported_node_method".into(),
+                message: "method must be handled by a persistent validator node".into(),
+            })
+        );
     }
 
     #[test]

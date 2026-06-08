@@ -191,6 +191,7 @@ name = "detta-rpc"
 version = "0.1.0"
 dependencies = [
  "detta-core",
+ "detta-protocol",
  "serde",
  "serde_json",
 ]
