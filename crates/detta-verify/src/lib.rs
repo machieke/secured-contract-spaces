@@ -241,12 +241,20 @@ pub fn proof_artifact_manifest() -> ProofArtifactManifest {
 }
 
 pub fn proof_model_artifacts() -> Vec<ModelArtifactRoot> {
-    vec![ModelArtifactRoot {
-        path: "models/DeTTaBlockExecution.tla",
-        sha256: proof_artifact_manifest_root_bytes(include_bytes!(
-            "../../../models/DeTTaBlockExecution.tla"
-        )),
-    }]
+    vec![
+        ModelArtifactRoot {
+            path: "models/DeTTaBlockExecution.tla",
+            sha256: proof_artifact_manifest_root_bytes(include_bytes!(
+                "../../../models/DeTTaBlockExecution.tla"
+            )),
+        },
+        ModelArtifactRoot {
+            path: "models/DeTTaBlockExecution.cfg",
+            sha256: proof_artifact_manifest_root_bytes(include_bytes!(
+                "../../../models/DeTTaBlockExecution.cfg"
+            )),
+        },
+    ]
 }
 
 pub fn proof_artifact_manifest_root_bytes(bytes: &[u8]) -> String {
@@ -670,10 +678,18 @@ mod tests {
     fn proof_model_artifacts_include_tla_roots() {
         assert_eq!(
             proof_model_artifacts(),
-            vec![ModelArtifactRoot {
-                path: "models/DeTTaBlockExecution.tla",
-                sha256: "b1ad4c2b5bed6d8efd44451ef1a69665fe62ff234b8aa49ee8bfc0d10a8a6fc9".into(),
-            }]
+            vec![
+                ModelArtifactRoot {
+                    path: "models/DeTTaBlockExecution.tla",
+                    sha256: "b1ad4c2b5bed6d8efd44451ef1a69665fe62ff234b8aa49ee8bfc0d10a8a6fc9"
+                        .into(),
+                },
+                ModelArtifactRoot {
+                    path: "models/DeTTaBlockExecution.cfg",
+                    sha256: "9149c3554fb6fb6971913c9ca7615c54289dbd04c9e612baae3b49bf203e6598"
+                        .into(),
+                },
+            ]
         );
     }
 

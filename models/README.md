@@ -6,6 +6,8 @@ This directory contains formal-model artifacts for the DeTTa runtime.
   dispatcher-mediated calls, method-policy lookup, nonce replay prevention,
   active reentrancy locks, guarded writes, commit/revert atomicity, and
   deterministic replay obligations.
+- `DeTTaBlockExecution.cfg` is a bounded TLC configuration for the abstract
+  block-execution model.
 - `detta-proof-artifact-manifest.json` is the stable proof-artifact manifest
   exported by `detta_verify::proof_artifact_manifest()`. It includes theorem
   coverage and formal model artifact roots. The verify crate tests that the

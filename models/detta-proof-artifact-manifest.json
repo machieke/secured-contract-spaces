@@ -6,6 +6,10 @@
     {
       "path": "models/DeTTaBlockExecution.tla",
       "sha256": "b1ad4c2b5bed6d8efd44451ef1a69665fe62ff234b8aa49ee8bfc0d10a8a6fc9"
+    },
+    {
+      "path": "models/DeTTaBlockExecution.cfg",
+      "sha256": "9149c3554fb6fb6971913c9ca7615c54289dbd04c9e612baae3b49bf203e6598"
     }
   ],
   "theorem_count": 15,

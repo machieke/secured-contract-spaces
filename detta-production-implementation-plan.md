@@ -174,10 +174,11 @@ Completed production-plan slices:
   workflow.
 - [x] Theorem evidence references are checked against concrete TLA model
   operators.
+- [x] A bounded TLC config artifact is included in the proof manifest.
 
 Next implementation slices:
 
-- [ ] Add a bounded TLC config artifact to the proof manifest.
+- [ ] Add proof-artifact manifest schema stability fixtures.
 
 # 1. Production Objective
 

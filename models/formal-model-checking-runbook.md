@@ -10,6 +10,7 @@ Run these from the repository root:
 cargo test -p detta-verify
 sha256sum -c models/detta-proof-artifact-manifest.sha256
 sha256sum models/DeTTaBlockExecution.tla
+sha256sum models/DeTTaBlockExecution.cfg
 ```
 
 `cargo test -p detta-verify` checks that:
@@ -38,8 +39,14 @@ implementation obligations.
 
 ## TLC/Apalache Use
 
-Before running an external model checker, add a bounded config file that gives
-finite values for:
+`models/DeTTaBlockExecution.cfg` is the checked-in bounded TLC config for the
+abstract block-execution model. With TLC available, run:
+
+```sh
+tlc2.TLC -deadlock -workers auto -config models/DeTTaBlockExecution.cfg models/DeTTaBlockExecution.tla
+```
+
+When adding a new bounded config file, give finite values for:
 
 - `Contracts`
 - `Methods`
