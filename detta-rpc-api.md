@@ -1,8 +1,10 @@
 # DeTTa JSON RPC API
 
-DeTTa exposes a line-delimited JSON RPC transport over TCP. Each request is a
-single JSON object followed by `\n`; each response is a single JSON object
-followed by `\n`.
+DeTTa exposes the same typed JSON RPC wire format over two transports:
+
+- bounded HTTP `POST` requests to `/` or `/rpc`;
+- line-delimited JSON RPC over TCP, where each request is a single JSON object
+  followed by `\n` and each response is a single JSON object followed by `\n`.
 
 The wire enum is defined in `crates/detta-rpc/src/lib.rs` as `RpcRequest` and
 `RpcResult`. Stable JSON fixture tests in that crate pin selected client-facing
@@ -34,8 +36,12 @@ Errors use stable code strings:
 {"status":"error","body":{"code":"rpc.receipt_not_found","message":"receipt was not found"}}
 ```
 
-Malformed requests return `rpc.decode_error`. Oversized line-delimited requests
-are rejected by the transport before dispatch.
+Malformed JSON requests return `rpc.decode_error`. Oversized line-delimited
+requests are rejected by the TCP transport before dispatch. Oversized HTTP
+bodies return HTTP `413` with stable RPC code `rpc.request_too_large`; HTTP
+requests without `Content-Length`, non-`POST` methods, malformed headers, or
+unknown paths return stable JSON RPC error bodies with non-`200` HTTP status
+codes.
 
 ## Public Methods
 

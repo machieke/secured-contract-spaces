@@ -430,6 +430,8 @@ Completed production-plan slices:
   fuzz-smoke coverage through the JSON request handler.
 - [x] Bridge redemption proofs are bound to authenticated trusted source-chain
   validator sets, including signer membership, quorum, and set-update tests.
+- [x] External JSON RPC is available over bounded HTTP POST transport with
+  stable transport error bodies and compatibility tests.
 
 Next implementation slices:
 

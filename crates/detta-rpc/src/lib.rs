@@ -16,6 +16,7 @@ use std::io::{self, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, ToSocketAddrs};
 
 pub const DEFAULT_MAX_RPC_REQUEST_BYTES: usize = 1024 * 1024;
+pub const DEFAULT_MAX_HTTP_HEADER_BYTES: usize = 16 * 1024;
 pub const DEFAULT_MAX_EVENT_PAGE_SIZE: usize = 1_000;
 pub const DEFAULT_MAX_BLOCK_PAGE_SIZE: usize = 100;
 pub const DEFAULT_MAX_SUBSCRIPTION_EVENT_PAGE_SIZE: usize = 1_000;
@@ -418,6 +419,42 @@ impl JsonRpcServer {
     ) -> Result<(), RpcTransportError> {
         let (stream, _) = self.listener.accept()?;
         serve_json_rpc_handler_connection(handler, stream, self.max_request_bytes)
+    }
+}
+
+pub struct HttpJsonRpcServer {
+    listener: TcpListener,
+    max_request_bytes: usize,
+}
+
+impl HttpJsonRpcServer {
+    pub fn bind(addr: impl ToSocketAddrs) -> Result<Self, RpcTransportError> {
+        let listener = TcpListener::bind(addr)?;
+        Ok(Self {
+            listener,
+            max_request_bytes: DEFAULT_MAX_RPC_REQUEST_BYTES,
+        })
+    }
+
+    pub fn with_max_request_bytes(mut self, max_request_bytes: usize) -> Self {
+        self.max_request_bytes = max_request_bytes;
+        self
+    }
+
+    pub fn local_addr(&self) -> Result<SocketAddr, RpcTransportError> {
+        self.listener.local_addr().map_err(RpcTransportError::Io)
+    }
+
+    pub fn serve_next_connection(&self, service: &mut RpcService) -> Result<(), RpcTransportError> {
+        self.serve_next_connection_with_handler(service)
+    }
+
+    pub fn serve_next_connection_with_handler<H: JsonRpcHandler>(
+        &self,
+        handler: &mut H,
+    ) -> Result<(), RpcTransportError> {
+        let (stream, _) = self.listener.accept()?;
+        serve_http_json_rpc_handler_connection(handler, stream, self.max_request_bytes)
     }
 }
 
@@ -1054,6 +1091,41 @@ pub fn serve_json_rpc_handler_connection<H: JsonRpcHandler, S: Read + Write>(
     }
 }
 
+pub fn serve_http_json_rpc_connection<S: Read + Write>(
+    service: &mut RpcService,
+    stream: S,
+    max_request_bytes: usize,
+) -> Result<(), RpcTransportError> {
+    serve_http_json_rpc_handler_connection(service, stream, max_request_bytes)
+}
+
+pub fn serve_http_json_rpc_handler_connection<H: JsonRpcHandler, S: Read + Write>(
+    handler: &mut H,
+    stream: S,
+    max_request_bytes: usize,
+) -> Result<(), RpcTransportError> {
+    let mut reader = BufReader::new(stream);
+    let headers = read_http_headers(&mut reader, DEFAULT_MAX_HTTP_HEADER_BYTES)?;
+    if headers.is_empty() {
+        return Ok(());
+    }
+
+    let response = match parse_http_json_rpc_request_head(&headers, max_request_bytes) {
+        Ok(content_length) => {
+            let mut body = vec![0; content_length];
+            reader.read_exact(&mut body)?;
+            let response = handler.handle_json_request(&body)?;
+            http_response_bytes(200, "OK", response)
+        }
+        Err(response) => response,
+    };
+
+    let stream = reader.get_mut();
+    stream.write_all(&response)?;
+    stream.flush()?;
+    Ok(())
+}
+
 pub fn json_rpc_response_for_request(
     request: &[u8],
     handle: impl FnOnce(RpcRequest) -> RpcResponse,
@@ -1078,6 +1150,140 @@ fn rpc_error_response_bytes(
         message: message.into(),
     }))
     .map_err(RpcTransportError::Encode)
+}
+
+fn read_http_headers<R: Read>(
+    reader: &mut R,
+    max_header_bytes: usize,
+) -> Result<Vec<u8>, RpcTransportError> {
+    let mut headers = Vec::new();
+    let mut byte = [0_u8; 1];
+
+    loop {
+        let read = reader.read(&mut byte)?;
+        if read == 0 {
+            return Ok(headers);
+        }
+
+        headers.push(byte[0]);
+        if headers.len() > max_header_bytes {
+            return Err(RpcTransportError::RequestTooLarge {
+                max_bytes: max_header_bytes,
+            });
+        }
+        if headers.ends_with(b"\r\n\r\n") {
+            return Ok(headers);
+        }
+    }
+}
+
+fn parse_http_json_rpc_request_head(
+    headers: &[u8],
+    max_request_bytes: usize,
+) -> Result<usize, Vec<u8>> {
+    let header_text = String::from_utf8_lossy(headers);
+    let Some((request_line, header_lines)) = header_text.split_once("\r\n") else {
+        return Err(http_rpc_error_response(
+            400,
+            "Bad Request",
+            "rpc.http_bad_request",
+            "malformed HTTP request",
+        ));
+    };
+
+    let mut request_parts = request_line.split_whitespace();
+    let method = request_parts.next().unwrap_or_default();
+    let path = request_parts.next().unwrap_or_default();
+    let version = request_parts.next().unwrap_or_default();
+    if request_parts.next().is_some() || !version.starts_with("HTTP/1.") {
+        return Err(http_rpc_error_response(
+            400,
+            "Bad Request",
+            "rpc.http_bad_request",
+            "malformed HTTP request",
+        ));
+    }
+    if method != "POST" {
+        return Err(http_rpc_error_response(
+            405,
+            "Method Not Allowed",
+            "rpc.http_method_not_allowed",
+            "JSON RPC HTTP endpoint requires POST",
+        ));
+    }
+    if path != "/" && path != "/rpc" {
+        return Err(http_rpc_error_response(
+            404,
+            "Not Found",
+            "rpc.http_not_found",
+            "JSON RPC HTTP endpoint was not found",
+        ));
+    }
+
+    let mut content_length = None;
+    for line in header_lines.split("\r\n").filter(|line| !line.is_empty()) {
+        let Some((name, value)) = line.split_once(':') else {
+            return Err(http_rpc_error_response(
+                400,
+                "Bad Request",
+                "rpc.http_bad_request",
+                "malformed HTTP header",
+            ));
+        };
+        if name.trim().eq_ignore_ascii_case("content-length") {
+            let Ok(parsed) = value.trim().parse::<usize>() else {
+                return Err(http_rpc_error_response(
+                    400,
+                    "Bad Request",
+                    "rpc.http_bad_request",
+                    "invalid Content-Length",
+                ));
+            };
+            if content_length.is_some_and(|existing| existing != parsed) {
+                return Err(http_rpc_error_response(
+                    400,
+                    "Bad Request",
+                    "rpc.http_bad_request",
+                    "conflicting Content-Length",
+                ));
+            }
+            content_length = Some(parsed);
+        }
+    }
+
+    let Some(content_length) = content_length else {
+        return Err(http_rpc_error_response(
+            411,
+            "Length Required",
+            "rpc.http_length_required",
+            "JSON RPC HTTP endpoint requires Content-Length",
+        ));
+    };
+    if content_length > max_request_bytes {
+        return Err(http_rpc_error_response(
+            413,
+            "Payload Too Large",
+            "rpc.request_too_large",
+            "JSON RPC request body exceeded maximum size",
+        ));
+    }
+
+    Ok(content_length)
+}
+
+fn http_rpc_error_response(status_code: u16, reason: &str, code: &str, message: &str) -> Vec<u8> {
+    let body = rpc_error_response_bytes(code, message).expect("RPC error body serializes");
+    http_response_bytes(status_code, reason, body)
+}
+
+fn http_response_bytes(status_code: u16, reason: &str, body: Vec<u8>) -> Vec<u8> {
+    let mut response = format!(
+        "HTTP/1.1 {status_code} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    response.extend(body);
+    response
 }
 
 fn read_bounded_json_line<R: Read>(
@@ -1227,7 +1433,7 @@ mod tests {
         DEFAULT_MEMPOOL_MAX_PENDING_PER_SENDER, DEFAULT_MEMPOOL_MAX_TRANSACTION_BYTES,
     };
     use detta_protocol::{ProtocolMessage, ValidatorSetMetadataUpdate, ValidatorSignatureDomain};
-    use std::io::{BufRead, BufReader, Write};
+    use std::io::{BufRead, BufReader, Read, Write};
     use std::net::{Shutdown, TcpStream};
 
     fn seeded_rpc() -> RpcService {
@@ -1271,6 +1477,61 @@ mod tests {
         reader.read_line(&mut line).unwrap();
         assert!(!line.is_empty());
         serde_json::from_str(&line).unwrap()
+    }
+
+    fn http_round_trip(raw_request: Vec<u8>, max_request_bytes: usize) -> (u16, RpcResponse) {
+        let server = HttpJsonRpcServer::bind("127.0.0.1:0")
+            .unwrap()
+            .with_max_request_bytes(max_request_bytes);
+        let addr = server.local_addr().unwrap();
+        let server_thread = std::thread::spawn(move || {
+            let mut rpc = seeded_rpc();
+            server.serve_next_connection(&mut rpc).unwrap();
+        });
+
+        let mut stream = TcpStream::connect(addr).unwrap();
+        stream.write_all(&raw_request).unwrap();
+        stream.flush().unwrap();
+        stream.shutdown(Shutdown::Write).unwrap();
+
+        let mut response_bytes = Vec::new();
+        stream.read_to_end(&mut response_bytes).unwrap();
+        server_thread.join().unwrap();
+        parse_http_rpc_response(&response_bytes)
+    }
+
+    fn http_post_request(path: &str, body: &[u8]) -> Vec<u8> {
+        let mut request = format!(
+            "POST {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
+        request.extend(body);
+        request
+    }
+
+    fn parse_http_rpc_response(response: &[u8]) -> (u16, RpcResponse) {
+        let split = response
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .expect("HTTP response has header terminator");
+        let headers = String::from_utf8(response[..split].to_vec()).unwrap();
+        let body = &response[split + 4..];
+        let status_line = headers.lines().next().unwrap();
+        let status = status_line
+            .split_whitespace()
+            .nth(1)
+            .unwrap()
+            .parse::<u16>()
+            .unwrap();
+        let content_length = headers
+            .lines()
+            .filter_map(|line| line.split_once(':'))
+            .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+            .map(|(_, value)| value.trim().parse::<usize>().unwrap())
+            .unwrap();
+        assert_eq!(body.len(), content_length);
+        (status, serde_json::from_slice(body).unwrap())
     }
 
     fn authenticated_request(token: &str, request: RpcRequest) -> Vec<u8> {
@@ -2413,6 +2674,50 @@ mod tests {
                 assert_ne!(error.code, "rpc.decode_error");
             }
         }
+    }
+
+    #[test]
+    fn http_json_rpc_server_serves_json_rpc_post() {
+        let body = serde_json::to_vec(&RpcRequest::GetBalance {
+            contract: "TokenA".into(),
+            owner: "Alice".into(),
+            asset: "USDC".into(),
+        })
+        .unwrap();
+
+        let (status, response) = http_round_trip(
+            http_post_request("/rpc", &body),
+            DEFAULT_MAX_RPC_REQUEST_BYTES,
+        );
+
+        assert_eq!(status, 200);
+        assert_eq!(response, RpcResponse::Ok(RpcResult::Amount(100)));
+    }
+
+    #[test]
+    fn http_json_rpc_server_returns_stable_transport_errors() {
+        let method_not_allowed =
+            b"GET /rpc HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n".to_vec();
+        let (status, response) = http_round_trip(method_not_allowed, DEFAULT_MAX_RPC_REQUEST_BYTES);
+        assert_eq!(status, 405);
+        assert_eq!(
+            response,
+            RpcResponse::Error(RpcErrorBody {
+                code: "rpc.http_method_not_allowed".into(),
+                message: "JSON RPC HTTP endpoint requires POST".into(),
+            })
+        );
+
+        let oversized_body = serde_json::to_vec(&RpcRequest::GetStateRoot).unwrap();
+        let (status, response) = http_round_trip(http_post_request("/rpc", &oversized_body), 8);
+        assert_eq!(status, 413);
+        assert_eq!(
+            response,
+            RpcResponse::Error(RpcErrorBody {
+                code: "rpc.request_too_large".into(),
+                message: "JSON RPC request body exceeded maximum size".into(),
+            })
+        );
     }
 
     #[test]
