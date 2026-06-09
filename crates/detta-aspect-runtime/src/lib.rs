@@ -636,10 +636,27 @@ impl<'a> AspectActionEvaluator<'a> {
                 items.len() - 1
             )));
         }
-        state.trace.push(AspectHostOp::Emit {
-            event: aspect_expr_source(&items[1]),
-        });
+        let event = self.eval_event_expr(&items[1], state)?;
+        state.trace.push(AspectHostOp::Emit { event });
         Ok(AspectValue::Unit)
+    }
+
+    fn eval_event_expr(
+        &self,
+        expr: &Expr,
+        state: &mut AspectEvalState,
+    ) -> Result<String, AspectEvalError> {
+        match expr {
+            Expr::Atom(atom) => Ok(aspect_value_source(self.eval_atom(atom, state)?)),
+            Expr::List(items) => {
+                let body = items
+                    .iter()
+                    .map(|item| self.eval_event_expr(item, state))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .join(" ");
+                Ok(format!("({body})"))
+            }
+        }
     }
 
     fn eval_call_contract(
@@ -744,6 +761,16 @@ fn aspect_key_part(value: AspectValue) -> Result<String, AspectEvalError> {
         AspectValue::Unit => Err(AspectEvalError::TypeMismatch(
             "state keys cannot contain Unit".into(),
         )),
+    }
+}
+
+fn aspect_value_source(value: AspectValue) -> String {
+    match value {
+        AspectValue::Unit => "Unit".into(),
+        AspectValue::Bool(true) => "True".into(),
+        AspectValue::Bool(false) => "False".into(),
+        AspectValue::Amount(value) => value.to_string(),
+        AspectValue::Atom(value) => value,
     }
 }
 
@@ -1035,6 +1062,9 @@ mod tests {
                     state: "balanceOf".into(),
                     key: vec!["Bob".into()],
                     value: AspectValue::Amount(25),
+                },
+                AspectHostOp::Emit {
+                    event: "(Transfer Alice Bob 25)".into(),
                 },
             ]
         );

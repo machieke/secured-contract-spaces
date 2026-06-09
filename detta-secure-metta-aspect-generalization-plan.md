@@ -1303,19 +1303,22 @@ Acceptance criteria:
 
 - [x] Implement static balance aspects.
 - [x] Implement transferable balance aspects.
-- [ ] Implement approval and delegated transfer aspects.
+- [x] Implement approval and delegated transfer aspects.
 - [ ] Implement permit approval aspect or a kernel adapter for permits.
-- [ ] Implement observable transfer/approval events.
-- [ ] Define `ERC20ConformantToken` bundle.
+- [x] Implement observable transfer/approval events.
+- [x] Define `ERC20ConformantToken` bundle.
 - [ ] Differential-test against native token.
 
 Progress note: the minimal standard-library transfer fixture is now executable.
-It uses keyed `balanceOf` state reads and writes, guarded by bundle-scoped
-aspect storage authorization, and a core differential test verifies the basic
-Alice-to-Bob transfer state transition against the native token baseline. The
-initial aspect balance is still test-seeded; generic deployment initializers,
-approval/allowance behavior, permits, event equivalence, and full ERC20 bundle
-coverage remain pending.
+It uses keyed `balanceOf` and `allowanceOf` state reads and writes, guarded by
+bundle-scoped aspect storage authorization, and a core differential test
+verifies transfer, approve, and transferFrom state transitions for the
+`ERC20ConformantToken` bundle against the native token baseline. Transfer and
+approval actions emit concrete aspect-contract event payloads through the
+guarded kernel event path. The initial aspect balance is still test-seeded;
+generic deployment initializers, permit support, native/aspect event-shape
+equivalence, and complete permit-inclusive differential coverage remain
+pending.
 
 Acceptance criteria:
 

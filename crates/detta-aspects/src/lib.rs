@@ -2121,7 +2121,7 @@ mod tests {
     #[test]
     fn parser_accepts_minimal_transfer_token_fixture() {
         let ast = parse_aspect_package(MINIMAL_TRANSFER_TOKEN_FIXTURE).unwrap();
-        assert_eq!(ast.declarations.len(), 39);
+        assert_eq!(ast.declarations.len(), 79);
 
         let canonical = canonical_aspect_source(&ast);
         assert!(canonical.contains("(bundle MinimalTransferToken)"));
@@ -2202,9 +2202,9 @@ mod tests {
     fn verifier_accepts_minimal_transfer_token_fixture() {
         let (canonical, ir, verified) =
             parse_verify_module(MINIMAL_TRANSFER_TOKEN_FIXTURE).unwrap();
-        assert_eq!(ir.projections.len(), 1);
-        assert_eq!(ir.abi.len(), 1);
-        assert_eq!(ir.policies.len(), 1);
+        assert_eq!(ir.projections.len(), 6);
+        assert_eq!(ir.abi.len(), 6);
+        assert_eq!(ir.policies.len(), 6);
 
         let closure = verified
             .bundle_aspect_closures
@@ -2214,6 +2214,13 @@ mod tests {
         assert!(closure.contains("StaticBalanceAspect"));
         assert!(closure.contains("TransferableBalanceAspect"));
         assert!(closure.contains("SelfTransferAspect"));
+        assert!(closure.contains("ApprovalAspect"));
+        assert!(closure.contains("DelegatedTransferAspect"));
+        let erc20_closure = verified
+            .bundle_aspect_closures
+            .get("ERC20ConformantToken")
+            .unwrap();
+        assert_eq!(closure, erc20_closure);
 
         let artifact = module_artifact("MinimalTransferToken", canonical.clone(), &verified);
         assert_eq!(artifact.source_root, ir.source_root);

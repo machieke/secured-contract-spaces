@@ -7469,13 +7469,13 @@ mod tests {
 
         let mut aspect_state = DeTTaState::new("detta-local");
         let module = AspectModuleRecord::from_verified_source(
-            "MinimalTransferToken",
+            "ERC20ConformantToken",
             MINIMAL_TRANSFER_TOKEN_FIXTURE,
         )
         .unwrap();
         let module_hash = aspect_state.register_aspect_module(module).unwrap();
         aspect_state
-            .deploy_aspect_contract("AspectToken", module_hash, "MinimalTransferToken")
+            .deploy_aspect_contract("AspectToken", module_hash, "ERC20ConformantToken")
             .unwrap();
         aspect_state.storage.insert(
             StateKey::AspectState {
@@ -7539,6 +7539,119 @@ mod tests {
                 key: vec!["Bob".into()],
             }),
             Some(&StateValue::UInt(25))
+        );
+
+        let native_approve = native_state.apply_transaction(tx_to(
+            "NativeToken",
+            "tx-native-approve",
+            "Alice",
+            2,
+            Method::Approve,
+            vec![principal("Carol"), asset("USDC"), amount(10)],
+        ));
+        let aspect_approve = aspect_state.apply_transaction(tx_to(
+            "AspectToken",
+            "tx-aspect-approve",
+            "Alice",
+            2,
+            Method::Other("ERC20-approve".into()),
+            vec![principal("Carol"), amount(10)],
+        ));
+
+        assert_eq!(native_approve.status, TxStatus::Committed);
+        assert_eq!(aspect_approve.status, TxStatus::Committed);
+        assert_eq!(
+            aspect_state.storage.get(&StateKey::AspectState {
+                contract: "AspectToken".into(),
+                aspect: "ApprovalAspect".into(),
+                state: "allowanceOf".into(),
+                key: vec!["Alice".into(), "Carol".into()],
+            }),
+            Some(&StateValue::UInt(10))
+        );
+
+        let native_transfer_from = native_state.apply_transaction(tx_to(
+            "NativeToken",
+            "tx-native-transfer-from",
+            "Carol",
+            1,
+            Method::TransferFrom,
+            vec![
+                principal("Alice"),
+                principal("Dave"),
+                asset("USDC"),
+                amount(6),
+            ],
+        ));
+        let aspect_transfer_from = aspect_state.apply_transaction(tx_to(
+            "AspectToken",
+            "tx-aspect-transfer-from",
+            "Carol",
+            1,
+            Method::Other("ERC20-transferFrom".into()),
+            vec![principal("Alice"), principal("Dave"), amount(6)],
+        ));
+
+        assert_eq!(native_transfer_from.status, TxStatus::Committed);
+        assert_eq!(aspect_transfer_from.status, TxStatus::Committed);
+        assert_eq!(
+            native_state.storage.get(&StateKey::Balance {
+                contract: "NativeToken".into(),
+                owner: "Alice".into(),
+                asset: "USDC".into(),
+            }),
+            Some(&StateValue::UInt(69))
+        );
+        assert_eq!(
+            native_state.storage.get(&StateKey::Balance {
+                contract: "NativeToken".into(),
+                owner: "Dave".into(),
+                asset: "USDC".into(),
+            }),
+            Some(&StateValue::UInt(6))
+        );
+        assert_eq!(
+            aspect_state.storage.get(&StateKey::AspectState {
+                contract: "AspectToken".into(),
+                aspect: "StaticBalanceAspect".into(),
+                state: "balanceOf".into(),
+                key: vec!["Alice".into()],
+            }),
+            Some(&StateValue::UInt(69))
+        );
+        assert_eq!(
+            aspect_state.storage.get(&StateKey::AspectState {
+                contract: "AspectToken".into(),
+                aspect: "StaticBalanceAspect".into(),
+                state: "balanceOf".into(),
+                key: vec!["Dave".into()],
+            }),
+            Some(&StateValue::UInt(6))
+        );
+        assert_eq!(
+            aspect_state.storage.get(&StateKey::AspectState {
+                contract: "AspectToken".into(),
+                aspect: "ApprovalAspect".into(),
+                state: "allowanceOf".into(),
+                key: vec!["Alice".into(), "Carol".into()],
+            }),
+            Some(&StateValue::UInt(4))
+        );
+        let aspect_events = aspect_state
+            .events()
+            .iter()
+            .filter_map(|event| match &event.payload {
+                EventPayload::AspectEvent { event, .. } => Some(event.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            aspect_events,
+            vec![
+                "(Transfer Alice Bob 25)",
+                "(Approval Alice Carol 10)",
+                "(Transfer Alice Dave 6)",
+            ]
         );
     }
 
