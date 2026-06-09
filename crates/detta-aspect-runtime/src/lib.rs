@@ -43,6 +43,13 @@ pub enum AspectHostOp {
         method: String,
         args: Vec<AspectValue>,
     },
+    PermitVerify {
+        owner: String,
+        spender: String,
+        asset: String,
+        amount: u128,
+        certificate: String,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -293,6 +300,7 @@ impl<'a> AspectActionEvaluator<'a> {
                     "registry-consume!" => self.eval_registry_consume(items, state),
                     "emit!" => self.eval_emit(items, state),
                     "call-contract!" => self.eval_call_contract(items, state),
+                    "permit-verify!" => self.eval_permit_verify(items, state),
                     action_name => self.eval_action_call(action_name, items, state),
                 }
             }
@@ -651,7 +659,10 @@ impl<'a> AspectActionEvaluator<'a> {
             Expr::List(items) => {
                 let body = items
                     .iter()
-                    .map(|item| self.eval_event_expr(item, state))
+                    .map(|item| match item {
+                        Expr::Atom(_) => self.eval_event_expr(item, state),
+                        Expr::List(_) => self.eval_expr(item, state).map(aspect_value_source),
+                    })
                     .collect::<Result<Vec<_>, _>>()?
                     .join(" ");
                 Ok(format!("({body})"))
@@ -680,6 +691,32 @@ impl<'a> AspectActionEvaluator<'a> {
             contract: contract.into(),
             method: method.into(),
             args,
+        });
+        Ok(AspectValue::Unit)
+    }
+
+    fn eval_permit_verify(
+        &self,
+        items: &[Expr],
+        state: &mut AspectEvalState,
+    ) -> Result<AspectValue, AspectEvalError> {
+        if items.len() != 6 {
+            return Err(AspectEvalError::InvalidExpression(format!(
+                "expected permit-verify! with owner, spender, asset, amount, certificate, got {}",
+                items.len() - 1
+            )));
+        }
+        let owner = aspect_atom_value(self.eval_expr(&items[1], state)?)?;
+        let spender = aspect_atom_value(self.eval_expr(&items[2], state)?)?;
+        let asset = aspect_atom_value(self.eval_expr(&items[3], state)?)?;
+        let amount = self.eval_expr(&items[4], state)?.into_amount()?;
+        let certificate = aspect_atom_value(self.eval_expr(&items[5], state)?)?;
+        state.trace.push(AspectHostOp::PermitVerify {
+            owner,
+            spender,
+            asset,
+            amount,
+            certificate,
         });
         Ok(AspectValue::Unit)
     }
@@ -771,6 +808,15 @@ fn aspect_value_source(value: AspectValue) -> String {
         AspectValue::Bool(false) => "False".into(),
         AspectValue::Amount(value) => value.to_string(),
         AspectValue::Atom(value) => value,
+    }
+}
+
+fn aspect_atom_value(value: AspectValue) -> Result<String, AspectEvalError> {
+    match value {
+        AspectValue::Atom(value) => Ok(value),
+        value => Err(AspectEvalError::TypeMismatch(format!(
+            "expected atom, got {value:?}"
+        ))),
     }
 }
 
@@ -1067,6 +1113,44 @@ mod tests {
                     event: "(Transfer Alice Bob 25)".into(),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn aspect_event_arguments_evaluate_nested_expressions() {
+        let module = aspect_module(
+            "
+            (: Bool Type)
+            (: Amount Type)
+            (aspect EventAspect)
+            (action EventAspect emitNetTransfer)
+            (derived EventAspect emitNetTransfer
+              (= (emitNetTransfer $amount)
+                 (begin
+                   (emit! (Transfer Alice Bob (safe-sub $amount 1)))
+                   True)))
+            (bundle EventBundle)
+            (bundle-includes EventBundle EventAspect)
+            (projection EventBundle EmitNetTransfer
+              (= (API.emitNetTransfer $amount) (emitNetTransfer $amount)))
+            (method-abi EventBundle EmitNetTransfer (args (amount Amount)) Bool)
+            (method-policy EventBundle EmitNetTransfer TxSender (effects EmitEvent) (invariants))
+        ",
+        );
+
+        let report = AspectActionEvaluator::new(&module, 16)
+            .execute_action(
+                "EventAspect",
+                "emitNetTransfer",
+                vec![AspectValue::Amount(5)],
+            )
+            .unwrap();
+
+        assert_eq!(
+            report.trace,
+            vec![AspectHostOp::Emit {
+                event: "(Transfer Alice Bob 4)".into(),
+            }]
         );
     }
 

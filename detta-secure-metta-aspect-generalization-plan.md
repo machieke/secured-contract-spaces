@@ -1304,21 +1304,22 @@ Acceptance criteria:
 - [x] Implement static balance aspects.
 - [x] Implement transferable balance aspects.
 - [x] Implement approval and delegated transfer aspects.
-- [ ] Implement permit approval aspect or a kernel adapter for permits.
+- [x] Implement permit approval aspect or a kernel adapter for permits.
 - [x] Implement observable transfer/approval events.
 - [x] Define `ERC20ConformantToken` bundle.
-- [ ] Differential-test against native token.
+- [x] Differential-test against native token.
 
 Progress note: the minimal standard-library transfer fixture is now executable.
 It uses keyed `balanceOf` and `allowanceOf` state reads and writes, guarded by
 bundle-scoped aspect storage authorization, and a core differential test
-verifies transfer, approve, and transferFrom state transitions for the
-`ERC20ConformantToken` bundle against the native token baseline. Transfer and
-approval actions emit concrete aspect-contract event payloads through the
-guarded kernel event path. The initial aspect balance is still test-seeded;
-generic deployment initializers, permit support, native/aspect event-shape
-equivalence, and complete permit-inclusive differential coverage remain
-pending.
+verifies transfer, approve, transferFrom, permit, permit replay rejection, and
+permit-authorized transferFrom state transitions for the `ERC20ConformantToken`
+bundle against the native token baseline. Transfer and approval actions emit
+concrete aspect-contract event payloads through the guarded kernel event path.
+Factory aspect deployment can invoke a verified MeTTa initializer projection,
+and the differential ERC20 test now initializes supply through
+`ERC20-initialize` instead of direct storage seeding. Native/aspect event-shape
+equivalence remains pending.
 
 Acceptance criteria:
 
@@ -1330,13 +1331,35 @@ Acceptance criteria:
 
 ### Phase 7: Extended Token Aspects
 
-- [ ] Add fee transfer aspect.
-- [ ] Add pausable transfer aspect.
-- [ ] Add restricted transfer aspect.
-- [ ] Add locked transfer aspect.
-- [ ] Add mintable and burnable aspects.
-- [ ] Add capped mintable aspect.
-- [ ] Add observable mint/burn aspects.
+- [x] Add fee transfer aspect.
+- [x] Add pausable transfer aspect.
+- [x] Add restricted transfer aspect.
+- [x] Add locked transfer aspect.
+- [x] Add mintable and burnable aspects.
+- [x] Add capped mintable aspect.
+- [x] Add observable mint/burn aspects.
+
+Progress note: `FeeTransferAspect` is now part of the executable token
+standard-library fixture. A `FeeToken` bundle deploys through the aspect module
+factory, initializes supply through `ERC20-initialize`, configures fee basis
+points through `Fee-setConfig`, and executes `ERC20-transfer` through a
+MeTTa-defined atomic debit/credit action that emits concrete fee and net
+transfer events. The current fixture uses a standard-library `FeeTreasury`
+atom for the recipient while aspect persistent state is still numeric-only.
+`PausableTransferAspect` and the `PausableToken` bundle are also executable:
+the bundle initializes through the same MeTTa initializer, transfers while
+unpaused, stores pause state through `Pause-setPaused`, and rejects
+`ERC20-transfer` while paused with no balance mutation.
+`RestrictedTransferAspect` and the `RestrictedToken` bundle store per-address
+blocked flags through `Restriction-setBlocked`, allow unblocked transfers, and
+reject transfers involving blocked accounts before balance mutation.
+`LockedTransferAspect` and the `LockedToken` bundle store per-address unlock
+heights and reject transfers before the deterministic block-height context
+reaches the configured unlock height.
+`MintableBalanceAspect`, `BurnableBalanceAspect`, and `CappedMintableAspect`
+now maintain `totalSupply`, update balances with checked arithmetic, emit
+zero-address mint/burn transfer events, and reject cap overflow through a
+MeTTa-defined `Mint-mint` projection.
 
 Acceptance criteria:
 
@@ -1349,12 +1372,24 @@ Acceptance criteria:
 
 ### Phase 8: DeFi Composability Aspects
 
-- [ ] Add votable balance aspect.
-- [ ] Add snapshot balance aspect.
+- [x] Add votable balance aspect.
+- [x] Add snapshot balance aspect.
 - [ ] Add wrapped balance aspect.
-- [ ] Add vault share balance aspect.
+- [x] Add vault share balance aspect.
 - [ ] Add stake and rewarded stake balance aspects.
 - [ ] Define bridge mint/burn aspect with certificate adapter.
+
+Progress note: `VotableBalanceAspect` and `VotableToken` expose
+`Votes-getVotes` as a read-only projection over aspect-owned balances.
+`SnapshotBalanceAspect` and `SnapshotToken` can capture keyed historical
+balance and supply snapshots and read them back after later transfers.
+`VaultShareBalanceAspect` and `VaultShareToken` support checked
+deposit/redeem share math, return minted/redeemed amounts, maintain reserve,
+share supply, and share balances, and emit concrete vault accounting events.
+Wrapped tokens, staking rewards, and bridge mint/burn remain open because
+production versions need either cross-contract asset movement or
+kernel-verified certificate adapters that are still fail-closed for general
+aspect modules.
 
 Acceptance criteria:
 

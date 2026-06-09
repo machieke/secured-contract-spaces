@@ -248,6 +248,7 @@ pub enum EffectKind {
     ScheduleUpgrade,
     ExecuteUpgrade,
     CrossShardOutboxAppend,
+    UsePermitCertificate,
     Abort,
 }
 
@@ -1745,6 +1746,7 @@ fn parse_effect_kind(effect: &str) -> Result<EffectKind, AspectVerifyError> {
         "ScheduleUpgrade" => EffectKind::ScheduleUpgrade,
         "ExecuteUpgrade" => EffectKind::ExecuteUpgrade,
         "CrossShardOutboxAppend" => EffectKind::CrossShardOutboxAppend,
+        "UsePermitCertificate" => EffectKind::UsePermitCertificate,
         "Abort" => EffectKind::Abort,
         _ => return Err(AspectVerifyError::UnsupportedEffect(effect.into())),
     })
@@ -2005,6 +2007,9 @@ fn infer_expr_effects(
         "cross-shard-outbox-append!" => {
             effects.insert(EffectKind::CrossShardOutboxAppend);
         }
+        "permit-verify!" => {
+            effects.insert(EffectKind::UsePermitCertificate);
+        }
         "abort" => {
             effects.insert(EffectKind::Abort);
         }
@@ -2121,7 +2126,7 @@ mod tests {
     #[test]
     fn parser_accepts_minimal_transfer_token_fixture() {
         let ast = parse_aspect_package(MINIMAL_TRANSFER_TOKEN_FIXTURE).unwrap();
-        assert_eq!(ast.declarations.len(), 79);
+        assert_eq!(ast.declarations.len(), 332);
 
         let canonical = canonical_aspect_source(&ast);
         assert!(canonical.contains("(bundle MinimalTransferToken)"));
@@ -2202,9 +2207,9 @@ mod tests {
     fn verifier_accepts_minimal_transfer_token_fixture() {
         let (canonical, ir, verified) =
             parse_verify_module(MINIMAL_TRANSFER_TOKEN_FIXTURE).unwrap();
-        assert_eq!(ir.projections.len(), 6);
-        assert_eq!(ir.abi.len(), 6);
-        assert_eq!(ir.policies.len(), 6);
+        assert_eq!(ir.projections.len(), 39);
+        assert_eq!(ir.abi.len(), 39);
+        assert_eq!(ir.policies.len(), 39);
 
         let closure = verified
             .bundle_aspect_closures
@@ -2221,6 +2226,69 @@ mod tests {
             .get("ERC20ConformantToken")
             .unwrap();
         assert_eq!(closure, erc20_closure);
+        let fee_closure = verified.bundle_aspect_closures.get("FeeToken").unwrap();
+        assert!(fee_closure.contains("BalanceAspect"));
+        assert!(fee_closure.contains("StaticBalanceAspect"));
+        assert!(fee_closure.contains("TransferableBalanceAspect"));
+        assert!(fee_closure.contains("FeeTransferAspect"));
+        let pausable_closure = verified
+            .bundle_aspect_closures
+            .get("PausableToken")
+            .unwrap();
+        assert!(pausable_closure.contains("BalanceAspect"));
+        assert!(pausable_closure.contains("StaticBalanceAspect"));
+        assert!(pausable_closure.contains("TransferableBalanceAspect"));
+        assert!(pausable_closure.contains("PausableTransferAspect"));
+        let restricted_closure = verified
+            .bundle_aspect_closures
+            .get("RestrictedToken")
+            .unwrap();
+        assert!(restricted_closure.contains("BalanceAspect"));
+        assert!(restricted_closure.contains("StaticBalanceAspect"));
+        assert!(restricted_closure.contains("TransferableBalanceAspect"));
+        assert!(restricted_closure.contains("RestrictedTransferAspect"));
+        let locked_closure = verified.bundle_aspect_closures.get("LockedToken").unwrap();
+        assert!(locked_closure.contains("BalanceAspect"));
+        assert!(locked_closure.contains("StaticBalanceAspect"));
+        assert!(locked_closure.contains("TransferableBalanceAspect"));
+        assert!(locked_closure.contains("LockedTransferAspect"));
+        let mint_burn_closure = verified
+            .bundle_aspect_closures
+            .get("MintBurnToken")
+            .unwrap();
+        assert!(mint_burn_closure.contains("BalanceAspect"));
+        assert!(mint_burn_closure.contains("StaticBalanceAspect"));
+        assert!(mint_burn_closure.contains("TransferableBalanceAspect"));
+        assert!(mint_burn_closure.contains("MintableBalanceAspect"));
+        assert!(mint_burn_closure.contains("BurnableBalanceAspect"));
+        let capped_mint_closure = verified
+            .bundle_aspect_closures
+            .get("CappedMintToken")
+            .unwrap();
+        assert!(capped_mint_closure.contains("BalanceAspect"));
+        assert!(capped_mint_closure.contains("StaticBalanceAspect"));
+        assert!(capped_mint_closure.contains("TransferableBalanceAspect"));
+        assert!(capped_mint_closure.contains("MintableBalanceAspect"));
+        assert!(capped_mint_closure.contains("CappedMintableAspect"));
+        let votable_closure = verified.bundle_aspect_closures.get("VotableToken").unwrap();
+        assert!(votable_closure.contains("BalanceAspect"));
+        assert!(votable_closure.contains("StaticBalanceAspect"));
+        assert!(votable_closure.contains("TransferableBalanceAspect"));
+        assert!(votable_closure.contains("VotableBalanceAspect"));
+        let snapshot_closure = verified
+            .bundle_aspect_closures
+            .get("SnapshotToken")
+            .unwrap();
+        assert!(snapshot_closure.contains("BalanceAspect"));
+        assert!(snapshot_closure.contains("StaticBalanceAspect"));
+        assert!(snapshot_closure.contains("TransferableBalanceAspect"));
+        assert!(snapshot_closure.contains("SnapshotBalanceAspect"));
+        let vault_closure = verified
+            .bundle_aspect_closures
+            .get("VaultShareToken")
+            .unwrap();
+        assert!(vault_closure.contains("BalanceAspect"));
+        assert!(vault_closure.contains("VaultShareBalanceAspect"));
 
         let artifact = module_artifact("MinimalTransferToken", canonical.clone(), &verified);
         assert_eq!(artifact.source_root, ir.source_root);

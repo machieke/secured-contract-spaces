@@ -1122,6 +1122,7 @@ fn core_method_policy_from_aspect(
 ) -> Result<MethodPolicy, ExecutionError> {
     let authority = match policy.authority {
         detta_aspects::AuthorityKind::TxSender => PolicyAuthority::TxSender,
+        detta_aspects::AuthorityKind::PermitCertificate => PolicyAuthority::PermitCertificate,
         _ => return Err(ExecutionError::InvalidArguments),
     };
     let mut effects = BTreeSet::new();
@@ -1154,6 +1155,9 @@ fn core_method_policy_from_aspect(
             }
             detta_aspects::EffectKind::CrossShardOutboxAppend => {
                 effects.insert(PolicyEffect::CrossShardOutboxAppend);
+            }
+            detta_aspects::EffectKind::UsePermitCertificate => {
+                effects.insert(PolicyEffect::RegistryWrite);
             }
         }
     }
@@ -4274,7 +4278,39 @@ impl DeTTaState {
             | AspectHostOp::RegistrySet { .. }
             | AspectHostOp::RegistryConsume { .. }
             | AspectHostOp::CallContract { .. } => Err(ExecutionError::InvalidArguments),
+            AspectHostOp::PermitVerify {
+                owner,
+                spender,
+                asset,
+                amount,
+                certificate,
+            } => self.apply_aspect_permit_verify(tx, owner, spender, asset, amount, certificate),
         }
+    }
+
+    fn apply_aspect_permit_verify(
+        &mut self,
+        tx: &Transaction,
+        owner: Principal,
+        spender: Principal,
+        asset: AssetId,
+        amount: Amount,
+        certificate: String,
+    ) -> Result<(), ExecutionError> {
+        let nonce = verify_permit_certificate(
+            &certificate,
+            &self.chain_id,
+            &tx.target,
+            &owner,
+            &spender,
+            &asset,
+            amount,
+        )?;
+        if self.used_certificate_nonces.contains(&nonce) {
+            return Err(ExecutionError::CertificateReplay);
+        }
+        self.used_certificate_nonces.insert(nonce);
+        Ok(())
     }
 
     fn transfer(
@@ -5865,11 +5901,13 @@ impl DeTTaState {
         &mut self,
         tx: &Transaction,
     ) -> Result<ReturnValue, ExecutionError> {
-        let [contract, module_hash, bundle_id] = expect_args(&tx.args)?;
-        let contract = expect_text(contract)?;
-        let module_hash = expect_text(module_hash)?;
-        let bundle_id = expect_text(bundle_id)?;
-        self.deploy_aspect_contract(contract.clone(), module_hash, bundle_id)?;
+        if tx.args.len() < 3 {
+            return Err(ExecutionError::InvalidArguments);
+        }
+        let contract = expect_text(&tx.args[0])?;
+        let module_hash = expect_text(&tx.args[1])?;
+        let bundle_id = expect_text(&tx.args[2])?;
+        self.deploy_aspect_contract(contract.clone(), module_hash.clone(), bundle_id.clone())?;
         let code_hash = self
             .contracts
             .get(&contract)
@@ -5880,11 +5918,27 @@ impl DeTTaState {
             &tx.target,
             &tx.tx_hash,
             EventPayload::ContractDeployed {
-                contract,
+                contract: contract.clone(),
                 kind: "aspect_module".into(),
                 code_hash,
             },
         );
+        if let Some(initializer) = tx.args.get(3) {
+            let initializer = expect_text(initializer)?;
+            let init_tx = Transaction {
+                chain_id: tx.chain_id.clone(),
+                tx_hash: format!("{}:init", tx.tx_hash),
+                sender: tx.sender.clone(),
+                nonce: tx.nonce,
+                valid_until_height: tx.valid_until_height,
+                target: contract,
+                method: Method::Other(initializer),
+                args: tx.args[4..].to_vec(),
+                signature_ok: true,
+                budget: tx.budget,
+            };
+            self.execute_aspect_module_method(&init_tx, tx.sender.clone(), module_hash, bundle_id)?;
+        }
         Ok(ReturnValue::Unit)
     }
 
@@ -7468,23 +7522,46 @@ mod tests {
             .unwrap();
 
         let mut aspect_state = DeTTaState::new("detta-local");
+        aspect_state.deploy_factory("Factory").unwrap();
         let module = AspectModuleRecord::from_verified_source(
             "ERC20ConformantToken",
             MINIMAL_TRANSFER_TOKEN_FIXTURE,
         )
         .unwrap();
         let module_hash = aspect_state.register_aspect_module(module).unwrap();
-        aspect_state
-            .deploy_aspect_contract("AspectToken", module_hash, "ERC20ConformantToken")
-            .unwrap();
-        aspect_state.storage.insert(
-            StateKey::AspectState {
+        let deploy_aspect = aspect_state.apply_transaction(tx_to(
+            "Factory",
+            "tx-deploy-aspect-erc20",
+            "Issuer",
+            1,
+            Method::DeployAspectContract,
+            vec![
+                text("AspectToken"),
+                text(&module_hash),
+                text("ERC20ConformantToken"),
+                text("ERC20-initialize"),
+                principal("Alice"),
+                amount(100),
+            ],
+        ));
+        assert_eq!(deploy_aspect.status, TxStatus::Committed);
+        assert_eq!(
+            aspect_state.storage.get(&StateKey::AspectState {
                 contract: "AspectToken".into(),
                 aspect: "StaticBalanceAspect".into(),
                 state: "balanceOf".into(),
                 key: vec!["Alice".into()],
-            },
-            StateValue::UInt(100),
+            }),
+            Some(&StateValue::UInt(100))
+        );
+        assert_eq!(
+            aspect_state.storage.get(&StateKey::AspectState {
+                contract: "AspectToken".into(),
+                aspect: "StaticBalanceAspect".into(),
+                state: "initialized".into(),
+                key: Vec::new(),
+            }),
+            Some(&StateValue::UInt(1))
         );
 
         let native_receipt = native_state.apply_transaction(tx_to(
@@ -7637,6 +7714,150 @@ mod tests {
             }),
             Some(&StateValue::UInt(4))
         );
+
+        let native_permit_certificate =
+            "permit:detta-local:NativeToken:Alice:Eve:USDC:8:permit-native-erc20-1";
+        let aspect_permit_certificate =
+            "permit:detta-local:AspectToken:Alice:Eve:USDC:8:permit-aspect-erc20-1";
+        let native_permit = native_state.apply_transaction(tx_to(
+            "NativeToken",
+            "tx-native-permit",
+            "Relayer",
+            1,
+            Method::Permit,
+            vec![
+                principal("Alice"),
+                principal("Eve"),
+                asset("USDC"),
+                amount(8),
+                Argument::Certificate(native_permit_certificate.into()),
+            ],
+        ));
+        let aspect_permit = aspect_state.apply_transaction(tx_to(
+            "AspectToken",
+            "tx-aspect-permit",
+            "Relayer",
+            1,
+            Method::Other("ERC20-permit".into()),
+            vec![
+                principal("Alice"),
+                principal("Eve"),
+                asset("USDC"),
+                amount(8),
+                Argument::Certificate(aspect_permit_certificate.into()),
+            ],
+        ));
+        assert_eq!(native_permit.status, TxStatus::Committed);
+        assert_eq!(aspect_permit.status, TxStatus::Committed);
+        assert_eq!(
+            native_state.allowance_remaining("NativeToken", "Alice", "Eve", "USDC"),
+            Some(8)
+        );
+        assert_eq!(
+            aspect_state.storage.get(&StateKey::AspectState {
+                contract: "AspectToken".into(),
+                aspect: "ApprovalAspect".into(),
+                state: "allowanceOf".into(),
+                key: vec!["Alice".into(), "Eve".into()],
+            }),
+            Some(&StateValue::UInt(8))
+        );
+
+        let aspect_permit_replay = aspect_state.apply_transaction(tx_to(
+            "AspectToken",
+            "tx-aspect-permit-replay",
+            "Relayer",
+            2,
+            Method::Other("ERC20-permit".into()),
+            vec![
+                principal("Alice"),
+                principal("Eve"),
+                asset("USDC"),
+                amount(8),
+                Argument::Certificate(aspect_permit_certificate.into()),
+            ],
+        ));
+        assert_eq!(aspect_permit_replay.status, TxStatus::Reverted);
+        assert_eq!(
+            aspect_permit_replay.error,
+            Some(ExecutionError::CertificateReplay)
+        );
+        assert_eq!(
+            aspect_state.storage.get(&StateKey::AspectState {
+                contract: "AspectToken".into(),
+                aspect: "ApprovalAspect".into(),
+                state: "allowanceOf".into(),
+                key: vec!["Alice".into(), "Eve".into()],
+            }),
+            Some(&StateValue::UInt(8))
+        );
+
+        let native_permit_transfer_from = native_state.apply_transaction(tx_to(
+            "NativeToken",
+            "tx-native-permit-transfer-from",
+            "Eve",
+            1,
+            Method::TransferFrom,
+            vec![
+                principal("Alice"),
+                principal("Frank"),
+                asset("USDC"),
+                amount(3),
+            ],
+        ));
+        let aspect_permit_transfer_from = aspect_state.apply_transaction(tx_to(
+            "AspectToken",
+            "tx-aspect-permit-transfer-from",
+            "Eve",
+            1,
+            Method::Other("ERC20-transferFrom".into()),
+            vec![principal("Alice"), principal("Frank"), amount(3)],
+        ));
+        assert_eq!(native_permit_transfer_from.status, TxStatus::Committed);
+        assert_eq!(aspect_permit_transfer_from.status, TxStatus::Committed);
+        assert_eq!(
+            native_state.storage.get(&StateKey::Balance {
+                contract: "NativeToken".into(),
+                owner: "Alice".into(),
+                asset: "USDC".into(),
+            }),
+            Some(&StateValue::UInt(66))
+        );
+        assert_eq!(
+            native_state.storage.get(&StateKey::Balance {
+                contract: "NativeToken".into(),
+                owner: "Frank".into(),
+                asset: "USDC".into(),
+            }),
+            Some(&StateValue::UInt(3))
+        );
+        assert_eq!(
+            aspect_state.storage.get(&StateKey::AspectState {
+                contract: "AspectToken".into(),
+                aspect: "StaticBalanceAspect".into(),
+                state: "balanceOf".into(),
+                key: vec!["Alice".into()],
+            }),
+            Some(&StateValue::UInt(66))
+        );
+        assert_eq!(
+            aspect_state.storage.get(&StateKey::AspectState {
+                contract: "AspectToken".into(),
+                aspect: "StaticBalanceAspect".into(),
+                state: "balanceOf".into(),
+                key: vec!["Frank".into()],
+            }),
+            Some(&StateValue::UInt(3))
+        );
+        assert_eq!(
+            aspect_state.storage.get(&StateKey::AspectState {
+                contract: "AspectToken".into(),
+                aspect: "ApprovalAspect".into(),
+                state: "allowanceOf".into(),
+                key: vec!["Alice".into(), "Eve".into()],
+            }),
+            Some(&StateValue::UInt(5))
+        );
         let aspect_events = aspect_state
             .events()
             .iter()
@@ -7648,9 +7869,864 @@ mod tests {
         assert_eq!(
             aspect_events,
             vec![
+                "(Transfer ZeroAddress Alice 100)",
                 "(Transfer Alice Bob 25)",
                 "(Approval Alice Carol 10)",
                 "(Transfer Alice Dave 6)",
+                "(Approval Alice Eve 8)",
+                "(Transfer Alice Frank 3)",
+            ]
+        );
+    }
+
+    #[test]
+    fn fee_token_aspect_charges_configured_fee() {
+        let mut state = DeTTaState::new("detta-local");
+        state.deploy_factory("Factory").unwrap();
+        let module =
+            AspectModuleRecord::from_verified_source("FeeToken", MINIMAL_TRANSFER_TOKEN_FIXTURE)
+                .unwrap();
+        let module_hash = state.register_aspect_module(module).unwrap();
+
+        let deploy = state.apply_transaction(tx_to(
+            "Factory",
+            "tx-deploy-fee-token",
+            "Issuer",
+            1,
+            Method::DeployAspectContract,
+            vec![
+                text("FeeAspectToken"),
+                text(&module_hash),
+                text("FeeToken"),
+                text("ERC20-initialize"),
+                principal("Alice"),
+                amount(1_000),
+            ],
+        ));
+        assert_eq!(deploy.status, TxStatus::Committed);
+
+        let configure_fee = state.apply_transaction(tx_to(
+            "FeeAspectToken",
+            "tx-configure-fee-token",
+            "Issuer",
+            2,
+            Method::Other("Fee-setConfig".into()),
+            vec![amount(100)],
+        ));
+        assert_eq!(configure_fee.status, TxStatus::Committed);
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "FeeAspectToken".into(),
+                aspect: "FeeTransferAspect".into(),
+                state: "feeBps".into(),
+                key: Vec::new(),
+            }),
+            Some(&StateValue::UInt(100))
+        );
+
+        let transfer = state.apply_transaction(tx_to(
+            "FeeAspectToken",
+            "tx-fee-transfer",
+            "Alice",
+            1,
+            Method::Other("ERC20-transfer".into()),
+            vec![principal("Bob"), amount(200)],
+        ));
+        assert_eq!(transfer.status, TxStatus::Committed);
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "FeeAspectToken".into(),
+                aspect: "StaticBalanceAspect".into(),
+                state: "balanceOf".into(),
+                key: vec!["Alice".into()],
+            }),
+            Some(&StateValue::UInt(800))
+        );
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "FeeAspectToken".into(),
+                aspect: "StaticBalanceAspect".into(),
+                state: "balanceOf".into(),
+                key: vec!["Bob".into()],
+            }),
+            Some(&StateValue::UInt(198))
+        );
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "FeeAspectToken".into(),
+                aspect: "StaticBalanceAspect".into(),
+                state: "balanceOf".into(),
+                key: vec!["FeeTreasury".into()],
+            }),
+            Some(&StateValue::UInt(2))
+        );
+
+        let aspect_events = state
+            .events()
+            .iter()
+            .filter_map(|event| match &event.payload {
+                EventPayload::AspectEvent { event, .. } => Some(event.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            aspect_events,
+            vec![
+                "(Transfer ZeroAddress Alice 1000)",
+                "(Transfer Alice FeeTreasury 2)",
+                "(Transfer Alice Bob 198)",
+            ]
+        );
+    }
+
+    #[test]
+    fn pausable_token_aspect_rejects_transfer_while_paused() {
+        let mut state = DeTTaState::new("detta-local");
+        state.deploy_factory("Factory").unwrap();
+        let module = AspectModuleRecord::from_verified_source(
+            "PausableToken",
+            MINIMAL_TRANSFER_TOKEN_FIXTURE,
+        )
+        .unwrap();
+        let module_hash = state.register_aspect_module(module).unwrap();
+
+        let deploy = state.apply_transaction(tx_to(
+            "Factory",
+            "tx-deploy-pausable-token",
+            "Issuer",
+            1,
+            Method::DeployAspectContract,
+            vec![
+                text("PausableAspectToken"),
+                text(&module_hash),
+                text("PausableToken"),
+                text("ERC20-initialize"),
+                principal("Alice"),
+                amount(100),
+            ],
+        ));
+        assert_eq!(deploy.status, TxStatus::Committed);
+
+        let first_transfer = state.apply_transaction(tx_to(
+            "PausableAspectToken",
+            "tx-pausable-transfer-before-pause",
+            "Alice",
+            1,
+            Method::Other("ERC20-transfer".into()),
+            vec![principal("Bob"), amount(10)],
+        ));
+        assert_eq!(first_transfer.status, TxStatus::Committed);
+
+        let pause = state.apply_transaction(tx_to(
+            "PausableAspectToken",
+            "tx-pause-token",
+            "Issuer",
+            2,
+            Method::Other("Pause-setPaused".into()),
+            vec![amount(1)],
+        ));
+        assert_eq!(pause.status, TxStatus::Committed);
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "PausableAspectToken".into(),
+                aspect: "PausableTransferAspect".into(),
+                state: "paused".into(),
+                key: Vec::new(),
+            }),
+            Some(&StateValue::UInt(1))
+        );
+
+        let paused_transfer = state.apply_transaction(tx_to(
+            "PausableAspectToken",
+            "tx-pausable-transfer-while-paused",
+            "Alice",
+            2,
+            Method::Other("ERC20-transfer".into()),
+            vec![principal("Carol"), amount(5)],
+        ));
+        assert_eq!(paused_transfer.status, TxStatus::Reverted);
+        assert_eq!(
+            paused_transfer.error,
+            Some(ExecutionError::InvalidArguments)
+        );
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "PausableAspectToken".into(),
+                aspect: "StaticBalanceAspect".into(),
+                state: "balanceOf".into(),
+                key: vec!["Alice".into()],
+            }),
+            Some(&StateValue::UInt(90))
+        );
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "PausableAspectToken".into(),
+                aspect: "StaticBalanceAspect".into(),
+                state: "balanceOf".into(),
+                key: vec!["Bob".into()],
+            }),
+            Some(&StateValue::UInt(10))
+        );
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "PausableAspectToken".into(),
+                aspect: "StaticBalanceAspect".into(),
+                state: "balanceOf".into(),
+                key: vec!["Carol".into()],
+            }),
+            None
+        );
+    }
+
+    #[test]
+    fn restricted_token_aspect_rejects_blocked_accounts() {
+        let mut state = DeTTaState::new("detta-local");
+        state.deploy_factory("Factory").unwrap();
+        let module = AspectModuleRecord::from_verified_source(
+            "RestrictedToken",
+            MINIMAL_TRANSFER_TOKEN_FIXTURE,
+        )
+        .unwrap();
+        let module_hash = state.register_aspect_module(module).unwrap();
+
+        let deploy = state.apply_transaction(tx_to(
+            "Factory",
+            "tx-deploy-restricted-token",
+            "Issuer",
+            1,
+            Method::DeployAspectContract,
+            vec![
+                text("RestrictedAspectToken"),
+                text(&module_hash),
+                text("RestrictedToken"),
+                text("ERC20-initialize"),
+                principal("Alice"),
+                amount(100),
+            ],
+        ));
+        assert_eq!(deploy.status, TxStatus::Committed);
+
+        let first_transfer = state.apply_transaction(tx_to(
+            "RestrictedAspectToken",
+            "tx-restricted-transfer-before-block",
+            "Alice",
+            1,
+            Method::Other("ERC20-transfer".into()),
+            vec![principal("Bob"), amount(10)],
+        ));
+        assert_eq!(first_transfer.status, TxStatus::Committed);
+
+        let block_bob = state.apply_transaction(tx_to(
+            "RestrictedAspectToken",
+            "tx-block-bob",
+            "Issuer",
+            2,
+            Method::Other("Restriction-setBlocked".into()),
+            vec![principal("Bob"), amount(1)],
+        ));
+        assert_eq!(block_bob.status, TxStatus::Committed);
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "RestrictedAspectToken".into(),
+                aspect: "RestrictedTransferAspect".into(),
+                state: "blocked".into(),
+                key: vec!["Bob".into()],
+            }),
+            Some(&StateValue::UInt(1))
+        );
+
+        let blocked_transfer = state.apply_transaction(tx_to(
+            "RestrictedAspectToken",
+            "tx-restricted-transfer-to-blocked",
+            "Alice",
+            2,
+            Method::Other("ERC20-transfer".into()),
+            vec![principal("Bob"), amount(5)],
+        ));
+        assert_eq!(blocked_transfer.status, TxStatus::Reverted);
+        assert_eq!(
+            blocked_transfer.error,
+            Some(ExecutionError::InvalidArguments)
+        );
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "RestrictedAspectToken".into(),
+                aspect: "StaticBalanceAspect".into(),
+                state: "balanceOf".into(),
+                key: vec!["Alice".into()],
+            }),
+            Some(&StateValue::UInt(90))
+        );
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "RestrictedAspectToken".into(),
+                aspect: "StaticBalanceAspect".into(),
+                state: "balanceOf".into(),
+                key: vec!["Bob".into()],
+            }),
+            Some(&StateValue::UInt(10))
+        );
+    }
+
+    #[test]
+    fn mint_burn_token_aspect_updates_supply_and_balances() {
+        let mut state = DeTTaState::new("detta-local");
+        state.deploy_factory("Factory").unwrap();
+        let module = AspectModuleRecord::from_verified_source(
+            "MintBurnToken",
+            MINIMAL_TRANSFER_TOKEN_FIXTURE,
+        )
+        .unwrap();
+        let module_hash = state.register_aspect_module(module).unwrap();
+
+        let deploy = state.apply_transaction(tx_to(
+            "Factory",
+            "tx-deploy-mint-burn-token",
+            "Issuer",
+            1,
+            Method::DeployAspectContract,
+            vec![
+                text("MintBurnAspectToken"),
+                text(&module_hash),
+                text("MintBurnToken"),
+                text("ERC20-initialize"),
+                principal("Alice"),
+                amount(100),
+            ],
+        ));
+        assert_eq!(deploy.status, TxStatus::Committed);
+
+        let mint = state.apply_transaction(tx_to(
+            "MintBurnAspectToken",
+            "tx-mint-bob",
+            "Issuer",
+            2,
+            Method::Other("Mint-mint".into()),
+            vec![principal("Bob"), amount(25)],
+        ));
+        assert_eq!(mint.status, TxStatus::Committed);
+
+        let burn = state.apply_transaction(tx_to(
+            "MintBurnAspectToken",
+            "tx-burn-bob",
+            "Bob",
+            1,
+            Method::Other("Burn-burn".into()),
+            vec![amount(10)],
+        ));
+        assert_eq!(burn.status, TxStatus::Committed);
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "MintBurnAspectToken".into(),
+                aspect: "StaticBalanceAspect".into(),
+                state: "totalSupply".into(),
+                key: Vec::new(),
+            }),
+            Some(&StateValue::UInt(115))
+        );
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "MintBurnAspectToken".into(),
+                aspect: "StaticBalanceAspect".into(),
+                state: "balanceOf".into(),
+                key: vec!["Alice".into()],
+            }),
+            Some(&StateValue::UInt(100))
+        );
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "MintBurnAspectToken".into(),
+                aspect: "StaticBalanceAspect".into(),
+                state: "balanceOf".into(),
+                key: vec!["Bob".into()],
+            }),
+            Some(&StateValue::UInt(15))
+        );
+
+        let aspect_events = state
+            .events()
+            .iter()
+            .filter_map(|event| match &event.payload {
+                EventPayload::AspectEvent { event, .. } => Some(event.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            aspect_events,
+            vec![
+                "(Transfer ZeroAddress Alice 100)",
+                "(Transfer ZeroAddress Bob 25)",
+                "(Transfer Bob ZeroAddress 10)",
+            ]
+        );
+    }
+
+    #[test]
+    fn capped_mint_token_aspect_rejects_cap_overflow() {
+        let mut state = DeTTaState::new("detta-local");
+        state.deploy_factory("Factory").unwrap();
+        let module = AspectModuleRecord::from_verified_source(
+            "CappedMintToken",
+            MINIMAL_TRANSFER_TOKEN_FIXTURE,
+        )
+        .unwrap();
+        let module_hash = state.register_aspect_module(module).unwrap();
+
+        let deploy = state.apply_transaction(tx_to(
+            "Factory",
+            "tx-deploy-capped-mint-token",
+            "Issuer",
+            1,
+            Method::DeployAspectContract,
+            vec![
+                text("CappedMintAspectToken"),
+                text(&module_hash),
+                text("CappedMintToken"),
+                text("ERC20-initialize"),
+                principal("Alice"),
+                amount(100),
+            ],
+        ));
+        assert_eq!(deploy.status, TxStatus::Committed);
+
+        let set_cap = state.apply_transaction(tx_to(
+            "CappedMintAspectToken",
+            "tx-set-mint-cap",
+            "Issuer",
+            2,
+            Method::Other("Cap-setMintCap".into()),
+            vec![amount(120)],
+        ));
+        assert_eq!(set_cap.status, TxStatus::Committed);
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "CappedMintAspectToken".into(),
+                aspect: "CappedMintableAspect".into(),
+                state: "mintCap".into(),
+                key: Vec::new(),
+            }),
+            Some(&StateValue::UInt(120))
+        );
+
+        let mint_to_cap = state.apply_transaction(tx_to(
+            "CappedMintAspectToken",
+            "tx-mint-to-cap",
+            "Issuer",
+            3,
+            Method::Other("Mint-mint".into()),
+            vec![principal("Bob"), amount(20)],
+        ));
+        assert_eq!(mint_to_cap.status, TxStatus::Committed);
+
+        let overflow = state.apply_transaction(tx_to(
+            "CappedMintAspectToken",
+            "tx-mint-over-cap",
+            "Issuer",
+            4,
+            Method::Other("Mint-mint".into()),
+            vec![principal("Bob"), amount(1)],
+        ));
+        assert_eq!(overflow.status, TxStatus::Reverted);
+        assert_eq!(overflow.error, Some(ExecutionError::InvalidArguments));
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "CappedMintAspectToken".into(),
+                aspect: "StaticBalanceAspect".into(),
+                state: "totalSupply".into(),
+                key: Vec::new(),
+            }),
+            Some(&StateValue::UInt(120))
+        );
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "CappedMintAspectToken".into(),
+                aspect: "StaticBalanceAspect".into(),
+                state: "balanceOf".into(),
+                key: vec!["Bob".into()],
+            }),
+            Some(&StateValue::UInt(20))
+        );
+    }
+
+    #[test]
+    fn locked_token_aspect_rejects_transfer_before_unlock_height() {
+        let mut state = DeTTaState::new("detta-local");
+        state.deploy_factory("Factory").unwrap();
+        let module =
+            AspectModuleRecord::from_verified_source("LockedToken", MINIMAL_TRANSFER_TOKEN_FIXTURE)
+                .unwrap();
+        let module_hash = state.register_aspect_module(module).unwrap();
+
+        let deploy = state.apply_transaction(tx_to(
+            "Factory",
+            "tx-deploy-locked-token",
+            "Issuer",
+            1,
+            Method::DeployAspectContract,
+            vec![
+                text("LockedAspectToken"),
+                text(&module_hash),
+                text("LockedToken"),
+                text("ERC20-initialize"),
+                principal("Alice"),
+                amount(100),
+            ],
+        ));
+        assert_eq!(deploy.status, TxStatus::Committed);
+
+        let first_transfer = state.apply_transaction(tx_to(
+            "LockedAspectToken",
+            "tx-locked-transfer-before-lock",
+            "Alice",
+            1,
+            Method::Other("ERC20-transfer".into()),
+            vec![principal("Bob"), amount(10)],
+        ));
+        assert_eq!(first_transfer.status, TxStatus::Committed);
+
+        let lock_alice = state.apply_transaction(tx_to(
+            "LockedAspectToken",
+            "tx-lock-alice",
+            "Issuer",
+            2,
+            Method::Other("Lock-setUntil".into()),
+            vec![principal("Alice"), amount(10)],
+        ));
+        assert_eq!(lock_alice.status, TxStatus::Committed);
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "LockedAspectToken".into(),
+                aspect: "LockedTransferAspect".into(),
+                state: "lockedUntil".into(),
+                key: vec!["Alice".into()],
+            }),
+            Some(&StateValue::UInt(10))
+        );
+
+        let locked_transfer = state.apply_transaction(tx_to(
+            "LockedAspectToken",
+            "tx-locked-transfer-before-unlock",
+            "Alice",
+            2,
+            Method::Other("ERC20-transfer".into()),
+            vec![principal("Carol"), amount(5)],
+        ));
+        assert_eq!(locked_transfer.status, TxStatus::Reverted);
+        assert_eq!(
+            locked_transfer.error,
+            Some(ExecutionError::InvalidArguments)
+        );
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "LockedAspectToken".into(),
+                aspect: "StaticBalanceAspect".into(),
+                state: "balanceOf".into(),
+                key: vec!["Alice".into()],
+            }),
+            Some(&StateValue::UInt(90))
+        );
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "LockedAspectToken".into(),
+                aspect: "StaticBalanceAspect".into(),
+                state: "balanceOf".into(),
+                key: vec!["Bob".into()],
+            }),
+            Some(&StateValue::UInt(10))
+        );
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "LockedAspectToken".into(),
+                aspect: "StaticBalanceAspect".into(),
+                state: "balanceOf".into(),
+                key: vec!["Carol".into()],
+            }),
+            None
+        );
+    }
+
+    #[test]
+    fn votable_token_aspect_reads_voting_power_from_balances() {
+        let mut state = DeTTaState::new("detta-local");
+        state.deploy_factory("Factory").unwrap();
+        let module = AspectModuleRecord::from_verified_source(
+            "VotableToken",
+            MINIMAL_TRANSFER_TOKEN_FIXTURE,
+        )
+        .unwrap();
+        let module_hash = state.register_aspect_module(module).unwrap();
+
+        let deploy = state.apply_transaction(tx_to(
+            "Factory",
+            "tx-deploy-votable-token",
+            "Issuer",
+            1,
+            Method::DeployAspectContract,
+            vec![
+                text("VotableAspectToken"),
+                text(&module_hash),
+                text("VotableToken"),
+                text("ERC20-initialize"),
+                principal("Alice"),
+                amount(100),
+            ],
+        ));
+        assert_eq!(deploy.status, TxStatus::Committed);
+
+        let alice_votes_before = state.apply_transaction(tx_to(
+            "VotableAspectToken",
+            "tx-votes-alice-before",
+            "Reader",
+            1,
+            Method::Other("Votes-getVotes".into()),
+            vec![principal("Alice")],
+        ));
+        assert_eq!(alice_votes_before.status, TxStatus::Committed);
+        assert_eq!(
+            alice_votes_before.return_value,
+            Some(ReturnValue::UInt(100))
+        );
+
+        let transfer = state.apply_transaction(tx_to(
+            "VotableAspectToken",
+            "tx-votable-transfer",
+            "Alice",
+            1,
+            Method::Other("ERC20-transfer".into()),
+            vec![principal("Bob"), amount(25)],
+        ));
+        assert_eq!(transfer.status, TxStatus::Committed);
+
+        let alice_votes_after = state.apply_transaction(tx_to(
+            "VotableAspectToken",
+            "tx-votes-alice-after",
+            "Reader",
+            2,
+            Method::Other("Votes-getVotes".into()),
+            vec![principal("Alice")],
+        ));
+        let bob_votes_after = state.apply_transaction(tx_to(
+            "VotableAspectToken",
+            "tx-votes-bob-after",
+            "Reader",
+            3,
+            Method::Other("Votes-getVotes".into()),
+            vec![principal("Bob")],
+        ));
+        assert_eq!(alice_votes_after.status, TxStatus::Committed);
+        assert_eq!(bob_votes_after.status, TxStatus::Committed);
+        assert_eq!(alice_votes_after.return_value, Some(ReturnValue::UInt(75)));
+        assert_eq!(bob_votes_after.return_value, Some(ReturnValue::UInt(25)));
+    }
+
+    #[test]
+    fn snapshot_token_aspect_preserves_historical_balance_and_supply() {
+        let mut state = DeTTaState::new("detta-local");
+        state.deploy_factory("Factory").unwrap();
+        let module = AspectModuleRecord::from_verified_source(
+            "SnapshotToken",
+            MINIMAL_TRANSFER_TOKEN_FIXTURE,
+        )
+        .unwrap();
+        let module_hash = state.register_aspect_module(module).unwrap();
+
+        let deploy = state.apply_transaction(tx_to(
+            "Factory",
+            "tx-deploy-snapshot-token",
+            "Issuer",
+            1,
+            Method::DeployAspectContract,
+            vec![
+                text("SnapshotAspectToken"),
+                text(&module_hash),
+                text("SnapshotToken"),
+                text("ERC20-initialize"),
+                principal("Alice"),
+                amount(100),
+            ],
+        ));
+        assert_eq!(deploy.status, TxStatus::Committed);
+
+        let capture_alice = state.apply_transaction(tx_to(
+            "SnapshotAspectToken",
+            "tx-capture-alice-snapshot",
+            "Keeper",
+            1,
+            Method::Other("Snapshot-capture".into()),
+            vec![principal("Alice"), amount(1)],
+        ));
+        assert_eq!(capture_alice.status, TxStatus::Committed);
+
+        let transfer = state.apply_transaction(tx_to(
+            "SnapshotAspectToken",
+            "tx-snapshot-transfer",
+            "Alice",
+            1,
+            Method::Other("ERC20-transfer".into()),
+            vec![principal("Bob"), amount(40)],
+        ));
+        assert_eq!(transfer.status, TxStatus::Committed);
+
+        let alice_snapshot = state.apply_transaction(tx_to(
+            "SnapshotAspectToken",
+            "tx-read-alice-snapshot",
+            "Reader",
+            1,
+            Method::Other("Snapshot-balanceOf".into()),
+            vec![principal("Alice"), amount(1)],
+        ));
+        let supply_snapshot = state.apply_transaction(tx_to(
+            "SnapshotAspectToken",
+            "tx-read-supply-snapshot",
+            "Reader",
+            2,
+            Method::Other("Snapshot-totalSupply".into()),
+            vec![amount(1)],
+        ));
+        assert_eq!(alice_snapshot.status, TxStatus::Committed);
+        assert_eq!(supply_snapshot.status, TxStatus::Committed);
+        assert_eq!(alice_snapshot.return_value, Some(ReturnValue::UInt(100)));
+        assert_eq!(supply_snapshot.return_value, Some(ReturnValue::UInt(100)));
+
+        let capture_bob = state.apply_transaction(tx_to(
+            "SnapshotAspectToken",
+            "tx-capture-bob-snapshot",
+            "Keeper",
+            2,
+            Method::Other("Snapshot-capture".into()),
+            vec![principal("Bob"), amount(2)],
+        ));
+        assert_eq!(capture_bob.status, TxStatus::Committed);
+        let bob_snapshot = state.apply_transaction(tx_to(
+            "SnapshotAspectToken",
+            "tx-read-bob-snapshot",
+            "Reader",
+            3,
+            Method::Other("Snapshot-balanceOf".into()),
+            vec![principal("Bob"), amount(2)],
+        ));
+        assert_eq!(bob_snapshot.status, TxStatus::Committed);
+        assert_eq!(bob_snapshot.return_value, Some(ReturnValue::UInt(40)));
+    }
+
+    #[test]
+    fn vault_share_aspect_supports_checked_deposit_and_redeem_math() {
+        let mut state = DeTTaState::new("detta-local");
+        state.deploy_factory("Factory").unwrap();
+        let module = AspectModuleRecord::from_verified_source(
+            "VaultShareToken",
+            MINIMAL_TRANSFER_TOKEN_FIXTURE,
+        )
+        .unwrap();
+        let module_hash = state.register_aspect_module(module).unwrap();
+
+        let deploy = state.apply_transaction(tx_to(
+            "Factory",
+            "tx-deploy-vault-share-token",
+            "Issuer",
+            1,
+            Method::DeployAspectContract,
+            vec![
+                text("VaultShareAspectToken"),
+                text(&module_hash),
+                text("VaultShareToken"),
+            ],
+        ));
+        assert_eq!(deploy.status, TxStatus::Committed);
+
+        let alice_deposit = state.apply_transaction(tx_to(
+            "VaultShareAspectToken",
+            "tx-vault-alice-deposit",
+            "Alice",
+            1,
+            Method::Other("Vault-deposit".into()),
+            vec![amount(100)],
+        ));
+        let bob_deposit = state.apply_transaction(tx_to(
+            "VaultShareAspectToken",
+            "tx-vault-bob-deposit",
+            "Bob",
+            1,
+            Method::Other("Vault-deposit".into()),
+            vec![amount(50)],
+        ));
+        assert_eq!(alice_deposit.status, TxStatus::Committed);
+        assert_eq!(bob_deposit.status, TxStatus::Committed);
+        assert_eq!(alice_deposit.return_value, Some(ReturnValue::UInt(100)));
+        assert_eq!(bob_deposit.return_value, Some(ReturnValue::UInt(50)));
+
+        let alice_redeem = state.apply_transaction(tx_to(
+            "VaultShareAspectToken",
+            "tx-vault-alice-redeem",
+            "Alice",
+            2,
+            Method::Other("Vault-redeem".into()),
+            vec![amount(40)],
+        ));
+        assert_eq!(alice_redeem.status, TxStatus::Committed);
+        assert_eq!(alice_redeem.return_value, Some(ReturnValue::UInt(40)));
+
+        let bob_shares = state.apply_transaction(tx_to(
+            "VaultShareAspectToken",
+            "tx-vault-bob-shares",
+            "Reader",
+            1,
+            Method::Other("Vault-sharesOf".into()),
+            vec![principal("Bob")],
+        ));
+        assert_eq!(bob_shares.status, TxStatus::Committed);
+        assert_eq!(bob_shares.return_value, Some(ReturnValue::UInt(50)));
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "VaultShareAspectToken".into(),
+                aspect: "VaultShareBalanceAspect".into(),
+                state: "vaultAssetReserve".into(),
+                key: Vec::new(),
+            }),
+            Some(&StateValue::UInt(110))
+        );
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "VaultShareAspectToken".into(),
+                aspect: "VaultShareBalanceAspect".into(),
+                state: "vaultShareSupply".into(),
+                key: Vec::new(),
+            }),
+            Some(&StateValue::UInt(110))
+        );
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "VaultShareAspectToken".into(),
+                aspect: "VaultShareBalanceAspect".into(),
+                state: "vaultShareBalanceOf".into(),
+                key: vec!["Alice".into()],
+            }),
+            Some(&StateValue::UInt(60))
+        );
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "VaultShareAspectToken".into(),
+                aspect: "VaultShareBalanceAspect".into(),
+                state: "vaultShareBalanceOf".into(),
+                key: vec!["Bob".into()],
+            }),
+            Some(&StateValue::UInt(50))
+        );
+
+        let aspect_events = state
+            .events()
+            .iter()
+            .filter_map(|event| match &event.payload {
+                EventPayload::AspectEvent { event, .. } => Some(event.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            aspect_events,
+            vec![
+                "(VaultDeposit Alice 100 100)",
+                "(VaultDeposit Bob 50 50)",
+                "(VaultRedeem Alice 40 40)",
             ]
         );
     }
