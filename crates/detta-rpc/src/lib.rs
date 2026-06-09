@@ -274,6 +274,9 @@ pub enum RpcRequest {
     GetAspectModuleProof {
         module_hash: String,
     },
+    GetAspectModuleArtifacts {
+        module_hash: String,
+    },
     GetAspectModules,
     GetScheduledUpgrades,
     GetScheduledPolicyUpdates,
@@ -336,6 +339,64 @@ pub struct PersistentNodeSnapshotRoots {
 pub struct RequiredSnapshotMetadataRootsReport {
     pub roots: BTreeMap<String, String>,
     pub root: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AspectModuleArtifactReport {
+    pub module_hash: String,
+    pub module_id: String,
+    pub taxonomy_version: String,
+    pub source_root: String,
+    pub ir_root: String,
+    pub abi_root: String,
+    pub policy_root: String,
+    pub storage_schema_root: String,
+    pub registry_schema_root: String,
+    pub invariant_root: String,
+    pub has_canonical_source: bool,
+    pub has_ir: bool,
+    pub bundle_ids: Vec<String>,
+    pub abi: BTreeMap<String, detta_aspects::MethodAbiDef>,
+    pub policies: BTreeMap<String, detta_aspects::MethodPolicyIr>,
+    pub storage_schema: BTreeMap<String, detta_aspects::StateSchema>,
+    pub registry_schema: BTreeMap<String, detta_aspects::RegistrySchema>,
+    pub invariants: BTreeMap<String, detta_aspects::InvariantDef>,
+}
+
+impl AspectModuleArtifactReport {
+    fn from_record(module: &AspectModuleRecord) -> Self {
+        let mut report = Self {
+            module_hash: module.module_hash.clone(),
+            module_id: module.module_id.clone(),
+            taxonomy_version: module.taxonomy_version.clone(),
+            source_root: module.source_root.clone(),
+            ir_root: module.ir_root.clone(),
+            abi_root: module.abi_root.clone(),
+            policy_root: module.policy_root.clone(),
+            storage_schema_root: module.storage_schema_root.clone(),
+            registry_schema_root: module.registry_schema_root.clone(),
+            invariant_root: module.invariant_root.clone(),
+            has_canonical_source: module.canonical_source.is_some(),
+            has_ir: module.ir.is_some(),
+            bundle_ids: Vec::new(),
+            abi: BTreeMap::new(),
+            policies: BTreeMap::new(),
+            storage_schema: BTreeMap::new(),
+            registry_schema: BTreeMap::new(),
+            invariants: BTreeMap::new(),
+        };
+
+        if let Some(ir) = &module.ir {
+            report.bundle_ids = ir.bundles.keys().cloned().collect();
+            report.abi = ir.abi.clone();
+            report.policies = ir.policies.clone();
+            report.storage_schema = ir.storage_schema.clone();
+            report.registry_schema = ir.registry_schema.clone();
+            report.invariants = ir.invariants.clone();
+        }
+
+        report
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -575,6 +636,7 @@ pub enum RpcResult {
     Contract(Box<ContractRecord>),
     AspectModule(Box<AspectModuleRecord>),
     AspectModuleProof(Box<AspectModuleProof>),
+    AspectModuleArtifacts(Box<AspectModuleArtifactReport>),
     AspectModules(Vec<AspectModuleRecord>),
     ScheduledUpgrades(Vec<ScheduledUpgrade>),
     ScheduledPolicyUpdates(Vec<ScheduledPolicyUpdate>),
@@ -1136,6 +1198,14 @@ impl RpcService {
             .ok_or(RpcError::ProofNotFound)
     }
 
+    pub fn get_aspect_module_artifacts(
+        &self,
+        module_hash: &str,
+    ) -> Result<AspectModuleArtifactReport, RpcError> {
+        self.get_aspect_module(module_hash)
+            .map(|module| AspectModuleArtifactReport::from_record(&module))
+    }
+
     pub fn get_aspect_modules(&self) -> Vec<AspectModuleRecord> {
         self.node.state().aspect_module_records().cloned().collect()
     }
@@ -1304,6 +1374,10 @@ impl RpcService {
             RpcRequest::GetAspectModuleProof { module_hash } => self
                 .get_aspect_module_proof(&module_hash)
                 .map(|proof| RpcResult::AspectModuleProof(Box::new(proof)))
+                .into(),
+            RpcRequest::GetAspectModuleArtifacts { module_hash } => self
+                .get_aspect_module_artifacts(&module_hash)
+                .map(|report| RpcResult::AspectModuleArtifacts(Box::new(report)))
                 .into(),
             RpcRequest::GetAspectModules => {
                 RpcResponse::Ok(RpcResult::AspectModules(self.get_aspect_modules()))
@@ -1943,6 +2017,7 @@ mod tests {
             "get_contract",
             "get_aspect_module",
             "get_aspect_module_proof",
+            "get_aspect_module_artifacts",
             "get_aspect_modules",
             "get_scheduled_upgrades",
             "get_scheduled_policy_updates",
@@ -2906,6 +2981,21 @@ mod tests {
         };
         assert!(proof.verify());
         assert_eq!(proof.proof.root, rpc.node().state().aspect_module_root());
+        let artifact_response = rpc.handle_request(RpcRequest::GetAspectModuleArtifacts {
+            module_hash: module_hash.clone(),
+        });
+        let RpcResponse::Ok(RpcResult::AspectModuleArtifacts(report)) = artifact_response else {
+            panic!("expected aspect module artifact report");
+        };
+        assert_eq!(report.module_hash, module_hash);
+        assert_eq!(report.module_id, "MinimalTransferToken");
+        assert!(!report.has_canonical_source);
+        assert!(!report.has_ir);
+        assert!(report.abi.is_empty());
+        assert!(report.policies.is_empty());
+        assert!(report.storage_schema.is_empty());
+        assert!(report.registry_schema.is_empty());
+        assert!(report.invariants.is_empty());
         assert_eq!(
             rpc.handle_request(RpcRequest::GetAspectModules),
             RpcResponse::Ok(RpcResult::AspectModules(vec![module]))

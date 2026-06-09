@@ -133,9 +133,14 @@ SCS specification
 - `detta-secure-metta-aspect-generalization-plan.md`: implementation plan for
   replacing hard-coded DeFi behavior with secure, restricted MeTTa aspect
   modules aligned with the token aspect taxonomy.
+- `detta-aspect-language-subset.md`: accepted and forbidden forms for the
+  restricted MeTTa aspect language used by DeTTa programmable modules.
 - `detta-e2e-client-integration-test-plan.md`: E2E client integration plan.
 - `detta-client-token-liquidity-guide.md`: end-user client guide for deploying
   a token, creating a liquidity pool, adding liquidity, and selling tokens.
+- `detta-client-aspect-token-guide.md`: end-user client guide for submitting a
+  verified MeTTa aspect module, inspecting its artifacts, deploying an
+  aspect-backed token, and transferring it.
 - `detta-rpc-api.md`: human-readable DeTTa RPC API documentation.
 - `detta-rpc-openapi.json`: machine-readable RPC API schema.
 - `detta-restricted-evaluator-subset.md`: restricted evaluator subset.

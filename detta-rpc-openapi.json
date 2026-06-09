@@ -127,6 +127,7 @@
           "get_contract",
           "get_aspect_module",
           "get_aspect_module_proof",
+          "get_aspect_module_artifacts",
           "get_aspect_modules",
           "get_scheduled_upgrades",
           "get_scheduled_policy_updates",

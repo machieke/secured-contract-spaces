@@ -4,5 +4,11 @@
   "project": "DeTTa",
   "scope": "Production distributed DeFi Atomspace release candidate",
   "generated_at": "2026-06-09T00:00:00Z",
+  "categories": [
+    "aspect_parser",
+    "aspect_verifier",
+    "aspect_evaluator",
+    "kernel_host_calls"
+  ],
   "findings": []
 }

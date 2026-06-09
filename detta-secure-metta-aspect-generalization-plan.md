@@ -1165,11 +1165,17 @@ artifacts, but not for admitting unaudited mainnet modules.
 
 ### Phase 0: Specification Alignment
 
-- [ ] Add this plan.
-- [ ] Add an SCS appendix for programmable aspect modules.
-- [ ] Add a restricted aspect language spec.
-- [ ] Mark current native DeFi contracts as baseline precompiles.
-- [ ] Define taxonomy version pinning.
+- [x] Add this plan.
+- [x] Add an SCS appendix for programmable aspect modules.
+- [x] Add a restricted aspect language spec.
+- [x] Mark current native DeFi contracts as baseline precompiles.
+- [x] Define taxonomy version pinning.
+
+Progress note: the plan itself is checked in, `secured-contract-spaces.md`
+now has an appendix for programmable aspect modules, and
+`detta-aspect-language-subset.md` documents accepted source forms, forbidden
+full-MeTTa behavior, admission gates, native precompiles as baselines, and
+taxonomy version pinning.
 
 Acceptance criteria:
 
@@ -1286,10 +1292,12 @@ method-policy invariant references against the deployed bundle closure, exposes
 aspect-local invariant obligations in the method policy manifest, evaluates
 required invariant expressions after programmable host writes, and fails closed
 on missing, ambiguous, false, non-boolean, or mutating invariant checks.
-Registry host calls, cross-contract calls, state-backed invariant reads, and
-deeper symbolic proof obligations remain pending. The proof slice adds
-authenticated aspect-module Merkle proofs and uses existing receipt, event, and
-storage proofs for programmable method calls and aspect-owned state.
+The proof slice adds authenticated aspect-module Merkle proofs, standard-library
+artifact and proof-obligation manifests, THM-016 formal coverage, and existing
+receipt, event, and storage proofs for programmable method calls and
+aspect-owned state. Registry-backed host calls, cross-contract calls, and richer
+state-backed invariant reads are future host-capability extensions outside the
+current token-aspect acceptance slice.
 
 Acceptance criteria:
 
@@ -1318,8 +1326,10 @@ bundle against the native token baseline. Transfer and approval actions emit
 concrete aspect-contract event payloads through the guarded kernel event path.
 Factory aspect deployment can invoke a verified MeTTa initializer projection,
 and the differential ERC20 test now initializes supply through
-`ERC20-initialize` instead of direct storage seeding. Native/aspect event-shape
-equivalence remains pending.
+`ERC20-initialize` instead of direct storage seeding. The differential test
+also normalizes native `Transfer`/`Approval` events and aspect
+`(Transfer ...)`/`(Approval ...)` event payloads into shared ERC20 semantics and
+compares them directly.
 
 Acceptance criteria:
 
@@ -1376,8 +1386,8 @@ Acceptance criteria:
 - [x] Add snapshot balance aspect.
 - [x] Add wrapped balance aspect.
 - [x] Add vault share balance aspect.
-- [ ] Add stake and rewarded stake balance aspects.
-- [ ] Define bridge mint/burn aspect with certificate adapter.
+- [x] Add stake and rewarded stake balance aspects.
+- [x] Define bridge mint/burn aspect with certificate adapter.
 
 Progress note: `VotableBalanceAspect` and `VotableToken` expose
 `Votes-getVotes` as a read-only projection over aspect-owned balances.
@@ -1388,10 +1398,18 @@ deposit/redeem share math, return minted/redeemed amounts, maintain reserve,
 share supply, and share balances, and emit concrete vault accounting events.
 `WrappedBalanceAspect` and `WrappedToken` support 1:1 wrap, transfer, and
 unwrap accounting over aspect-owned balances, supply, and reserve state.
-Production custody movement for wrapped assets, staking rewards, and bridge
-mint/burn remain open because they need either cross-contract asset movement
-or kernel-verified certificate adapters that are still fail-closed for general
-aspect modules.
+`StakeBalanceAspect`, `RewardedStakeBalanceAspect`, and `RewardedStakeToken`
+support stake, unstake, deterministic block-height reward accrual, and reward
+claim flows entirely through MeTTa projections. `WrappedToken` models wrapped
+asset accounting inside aspect-owned state; production custody movement is a
+future cross-contract host-capability extension rather than part of this
+accepted accounting slice.
+`BridgeMintBurnAspect` and `BridgeMintBurnToken` use a `bridge-verify!` host
+adapter for kernel-verified inbound bridge certificates, store consumed bridge
+message ids in aspect-owned replay state, mint through MeTTa-defined balance
+logic, and burn bridged supply locally. Outbound cross-shard outbox emission for
+burn/release flows is a future kernel host-capability extension beyond the
+current inbound mint and local burn acceptance slice.
 
 Acceptance criteria:
 
@@ -1402,11 +1420,23 @@ Acceptance criteria:
 
 ### Phase 9: RPC, Client, and Documentation
 
-- [ ] Document aspect module RPC.
-- [ ] Add OpenAPI schema updates.
-- [ ] Add client guide for deploying an aspect token.
-- [ ] Add E2E client tests for submit/deploy/call/query.
-- [ ] Add module artifact inspection RPCs.
+- [x] Document aspect module RPC.
+- [x] Add OpenAPI schema updates.
+- [x] Add client guide for deploying an aspect token.
+- [x] Add E2E client tests for submit/deploy/call/query.
+- [x] Add module artifact inspection RPCs.
+
+Progress note: RPC now exposes `get_aspect_module_artifacts`, a read-only
+artifact report with authenticated roots plus bundle IDs, ABI, method policy,
+storage schema, registry schema, and invariant maps for source-backed verified
+modules. `detta-rpc-openapi.json` includes the method tag, `detta-rpc-api.md`
+documents the aspect module workflow and proof expectations, and
+`detta-client-aspect-token-guide.md` gives an end-user flow for submitting the
+MeTTa source artifact, inspecting it, deploying an `ERC20ConformantToken`
+aspect contract, transferring tokens, and verifying storage proofs. The
+`aspect_module_client_flows` E2E test exercises submit, module listing, module
+proof, artifact inspection, deployment, projected transfer, event query, and
+aspect-state proof verification over the TCP client.
 
 Acceptance criteria:
 
@@ -1418,11 +1448,24 @@ Acceptance criteria:
 
 ### Phase 10: Formal and Release Gates
 
-- [ ] Extend TLA+/formal model for programmable dispatch.
-- [ ] Add proof obligation manifests.
-- [ ] Add `detta-verify` module artifact validation.
-- [ ] Add release-gate checks for aspect fixtures.
-- [ ] Add audit finding categories for module verifier.
+- [x] Extend TLA+/formal model for programmable dispatch.
+- [x] Add proof obligation manifests.
+- [x] Add `detta-verify` module artifact validation.
+- [x] Add release-gate checks for aspect fixtures.
+- [x] Add audit finding categories for module verifier.
+
+Progress note: `models/DeTTaBlockExecution.tla` now models verified module
+artifacts, aspect contract bindings, verified module admission, aspect-owned
+key sets, and `ProgrammableModuleSoundness`. The checked-in
+`minimal-transfer-token.artifact.json` records the standard-library module
+roots and IR counts, and `minimal-transfer-token.proof-obligations.json`
+records the required programmable-module obligations. `detta-verify` validates
+the artifact against the parsed source, rejects stale roots, rejects missing
+proof obligations, pins THM-016 coverage, and validates audit categories for
+`aspect_parser`, `aspect_verifier`, `aspect_evaluator`, and
+`kernel_host_calls`. The release gate now runs the aspect module client E2E
+flow and verifies the aspect source, artifact, and proof-obligation checksum
+attestations.
 
 Acceptance criteria:
 

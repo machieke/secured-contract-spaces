@@ -1,0 +1,99 @@
+{
+  "schema": "detta.aspect-proof-obligations.v1",
+  "schema_version": 1,
+  "module_id": "ERC20ConformantToken",
+  "source_path": "models/aspects/stdlib/minimal-transfer-token.metta",
+  "artifact_path": "models/aspects/stdlib/minimal-transfer-token.artifact.json",
+  "source_root": "c2ea78f4c2e95cbdee3d4df5ff34ad9c0678a9351a22f1b05c45d5d58247449d",
+  "ir_root": "72803331373b5e78f3851d5978d47f6b531e31e91c2af397f458fc08366e1cff",
+  "obligations": [
+    {
+      "id": "APO-001",
+      "category": "canonical_source",
+      "statement": "All validators parse and canonicalize the source to one source root before module admission.",
+      "discharged_by": [
+        "detta_aspects::parse_verify_module",
+        "models/aspects/stdlib/minimal-transfer-token.artifact.json::source_root"
+      ]
+    },
+    {
+      "id": "APO-002",
+      "category": "typed_ir",
+      "statement": "The lowered IR has stable roots for ABI, policy, storage schema, registry schema, and invariants.",
+      "discharged_by": [
+        "detta_aspects::verify_module",
+        "models/aspects/stdlib/minimal-transfer-token.artifact.json"
+      ]
+    },
+    {
+      "id": "APO-003",
+      "category": "aspect_closure",
+      "statement": "Every deployed bundle includes closed aspect dependencies and rejects missing required facets.",
+      "discharged_by": [
+        "detta_aspects::verify_required_facets",
+        "detta_aspects::bundle_aspect_closures"
+      ]
+    },
+    {
+      "id": "APO-004",
+      "category": "conflict_exclusion",
+      "statement": "Conflicting aspects cannot be admitted into the same bundle closure.",
+      "discharged_by": [
+        "detta_aspects::verify_conflicts"
+      ]
+    },
+    {
+      "id": "APO-005",
+      "category": "storage_ownership",
+      "statement": "Each aspect-owned storage key has one owner and projected writes stay inside the bundle-owned storage closure.",
+      "discharged_by": [
+        "detta_aspects::verify_unique_ownership",
+        "detta_aspects::verify_effects_and_write_scopes",
+        "models/DeTTaBlockExecution.tla::AspectWriteScopeSafety"
+      ]
+    },
+    {
+      "id": "APO-006",
+      "category": "abi_policy_binding",
+      "statement": "Every projection exposed as a callable method has matching ABI and method policy entries.",
+      "discharged_by": [
+        "detta_aspects::verify_projection_abi_and_policy"
+      ]
+    },
+    {
+      "id": "APO-007",
+      "category": "declared_effects",
+      "statement": "The inferred action effects are a subset of the projection policy effects before deployment.",
+      "discharged_by": [
+        "detta_aspects::verify_effects_and_write_scopes"
+      ]
+    },
+    {
+      "id": "APO-008",
+      "category": "invariant_binding",
+      "statement": "Policy invariant references resolve to local invariant definitions in included aspects.",
+      "discharged_by": [
+        "detta_aspects::verify_projection_abi_and_policy",
+        "detta_core::tests::aspect_method_policy_invariants_commit_or_revert_programmable_calls"
+      ]
+    },
+    {
+      "id": "APO-009",
+      "category": "host_call_confinement",
+      "statement": "Aspect execution can only mutate state, emit events, or consume certificates through declared kernel host operations.",
+      "discharged_by": [
+        "detta_core::execute_aspect_module_method",
+        "models/DeTTaBlockExecution.tla::ProgrammableModuleSoundness"
+      ]
+    },
+    {
+      "id": "APO-010",
+      "category": "deterministic_dispatch",
+      "statement": "Callable projections execute from canonical IR and produce replay-stable receipts, events, and roots.",
+      "discharged_by": [
+        "detta_core::tests::aspect_minimal_transfer_matches_native_token_state_transition",
+        "crates/detta-e2e/tests/aspect_module_client_flows.rs"
+      ]
+    }
+  ]
+}

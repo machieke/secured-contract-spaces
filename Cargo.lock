@@ -230,6 +230,7 @@ dependencies = [
 name = "detta-rpc"
 version = "0.1.0"
 dependencies = [
+ "detta-aspects",
  "detta-consensus",
  "detta-core",
  "detta-evaluator",
@@ -256,6 +257,7 @@ dependencies = [
 name = "detta-verify"
 version = "0.1.0"
 dependencies = [
+ "detta-aspects",
  "detta-core",
  "serde",
  "serde_json",

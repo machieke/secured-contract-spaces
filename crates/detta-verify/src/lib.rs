@@ -242,6 +242,25 @@ pub const REQUIRED_PUBLIC_TESTNET_WORKFLOWS: [&str; 5] =
 pub const MAINNET_CANDIDATE_READINESS_SCHEMA: &str = "detta.mainnet-candidate-readiness.v1";
 pub const MAINNET_CANDIDATE_READINESS_SCHEMA_VERSION: u32 = 1;
 pub const MAINNET_CANDIDATE_READINESS_PROJECT: &str = "DeTTa";
+pub const ASPECT_STDLIB_SOURCE_PATH: &str = "models/aspects/stdlib/minimal-transfer-token.metta";
+pub const ASPECT_STDLIB_ARTIFACT_PATH: &str =
+    "models/aspects/stdlib/minimal-transfer-token.artifact.json";
+pub const ASPECT_STDLIB_PROOF_OBLIGATIONS_PATH: &str =
+    "models/aspects/stdlib/minimal-transfer-token.proof-obligations.json";
+pub const ASPECT_STDLIB_ARTIFACT_SCHEMA: &str = "detta.aspect-stdlib-artifact.v1";
+pub const ASPECT_STDLIB_ARTIFACT_SCHEMA_VERSION: u32 = 1;
+pub const ASPECT_STDLIB_PROOF_OBLIGATIONS_SCHEMA: &str = "detta.aspect-proof-obligations.v1";
+pub const ASPECT_STDLIB_PROOF_OBLIGATIONS_SCHEMA_VERSION: u32 = 1;
+pub const REQUIRED_AUDIT_CATEGORIES: [&str; 4] = [
+    "aspect_parser",
+    "aspect_verifier",
+    "aspect_evaluator",
+    "kernel_host_calls",
+];
+pub const REQUIRED_ASPECT_PROOF_OBLIGATION_IDS: [&str; 10] = [
+    "APO-001", "APO-002", "APO-003", "APO-004", "APO-005", "APO-006", "APO-007", "APO-008",
+    "APO-009", "APO-010",
+];
 pub const REQUIRED_MAINNET_CANDIDATE_GATES: [&str; 10] = [
     "production_acceptance",
     "public_testnet",
@@ -254,6 +273,389 @@ pub const REQUIRED_MAINNET_CANDIDATE_GATES: [&str; 10] = [
     "governance_bootstrap",
     "incident_response_drill",
 ];
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AspectStdlibArtifactManifest {
+    pub schema: String,
+    pub schema_version: u32,
+    pub module_id: String,
+    pub source_path: String,
+    pub taxonomy_version: String,
+    pub accepted_language: String,
+    pub verifier_version: String,
+    pub source_root: String,
+    pub ir_root: String,
+    pub abi_root: String,
+    pub policy_root: String,
+    pub storage_schema_root: String,
+    pub registry_schema_root: String,
+    pub invariant_root: String,
+    pub bundle_count: usize,
+    pub aspect_count: usize,
+    pub projection_count: usize,
+    pub abi_count: usize,
+    pub policy_count: usize,
+    pub storage_schema_count: usize,
+    pub registry_schema_count: usize,
+    pub invariant_count: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AspectStdlibArtifactError {
+    SchemaMismatch {
+        actual: String,
+    },
+    SchemaVersionMismatch {
+        actual: u32,
+    },
+    EmptyModuleId,
+    SourcePathMismatch {
+        actual: String,
+    },
+    MissingBundle {
+        module_id: String,
+    },
+    TaxonomyVersionMismatch {
+        expected: String,
+        actual: String,
+    },
+    AcceptedLanguageMismatch {
+        actual: String,
+    },
+    VerifierVersionMismatch {
+        actual: String,
+    },
+    RootMismatch {
+        field: &'static str,
+        expected: String,
+        actual: String,
+    },
+    CountMismatch {
+        field: &'static str,
+        expected: usize,
+        actual: usize,
+    },
+    SourceRejected {
+        error: String,
+    },
+}
+
+pub fn validate_aspect_stdlib_artifact(
+    source: &str,
+    artifact: &AspectStdlibArtifactManifest,
+) -> Vec<AspectStdlibArtifactError> {
+    let mut errors = Vec::new();
+    if artifact.schema != ASPECT_STDLIB_ARTIFACT_SCHEMA {
+        errors.push(AspectStdlibArtifactError::SchemaMismatch {
+            actual: artifact.schema.clone(),
+        });
+    }
+    if artifact.schema_version != ASPECT_STDLIB_ARTIFACT_SCHEMA_VERSION {
+        errors.push(AspectStdlibArtifactError::SchemaVersionMismatch {
+            actual: artifact.schema_version,
+        });
+    }
+    if artifact.module_id.trim().is_empty() {
+        errors.push(AspectStdlibArtifactError::EmptyModuleId);
+    }
+    if artifact.source_path != ASPECT_STDLIB_SOURCE_PATH {
+        errors.push(AspectStdlibArtifactError::SourcePathMismatch {
+            actual: artifact.source_path.clone(),
+        });
+    }
+
+    let (canonical_source, ir, verified) = match detta_aspects::parse_verify_module(source) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            errors.push(AspectStdlibArtifactError::SourceRejected {
+                error: format!("{error:?}"),
+            });
+            return errors;
+        }
+    };
+
+    if !ir.bundles.contains_key(&artifact.module_id) {
+        errors.push(AspectStdlibArtifactError::MissingBundle {
+            module_id: artifact.module_id.clone(),
+        });
+    }
+
+    let computed = detta_aspects::module_artifact(&artifact.module_id, canonical_source, &verified);
+    if artifact.taxonomy_version != computed.taxonomy_version {
+        errors.push(AspectStdlibArtifactError::TaxonomyVersionMismatch {
+            expected: computed.taxonomy_version,
+            actual: artifact.taxonomy_version.clone(),
+        });
+    }
+    if artifact.accepted_language != computed.accepted_language {
+        errors.push(AspectStdlibArtifactError::AcceptedLanguageMismatch {
+            actual: artifact.accepted_language.clone(),
+        });
+    }
+    if artifact.verifier_version != computed.verifier_version {
+        errors.push(AspectStdlibArtifactError::VerifierVersionMismatch {
+            actual: artifact.verifier_version.clone(),
+        });
+    }
+
+    push_root_mismatch(
+        &mut errors,
+        "source_root",
+        &computed.source_root,
+        &artifact.source_root,
+    );
+    push_root_mismatch(&mut errors, "ir_root", &computed.ir_root, &artifact.ir_root);
+    push_root_mismatch(
+        &mut errors,
+        "abi_root",
+        &computed.abi_root,
+        &artifact.abi_root,
+    );
+    push_root_mismatch(
+        &mut errors,
+        "policy_root",
+        &computed.policy_root,
+        &artifact.policy_root,
+    );
+    push_root_mismatch(
+        &mut errors,
+        "storage_schema_root",
+        &computed.storage_schema_root,
+        &artifact.storage_schema_root,
+    );
+    push_root_mismatch(
+        &mut errors,
+        "registry_schema_root",
+        &computed.registry_schema_root,
+        &artifact.registry_schema_root,
+    );
+    push_root_mismatch(
+        &mut errors,
+        "invariant_root",
+        &computed.invariant_root,
+        &artifact.invariant_root,
+    );
+
+    push_count_mismatch(
+        &mut errors,
+        "bundle_count",
+        ir.bundles.len(),
+        artifact.bundle_count,
+    );
+    push_count_mismatch(
+        &mut errors,
+        "aspect_count",
+        ir.aspects.len(),
+        artifact.aspect_count,
+    );
+    push_count_mismatch(
+        &mut errors,
+        "projection_count",
+        ir.projections.len(),
+        artifact.projection_count,
+    );
+    push_count_mismatch(&mut errors, "abi_count", ir.abi.len(), artifact.abi_count);
+    push_count_mismatch(
+        &mut errors,
+        "policy_count",
+        ir.policies.len(),
+        artifact.policy_count,
+    );
+    push_count_mismatch(
+        &mut errors,
+        "storage_schema_count",
+        ir.storage_schema.len(),
+        artifact.storage_schema_count,
+    );
+    push_count_mismatch(
+        &mut errors,
+        "registry_schema_count",
+        ir.registry_schema.len(),
+        artifact.registry_schema_count,
+    );
+    push_count_mismatch(
+        &mut errors,
+        "invariant_count",
+        ir.invariants.len(),
+        artifact.invariant_count,
+    );
+
+    errors
+}
+
+fn push_root_mismatch(
+    errors: &mut Vec<AspectStdlibArtifactError>,
+    field: &'static str,
+    expected: &str,
+    actual: &str,
+) {
+    if actual != expected {
+        errors.push(AspectStdlibArtifactError::RootMismatch {
+            field,
+            expected: expected.into(),
+            actual: actual.into(),
+        });
+    }
+}
+
+fn push_count_mismatch(
+    errors: &mut Vec<AspectStdlibArtifactError>,
+    field: &'static str,
+    expected: usize,
+    actual: usize,
+) {
+    if actual != expected {
+        errors.push(AspectStdlibArtifactError::CountMismatch {
+            field,
+            expected,
+            actual,
+        });
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AspectProofObligationManifest {
+    pub schema: String,
+    pub schema_version: u32,
+    pub module_id: String,
+    pub source_path: String,
+    pub artifact_path: String,
+    pub source_root: String,
+    pub ir_root: String,
+    pub obligations: Vec<AspectProofObligation>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AspectProofObligation {
+    pub id: String,
+    pub category: String,
+    pub statement: String,
+    pub discharged_by: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AspectProofObligationError {
+    SchemaMismatch {
+        actual: String,
+    },
+    SchemaVersionMismatch {
+        actual: u32,
+    },
+    ModuleIdMismatch {
+        expected: String,
+        actual: String,
+    },
+    SourcePathMismatch {
+        actual: String,
+    },
+    ArtifactPathMismatch {
+        actual: String,
+    },
+    RootMismatch {
+        field: &'static str,
+        expected: String,
+        actual: String,
+    },
+    EmptyObligationId,
+    DuplicateObligationId {
+        id: String,
+    },
+    EmptyObligationCategory {
+        id: String,
+    },
+    EmptyObligationStatement {
+        id: String,
+    },
+    EmptyObligationDischarge {
+        id: String,
+    },
+    MissingRequiredObligation {
+        id: String,
+    },
+}
+
+pub fn validate_aspect_proof_obligations(
+    manifest: &AspectProofObligationManifest,
+    artifact: &AspectStdlibArtifactManifest,
+) -> Vec<AspectProofObligationError> {
+    let mut errors = Vec::new();
+    if manifest.schema != ASPECT_STDLIB_PROOF_OBLIGATIONS_SCHEMA {
+        errors.push(AspectProofObligationError::SchemaMismatch {
+            actual: manifest.schema.clone(),
+        });
+    }
+    if manifest.schema_version != ASPECT_STDLIB_PROOF_OBLIGATIONS_SCHEMA_VERSION {
+        errors.push(AspectProofObligationError::SchemaVersionMismatch {
+            actual: manifest.schema_version,
+        });
+    }
+    if manifest.module_id != artifact.module_id {
+        errors.push(AspectProofObligationError::ModuleIdMismatch {
+            expected: artifact.module_id.clone(),
+            actual: manifest.module_id.clone(),
+        });
+    }
+    if manifest.source_path != ASPECT_STDLIB_SOURCE_PATH {
+        errors.push(AspectProofObligationError::SourcePathMismatch {
+            actual: manifest.source_path.clone(),
+        });
+    }
+    if manifest.artifact_path != ASPECT_STDLIB_ARTIFACT_PATH {
+        errors.push(AspectProofObligationError::ArtifactPathMismatch {
+            actual: manifest.artifact_path.clone(),
+        });
+    }
+    if manifest.source_root != artifact.source_root {
+        errors.push(AspectProofObligationError::RootMismatch {
+            field: "source_root",
+            expected: artifact.source_root.clone(),
+            actual: manifest.source_root.clone(),
+        });
+    }
+    if manifest.ir_root != artifact.ir_root {
+        errors.push(AspectProofObligationError::RootMismatch {
+            field: "ir_root",
+            expected: artifact.ir_root.clone(),
+            actual: manifest.ir_root.clone(),
+        });
+    }
+
+    let mut ids = BTreeSet::new();
+    for obligation in &manifest.obligations {
+        let id = obligation.id.trim();
+        if id.is_empty() {
+            errors.push(AspectProofObligationError::EmptyObligationId);
+            continue;
+        }
+        if !ids.insert(id.to_string()) {
+            errors.push(AspectProofObligationError::DuplicateObligationId { id: id.into() });
+        }
+        if obligation.category.trim().is_empty() {
+            errors.push(AspectProofObligationError::EmptyObligationCategory { id: id.into() });
+        }
+        if obligation.statement.trim().is_empty() {
+            errors.push(AspectProofObligationError::EmptyObligationStatement { id: id.into() });
+        }
+        if obligation
+            .discharged_by
+            .iter()
+            .any(|entry| entry.trim().is_empty())
+            || obligation.discharged_by.is_empty()
+        {
+            errors.push(AspectProofObligationError::EmptyObligationDischarge { id: id.into() });
+        }
+    }
+
+    for required in REQUIRED_ASPECT_PROOF_OBLIGATION_IDS {
+        if !ids.contains(required) {
+            errors.push(AspectProofObligationError::MissingRequiredObligation {
+                id: required.into(),
+            });
+        }
+    }
+
+    errors
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ProofArtifactManifest {
@@ -319,6 +721,7 @@ pub struct AuditFindingsManifest {
     pub project: String,
     pub scope: String,
     pub generated_at: String,
+    pub categories: Vec<String>,
     pub findings: Vec<AuditFinding>,
 }
 
@@ -335,6 +738,13 @@ pub enum AuditFindingManifestError {
     },
     EmptyScope,
     EmptyGeneratedAt,
+    EmptyCategory,
+    DuplicateCategory {
+        category: String,
+    },
+    MissingRequiredCategory {
+        category: String,
+    },
     EmptyFindingId,
     DuplicateFindingId {
         id: String,
@@ -384,6 +794,27 @@ pub fn validate_audit_findings_manifest(
     }
     if manifest.generated_at.trim().is_empty() {
         errors.push(AuditFindingManifestError::EmptyGeneratedAt);
+    }
+
+    let mut categories = BTreeSet::new();
+    for category in &manifest.categories {
+        let category = category.trim();
+        if category.is_empty() {
+            errors.push(AuditFindingManifestError::EmptyCategory);
+            continue;
+        }
+        if !categories.insert(category.to_string()) {
+            errors.push(AuditFindingManifestError::DuplicateCategory {
+                category: category.into(),
+            });
+        }
+    }
+    for required in REQUIRED_AUDIT_CATEGORIES {
+        if !categories.contains(required) {
+            errors.push(AuditFindingManifestError::MissingRequiredCategory {
+                category: required.into(),
+            });
+        }
     }
 
     let mut ids = BTreeSet::new();
@@ -1116,6 +1547,28 @@ pub fn scs_theorem_coverage() -> Vec<SafetyTheoremCoverage> {
                 },
             ],
         },
+        SafetyTheoremCoverage {
+            id: "THM-016",
+            name: "Programmable Module Soundness",
+            evidence: vec![
+                TheoremEvidence {
+                    kind: Verifier,
+                    reference: "detta_verify::validate_aspect_stdlib_artifact",
+                },
+                TheoremEvidence {
+                    kind: Verifier,
+                    reference: "detta_verify::validate_aspect_proof_obligations",
+                },
+                TheoremEvidence {
+                    kind: RuntimeTest,
+                    reference: "detta_e2e::tests::aspect_module_client_flows::client_submits_inspects_deploys_and_calls_aspect_token",
+                },
+                TheoremEvidence {
+                    kind: Model,
+                    reference: "models/DeTTaBlockExecution.tla::ProgrammableModuleSoundness",
+                },
+            ],
+        },
     ]
 }
 
@@ -1503,9 +1956,9 @@ mod tests {
         let coverage = scs_theorem_coverage();
         let ids: BTreeSet<_> = coverage.iter().map(|entry| entry.id).collect();
 
-        assert_eq!(coverage.len(), 15);
-        assert_eq!(ids.len(), 15);
-        for index in 1..=15 {
+        assert_eq!(coverage.len(), 16);
+        assert_eq!(ids.len(), 16);
+        for index in 1..=16 {
             let id = format!("THM-{index:03}");
             assert!(ids.contains(id.as_str()), "{id} has no coverage entry");
         }
@@ -1525,6 +1978,99 @@ mod tests {
                 .unwrap();
 
         assert_eq!(validate_audit_findings_manifest(&manifest), vec![]);
+    }
+
+    #[test]
+    fn checked_in_audit_findings_manifest_covers_aspect_security_categories() {
+        let manifest: AuditFindingsManifest =
+            serde_json::from_str(include_str!("../../../security/detta-audit-findings.json"))
+                .unwrap();
+        let categories: BTreeSet<_> = manifest.categories.iter().map(String::as_str).collect();
+
+        for required in REQUIRED_AUDIT_CATEGORIES {
+            assert!(
+                categories.contains(required),
+                "audit manifest must cover {required}"
+            );
+        }
+    }
+
+    #[test]
+    fn checked_in_aspect_stdlib_artifact_matches_source() {
+        let artifact: AspectStdlibArtifactManifest = serde_json::from_str(include_str!(
+            "../../../models/aspects/stdlib/minimal-transfer-token.artifact.json"
+        ))
+        .unwrap();
+
+        assert_eq!(
+            validate_aspect_stdlib_artifact(
+                include_str!("../../../models/aspects/stdlib/minimal-transfer-token.metta"),
+                &artifact,
+            ),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn aspect_stdlib_artifact_rejects_stale_roots() {
+        let mut artifact: AspectStdlibArtifactManifest = serde_json::from_str(include_str!(
+            "../../../models/aspects/stdlib/minimal-transfer-token.artifact.json"
+        ))
+        .unwrap();
+        artifact.source_root = "bad-root".into();
+
+        assert!(validate_aspect_stdlib_artifact(
+            include_str!("../../../models/aspects/stdlib/minimal-transfer-token.metta"),
+            &artifact,
+        )
+        .iter()
+        .any(|error| matches!(
+            error,
+            AspectStdlibArtifactError::RootMismatch {
+                field: "source_root",
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn checked_in_aspect_proof_obligations_are_complete() {
+        let artifact: AspectStdlibArtifactManifest = serde_json::from_str(include_str!(
+            "../../../models/aspects/stdlib/minimal-transfer-token.artifact.json"
+        ))
+        .unwrap();
+        let obligations: AspectProofObligationManifest = serde_json::from_str(include_str!(
+            "../../../models/aspects/stdlib/minimal-transfer-token.proof-obligations.json"
+        ))
+        .unwrap();
+
+        assert_eq!(
+            validate_aspect_proof_obligations(&obligations, &artifact),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn aspect_proof_obligations_reject_missing_required_entries() {
+        let artifact: AspectStdlibArtifactManifest = serde_json::from_str(include_str!(
+            "../../../models/aspects/stdlib/minimal-transfer-token.artifact.json"
+        ))
+        .unwrap();
+        let mut obligations: AspectProofObligationManifest = serde_json::from_str(include_str!(
+            "../../../models/aspects/stdlib/minimal-transfer-token.proof-obligations.json"
+        ))
+        .unwrap();
+        obligations
+            .obligations
+            .retain(|entry| entry.id != "APO-010");
+
+        assert!(
+            validate_aspect_proof_obligations(&obligations, &artifact).contains(
+                &AspectProofObligationError::MissingRequiredObligation {
+                    id: "APO-010".into(),
+                }
+            )
+        );
     }
 
     #[test]
@@ -1581,6 +2127,10 @@ mod tests {
             project: AUDIT_FINDINGS_PROJECT.into(),
             scope: "release candidate".into(),
             generated_at: "2026-06-09T00:00:00Z".into(),
+            categories: REQUIRED_AUDIT_CATEGORIES
+                .iter()
+                .map(|category| (*category).into())
+                .collect(),
             findings: vec![AuditFinding {
                 id: "AUD-001".into(),
                 title: "example unresolved finding".into(),
@@ -1623,6 +2173,10 @@ mod tests {
             project: AUDIT_FINDINGS_PROJECT.into(),
             scope: "release candidate".into(),
             generated_at: "2026-06-09T00:00:00Z".into(),
+            categories: REQUIRED_AUDIT_CATEGORIES
+                .iter()
+                .map(|category| (*category).into())
+                .collect(),
             findings: vec![AuditFinding {
                 id: "AUD-002".into(),
                 title: "critical issue".into(),
@@ -1702,6 +2256,10 @@ mod tests {
             project: AUDIT_FINDINGS_PROJECT.into(),
             scope: "release candidate".into(),
             generated_at: "2026-06-09T00:00:00Z".into(),
+            categories: REQUIRED_AUDIT_CATEGORIES
+                .iter()
+                .map(|category| (*category).into())
+                .collect(),
             findings: vec![AuditFinding {
                 id: "AUD-003".into(),
                 title: "open issue".into(),
@@ -1745,7 +2303,7 @@ mod tests {
             vec![
                 "THM-001", "THM-002", "THM-003", "THM-004", "THM-005", "THM-006", "THM-007",
                 "THM-008", "THM-009", "THM-010", "THM-011", "THM-012", "THM-013", "THM-014",
-                "THM-015",
+                "THM-015", "THM-016",
             ]
         );
     }
@@ -1794,6 +2352,7 @@ mod tests {
                 ("THM-013", "View Read-Only Safety"),
                 ("THM-014", "Schema Safety"),
                 ("THM-015", "Raw Primitive Exclusion"),
+                ("THM-016", "Programmable Module Soundness"),
             ])
         );
     }
@@ -1983,6 +2542,27 @@ mod tests {
                         ),
                     ],
                 ),
+                (
+                    "THM-016",
+                    vec![
+                        (
+                            Verifier,
+                            "detta_verify::validate_aspect_stdlib_artifact",
+                        ),
+                        (
+                            Verifier,
+                            "detta_verify::validate_aspect_proof_obligations",
+                        ),
+                        (
+                            RuntimeTest,
+                            "detta_e2e::tests::aspect_module_client_flows::client_submits_inspects_deploys_and_calls_aspect_token",
+                        ),
+                        (
+                            Model,
+                            "models/DeTTaBlockExecution.tla::ProgrammableModuleSoundness",
+                        ),
+                    ],
+                ),
             ])
         );
     }
@@ -2044,6 +2624,7 @@ mod tests {
     fn theorem_runtime_test_evidence_uses_expected_namespaces() {
         let allowed_prefixes = [
             "detta_core::tests::",
+            "detta_e2e::tests::",
             "detta_evaluator::tests::",
             "detta_verify::tests::",
         ];
@@ -2077,7 +2658,7 @@ mod tests {
 
         assert_eq!(
             runtime_test_crates,
-            BTreeSet::from(["detta_core", "detta_evaluator", "detta_verify"])
+            BTreeSet::from(["detta_core", "detta_e2e", "detta_evaluator", "detta_verify"])
         );
     }
 
@@ -2090,7 +2671,8 @@ mod tests {
                 .filter(|evidence| matches!(evidence.kind, TheoremEvidenceKind::Verifier))
             {
                 assert!(
-                    evidence.reference.starts_with("detta_verify::verify_"),
+                    evidence.reference.starts_with("detta_verify::verify_")
+                        || evidence.reference.starts_with("detta_verify::validate_"),
                     "{} verifier evidence uses an unexpected namespace: {}",
                     entry.id,
                     evidence.reference
@@ -2111,6 +2693,8 @@ mod tests {
         assert_eq!(
             verifier_functions,
             BTreeSet::from([
+                "detta_verify::validate_aspect_proof_obligations",
+                "detta_verify::validate_aspect_stdlib_artifact",
                 "detta_verify::verify_kernel_trace",
                 "detta_verify::verify_differential_replay",
             ])
@@ -2821,12 +3405,12 @@ mod tests {
             vec![
                 ModelArtifactRoot {
                     path: "models/DeTTaBlockExecution.tla",
-                    sha256: "ea4eb64dc59e46005a536bc4e6e133779158dec4afa731a5fe09712d906273dd"
+                    sha256: "1c44db0ee0a2dc0aaa2ba2bcb2dc6c1543abb40569488ffc52b15baf64c1b354"
                         .into(),
                 },
                 ModelArtifactRoot {
                     path: "models/DeTTaBlockExecution.cfg",
-                    sha256: "47d31b79a518f34913797b9732cccb966be47ddcfc05635e4b1ae3a8b0f4cab2"
+                    sha256: "03631e789e1f1141d390f0b12277a612f103493305e34c14f9f264765bdadeef"
                         .into(),
                 },
             ]
@@ -3831,6 +4415,7 @@ mod tests {
                 "AtomicRevert",
                 "ReplaySafety",
                 "WriteScopeSafety",
+                "ProgrammableModuleSoundness",
                 "TypeOK",
             ])
         );

@@ -249,6 +249,7 @@ pub enum EffectKind {
     ExecuteUpgrade,
     CrossShardOutboxAppend,
     UsePermitCertificate,
+    UseBridgeCertificate,
     Abort,
 }
 
@@ -1747,6 +1748,7 @@ fn parse_effect_kind(effect: &str) -> Result<EffectKind, AspectVerifyError> {
         "ExecuteUpgrade" => EffectKind::ExecuteUpgrade,
         "CrossShardOutboxAppend" => EffectKind::CrossShardOutboxAppend,
         "UsePermitCertificate" => EffectKind::UsePermitCertificate,
+        "UseBridgeCertificate" => EffectKind::UseBridgeCertificate,
         "Abort" => EffectKind::Abort,
         _ => return Err(AspectVerifyError::UnsupportedEffect(effect.into())),
     })
@@ -2010,6 +2012,9 @@ fn infer_expr_effects(
         "permit-verify!" => {
             effects.insert(EffectKind::UsePermitCertificate);
         }
+        "bridge-verify!" => {
+            effects.insert(EffectKind::UseBridgeCertificate);
+        }
         "abort" => {
             effects.insert(EffectKind::Abort);
         }
@@ -2126,7 +2131,7 @@ mod tests {
     #[test]
     fn parser_accepts_minimal_transfer_token_fixture() {
         let ast = parse_aspect_package(MINIMAL_TRANSFER_TOKEN_FIXTURE).unwrap();
-        assert_eq!(ast.declarations.len(), 356);
+        assert_eq!(ast.declarations.len(), 435);
 
         let canonical = canonical_aspect_source(&ast);
         assert!(canonical.contains("(bundle MinimalTransferToken)"));
@@ -2207,9 +2212,9 @@ mod tests {
     fn verifier_accepts_minimal_transfer_token_fixture() {
         let (canonical, ir, verified) =
             parse_verify_module(MINIMAL_TRANSFER_TOKEN_FIXTURE).unwrap();
-        assert_eq!(ir.projections.len(), 42);
-        assert_eq!(ir.abi.len(), 42);
-        assert_eq!(ir.policies.len(), 42);
+        assert_eq!(ir.projections.len(), 50);
+        assert_eq!(ir.abi.len(), 50);
+        assert_eq!(ir.policies.len(), 50);
 
         let closure = verified
             .bundle_aspect_closures
@@ -2294,6 +2299,23 @@ mod tests {
         assert!(wrapped_closure.contains("StaticBalanceAspect"));
         assert!(wrapped_closure.contains("TransferableBalanceAspect"));
         assert!(wrapped_closure.contains("WrappedBalanceAspect"));
+        let rewarded_stake_closure = verified
+            .bundle_aspect_closures
+            .get("RewardedStakeToken")
+            .unwrap();
+        assert!(rewarded_stake_closure.contains("BalanceAspect"));
+        assert!(rewarded_stake_closure.contains("StakeBalanceAspect"));
+        assert!(rewarded_stake_closure.contains("RewardedStakeBalanceAspect"));
+        let bridge_closure = verified
+            .bundle_aspect_closures
+            .get("BridgeMintBurnToken")
+            .unwrap();
+        assert!(bridge_closure.contains("BalanceAspect"));
+        assert!(bridge_closure.contains("StaticBalanceAspect"));
+        assert!(bridge_closure.contains("TransferableBalanceAspect"));
+        assert!(bridge_closure.contains("MintableBalanceAspect"));
+        assert!(bridge_closure.contains("BurnableBalanceAspect"));
+        assert!(bridge_closure.contains("BridgeMintBurnAspect"));
 
         let artifact = module_artifact("MinimalTransferToken", canonical.clone(), &verified);
         assert_eq!(artifact.source_root, ir.source_root);

@@ -31,6 +31,9 @@
 (: SnapshotBalanceAspect Aspect)
 (: VaultShareBalanceAspect Aspect)
 (: WrappedBalanceAspect Aspect)
+(: StakeBalanceAspect Aspect)
+(: RewardedStakeBalanceAspect Aspect)
+(: BridgeMintBurnAspect Aspect)
 (: MinimalTransferToken Bundle)
 (: ERC20ConformantToken Bundle)
 (: FeeToken Bundle)
@@ -43,6 +46,8 @@
 (: SnapshotToken Bundle)
 (: VaultShareToken Bundle)
 (: WrappedToken Bundle)
+(: RewardedStakeToken Bundle)
+(: BridgeMintBurnToken Bundle)
 
 (abstract-aspect BalanceAspect)
 (aspect StaticBalanceAspect)
@@ -61,6 +66,9 @@
 (aspect SnapshotBalanceAspect)
 (aspect VaultShareBalanceAspect)
 (aspect WrappedBalanceAspect)
+(aspect StakeBalanceAspect)
+(aspect RewardedStakeBalanceAspect)
+(aspect BridgeMintBurnAspect)
 
 (extends StaticBalanceAspect BalanceAspect)
 (extends TransferableBalanceAspect BalanceAspect)
@@ -77,6 +85,9 @@
 (extends SnapshotBalanceAspect BalanceAspect)
 (extends VaultShareBalanceAspect BalanceAspect)
 (extends WrappedBalanceAspect BalanceAspect)
+(extends StakeBalanceAspect BalanceAspect)
+(extends RewardedStakeBalanceAspect StakeBalanceAspect)
+(extends BridgeMintBurnAspect BalanceAspect)
 
 (owns BalanceAspect tokenDecimals UInt8)
 (owns StaticBalanceAspect initialized Amount)
@@ -94,6 +105,12 @@
 (owns VaultShareBalanceAspect vaultShareSupply Amount)
 (owns VaultShareBalanceAspect vaultShareBalanceOf (-> Address Amount))
 (owns WrappedBalanceAspect wrappedUnderlyingReserve Amount)
+(owns StakeBalanceAspect stakeBalanceOf (-> Address Amount))
+(owns StakeBalanceAspect totalStakedBalance Amount)
+(owns RewardedStakeBalanceAspect rewardPerBlock Amount)
+(owns RewardedStakeBalanceAspect pendingRewardOf (-> Address Amount))
+(owns RewardedStakeBalanceAspect lastRewardHeightOf (-> Address Amount))
+(owns BridgeMintBurnAspect bridgeMessageConsumed (-> Address Amount))
 
 (provides TransferableBalanceAspect Balance-Transfer)
 (provides ApprovalAspect Balance-Allowance)
@@ -108,6 +125,9 @@
 (provides SnapshotBalanceAspect Balance-Snapshot)
 (provides VaultShareBalanceAspect Vault-Share)
 (provides WrappedBalanceAspect Balance-Wrap)
+(provides StakeBalanceAspect Balance-Stake)
+(provides RewardedStakeBalanceAspect Balance-RewardedStake)
+(provides BridgeMintBurnAspect Bridge-MintBurn)
 (requires SelfTransferAspect Balance-Transfer)
 (requires DelegatedTransferAspect Balance-Transfer)
 (requires DelegatedTransferAspect Balance-Allowance)
@@ -116,6 +136,9 @@
 (requires RestrictedTransferAspect Balance-Transfer)
 (requires LockedTransferAspect Balance-Transfer)
 (requires CappedMintableAspect Balance-Mint)
+(requires RewardedStakeBalanceAspect Balance-Stake)
+(requires BridgeMintBurnAspect Balance-Mint)
+(requires BridgeMintBurnAspect Balance-Burn)
 
 (action StaticBalanceAspect initializeSupply)
 (action TransferableBalanceAspect transferBalance)
@@ -145,6 +168,16 @@
 (action VaultShareBalanceAspect readVaultShares)
 (action WrappedBalanceAspect wrapBalance)
 (action WrappedBalanceAspect unwrapBalance)
+(action StakeBalanceAspect stakeBalance)
+(action StakeBalanceAspect unstakeBalance)
+(action StakeBalanceAspect readStakeBalance)
+(action RewardedStakeBalanceAspect configureStakeReward)
+(action RewardedStakeBalanceAspect accrueStakeReward)
+(action RewardedStakeBalanceAspect stakeWithRewardAccrual)
+(action RewardedStakeBalanceAspect unstakeWithRewardAccrual)
+(action RewardedStakeBalanceAspect claimStakeReward)
+(action BridgeMintBurnAspect bridgeMintBalance)
+(action BridgeMintBurnAspect bridgeBurnBalance)
 
 (derived StaticBalanceAspect initializeSupply
   (= (initializeSupply $owner $amount)
@@ -420,6 +453,103 @@
        (emit! (Unwrap $account $amount))
        $amount)))
 
+(derived StakeBalanceAspect stakeBalance
+  (= (stakeBalance $account $amount)
+     (begin
+       (require (> $amount 0) ZERO_STAKE)
+       (state-set! stakeBalanceOf $account
+         (safe-add (state-get stakeBalanceOf $account) $amount))
+       (state-set! totalStakedBalance
+         (safe-add (state-get totalStakedBalance) $amount))
+       (emit! (Stake $account $amount))
+       True)))
+
+(derived StakeBalanceAspect unstakeBalance
+  (= (unstakeBalance $account $amount)
+     (begin
+       (require (> $amount 0) ZERO_UNSTAKE)
+       (require (>= (state-get stakeBalanceOf $account) $amount) INSUFFICIENT_STAKE)
+       (require (>= (state-get totalStakedBalance) $amount) INSUFFICIENT_TOTAL_STAKE)
+       (state-set! stakeBalanceOf $account
+         (safe-sub (state-get stakeBalanceOf $account) $amount))
+       (state-set! totalStakedBalance
+         (safe-sub (state-get totalStakedBalance) $amount))
+       (emit! (Unstake $account $amount))
+       True)))
+
+(derived StakeBalanceAspect readStakeBalance
+  (= (readStakeBalance $account)
+     (state-get stakeBalanceOf $account)))
+
+(derived RewardedStakeBalanceAspect configureStakeReward
+  (= (configureStakeReward $reward)
+     (begin
+       (state-set! rewardPerBlock $reward)
+       True)))
+
+(derived RewardedStakeBalanceAspect accrueStakeReward
+  (= (accrueStakeReward $account)
+     (begin
+       (require (>= block-height (state-get lastRewardHeightOf $account)) REWARD_TIME_REWIND)
+       (state-set! pendingRewardOf $account
+         (safe-add (state-get pendingRewardOf $account)
+           (safe-mul
+             (safe-mul
+               (safe-sub block-height (state-get lastRewardHeightOf $account))
+               (state-get stakeBalanceOf $account))
+             (state-get rewardPerBlock))))
+       (state-set! lastRewardHeightOf $account block-height)
+       True)))
+
+(derived RewardedStakeBalanceAspect stakeWithRewardAccrual
+  (= (stakeWithRewardAccrual $account $amount)
+     (begin
+       (accrueStakeReward $account)
+       (stakeBalance $account $amount)
+       True)))
+
+(derived RewardedStakeBalanceAspect unstakeWithRewardAccrual
+  (= (unstakeWithRewardAccrual $account $amount)
+     (begin
+       (accrueStakeReward $account)
+       (unstakeBalance $account $amount)
+       True)))
+
+(derived RewardedStakeBalanceAspect claimStakeReward
+  (= (claimStakeReward $account)
+     (begin
+       (require (>= block-height (state-get lastRewardHeightOf $account)) REWARD_TIME_REWIND)
+       (state-set! pendingRewardOf $account 0)
+       (state-set! lastRewardHeightOf $account block-height)
+       (emit! (RewardClaimed $account
+         (safe-add (state-get pendingRewardOf $account)
+           (safe-mul
+             (safe-mul
+               (safe-sub block-height (state-get lastRewardHeightOf $account))
+               (state-get stakeBalanceOf $account))
+             (state-get rewardPerBlock)))))
+       (safe-add (state-get pendingRewardOf $account)
+         (safe-mul
+           (safe-mul
+             (safe-sub block-height (state-get lastRewardHeightOf $account))
+            (state-get stakeBalanceOf $account))
+           (state-get rewardPerBlock))))))
+
+(derived BridgeMintBurnAspect bridgeMintBalance
+  (= (bridgeMintBalance $sourceChain $messageId $recipient $asset $amount $certificate)
+     (begin
+       (bridge-verify! $sourceChain $messageId $recipient $asset $amount $certificate)
+       (require (= (state-get bridgeMessageConsumed $messageId) 0) BRIDGE_MESSAGE_REPLAY)
+       (state-set! bridgeMessageConsumed $messageId 1)
+       (mintBalance $recipient $amount)
+       True)))
+
+(derived BridgeMintBurnAspect bridgeBurnBalance
+  (= (bridgeBurnBalance $account $amount)
+     (begin
+       (burnBalance $account $amount)
+       True)))
+
 (local-invariant TransferableBalanceAspect TBA-3
   True)
 
@@ -457,6 +587,15 @@
   True)
 
 (local-invariant WrappedBalanceAspect WRAP-1
+  True)
+
+(local-invariant StakeBalanceAspect STAKE-1
+  True)
+
+(local-invariant RewardedStakeBalanceAspect REWARD-1
+  True)
+
+(local-invariant BridgeMintBurnAspect BRIDGE-1
   True)
 
 (bundle MinimalTransferToken)
@@ -522,6 +661,17 @@
 (bundle-includes WrappedToken StaticBalanceAspect)
 (bundle-includes WrappedToken TransferableBalanceAspect)
 (bundle-includes WrappedToken WrappedBalanceAspect)
+
+(bundle RewardedStakeToken)
+(bundle-includes RewardedStakeToken StakeBalanceAspect)
+(bundle-includes RewardedStakeToken RewardedStakeBalanceAspect)
+
+(bundle BridgeMintBurnToken)
+(bundle-includes BridgeMintBurnToken StaticBalanceAspect)
+(bundle-includes BridgeMintBurnToken TransferableBalanceAspect)
+(bundle-includes BridgeMintBurnToken MintableBalanceAspect)
+(bundle-includes BridgeMintBurnToken BurnableBalanceAspect)
+(bundle-includes BridgeMintBurnToken BridgeMintBurnAspect)
 
 (projection MinimalTransferToken ERC20-transfer
   (= (ERC20.transfer $to $amount)
@@ -691,6 +841,38 @@
   (= (ERC20.transfer $to $amount)
      (transferBalance tx.sender $to $amount)))
 
+(projection RewardedStakeToken Staking-configureReward
+  (= (Staking.configureReward $reward)
+     (configureStakeReward $reward)))
+
+(projection RewardedStakeToken Staking-stake
+  (= (Staking.stake $amount)
+     (stakeWithRewardAccrual tx.sender $amount)))
+
+(projection RewardedStakeToken Staking-unstake
+  (= (Staking.unstake $amount)
+     (unstakeWithRewardAccrual tx.sender $amount)))
+
+(projection RewardedStakeToken Staking-claimReward
+  (= (Staking.claimReward)
+     (claimStakeReward tx.sender)))
+
+(projection RewardedStakeToken Staking-stakeOf
+  (= (Staking.stakeOf $account)
+     (readStakeBalance $account)))
+
+(projection BridgeMintBurnToken Bridge-mint
+  (= (Bridge.mint $sourceChain $messageId $recipient $asset $amount $certificate)
+     (bridgeMintBalance $sourceChain $messageId $recipient $asset $amount $certificate)))
+
+(projection BridgeMintBurnToken Bridge-burn
+  (= (Bridge.burn $amount)
+     (bridgeBurnBalance tx.sender $amount)))
+
+(projection BridgeMintBurnToken ERC20-transfer
+  (= (ERC20.transfer $to $amount)
+     (transferBalance tx.sender $to $amount)))
+
 (method-abi MinimalTransferToken ERC20-transfer
   (args (to Address) (amount Amount))
   Bool)
@@ -856,6 +1038,44 @@
   Amount)
 
 (method-abi WrappedToken ERC20-transfer
+  (args (to Address) (amount Amount))
+  Bool)
+
+(method-abi RewardedStakeToken Staking-configureReward
+  (args (reward Amount))
+  Bool)
+
+(method-abi RewardedStakeToken Staking-stake
+  (args (amount Amount))
+  Bool)
+
+(method-abi RewardedStakeToken Staking-unstake
+  (args (amount Amount))
+  Bool)
+
+(method-abi RewardedStakeToken Staking-claimReward
+  (args)
+  Amount)
+
+(method-abi RewardedStakeToken Staking-stakeOf
+  (args (account Address))
+  Amount)
+
+(method-abi BridgeMintBurnToken Bridge-mint
+  (args
+    (sourceChain Address)
+    (messageId Address)
+    (recipient Address)
+    (asset Asset)
+    (amount Amount)
+    (certificate Bytes))
+  Bool)
+
+(method-abi BridgeMintBurnToken Bridge-burn
+  (args (amount Amount))
+  Bool)
+
+(method-abi BridgeMintBurnToken ERC20-transfer
   (args (to Address) (amount Amount))
   Bool)
 
@@ -1068,3 +1288,43 @@
   TxSender
   (effects ReadState WriteState EmitEvent)
   (invariants TBA-3 WRAP-1))
+
+(method-policy RewardedStakeToken Staking-configureReward
+  TxSender
+  (effects WriteState)
+  (invariants REWARD-1))
+
+(method-policy RewardedStakeToken Staking-stake
+  TxSender
+  (effects ReadState WriteState EmitEvent)
+  (invariants STAKE-1 REWARD-1))
+
+(method-policy RewardedStakeToken Staking-unstake
+  TxSender
+  (effects ReadState WriteState EmitEvent)
+  (invariants STAKE-1 REWARD-1))
+
+(method-policy RewardedStakeToken Staking-claimReward
+  TxSender
+  (effects ReadState WriteState EmitEvent)
+  (invariants REWARD-1))
+
+(method-policy RewardedStakeToken Staking-stakeOf
+  TxSender
+  (effects ReadState)
+  (invariants STAKE-1))
+
+(method-policy BridgeMintBurnToken Bridge-mint
+  BridgeCertificate
+  (effects ReadState WriteState EmitEvent UseBridgeCertificate)
+  (invariants MINT-1 BRIDGE-1))
+
+(method-policy BridgeMintBurnToken Bridge-burn
+  TxSender
+  (effects ReadState WriteState EmitEvent)
+  (invariants BURN-1 BRIDGE-1))
+
+(method-policy BridgeMintBurnToken ERC20-transfer
+  TxSender
+  (effects ReadState WriteState EmitEvent)
+  (invariants TBA-3 BRIDGE-1))

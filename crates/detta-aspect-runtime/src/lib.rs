@@ -50,6 +50,14 @@ pub enum AspectHostOp {
         amount: u128,
         certificate: String,
     },
+    BridgeVerify {
+        source_chain: String,
+        message_id: String,
+        recipient: String,
+        asset: String,
+        amount: u128,
+        certificate: String,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -301,6 +309,7 @@ impl<'a> AspectActionEvaluator<'a> {
                     "emit!" => self.eval_emit(items, state),
                     "call-contract!" => self.eval_call_contract(items, state),
                     "permit-verify!" => self.eval_permit_verify(items, state),
+                    "bridge-verify!" => self.eval_bridge_verify(items, state),
                     action_name => self.eval_action_call(action_name, items, state),
                 }
             }
@@ -714,6 +723,34 @@ impl<'a> AspectActionEvaluator<'a> {
         state.trace.push(AspectHostOp::PermitVerify {
             owner,
             spender,
+            asset,
+            amount,
+            certificate,
+        });
+        Ok(AspectValue::Unit)
+    }
+
+    fn eval_bridge_verify(
+        &self,
+        items: &[Expr],
+        state: &mut AspectEvalState,
+    ) -> Result<AspectValue, AspectEvalError> {
+        if items.len() != 7 {
+            return Err(AspectEvalError::InvalidExpression(format!(
+                "expected bridge-verify! with source-chain, message-id, recipient, asset, amount, certificate, got {}",
+                items.len() - 1
+            )));
+        }
+        let source_chain = aspect_atom_value(self.eval_expr(&items[1], state)?)?;
+        let message_id = aspect_atom_value(self.eval_expr(&items[2], state)?)?;
+        let recipient = aspect_atom_value(self.eval_expr(&items[3], state)?)?;
+        let asset = aspect_atom_value(self.eval_expr(&items[4], state)?)?;
+        let amount = self.eval_expr(&items[5], state)?.into_amount()?;
+        let certificate = aspect_atom_value(self.eval_expr(&items[6], state)?)?;
+        state.trace.push(AspectHostOp::BridgeVerify {
+            source_chain,
+            message_id,
+            recipient,
             asset,
             amount,
             certificate,

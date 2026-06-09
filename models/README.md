@@ -4,7 +4,8 @@ This directory contains formal-model artifacts for the DeTTa runtime.
 
 - `DeTTaBlockExecution.tla` models the abstract SCS block-execution boundary:
   dispatcher-mediated calls, method-policy lookup, nonce replay prevention,
-  active reentrancy locks, guarded writes, commit/revert atomicity, and
+  active reentrancy locks, guarded writes, programmable aspect module
+  admission, aspect-owned write scopes, commit/revert atomicity, and
   deterministic replay obligations.
 - `DeTTaBlockExecution.cfg` is a bounded TLC configuration for the abstract
   block-execution model.
@@ -44,13 +45,22 @@ This directory contains formal-model artifacts for the DeTTa runtime.
   trace-root attestation metadata.
 - `detta-restricted-evaluator-fixture-inventory.sha256` records the release
   attestation root for the fixture inventory.
+- `aspects/stdlib/minimal-transfer-token.artifact.json` records the
+  root-authenticated standard-library aspect artifact used by release gates.
+- `aspects/stdlib/minimal-transfer-token.proof-obligations.json` records the
+  programmable-module proof obligations for the standard-library token bundle.
+- `aspects/stdlib/*.sha256` files bind the checked-in aspect source, artifact,
+  and proof-obligation manifest to release-gate checksum checks.
 - `formal-model-checking-runbook.md` describes the repository checks, external
   model-checker preparation, and manifest refresh procedure.
 - `../detta-restricted-evaluator-subset.md` documents the implemented
   restricted evaluator subset, fixture schemas, and refresh workflow.
 
 The model is intentionally abstract over hashing, signatures, concrete storage
-encoding, and networking. Those are checked by the Rust implementation tests and
+encoding, concrete MeTTa syntax, and networking. Programmable contracts are
+represented by verified module artifacts, contract-to-module bindings, and
+artifact-owned key sets. Parser, verifier, evaluator, and host-call details are
+checked by Rust tests plus the standard-library proof-obligation manifest and
 can be refined into separate models later.
 
 Primary theorem mapping:
@@ -59,5 +69,8 @@ Primary theorem mapping:
 - `WriteScopeSafety` corresponds to `THM-003` and supports `THM-012`.
 - `AtomicRevert` corresponds to `THM-006` and `THM-007`.
 - `ReplaySafety` corresponds to `THM-010`.
+- `ProgrammableModuleSoundness` corresponds to the programmable aspect module
+  proof obligations in
+  `aspects/stdlib/minimal-transfer-token.proof-obligations.json`.
 - Deterministic replay is represented as a trace-comparison obligation and is
   exercised by the `detta-verify` differential replay harness.

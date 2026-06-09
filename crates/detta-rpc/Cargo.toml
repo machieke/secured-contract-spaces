@@ -5,6 +5,7 @@ edition = "2021"
 license = "MIT"
 
 [dependencies]
+detta-aspects = { path = "../detta-aspects" }
 detta-consensus = { path = "../detta-consensus" }
 detta-core = { path = "../detta-core" }
 detta-evaluator = { path = "../detta-evaluator" }

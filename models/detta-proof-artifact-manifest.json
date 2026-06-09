@@ -6,11 +6,11 @@
   "model_artifacts": [
     {
       "path": "models/DeTTaBlockExecution.tla",
-      "sha256": "ea4eb64dc59e46005a536bc4e6e133779158dec4afa731a5fe09712d906273dd"
+      "sha256": "1c44db0ee0a2dc0aaa2ba2bcb2dc6c1543abb40569488ffc52b15baf64c1b354"
     },
     {
       "path": "models/DeTTaBlockExecution.cfg",
-      "sha256": "47d31b79a518f34913797b9732cccb966be47ddcfc05635e4b1ae3a8b0f4cab2"
+      "sha256": "03631e789e1f1141d390f0b12277a612f103493305e34c14f9f264765bdadeef"
     }
   ],
   "runtime_artifacts": [
@@ -59,7 +59,7 @@
       "sha256": "40660cbc15f9d9b4a5b3081a0f9aa2c2a390b2043c26fef041333701b0da1a66"
     }
   ],
-  "theorem_count": 15,
+  "theorem_count": 16,
   "coverage": [
     {
       "id": "THM-001",
@@ -264,6 +264,28 @@
         {
           "kind": "Fixture",
           "reference": "models/detta-restricted-evaluator-forbidden-primitives.json"
+        }
+      ]
+    },
+    {
+      "id": "THM-016",
+      "name": "Programmable Module Soundness",
+      "evidence": [
+        {
+          "kind": "Verifier",
+          "reference": "detta_verify::validate_aspect_stdlib_artifact"
+        },
+        {
+          "kind": "Verifier",
+          "reference": "detta_verify::validate_aspect_proof_obligations"
+        },
+        {
+          "kind": "RuntimeTest",
+          "reference": "detta_e2e::tests::aspect_module_client_flows::client_submits_inspects_deploys_and_calls_aspect_token"
+        },
+        {
+          "kind": "Model",
+          "reference": "models/DeTTaBlockExecution.tla::ProgrammableModuleSoundness"
         }
       ]
     }

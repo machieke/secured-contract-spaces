@@ -2063,6 +2063,42 @@ The most important security invariant is:
 
 For PeTTa, this requires an added contract runtime, guarded storage backend, and restricted evaluator. Ordinary PeTTa spaces and ordinary reflective mutation primitives are too open for adversarial DeFi balances.
 
+# Appendix: Programmable Aspect Modules
+
+DeTTa generalizes SCS contracts with verified MeTTa aspect modules. A
+programmable module is not allowed to mutate an Atomspace directly. It is a
+canonical source artifact that lowers to typed IR and is admitted only after
+the parser, verifier, artifact-root checks, policy checks, and proof-obligation
+checks pass.
+
+The kernel enforcement boundary remains unchanged:
+
+- method dispatch checks transaction identity, nonce, policy, registry grants,
+  and certificate adapters;
+- aspect code receives only bounded evaluator primitives and approved host
+  operations;
+- aspect-owned state writes must target schema-owned keys in the current
+  contract's write scope;
+- events, storage, registry consumption, and receipts commit or revert
+  atomically;
+- module roots, ABI roots, policy roots, schema roots, and invariant roots are
+  authenticated state.
+
+Full MeTTa behavior is not admitted for DeFi modules. Raw Atomspace mutation,
+reflection over private state, host interop, nondeterministic primitives,
+dynamic code loading, unbounded recursion, and authority-by-syntax are
+forbidden. The accepted language subset is documented in
+`detta-aspect-language-subset.md`.
+
+Native DeTTa DeFi contracts are baseline precompiles. They remain useful for
+genesis bootstrapping, compatibility, emergency migration, and differential
+tests, but taxonomy-defined token behavior should be deployed as verified
+aspect bundles rather than new hard-coded Rust branches.
+
+Every module pins a taxonomy version in its artifact. Validators must treat
+the taxonomy version as part of module identity: a module compiled and verified
+for one taxonomy version must not be silently interpreted under another.
+
 # References
 
 PeTTa `spaces.pl` source. https://raw.githubusercontent.com/trueagi-io/PeTTa/main/src/spaces.pl

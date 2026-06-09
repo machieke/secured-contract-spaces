@@ -1123,6 +1123,7 @@ fn core_method_policy_from_aspect(
     let authority = match policy.authority {
         detta_aspects::AuthorityKind::TxSender => PolicyAuthority::TxSender,
         detta_aspects::AuthorityKind::PermitCertificate => PolicyAuthority::PermitCertificate,
+        detta_aspects::AuthorityKind::BridgeCertificate => PolicyAuthority::BridgeCertificate,
         _ => return Err(ExecutionError::InvalidArguments),
     };
     let mut effects = BTreeSet::new();
@@ -1158,6 +1159,9 @@ fn core_method_policy_from_aspect(
             }
             detta_aspects::EffectKind::UsePermitCertificate => {
                 effects.insert(PolicyEffect::RegistryWrite);
+            }
+            detta_aspects::EffectKind::UseBridgeCertificate => {
+                effects.insert(PolicyEffect::StorageWrite);
             }
         }
     }
@@ -4285,6 +4289,24 @@ impl DeTTaState {
                 amount,
                 certificate,
             } => self.apply_aspect_permit_verify(tx, owner, spender, asset, amount, certificate),
+            AspectHostOp::BridgeVerify {
+                source_chain,
+                message_id,
+                recipient,
+                asset,
+                amount,
+                certificate,
+            } => self.apply_aspect_bridge_verify(
+                tx,
+                AspectBridgeVerification {
+                    source_chain,
+                    message_id,
+                    recipient,
+                    asset,
+                    amount,
+                    certificate,
+                },
+            ),
         }
     }
 
@@ -4311,6 +4333,27 @@ impl DeTTaState {
         }
         self.used_certificate_nonces.insert(nonce);
         Ok(())
+    }
+
+    fn apply_aspect_bridge_verify(
+        &self,
+        tx: &Transaction,
+        verification: AspectBridgeVerification,
+    ) -> Result<(), ExecutionError> {
+        let expected = ExpectedBridgeMessage {
+            destination_chain: &self.chain_id,
+            destination_contract: &tx.target,
+            source_chain: &verification.source_chain,
+            message_id: &verification.message_id,
+            recipient: &verification.recipient,
+            asset: &verification.asset,
+            amount: verification.amount,
+        };
+        let validator_set = self
+            .trusted_bridge_validator_sets
+            .get(&verification.source_chain)
+            .ok_or(ExecutionError::InvalidBridgeMessage)?;
+        verify_bridge_finality_proof(&verification.certificate, &expected, validator_set)
     }
 
     fn transfer(
@@ -6522,6 +6565,15 @@ fn aspect_value_from_state_value(value: &StateValue) -> AspectValue {
     }
 }
 
+struct AspectBridgeVerification {
+    source_chain: ChainId,
+    message_id: String,
+    recipient: Principal,
+    asset: AssetId,
+    amount: Amount,
+    certificate: String,
+}
+
 fn aspect_write_scope(
     contract: &ContractId,
     bundle_id: &str,
@@ -7165,6 +7217,44 @@ mod tests {
             text(&module.registry_schema_root),
             text(&module.invariant_root),
         ]
+    }
+
+    fn erc20_event_semantics(events: &[Event]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|event| match &event.payload {
+                EventPayload::Transfer {
+                    from,
+                    to,
+                    asset,
+                    amount,
+                } => Some(format!("Transfer:{from}:{to}:{asset}:{amount}")),
+                EventPayload::Approval {
+                    owner,
+                    spender,
+                    asset,
+                    amount,
+                } => Some(format!("Approval:{owner}:{spender}:{asset}:{amount}")),
+                EventPayload::AspectEvent { event, .. } => {
+                    aspect_erc20_event_semantics(event, "USDC")
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn aspect_erc20_event_semantics(event: &str, asset: &str) -> Option<String> {
+        let body = event.strip_prefix('(')?.strip_suffix(')')?;
+        let parts = body.split_whitespace().collect::<Vec<_>>();
+        match parts.as_slice() {
+            ["Transfer", from, to, amount] => {
+                Some(format!("Transfer:{from}:{to}:{asset}:{amount}"))
+            }
+            ["Approval", owner, spender, amount] => {
+                Some(format!("Approval:{owner}:{spender}:{asset}:{amount}"))
+            }
+            _ => None,
+        }
     }
 
     fn executable_counter_aspect_source() -> &'static str {
@@ -7876,6 +7966,13 @@ mod tests {
                 "(Approval Alice Eve 8)",
                 "(Transfer Alice Frank 3)",
             ]
+        );
+        assert_eq!(
+            erc20_event_semantics(native_state.events()),
+            erc20_event_semantics(aspect_state.events())
+                .into_iter()
+                .filter(|event| event != "Transfer:ZeroAddress:Alice:USDC:100")
+                .collect::<Vec<_>>()
         );
     }
 
@@ -8845,6 +8942,313 @@ mod tests {
     }
 
     #[test]
+    fn rewarded_stake_aspect_accrues_rewards_by_block_height() {
+        let mut state = DeTTaState::new("detta-local");
+        state.deploy_factory("Factory").unwrap();
+        let module = AspectModuleRecord::from_verified_source(
+            "RewardedStakeToken",
+            MINIMAL_TRANSFER_TOKEN_FIXTURE,
+        )
+        .unwrap();
+        let module_hash = state.register_aspect_module(module).unwrap();
+
+        let deploy = state.apply_transaction(tx_to(
+            "Factory",
+            "tx-deploy-rewarded-stake-token",
+            "Issuer",
+            1,
+            Method::DeployAspectContract,
+            vec![
+                text("RewardedStakeAspectToken"),
+                text(&module_hash),
+                text("RewardedStakeToken"),
+            ],
+        ));
+        assert_eq!(deploy.status, TxStatus::Committed);
+
+        let configure_reward = state.apply_transaction(tx_to(
+            "RewardedStakeAspectToken",
+            "tx-configure-stake-reward",
+            "Admin",
+            1,
+            Method::Other("Staking-configureReward".into()),
+            vec![amount(1)],
+        ));
+        assert_eq!(configure_reward.status, TxStatus::Committed);
+
+        let stake = state.apply_transaction(tx_to(
+            "RewardedStakeAspectToken",
+            "tx-stake-alice",
+            "Alice",
+            1,
+            Method::Other("Staking-stake".into()),
+            vec![amount(100)],
+        ));
+        assert_eq!(stake.status, TxStatus::Committed);
+
+        let (claim_block, claimed_state) = state.build_block(
+            5,
+            vec![tx_to(
+                "RewardedStakeAspectToken",
+                "tx-claim-alice-reward-1",
+                "Alice",
+                2,
+                Method::Other("Staking-claimReward".into()),
+                vec![],
+            )],
+            5_000,
+            "validator-1",
+            "cert-stake-1",
+        );
+        assert_eq!(claim_block.receipts[0].status, TxStatus::Committed);
+        assert_eq!(
+            claim_block.receipts[0].return_value,
+            Some(ReturnValue::UInt(500))
+        );
+
+        let (unstake_block, unstaked_state) = claimed_state.build_block(
+            8,
+            vec![tx_to(
+                "RewardedStakeAspectToken",
+                "tx-unstake-alice",
+                "Alice",
+                3,
+                Method::Other("Staking-unstake".into()),
+                vec![amount(40)],
+            )],
+            8_000,
+            "validator-1",
+            "cert-stake-2",
+        );
+        assert_eq!(unstake_block.receipts[0].status, TxStatus::Committed);
+
+        let (second_claim_block, final_state) = unstaked_state.build_block(
+            9,
+            vec![tx_to(
+                "RewardedStakeAspectToken",
+                "tx-claim-alice-reward-2",
+                "Alice",
+                4,
+                Method::Other("Staking-claimReward".into()),
+                vec![],
+            )],
+            9_000,
+            "validator-1",
+            "cert-stake-3",
+        );
+        assert_eq!(second_claim_block.receipts[0].status, TxStatus::Committed);
+        assert_eq!(
+            second_claim_block.receipts[0].return_value,
+            Some(ReturnValue::UInt(360))
+        );
+        assert_eq!(
+            final_state.storage.get(&StateKey::AspectState {
+                contract: "RewardedStakeAspectToken".into(),
+                aspect: "StakeBalanceAspect".into(),
+                state: "stakeBalanceOf".into(),
+                key: vec!["Alice".into()],
+            }),
+            Some(&StateValue::UInt(60))
+        );
+        assert_eq!(
+            final_state.storage.get(&StateKey::AspectState {
+                contract: "RewardedStakeAspectToken".into(),
+                aspect: "StakeBalanceAspect".into(),
+                state: "totalStakedBalance".into(),
+                key: Vec::new(),
+            }),
+            Some(&StateValue::UInt(60))
+        );
+        assert_eq!(
+            final_state.storage.get(&StateKey::AspectState {
+                contract: "RewardedStakeAspectToken".into(),
+                aspect: "RewardedStakeBalanceAspect".into(),
+                state: "pendingRewardOf".into(),
+                key: vec!["Alice".into()],
+            }),
+            Some(&StateValue::UInt(0))
+        );
+        assert_eq!(
+            final_state.storage.get(&StateKey::AspectState {
+                contract: "RewardedStakeAspectToken".into(),
+                aspect: "RewardedStakeBalanceAspect".into(),
+                state: "lastRewardHeightOf".into(),
+                key: vec!["Alice".into()],
+            }),
+            Some(&StateValue::UInt(9))
+        );
+
+        let aspect_events = final_state
+            .events()
+            .iter()
+            .filter_map(|event| match &event.payload {
+                EventPayload::AspectEvent { event, .. } => Some(event.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            aspect_events,
+            vec![
+                "(Stake Alice 100)",
+                "(RewardClaimed Alice 500)",
+                "(Unstake Alice 40)",
+                "(RewardClaimed Alice 360)",
+            ]
+        );
+    }
+
+    #[test]
+    fn bridge_mint_burn_aspect_requires_verified_bridge_certificate() {
+        let mut state = DeTTaState::new("detta-local");
+        state.deploy_factory("Factory").unwrap();
+        state
+            .deploy_bridge_with_validator_set(
+                "BridgeA",
+                "SourceChain",
+                vec![
+                    "source-validator-1".into(),
+                    "source-validator-2".into(),
+                    "source-validator-3".into(),
+                ],
+                2,
+            )
+            .unwrap();
+        let module = AspectModuleRecord::from_verified_source(
+            "BridgeMintBurnToken",
+            MINIMAL_TRANSFER_TOKEN_FIXTURE,
+        )
+        .unwrap();
+        let module_hash = state.register_aspect_module(module).unwrap();
+
+        let deploy = state.apply_transaction(tx_to(
+            "Factory",
+            "tx-deploy-bridge-mint-burn-token",
+            "Issuer",
+            1,
+            Method::DeployAspectContract,
+            vec![
+                text("BridgeAspectToken"),
+                text(&module_hash),
+                text("BridgeMintBurnToken"),
+            ],
+        ));
+        assert_eq!(deploy.status, TxStatus::Committed);
+
+        let certificate = bridge_finality_certificate_for(
+            "BridgeAspectToken",
+            "msg-bridge-1",
+            "Alice",
+            "USDC",
+            100,
+        );
+        let bad_mint = state.apply_transaction(tx_to(
+            "BridgeAspectToken",
+            "tx-bridge-bad-mint",
+            "Relayer",
+            1,
+            Method::Other("Bridge-mint".into()),
+            vec![
+                text("SourceChain"),
+                text("msg-tampered"),
+                principal("Alice"),
+                asset("USDC"),
+                amount(100),
+                Argument::Certificate(certificate.clone()),
+            ],
+        ));
+        assert_eq!(bad_mint.status, TxStatus::Reverted);
+        assert_eq!(bad_mint.error, Some(ExecutionError::InvalidBridgeMessage));
+
+        let mint = state.apply_transaction(tx_to(
+            "BridgeAspectToken",
+            "tx-bridge-mint",
+            "Relayer",
+            2,
+            Method::Other("Bridge-mint".into()),
+            vec![
+                text("SourceChain"),
+                text("msg-bridge-1"),
+                principal("Alice"),
+                asset("USDC"),
+                amount(100),
+                Argument::Certificate(certificate.clone()),
+            ],
+        ));
+        assert_eq!(mint.status, TxStatus::Committed);
+
+        let replay = state.apply_transaction(tx_to(
+            "BridgeAspectToken",
+            "tx-bridge-mint-replay",
+            "Relayer",
+            3,
+            Method::Other("Bridge-mint".into()),
+            vec![
+                text("SourceChain"),
+                text("msg-bridge-1"),
+                principal("Alice"),
+                asset("USDC"),
+                amount(100),
+                Argument::Certificate(certificate),
+            ],
+        ));
+        assert_eq!(replay.status, TxStatus::Reverted);
+        assert_eq!(replay.error, Some(ExecutionError::InvalidArguments));
+
+        let burn = state.apply_transaction(tx_to(
+            "BridgeAspectToken",
+            "tx-bridge-burn",
+            "Alice",
+            1,
+            Method::Other("Bridge-burn".into()),
+            vec![amount(40)],
+        ));
+        assert_eq!(burn.status, TxStatus::Committed);
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "BridgeAspectToken".into(),
+                aspect: "StaticBalanceAspect".into(),
+                state: "balanceOf".into(),
+                key: vec!["Alice".into()],
+            }),
+            Some(&StateValue::UInt(60))
+        );
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "BridgeAspectToken".into(),
+                aspect: "StaticBalanceAspect".into(),
+                state: "totalSupply".into(),
+                key: Vec::new(),
+            }),
+            Some(&StateValue::UInt(60))
+        );
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "BridgeAspectToken".into(),
+                aspect: "BridgeMintBurnAspect".into(),
+                state: "bridgeMessageConsumed".into(),
+                key: vec!["msg-bridge-1".into()],
+            }),
+            Some(&StateValue::UInt(1))
+        );
+
+        let aspect_events = state
+            .events()
+            .iter()
+            .filter_map(|event| match &event.payload {
+                EventPayload::AspectEvent { event, .. } => Some(event.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            aspect_events,
+            vec![
+                "(Transfer ZeroAddress Alice 100)",
+                "(Transfer Alice ZeroAddress 40)",
+            ]
+        );
+    }
+
+    #[test]
     fn factory_transaction_deploys_registered_aspect_contract() {
         let mut state = DeTTaState::new("detta-local");
         state.deploy_factory("Factory").unwrap();
@@ -8975,6 +9379,16 @@ mod tests {
     }
 
     fn bridge_finality_proof() -> CrossShardFinalityProof {
+        bridge_finality_proof_for("BridgeA", "msg-1", "Alice", "USDC", 100)
+    }
+
+    fn bridge_finality_proof_for(
+        destination_contract: &str,
+        message_id: &str,
+        recipient: &str,
+        asset_id: &str,
+        bridge_amount: Amount,
+    ) -> CrossShardFinalityProof {
         let mut source = DeTTaState::new("SourceChain");
         source.deploy_bridge("BridgeSource", "detta-local").unwrap();
         let (block, next_state) = source.build_block(
@@ -8989,11 +9403,11 @@ mod tests {
                 method: Method::QueueBridgeMessage,
                 args: vec![
                     text("detta-local"),
-                    text("BridgeA"),
-                    text("msg-1"),
-                    principal("Alice"),
-                    asset("USDC"),
-                    amount(100),
+                    text(destination_contract),
+                    text(message_id),
+                    principal(recipient),
+                    asset(asset_id),
+                    amount(bridge_amount),
                 ],
                 signature_ok: true,
                 budget: 1_000_000,
@@ -9017,6 +9431,23 @@ mod tests {
 
     fn bridge_finality_certificate() -> String {
         serde_json::to_string(&bridge_finality_proof()).unwrap()
+    }
+
+    fn bridge_finality_certificate_for(
+        destination_contract: &str,
+        message_id: &str,
+        recipient: &str,
+        asset_id: &str,
+        bridge_amount: Amount,
+    ) -> String {
+        serde_json::to_string(&bridge_finality_proof_for(
+            destination_contract,
+            message_id,
+            recipient,
+            asset_id,
+            bridge_amount,
+        ))
+        .unwrap()
     }
 
     fn deploy_inbound_bridge(state: &mut DeTTaState) {

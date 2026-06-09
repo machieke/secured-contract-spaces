@@ -15,6 +15,9 @@ CONSTANTS
     Principals,
     Keys,
     Values,
+    Modules,
+    BundleIds,
+    Aspects,
     TxIds,
     Nonces,
     Errors,
@@ -28,6 +31,9 @@ VARIABLES
     usedNonces,
     events,
     activeLocks,
+    moduleArtifacts,
+    contractModules,
+    verifiedModules,
     receipts,
     height,
     finalizedHash
@@ -39,6 +45,9 @@ vars ==
        usedNonces,
        events,
        activeLocks,
+       moduleArtifacts,
+       contractModules,
+       verifiedModules,
        receipts,
        height,
        finalizedHash >>
@@ -59,6 +68,18 @@ EventType ==
     [ contract : Contracts,
       tx_hash  : TxIds ]
 
+ModuleArtifactType ==
+    [ module    : Modules,
+      bundle    : BundleIds,
+      aspects   : SUBSET Aspects,
+      ownedKeys : SUBSET Keys,
+      methods   : SUBSET Methods ]
+
+AspectContractType ==
+    [ contract : Contracts,
+      module   : Modules,
+      bundle   : BundleIds ]
+
 TypeOK ==
     /\ storage \in [Keys -> Values \cup {NoValue}]
     /\ registry \subseteq (Principals \X Principals)
@@ -66,6 +87,9 @@ TypeOK ==
     /\ usedNonces \subseteq (Principals \X Nonces)
     /\ events \in Seq(EventType)
     /\ activeLocks \subseteq Contracts
+    /\ moduleArtifacts \subseteq ModuleArtifactType
+    /\ contractModules \subseteq AspectContractType
+    /\ verifiedModules \in SUBSET Modules
     /\ receipts \in Seq([tx_hash : TxIds,
                          status  : {"Committed", "Reverted", "Rejected"},
                          error   : Errors \cup {NoValue}])
@@ -82,6 +106,23 @@ PolicyKey(tx) == <<tx.target, tx.method>>
 
 PolicyExists(tx) == PolicyKey(tx) \in policies
 
+ContractModuleVerified(tx) ==
+    \A binding \in contractModules :
+        binding.contract = tx.target =>
+            /\ binding.module \in verifiedModules
+            /\ \E artifact \in moduleArtifacts :
+                /\ artifact.module = binding.module
+                /\ artifact.bundle = binding.bundle
+                /\ tx.method \in artifact.methods
+
+AspectWriteScopeOK(tx, writes) ==
+    \A binding \in contractModules :
+        binding.contract = tx.target =>
+            \E artifact \in moduleArtifacts :
+                /\ artifact.module = binding.module
+                /\ artifact.bundle = binding.bundle
+                /\ \A w \in writes : w.key \in artifact.ownedKeys
+
 NonceFresh(tx) == NonceKey(tx) \notin usedNonces
 
 NotReentrant(tx) == tx.target \notin activeLocks
@@ -94,6 +135,7 @@ DispatcherAllowed(tx) ==
 
 Authorized(tx) ==
     /\ PolicyExists(tx)
+    /\ ContractModuleVerified(tx)
     /\ registry = registry
 
 WriteScopeOK(tx, writes) ==
@@ -114,13 +156,19 @@ Commit(tx, writes, emitted) ==
     /\ NotReentrant(tx)
     /\ Authorized(tx)
     /\ WriteScopeOK(tx, writes)
+    /\ AspectWriteScopeOK(tx, writes)
     /\ activeLocks' = activeLocks
     /\ storage' = ApplyEffects(writes, storage)
     /\ registry' = registry
     /\ usedNonces' = usedNonces \cup {NonceKey(tx)}
     /\ events' = Append(events, emitted)
     /\ receipts' = Append(receipts, NullReceipt(tx, "Committed", NoValue))
-    /\ UNCHANGED << policies, height, finalizedHash >>
+    /\ UNCHANGED << policies,
+                    moduleArtifacts,
+                    contractModules,
+                    verifiedModules,
+                    height,
+                    finalizedHash >>
 
 Revert(tx, err) ==
     /\ DispatcherAllowed(tx)
@@ -133,7 +181,11 @@ Revert(tx, err) ==
     /\ usedNonces' = usedNonces \cup {NonceKey(tx)}
     /\ activeLocks' = activeLocks
     /\ receipts' = Append(receipts, NullReceipt(tx, "Reverted", err))
-    /\ UNCHANGED << height, finalizedHash >>
+    /\ UNCHANGED << moduleArtifacts,
+                    contractModules,
+                    verifiedModules,
+                    height,
+                    finalizedHash >>
 
 Reject(tx, err) ==
     /\ err \in Errors
@@ -144,7 +196,11 @@ Reject(tx, err) ==
     /\ usedNonces' = usedNonces
     /\ activeLocks' = activeLocks
     /\ receipts' = Append(receipts, NullReceipt(tx, "Rejected", err))
-    /\ UNCHANGED << height, finalizedHash >>
+    /\ UNCHANGED << moduleArtifacts,
+                    contractModules,
+                    verifiedModules,
+                    height,
+                    finalizedHash >>
 
 ExecuteTx(tx) ==
     \/ \E writes \in SUBSET WriteType,
@@ -160,6 +216,9 @@ Init ==
     /\ usedNonces = {}
     /\ events = <<>>
     /\ activeLocks = {}
+    /\ moduleArtifacts \in SUBSET ModuleArtifactType
+    /\ contractModules \in SUBSET AspectContractType
+    /\ verifiedModules \in SUBSET Modules
     /\ receipts = <<>>
     /\ height = 0
     /\ finalizedHash = GenesisHash
@@ -195,5 +254,14 @@ ReplaySafety ==
 
 \* THM-012 No write-scope leakage across calls is represented by
 \* WriteScopeOK using the current tx.target owner for every write.
+
+\* THM-016 Programmable module soundness.
+ProgrammableModuleSoundness ==
+    [][\A tx \in TxType :
+        \A writes \in SUBSET WriteType :
+            \A emitted \in EventType :
+                Commit(tx, writes, emitted) =>
+                    /\ ContractModuleVerified(tx)
+                    /\ AspectWriteScopeOK(tx, writes)]_vars
 
 =============================================================================

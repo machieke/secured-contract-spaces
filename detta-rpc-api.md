@@ -97,6 +97,14 @@ The shared `RpcService` supports:
 - `get_subscription_events`: fetch a bounded page of subscription
   notifications from a subscription sequence cursor.
 - `get_contract`: fetch a deployed contract descriptor.
+- `get_aspect_module`: fetch a registered aspect module record by module hash.
+- `get_aspect_module_proof`: fetch a Merkle proof for a registered aspect
+  module by module hash.
+- `get_aspect_module_artifacts`: fetch the module's root-authenticated artifact
+  report, including bundle IDs, ABI entries, method policies, storage schema,
+  registry schema, and invariant definitions when the module was submitted with
+  source-backed IR.
+- `get_aspect_modules`: list registered aspect module records.
 - `get_scheduled_upgrades`: list scheduled governance code upgrades and their
   execution flags.
 - `get_scheduled_policy_updates`: list scheduled governance policy updates and
@@ -106,6 +114,24 @@ The shared `RpcService` supports:
 
 Read-only view and proof methods must not alter nonce, event, registry, storage,
 or global roots.
+
+## Aspect Module Workflow
+
+Clients deploy programmable DeFi behavior through the factory:
+
+1. Submit a verified source-backed module with a `SubmitAspectModule`
+   transaction against `FactoryA`.
+2. Inspect the returned module through `get_aspect_module_artifacts` and verify
+   module inclusion with `get_aspect_module_proof`.
+3. Deploy a contract with `DeployAspectContract`, passing the registered
+   `module_hash`, selected bundle ID, and optional initializer projection.
+4. Call exported projections with `Method::Other("<projection>")`, then verify
+   receipts and storage proofs for the resulting aspect state.
+
+Roots-only module records remain queryable, but their artifact report has
+`has_ir: false` and empty ABI, policy, schema, and invariant maps. Source-backed
+modules expose those maps directly so wallets and deployment tools can review
+the behavior before deployment.
 
 ## Persistent Validator Methods
 
@@ -148,7 +174,9 @@ Proof responses contain the proved value and a Merkle proof:
 - receipt proofs verify against `BlockHeader.receipt_root`;
 - event proofs verify against the current cumulative event root;
 - outbox proofs verify against `BlockHeader.outbox_root` for bridge finality
-  verification.
+  verification;
+- aspect module proofs verify module records against the aspect module root,
+  which is part of the authenticated global state.
 
 Clients should call each proof type's `verify` logic or reproduce the same
 leaf/node hashing rules before trusting a value.
