@@ -7,8 +7,9 @@ DeTTa exposes the same typed JSON RPC wire format over two transports:
   followed by `\n` and each response is a single JSON object followed by `\n`.
 
 The wire enum is defined in `crates/detta-rpc/src/lib.rs` as `RpcRequest` and
-`RpcResult`. Stable JSON fixture tests in that crate pin selected client-facing
-response shapes.
+`RpcResult`. `detta-rpc-openapi.json` is the versioned OpenAPI 3.1 schema for
+the bounded HTTP JSON RPC endpoint. Stable JSON fixture tests in that crate pin
+selected client-facing response shapes.
 
 ## Request and Response Shape
 

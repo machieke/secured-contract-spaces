@@ -1542,6 +1542,74 @@ mod tests {
         .unwrap()
     }
 
+    fn rpc_request_method_tags() -> Vec<&'static str> {
+        vec![
+            "submit_transaction",
+            "produce_block",
+            "import_block",
+            "get_transaction",
+            "get_receipt",
+            "get_receipt_proof",
+            "get_block",
+            "get_blocks_page",
+            "get_finality_certificate",
+            "get_slashing_record",
+            "get_node_health",
+            "get_mempool_status",
+            "get_state_root",
+            "get_snapshot",
+            "get_persistent_node_snapshot_roots",
+            "get_snapshot_metadata_root_status",
+            "get_snapshot_sync_client_metrics",
+            "get_required_snapshot_metadata_roots",
+            "get_balance",
+            "get_total_supply",
+            "get_storage_proof",
+            "get_storage_non_inclusion_proof",
+            "get_registry_proof",
+            "get_registry_non_inclusion_proof",
+            "get_outbox_message_proof",
+            "get_event_proof",
+            "get_events",
+            "get_events_page",
+            "subscribe",
+            "get_subscription_events",
+            "get_contract",
+            "get_scheduled_upgrades",
+            "get_scheduled_policy_updates",
+            "get_upgrade_rehearsal_report",
+            "propose_validator_set_metadata_update",
+            "get_validator_set_metadata_update_status",
+            "get_validator_set_metadata_audit_records",
+            "get_snapshot_import_audit_records",
+            "get_snapshot_import_audit_root",
+            "get_snapshot_import_audit_config_root",
+            "get_snapshot_import_audit_config",
+        ]
+    }
+
+    #[test]
+    fn rpc_openapi_schema_covers_request_method_tags() {
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../../../detta-rpc-openapi.json")).unwrap();
+        assert_eq!(schema["openapi"], "3.1.0");
+        assert_eq!(schema["x-detta-schema"], "detta.rpc.openapi.v1");
+        assert_eq!(schema["x-detta-schema-version"], 1);
+        assert_eq!(
+            schema["paths"]["/rpc"]["post"]["requestBody"]["content"]["application/json"]["schema"]
+                ["$ref"],
+            "#/components/schemas/RpcRequest"
+        );
+
+        let schema_methods: Vec<_> = schema["components"]["schemas"]["RpcMethod"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect();
+        assert_eq!(schema_methods, rpc_request_method_tags());
+    }
+
     #[test]
     fn authenticated_json_rpc_handler_requires_bearer_token() {
         let mut rpc = seeded_rpc();

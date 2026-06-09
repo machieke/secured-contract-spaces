@@ -432,6 +432,8 @@ Completed production-plan slices:
   validator sets, including signer membership, quorum, and set-update tests.
 - [x] External JSON RPC is available over bounded HTTP POST transport with
   stable transport error bodies and compatibility tests.
+- [x] The external JSON RPC HTTP endpoint has a versioned OpenAPI schema whose
+  method enum is covered by crate tests.
 
 Next implementation slices:
 

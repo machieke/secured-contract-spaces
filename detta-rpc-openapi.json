@@ -1,0 +1,211 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "DeTTa JSON RPC API",
+    "version": "1.0.0"
+  },
+  "x-detta-schema": "detta.rpc.openapi.v1",
+  "x-detta-schema-version": 1,
+  "paths": {
+    "/rpc": {
+      "post": {
+        "summary": "Submit a DeTTa JSON RPC request",
+        "operationId": "submitDeTTaJsonRpc",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RpcRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "RPC request decoded and dispatched",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RpcResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed HTTP request or header",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RpcResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown HTTP endpoint path",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RpcResponse"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "HTTP method is not POST",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RpcResponse"
+                }
+              }
+            }
+          },
+          "411": {
+            "description": "Content-Length is required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RpcResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "JSON RPC request body exceeds the configured transport limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RpcResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "RpcMethod": {
+        "type": "string",
+        "enum": [
+          "submit_transaction",
+          "produce_block",
+          "import_block",
+          "get_transaction",
+          "get_receipt",
+          "get_receipt_proof",
+          "get_block",
+          "get_blocks_page",
+          "get_finality_certificate",
+          "get_slashing_record",
+          "get_node_health",
+          "get_mempool_status",
+          "get_state_root",
+          "get_snapshot",
+          "get_persistent_node_snapshot_roots",
+          "get_snapshot_metadata_root_status",
+          "get_snapshot_sync_client_metrics",
+          "get_required_snapshot_metadata_roots",
+          "get_balance",
+          "get_total_supply",
+          "get_storage_proof",
+          "get_storage_non_inclusion_proof",
+          "get_registry_proof",
+          "get_registry_non_inclusion_proof",
+          "get_outbox_message_proof",
+          "get_event_proof",
+          "get_events",
+          "get_events_page",
+          "subscribe",
+          "get_subscription_events",
+          "get_contract",
+          "get_scheduled_upgrades",
+          "get_scheduled_policy_updates",
+          "get_upgrade_rehearsal_report",
+          "propose_validator_set_metadata_update",
+          "get_validator_set_metadata_update_status",
+          "get_validator_set_metadata_audit_records",
+          "get_snapshot_import_audit_records",
+          "get_snapshot_import_audit_root",
+          "get_snapshot_import_audit_config_root",
+          "get_snapshot_import_audit_config"
+        ]
+      },
+      "RpcRequest": {
+        "type": "object",
+        "required": [
+          "method"
+        ],
+        "properties": {
+          "method": {
+            "$ref": "#/components/schemas/RpcMethod"
+          },
+          "params": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "RpcResponse": {
+        "type": "object",
+        "required": [
+          "status",
+          "body"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "error"
+            ]
+          },
+          "body": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RpcResultBody"
+              },
+              {
+                "$ref": "#/components/schemas/RpcErrorBody"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "RpcResultBody": {
+        "type": "object",
+        "required": [
+          "result"
+        ],
+        "properties": {
+          "result": {
+            "type": "string"
+          },
+          "data": true
+        },
+        "additionalProperties": false
+      },
+      "RpcErrorBody": {
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  }
+}
