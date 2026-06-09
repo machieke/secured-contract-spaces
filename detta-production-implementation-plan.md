@@ -424,6 +424,8 @@ Completed production-plan slices:
   over the shared TCP JSON operator path.
 - [x] RPC exposes bounded committed-block pages for catch-up clients, including
   durable after-restart persistent-node TCP coverage.
+- [x] Light-client finality certificate verification checks height, block hash,
+  active validator membership, and quorum without full node state.
 
 Next implementation slices:
 

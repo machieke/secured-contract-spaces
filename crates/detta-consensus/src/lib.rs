@@ -51,6 +51,14 @@ pub enum ConsensusError {
         accepted: usize,
         required: usize,
     },
+    FinalityHeightMismatch {
+        expected: u64,
+        actual: u64,
+    },
+    FinalityBlockHashMismatch {
+        expected: String,
+        actual: String,
+    },
     InvalidBlock {
         validator: String,
         error: BlockError,
@@ -114,6 +122,36 @@ impl ConsensusCluster {
 
     pub fn slashing_records(&self) -> impl Iterator<Item = &SlashingRecord> {
         self.slashing_records.values()
+    }
+
+    pub fn verify_finality_certificate(
+        &self,
+        certificate: &FinalityCertificate,
+        expected_height: u64,
+        expected_block_hash: &str,
+    ) -> Result<(), ConsensusError> {
+        for signer in &certificate.signers {
+            if !self.validators.contains_key(signer) {
+                return Err(ConsensusError::UnknownValidator(signer.clone()));
+            }
+            if self.is_slashed(signer) {
+                return Err(ConsensusError::SlashedValidator(signer.clone()));
+            }
+        }
+
+        let active_validators = self
+            .validators
+            .keys()
+            .filter(|validator_id| !self.is_slashed(validator_id))
+            .cloned()
+            .collect();
+        verify_finality_certificate(
+            certificate,
+            expected_height,
+            expected_block_hash,
+            &active_validators,
+            self.quorum(),
+        )
     }
 
     pub fn has_applied_validator_set_update(&self, update_id: &str) -> bool {
@@ -358,6 +396,47 @@ pub fn quorum_for(active_validators: usize) -> usize {
     } else {
         (active_validators * 2 / 3) + 1
     }
+}
+
+pub fn verify_finality_certificate(
+    certificate: &FinalityCertificate,
+    expected_height: u64,
+    expected_block_hash: &str,
+    active_validators: &BTreeSet<String>,
+    quorum: usize,
+) -> Result<(), ConsensusError> {
+    if active_validators.is_empty() || quorum == 0 {
+        return Err(ConsensusError::EmptyValidatorSet);
+    }
+
+    if certificate.height != expected_height {
+        return Err(ConsensusError::FinalityHeightMismatch {
+            expected: expected_height,
+            actual: certificate.height,
+        });
+    }
+    if certificate.block_hash != expected_block_hash {
+        return Err(ConsensusError::FinalityBlockHashMismatch {
+            expected: expected_block_hash.into(),
+            actual: certificate.block_hash.clone(),
+        });
+    }
+
+    let mut unique_signers = BTreeSet::new();
+    for signer in &certificate.signers {
+        if !active_validators.contains(signer) {
+            return Err(ConsensusError::UnknownValidator(signer.clone()));
+        }
+        unique_signers.insert(signer.clone());
+    }
+    if unique_signers.len() < quorum {
+        return Err(ConsensusError::QuorumNotReached {
+            accepted: unique_signers.len(),
+            required: quorum,
+        });
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -661,6 +740,109 @@ mod tests {
             .certificate_from_active_votes(2, "hash-c", enough_active_votes)
             .unwrap();
         assert_eq!(certificate.signers, vec!["v2", "v3", "v4"]);
+    }
+
+    #[test]
+    fn light_client_verifies_finality_certificate_from_active_validator_set() {
+        let active_validators =
+            BTreeSet::from(["v1".to_string(), "v2".to_string(), "v3".to_string()]);
+        let certificate = FinalityCertificate {
+            height: 7,
+            block_hash: "block-hash-7".into(),
+            signers: vec!["v1".into(), "v3".into()],
+        };
+
+        assert_eq!(
+            verify_finality_certificate(&certificate, 7, "block-hash-7", &active_validators, 2),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn light_client_rejects_invalid_finality_certificates() {
+        let active_validators =
+            BTreeSet::from(["v1".to_string(), "v2".to_string(), "v3".to_string()]);
+        let certificate = FinalityCertificate {
+            height: 7,
+            block_hash: "block-hash-7".into(),
+            signers: vec!["v1".into(), "v2".into()],
+        };
+
+        assert_eq!(
+            verify_finality_certificate(&certificate, 8, "block-hash-7", &active_validators, 2),
+            Err(ConsensusError::FinalityHeightMismatch {
+                expected: 8,
+                actual: 7,
+            })
+        );
+        assert_eq!(
+            verify_finality_certificate(&certificate, 7, "other-hash", &active_validators, 2),
+            Err(ConsensusError::FinalityBlockHashMismatch {
+                expected: "other-hash".into(),
+                actual: "block-hash-7".into(),
+            })
+        );
+
+        let unknown = FinalityCertificate {
+            signers: vec!["v1".into(), "v9".into()],
+            ..certificate.clone()
+        };
+        assert_eq!(
+            verify_finality_certificate(&unknown, 7, "block-hash-7", &active_validators, 2),
+            Err(ConsensusError::UnknownValidator("v9".into()))
+        );
+
+        let duplicate = FinalityCertificate {
+            signers: vec!["v1".into(), "v1".into()],
+            ..certificate
+        };
+        assert_eq!(
+            verify_finality_certificate(&duplicate, 7, "block-hash-7", &active_validators, 2),
+            Err(ConsensusError::QuorumNotReached {
+                accepted: 1,
+                required: 2,
+            })
+        );
+
+        let empty_active_validators = BTreeSet::new();
+        assert_eq!(
+            verify_finality_certificate(&duplicate, 7, "block-hash-7", &empty_active_validators, 0),
+            Err(ConsensusError::EmptyValidatorSet)
+        );
+    }
+
+    #[test]
+    fn cluster_finality_verifier_uses_active_unslashed_validator_set() {
+        let mut cluster = ConsensusCluster::new(vec![
+            ("v1".into(), seeded_state()),
+            ("v2".into(), seeded_state()),
+            ("v3".into(), seeded_state()),
+        ])
+        .unwrap();
+        let certificate = FinalityCertificate {
+            height: 9,
+            block_hash: "block-hash-9".into(),
+            signers: vec!["v1".into(), "v2".into(), "v3".into()],
+        };
+
+        assert_eq!(
+            cluster.verify_finality_certificate(&certificate, 9, "block-hash-9"),
+            Ok(())
+        );
+
+        cluster
+            .record_equivocation(EquivocationEvidence {
+                validator_id: "v1".into(),
+                height: 8,
+                first_block_hash: "hash-a".into(),
+                second_block_hash: "hash-b".into(),
+            })
+            .unwrap();
+
+        assert_eq!(
+            cluster.verify_finality_certificate(&certificate, 9, "block-hash-9"),
+            Err(ConsensusError::SlashedValidator("v1".into()))
+        );
     }
 
     #[test]
