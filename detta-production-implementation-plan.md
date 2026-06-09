@@ -391,6 +391,9 @@ Completed production-plan slices:
 - [x] Persistent validator nodes serve finalized block, transaction, and
   receipt history from durable block storage after restart over node-aware and
   TCP JSON RPC paths.
+- [x] RPC exposes independently verifiable receipt and event Merkle proofs, with
+  persistent nodes serving finalized receipt proofs from durable block storage
+  after restart.
 
 Next implementation slices:
 

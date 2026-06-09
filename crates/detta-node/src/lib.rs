@@ -753,6 +753,16 @@ impl PersistentValidatorNode {
                 Ok(None) => Err(RpcError::ReceiptNotFound).into(),
                 Err(error) => node_rpc_error_response(NodeError::Storage(error)),
             },
+            RpcRequest::GetReceiptProof { height, index } => {
+                match self.storage.maybe_load_block(height) {
+                    Ok(Some(block)) => match block.receipt_proof(index) {
+                        Some(proof) => RpcResponse::Ok(RpcResult::ReceiptProof(Box::new(proof))),
+                        None => Err(RpcError::ProofNotFound).into(),
+                    },
+                    Ok(None) => Err(RpcError::BlockNotFound).into(),
+                    Err(error) => node_rpc_error_response(NodeError::Storage(error)),
+                }
+            }
             RpcRequest::GetNodeHealth => RpcResponse::Ok(RpcResult::NodeHealth(Box::new(
                 self.persistent_node_health(),
             ))),
@@ -1979,6 +1989,8 @@ mod tests {
         let expected_transaction = block.transactions[0].clone();
         let expected_receipt = block.receipts[0].clone();
         let mut restarted = PersistentValidatorNode::restart("validator-1", &dir).unwrap();
+        let expected_receipt_proof = block.receipt_proof(0).unwrap();
+        let expected_event_proof = restarted.rpc().node().state().event_proof(0).unwrap();
 
         assert_eq!(restarted.validator_id(), "validator-1");
         assert_eq!(
@@ -2004,6 +2016,17 @@ mod tests {
                 tx_hash: "tx1".into(),
             }),
             RpcResponse::Ok(RpcResult::Receipt(Box::new(expected_receipt)))
+        );
+        assert_eq!(
+            restarted.handle_rpc_request(RpcRequest::GetReceiptProof {
+                height: 1,
+                index: 0,
+            }),
+            RpcResponse::Ok(RpcResult::ReceiptProof(Box::new(expected_receipt_proof)))
+        );
+        assert_eq!(
+            restarted.handle_rpc_request(RpcRequest::GetEventProof { index: 0 }),
+            RpcResponse::Ok(RpcResult::EventProof(Box::new(expected_event_proof)))
         );
         fs::remove_dir_all(dir).unwrap();
     }
@@ -3928,6 +3951,8 @@ mod tests {
         let expected_transaction = block.transactions[0].clone();
         let expected_receipt = block.receipts[0].clone();
         let restarted = PersistentValidatorNode::restart("validator-1", &dir).unwrap();
+        let expected_receipt_proof = block.receipt_proof(0).unwrap();
+        let expected_event_proof = restarted.rpc().node().state().event_proof(0).unwrap();
         let server = JsonRpcServer::bind("127.0.0.1:0").unwrap();
         let addr = server.local_addr().unwrap();
         let handle = thread::spawn(move || {
@@ -3964,6 +3989,22 @@ mod tests {
         assert_eq!(
             read_rpc_response(&mut reader),
             RpcResponse::Ok(RpcResult::Receipt(Box::new(expected_receipt)))
+        );
+        write_rpc_request(
+            &mut stream,
+            &RpcRequest::GetReceiptProof {
+                height: 1,
+                index: 0,
+            },
+        );
+        assert_eq!(
+            read_rpc_response(&mut reader),
+            RpcResponse::Ok(RpcResult::ReceiptProof(Box::new(expected_receipt_proof)))
+        );
+        write_rpc_request(&mut stream, &RpcRequest::GetEventProof { index: 0 });
+        assert_eq!(
+            read_rpc_response(&mut reader),
+            RpcResponse::Ok(RpcResult::EventProof(Box::new(expected_event_proof)))
         );
 
         stream.shutdown(Shutdown::Write).unwrap();

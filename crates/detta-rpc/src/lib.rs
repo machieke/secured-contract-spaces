@@ -1,8 +1,8 @@
 use detta_core::{
-    Amount, AssetId, Block, BlockError, ContractId, ContractRecord, Event, ExecutionError,
-    GrantKey, MempoolError, OutboxMessageProof, Principal, Receipt, RegistryNonInclusionProof,
-    RegistryProof, StateKey, StateSnapshot, StorageNonInclusionProof, StorageProof, Transaction,
-    UpgradeRehearsalReport, ValidatorNode,
+    Amount, AssetId, Block, BlockError, ContractId, ContractRecord, Event, EventProof,
+    ExecutionError, GrantKey, MempoolError, OutboxMessageProof, Principal, Receipt, ReceiptProof,
+    RegistryNonInclusionProof, RegistryProof, StateKey, StateSnapshot, StorageNonInclusionProof,
+    StorageProof, Transaction, UpgradeRehearsalReport, ValidatorNode,
 };
 use detta_protocol::SignedValidatorMessage;
 use detta_storage::{
@@ -47,6 +47,10 @@ pub enum RpcRequest {
     GetReceipt {
         tx_hash: String,
     },
+    GetReceiptProof {
+        height: u64,
+        index: usize,
+    },
     GetBlock {
         height: u64,
     },
@@ -79,6 +83,9 @@ pub enum RpcRequest {
         key: GrantKey,
     },
     GetOutboxMessageProof {
+        index: usize,
+    },
+    GetEventProof {
         index: usize,
     },
     GetEvents,
@@ -221,6 +228,8 @@ pub enum RpcResult {
     RegistryProof(Box<RegistryProof>),
     RegistryNonInclusionProof(Box<RegistryNonInclusionProof>),
     OutboxMessageProof(Box<OutboxMessageProof>),
+    ReceiptProof(Box<ReceiptProof>),
+    EventProof(Box<EventProof>),
     Events(Vec<Event>),
     Contract(Box<ContractRecord>),
     UpgradeRehearsalReport(Box<UpgradeRehearsalReport>),
@@ -341,6 +350,14 @@ impl RpcService {
             .ok_or(RpcError::ReceiptNotFound)
     }
 
+    pub fn get_receipt_proof(&self, height: u64, index: usize) -> Result<ReceiptProof, RpcError> {
+        self.node
+            .get_block(height)
+            .ok_or(RpcError::BlockNotFound)?
+            .receipt_proof(index)
+            .ok_or(RpcError::ProofNotFound)
+    }
+
     pub fn get_block(&self, height: u64) -> Result<Block, RpcError> {
         self.node
             .get_block(height)
@@ -434,6 +451,13 @@ impl RpcService {
             .ok_or(RpcError::ProofNotFound)
     }
 
+    pub fn get_event_proof(&self, index: usize) -> Result<EventProof, RpcError> {
+        self.node
+            .state()
+            .event_proof(index)
+            .ok_or(RpcError::ProofNotFound)
+    }
+
     pub fn get_events(&self) -> Vec<Event> {
         self.node.state().events().to_vec()
     }
@@ -481,6 +505,10 @@ impl RpcService {
                 .get_receipt(&tx_hash)
                 .map(|receipt| RpcResult::Receipt(Box::new(receipt)))
                 .into(),
+            RpcRequest::GetReceiptProof { height, index } => self
+                .get_receipt_proof(height, index)
+                .map(|proof| RpcResult::ReceiptProof(Box::new(proof)))
+                .into(),
             RpcRequest::GetBlock { height } => self
                 .get_block(height)
                 .map(|block| RpcResult::Block(Box::new(block)))
@@ -523,6 +551,10 @@ impl RpcService {
             RpcRequest::GetOutboxMessageProof { index } => self
                 .get_outbox_message_proof(index)
                 .map(|proof| RpcResult::OutboxMessageProof(Box::new(proof)))
+                .into(),
+            RpcRequest::GetEventProof { index } => self
+                .get_event_proof(index)
+                .map(|proof| RpcResult::EventProof(Box::new(proof)))
                 .into(),
             RpcRequest::GetEvents => RpcResponse::Ok(RpcResult::Events(self.get_events())),
             RpcRequest::GetContract { contract } => self
@@ -931,10 +963,16 @@ mod tests {
             asset: "USDC".into(),
         };
         let proof = rpc.get_storage_proof(&key).unwrap();
+        let receipt_proof = rpc.get_receipt_proof(1, 0).unwrap();
+        let event_proof = rpc.get_event_proof(0).unwrap();
         let contract = rpc.get_contract("TokenA").unwrap();
 
         assert!(proof.verify());
         assert_eq!(proof.proof.root, block.header.storage_root);
+        assert!(receipt_proof.verify());
+        assert_eq!(receipt_proof.proof.root, block.header.receipt_root);
+        assert!(event_proof.verify());
+        assert_eq!(event_proof.proof.root, block.header.event_root);
         assert_eq!(contract.contract_id, "TokenA");
         assert!(contract.method_policy(&Method::Transfer).is_some());
         assert!(contract
@@ -1177,6 +1215,28 @@ mod tests {
                 assert_eq!(receipt.status, TxStatus::Committed);
             }
             response => panic!("expected receipt, got {response:?}"),
+        }
+
+        write_request(
+            &mut stream,
+            &RpcRequest::GetReceiptProof {
+                height: 1,
+                index: 0,
+            },
+        );
+        match read_response(&mut reader) {
+            RpcResponse::Ok(RpcResult::ReceiptProof(proof)) => {
+                assert!(proof.verify());
+            }
+            response => panic!("expected receipt proof, got {response:?}"),
+        }
+
+        write_request(&mut stream, &RpcRequest::GetEventProof { index: 0 });
+        match read_response(&mut reader) {
+            RpcResponse::Ok(RpcResult::EventProof(proof)) => {
+                assert!(proof.verify());
+            }
+            response => panic!("expected event proof, got {response:?}"),
         }
 
         write_request(
