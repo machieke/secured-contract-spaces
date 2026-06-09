@@ -428,6 +428,8 @@ Completed production-plan slices:
   active validator membership, and quorum without full node state.
 - [x] RPC decoding has deterministic malformed and valid boundary corpus
   fuzz-smoke coverage through the JSON request handler.
+- [x] Bridge redemption proofs are bound to authenticated trusted source-chain
+  validator sets, including signer membership, quorum, and set-update tests.
 
 Next implementation slices:
 

@@ -1611,6 +1611,68 @@ pub struct CrossShardFinalityProof {
     pub message_proof: OutboxMessageProof,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct BridgeValidatorSet {
+    pub source_chain: ChainId,
+    pub validators: BTreeSet<Principal>,
+    pub quorum: usize,
+}
+
+impl BridgeValidatorSet {
+    pub fn new(
+        source_chain: impl Into<ChainId>,
+        validators: Vec<Principal>,
+        quorum: usize,
+    ) -> Result<Self, ExecutionError> {
+        let source_chain = source_chain.into();
+        let mut unique_validators = BTreeSet::new();
+        for validator in validators {
+            if validator.is_empty() || !unique_validators.insert(validator) {
+                return Err(ExecutionError::InvalidArguments);
+            }
+        }
+        if source_chain.is_empty()
+            || unique_validators.is_empty()
+            || quorum == 0
+            || quorum > unique_validators.len()
+        {
+            return Err(ExecutionError::InvalidArguments);
+        }
+
+        Ok(Self {
+            source_chain,
+            validators: unique_validators,
+            quorum,
+        })
+    }
+
+    pub fn root(&self) -> String {
+        root_of(self)
+    }
+
+    pub fn verifies_finality(&self, proof: &CrossShardFinalityProof) -> bool {
+        if self.source_chain.is_empty()
+            || self.validators.is_empty()
+            || self.quorum == 0
+            || self.quorum > self.validators.len()
+        {
+            return false;
+        }
+        if proof.source_chain != self.source_chain || proof.quorum != self.quorum {
+            return false;
+        }
+
+        let mut unique_signers = BTreeSet::new();
+        for signer in &proof.signers {
+            if !self.validators.contains(signer) || !unique_signers.insert(signer) {
+                return false;
+            }
+        }
+
+        unique_signers.len() >= self.quorum
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ExpectedBridgeMessage<'a> {
     pub destination_chain: &'a ChainId,
@@ -1648,6 +1710,14 @@ impl CrossShardFinalityProof {
             && message.recipient == *expected.recipient
             && message.asset == *expected.asset
             && message.amount == expected.amount
+    }
+
+    pub fn verify_message_with_validator_set(
+        &self,
+        expected: &ExpectedBridgeMessage<'_>,
+        validator_set: &BridgeValidatorSet,
+    ) -> bool {
+        self.verify_message(expected) && validator_set.verifies_finality(self)
     }
 }
 
@@ -1945,6 +2015,7 @@ pub struct DeTTaState {
     paused_contracts: BTreeSet<ContractId>,
     scheduled_upgrades: BTreeMap<String, ScheduledUpgrade>,
     scheduled_policy_updates: BTreeMap<String, ScheduledPolicyUpdate>,
+    trusted_bridge_validator_sets: BTreeMap<ChainId, BridgeValidatorSet>,
     outbound_message_ids: BTreeSet<String>,
     cross_shard_outbox: Vec<CrossShardMessage>,
     events: Vec<Event>,
@@ -1964,6 +2035,7 @@ impl DeTTaState {
             paused_contracts: BTreeSet::new(),
             scheduled_upgrades: BTreeMap::new(),
             scheduled_policy_updates: BTreeMap::new(),
+            trusted_bridge_validator_sets: BTreeMap::new(),
             outbound_message_ids: BTreeSet::new(),
             cross_shard_outbox: Vec::new(),
             events: Vec::new(),
@@ -2199,6 +2271,42 @@ impl DeTTaState {
             contract.clone(),
             ContractRecord::bridge(contract, code_hash, source_chain),
         );
+        Ok(())
+    }
+
+    pub fn deploy_bridge_with_validator_set(
+        &mut self,
+        contract: impl Into<ContractId>,
+        source_chain: impl Into<ChainId>,
+        validators: Vec<Principal>,
+        quorum: usize,
+    ) -> Result<(), ExecutionError> {
+        let source_chain = source_chain.into();
+        let validator_set = BridgeValidatorSet::new(source_chain.clone(), validators, quorum)?;
+        self.set_trusted_bridge_validator_set(validator_set)?;
+        self.deploy_bridge(contract, source_chain)
+    }
+
+    pub fn set_trusted_bridge_validator_set(
+        &mut self,
+        validator_set: BridgeValidatorSet,
+    ) -> Result<(), ExecutionError> {
+        let validator_set = BridgeValidatorSet::new(
+            validator_set.source_chain.clone(),
+            validator_set.validators.iter().cloned().collect(),
+            validator_set.quorum,
+        )?;
+        if let Some(existing) = self
+            .trusted_bridge_validator_sets
+            .get(&validator_set.source_chain)
+        {
+            if existing == &validator_set {
+                return Ok(());
+            }
+        }
+
+        self.trusted_bridge_validator_sets
+            .insert(validator_set.source_chain.clone(), validator_set);
         Ok(())
     }
 
@@ -2742,6 +2850,18 @@ impl DeTTaState {
         self.contracts.values()
     }
 
+    pub fn trusted_bridge_validator_set(
+        &self,
+        source_chain: impl Into<ChainId>,
+    ) -> Option<&BridgeValidatorSet> {
+        let source_chain = source_chain.into();
+        self.trusted_bridge_validator_sets.get(&source_chain)
+    }
+
+    pub fn trusted_bridge_validator_sets(&self) -> impl Iterator<Item = &BridgeValidatorSet> {
+        self.trusted_bridge_validator_sets.values()
+    }
+
     pub fn check_declared_invariants(&self) -> Vec<InvariantFailure> {
         let mut failures = Vec::new();
         for record in self.contracts.values() {
@@ -3069,6 +3189,7 @@ impl DeTTaState {
             &self.paused_contracts,
             &self.scheduled_upgrades,
             &self.scheduled_policy_updates,
+            &self.trusted_bridge_validator_sets,
             &self.outbound_message_ids,
             self.outbox_root(),
             self.event_root(),
@@ -3753,7 +3874,11 @@ impl DeTTaState {
             asset: &asset,
             amount,
         };
-        verify_bridge_finality_proof(&certificate, &expected)?;
+        let validator_set = self
+            .trusted_bridge_validator_sets
+            .get(&source_chain)
+            .ok_or(ExecutionError::InvalidBridgeMessage)?;
+        verify_bridge_finality_proof(&certificate, &expected, validator_set)?;
 
         let consumed_key = bridge_message_consumed_key(&tx.target, &message_id);
         if self.uint_at(&consumed_key) != 0 {
@@ -5467,11 +5592,12 @@ fn verify_permit_certificate(
 fn verify_bridge_finality_proof(
     certificate: &str,
     expected: &ExpectedBridgeMessage<'_>,
+    validator_set: &BridgeValidatorSet,
 ) -> Result<(), ExecutionError> {
     let proof: CrossShardFinalityProof =
         serde_json::from_str(certificate).map_err(|_| ExecutionError::InvalidBridgeMessage)?;
 
-    if !proof.verify_message(expected) {
+    if !proof.verify_message_with_validator_set(expected, validator_set) {
         return Err(ExecutionError::InvalidBridgeMessage);
     }
 
@@ -5759,6 +5885,21 @@ mod tests {
 
     fn bridge_finality_certificate() -> String {
         serde_json::to_string(&bridge_finality_proof()).unwrap()
+    }
+
+    fn deploy_inbound_bridge(state: &mut DeTTaState) {
+        state
+            .deploy_bridge_with_validator_set(
+                "BridgeA",
+                "SourceChain",
+                vec![
+                    "source-validator-1".into(),
+                    "source-validator-2".into(),
+                    "source-validator-3".into(),
+                ],
+                2,
+            )
+            .unwrap();
     }
 
     #[test]
@@ -7080,7 +7221,7 @@ mod tests {
     #[test]
     fn bridge_redeems_message_once_and_rejects_replay() {
         let mut state = DeTTaState::new("detta-local");
-        state.deploy_bridge("BridgeA", "SourceChain").unwrap();
+        deploy_inbound_bridge(&mut state);
         let certificate = bridge_finality_certificate();
 
         let first = state.apply_transaction(tx_to(
@@ -7120,7 +7261,7 @@ mod tests {
     #[test]
     fn bridge_rejects_invalid_message_certificate() {
         let mut state = DeTTaState::new("detta-local");
-        state.deploy_bridge("BridgeA", "SourceChain").unwrap();
+        deploy_inbound_bridge(&mut state);
 
         let receipt = state.apply_transaction(tx_to(
             "BridgeA",
@@ -7144,7 +7285,7 @@ mod tests {
     #[test]
     fn bridge_rejects_tampered_outbox_finality_proof() {
         let mut state = DeTTaState::new("detta-local");
-        state.deploy_bridge("BridgeA", "SourceChain").unwrap();
+        deploy_inbound_bridge(&mut state);
         let mut proof = bridge_finality_proof();
         proof.outbox_root = "bad-root".into();
 
@@ -7165,6 +7306,135 @@ mod tests {
 
         assert_eq!(receipt.status, TxStatus::Reverted);
         assert_eq!(receipt.error, Some(ExecutionError::InvalidBridgeMessage));
+    }
+
+    #[test]
+    fn bridge_rejects_untrusted_source_validator_signer() {
+        let mut state = DeTTaState::new("detta-local");
+        state
+            .deploy_bridge_with_validator_set(
+                "BridgeA",
+                "SourceChain",
+                vec!["source-validator-1".into(), "source-validator-3".into()],
+                2,
+            )
+            .unwrap();
+
+        let receipt = state.apply_transaction(tx_to(
+            "BridgeA",
+            "tx1",
+            "Relayer",
+            1,
+            Method::RedeemBridgeMessage,
+            vec![
+                text("msg-1"),
+                principal("Alice"),
+                asset("USDC"),
+                amount(100),
+                Argument::Certificate(bridge_finality_certificate()),
+            ],
+        ));
+
+        assert_eq!(receipt.status, TxStatus::Reverted);
+        assert_eq!(receipt.error, Some(ExecutionError::InvalidBridgeMessage));
+    }
+
+    #[test]
+    fn bridge_rejects_lowered_source_validator_quorum() {
+        let mut state = DeTTaState::new("detta-local");
+        state
+            .deploy_bridge_with_validator_set(
+                "BridgeA",
+                "SourceChain",
+                vec![
+                    "source-validator-1".into(),
+                    "source-validator-2".into(),
+                    "source-validator-3".into(),
+                ],
+                3,
+            )
+            .unwrap();
+        let mut proof = bridge_finality_proof();
+        proof.signers.push("source-validator-3".into());
+        proof.quorum = 2;
+
+        let receipt = state.apply_transaction(tx_to(
+            "BridgeA",
+            "tx1",
+            "Relayer",
+            1,
+            Method::RedeemBridgeMessage,
+            vec![
+                text("msg-1"),
+                principal("Alice"),
+                asset("USDC"),
+                amount(100),
+                Argument::Certificate(serde_json::to_string(&proof).unwrap()),
+            ],
+        ));
+
+        assert_eq!(receipt.status, TxStatus::Reverted);
+        assert_eq!(receipt.error, Some(ExecutionError::InvalidBridgeMessage));
+    }
+
+    #[test]
+    fn bridge_validator_set_updates_are_authenticated_and_enforced() {
+        let mut state = DeTTaState::new("detta-local");
+        deploy_inbound_bridge(&mut state);
+        let original_root = state.global_state_root();
+        let original_validator_set = state
+            .trusted_bridge_validator_set("SourceChain")
+            .unwrap()
+            .clone();
+        assert_eq!(original_validator_set.quorum, 2);
+        assert_eq!(original_validator_set.root().len(), 64);
+
+        state
+            .set_trusted_bridge_validator_set(
+                BridgeValidatorSet::new(
+                    "SourceChain",
+                    vec!["source-validator-3".into(), "source-validator-4".into()],
+                    2,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert_ne!(state.global_state_root(), original_root);
+
+        let stale = state.apply_transaction(tx_to(
+            "BridgeA",
+            "tx1",
+            "Relayer",
+            1,
+            Method::RedeemBridgeMessage,
+            vec![
+                text("msg-1"),
+                principal("Alice"),
+                asset("USDC"),
+                amount(100),
+                Argument::Certificate(bridge_finality_certificate()),
+            ],
+        ));
+        assert_eq!(stale.status, TxStatus::Reverted);
+        assert_eq!(stale.error, Some(ExecutionError::InvalidBridgeMessage));
+
+        let mut updated_proof = bridge_finality_proof();
+        updated_proof.signers = vec!["source-validator-3".into(), "source-validator-4".into()];
+        let current = state.apply_transaction(tx_to(
+            "BridgeA",
+            "tx2",
+            "Relayer",
+            2,
+            Method::RedeemBridgeMessage,
+            vec![
+                text("msg-1"),
+                principal("Alice"),
+                asset("USDC"),
+                amount(100),
+                Argument::Certificate(serde_json::to_string(&updated_proof).unwrap()),
+            ],
+        ));
+        assert_eq!(current.status, TxStatus::Committed);
     }
 
     #[test]
