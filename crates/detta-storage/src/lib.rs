@@ -1,7 +1,7 @@
 use bincode::Options;
 use detta_consensus::{FinalityCertificate, SlashingRecord};
 use detta_core::{Block, DeTTaState, Receipt, SnapshotError, StateSnapshot, Transaction};
-use detta_protocol::{SignedValidatorMessage, ValidatorSetMetadata};
+use detta_protocol::{SignedValidatorMessage, ValidatorSetMetadata, ValidatorSignatureDomain};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -56,12 +56,21 @@ pub struct SnapshotImportAuditConfig {
     pub max_page_size: usize,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ConsensusSigningRecord {
+    pub validator_id: String,
+    pub domain: ValidatorSignatureDomain,
+    pub height: u64,
+    pub block_hash: String,
+}
+
 impl FileStorage {
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, StorageError> {
         let root = root.into();
         fs::create_dir_all(root.join("blocks")).map_err(io_error)?;
         fs::create_dir_all(root.join("certificates")).map_err(io_error)?;
         fs::create_dir_all(root.join("slashings")).map_err(io_error)?;
+        fs::create_dir_all(root.join("consensus_signing_records")).map_err(io_error)?;
         Ok(Self { root })
     }
 
@@ -449,6 +458,42 @@ impl FileStorage {
         read_json(&path)
     }
 
+    pub fn commit_consensus_signing_record_if_absent(
+        &self,
+        record: &ConsensusSigningRecord,
+    ) -> Result<Option<ConsensusSigningRecord>, StorageError> {
+        let path =
+            self.consensus_signing_record_path(&record.validator_id, record.domain, record.height);
+        if path.exists() {
+            return read_json(&path).map(Some);
+        }
+
+        match write_json_create_new(&path, record) {
+            Ok(()) => Ok(None),
+            Err(StorageError::Io(error)) => {
+                if path.exists() {
+                    read_json(&path).map(Some)
+                } else {
+                    Err(StorageError::Io(error))
+                }
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    pub fn maybe_load_consensus_signing_record(
+        &self,
+        validator_id: &str,
+        domain: ValidatorSignatureDomain,
+        height: u64,
+    ) -> Result<Option<ConsensusSigningRecord>, StorageError> {
+        let path = self.consensus_signing_record_path(validator_id, domain, height);
+        if !path.exists() {
+            return Ok(None);
+        }
+        read_json(&path).map(Some)
+    }
+
     fn snapshot_path(&self) -> PathBuf {
         self.root.join("latest_snapshot.bin")
     }
@@ -504,6 +549,19 @@ impl FileStorage {
     fn mempool_path(&self) -> PathBuf {
         self.root.join("mempool.bin")
     }
+
+    fn consensus_signing_record_path(
+        &self,
+        validator_id: &str,
+        domain: ValidatorSignatureDomain,
+        height: u64,
+    ) -> PathBuf {
+        self.root
+            .join("consensus_signing_records")
+            .join(validator_signature_domain_path(domain))
+            .join(file_safe_id(validator_id))
+            .join(format!("{height}.bin"))
+    }
 }
 
 fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), StorageError> {
@@ -535,6 +593,22 @@ fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, StorageError> {
     bincode_options()
         .deserialize_from(reader)
         .map_err(data_error)
+}
+
+fn write_json_create_new<T: Serialize>(path: &Path, value: &T) -> Result<(), StorageError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(io_error)?;
+    }
+
+    let mut file = File::options()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(io_error)?;
+    bincode_options()
+        .serialize_into(&mut file, value)
+        .map_err(data_error)?;
+    file.sync_all().map_err(io_error)
 }
 
 fn io_error(error: std::io::Error) -> StorageError {
@@ -576,6 +650,17 @@ fn file_safe_id(value: &str) -> String {
         out.push(HEX[(byte & 0x0f) as usize] as char);
     }
     out
+}
+
+fn validator_signature_domain_path(domain: ValidatorSignatureDomain) -> &'static str {
+    match domain {
+        ValidatorSignatureDomain::BlockProposal => "block_proposal",
+        ValidatorSignatureDomain::Vote => "vote",
+        ValidatorSignatureDomain::FinalityCertificate => "finality_certificate",
+        ValidatorSignatureDomain::ValidatorSetUpdate => "validator_set_update",
+        ValidatorSignatureDomain::EquivocationEvidence => "equivocation_evidence",
+        ValidatorSignatureDomain::ValidatorSetMetadataUpdate => "validator_set_metadata_update",
+    }
 }
 
 #[cfg(test)]
@@ -1142,6 +1227,67 @@ mod tests {
         let loaded = storage.load_mempool().unwrap();
 
         assert_eq!(loaded, vec![tx]);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn consensus_signing_record_preserves_first_height_domain_claim() {
+        let dir = temp_dir("consensus-signing-record");
+        let storage = FileStorage::open(&dir).unwrap();
+        let first = ConsensusSigningRecord {
+            validator_id: "validator/1".into(),
+            domain: ValidatorSignatureDomain::Vote,
+            height: 7,
+            block_hash: "block-a".into(),
+        };
+        let conflicting = ConsensusSigningRecord {
+            block_hash: "block-b".into(),
+            ..first.clone()
+        };
+
+        assert_eq!(
+            storage
+                .maybe_load_consensus_signing_record(
+                    "validator/1",
+                    ValidatorSignatureDomain::Vote,
+                    7,
+                )
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            storage
+                .commit_consensus_signing_record_if_absent(&first)
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            storage
+                .maybe_load_consensus_signing_record(
+                    "validator/1",
+                    ValidatorSignatureDomain::Vote,
+                    7,
+                )
+                .unwrap(),
+            Some(first.clone())
+        );
+        assert_eq!(
+            storage
+                .commit_consensus_signing_record_if_absent(&conflicting)
+                .unwrap(),
+            Some(first.clone())
+        );
+        assert_eq!(
+            FileStorage::open(&dir)
+                .unwrap()
+                .maybe_load_consensus_signing_record(
+                    "validator/1",
+                    ValidatorSignatureDomain::Vote,
+                    7,
+                )
+                .unwrap(),
+            Some(first)
+        );
         fs::remove_dir_all(dir).unwrap();
     }
 

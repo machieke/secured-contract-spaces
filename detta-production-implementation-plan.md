@@ -438,6 +438,9 @@ Completed production-plan slices:
   staking, committed/reverted receipts, and post-replay declared invariants.
 - [x] Operator runbook documents deployment, monitoring, recovery, governed
   upgrades, validator-key rotation, and incident response using current RPCs.
+- [x] Durable consensus-signing records prevent validators from signing
+  conflicting block proposals, votes, or finality certificates across restart
+  and network-partition simulations.
 
 Next implementation slices:
 

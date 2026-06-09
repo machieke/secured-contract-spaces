@@ -16,6 +16,8 @@ Each validator data directory contains:
 
 - durable blocks, receipts, finality certificates, slashing records, and
   snapshots;
+- durable consensus-signing records that prevent conflicting validator
+  signatures after restart, crash recovery, or network partition;
 - pending mempool transactions;
 - validator-set metadata, keyring, pending authorizations, and audit records;
 - snapshot import audit records and state-sync diagnostics.
@@ -66,6 +68,8 @@ For process restart, restart from the same data directory and verify:
 - pending mempool entries reload with `get_mempool_status`;
 - finalized history is served with `get_block`, `get_transaction`,
   `get_receipt`, and proof RPCs;
+- consensus-signing records remain in the validator data directory before the
+  validator key is allowed to sign again;
 - finality certificates and slashing records are still available;
 - validator-set metadata and pending authorizations reload.
 

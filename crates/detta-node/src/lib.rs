@@ -10,7 +10,7 @@ use detta_protocol::{
     build_snapshot_chunks_with_metadata_roots, ProtocolMessageKind, SignatureError,
     SignedValidatorMessage, SnapshotChunkManifest, SnapshotChunkRequest, SnapshotChunkSet,
     SnapshotSyncError, ValidatorPublicKey, ValidatorSetMetadata, ValidatorSetMetadataUpdate,
-    ValidatorSigningKey, SNAPSHOT_METADATA_REQUIRED_METADATA_ROOTS_ROOT,
+    ValidatorSignatureDomain, ValidatorSigningKey, SNAPSHOT_METADATA_REQUIRED_METADATA_ROOTS_ROOT,
     SNAPSHOT_METADATA_SNAPSHOT_IMPORT_AUDIT_CONFIG_ROOT,
     SNAPSHOT_METADATA_SNAPSHOT_IMPORT_AUDIT_ROOT, SNAPSHOT_METADATA_STATE_SYNC_CLIENT_METRICS_ROOT,
     SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT,
@@ -22,8 +22,8 @@ use detta_rpc::{
     SnapshotSyncClientMetricsReport, ValidatorSetMetadataUpdateStatus, DEFAULT_MAX_BLOCK_PAGE_SIZE,
 };
 use detta_storage::{
-    FileStorage, SnapshotImportAuditConfig, SnapshotImportAuditRecord, StorageError,
-    ValidatorSetMetadataAuditOutcome, ValidatorSetMetadataAuditRecord,
+    ConsensusSigningRecord, FileStorage, SnapshotImportAuditConfig, SnapshotImportAuditRecord,
+    StorageError, ValidatorSetMetadataAuditOutcome, ValidatorSetMetadataAuditRecord,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -53,6 +53,10 @@ pub enum NodeError {
         available: String,
     },
     SigningKeyMismatch {
+        expected: String,
+        actual: String,
+    },
+    ConsensusMessageSignerMismatch {
         expected: String,
         actual: String,
     },
@@ -92,6 +96,13 @@ pub enum NodeError {
         actual: String,
     },
     UnsignedValidatorSetMetadataUpdate,
+    ConsensusSigningConflict {
+        validator_id: String,
+        domain: ValidatorSignatureDomain,
+        height: u64,
+        existing_block_hash: String,
+        attempted_block_hash: String,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1542,6 +1553,7 @@ impl PersistentValidatorNode {
                 actual: signing_key.validator_id().to_string(),
             });
         }
+        self.reserve_consensus_signing_record(&message)?;
         let signed = signing_key
             .sign_message(&self.network_id, self.chain_id.clone(), message)
             .map_err(NodeError::Signature)?;
@@ -1782,6 +1794,34 @@ impl PersistentValidatorNode {
         Ok(signed.message.as_ref().clone())
     }
 
+    fn reserve_consensus_signing_record(&self, message: &NetworkMessage) -> Result<(), NodeError> {
+        let Some(commitment) = consensus_signing_commitment(&self.validator_id, message)? else {
+            return Ok(());
+        };
+        let record = ConsensusSigningRecord {
+            validator_id: self.validator_id.clone(),
+            domain: commitment.domain,
+            height: commitment.height,
+            block_hash: commitment.block_hash,
+        };
+        if let Some(existing) = self
+            .storage
+            .commit_consensus_signing_record_if_absent(&record)
+            .map_err(NodeError::Storage)?
+        {
+            if existing.block_hash != record.block_hash {
+                return Err(NodeError::ConsensusSigningConflict {
+                    validator_id: record.validator_id,
+                    domain: record.domain,
+                    height: record.height,
+                    existing_block_hash: existing.block_hash,
+                    attempted_block_hash: record.block_hash,
+                });
+            }
+        }
+        Ok(())
+    }
+
     fn apply_validator_set_metadata(
         &mut self,
         metadata: ValidatorSetMetadata,
@@ -1851,6 +1891,53 @@ fn keyring_from_metadata(
     Ok(keyring)
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ConsensusSigningCommitment {
+    domain: ValidatorSignatureDomain,
+    height: u64,
+    block_hash: String,
+}
+
+fn consensus_signing_commitment(
+    validator_id: &str,
+    message: &NetworkMessage,
+) -> Result<Option<ConsensusSigningCommitment>, NodeError> {
+    match message {
+        NetworkMessage::Block(block) => {
+            if block.header.proposer != validator_id {
+                return Err(NodeError::ConsensusMessageSignerMismatch {
+                    expected: validator_id.to_string(),
+                    actual: block.header.proposer.clone(),
+                });
+            }
+            Ok(Some(ConsensusSigningCommitment {
+                domain: ValidatorSignatureDomain::BlockProposal,
+                height: block.header.height,
+                block_hash: block.block_hash(),
+            }))
+        }
+        NetworkMessage::Vote(vote) => {
+            if vote.validator_id != validator_id {
+                return Err(NodeError::ConsensusMessageSignerMismatch {
+                    expected: validator_id.to_string(),
+                    actual: vote.validator_id.clone(),
+                });
+            }
+            Ok(Some(ConsensusSigningCommitment {
+                domain: ValidatorSignatureDomain::Vote,
+                height: vote.height,
+                block_hash: vote.block_hash.clone(),
+            }))
+        }
+        NetworkMessage::FinalityCertificate(certificate) => Ok(Some(ConsensusSigningCommitment {
+            domain: ValidatorSignatureDomain::FinalityCertificate,
+            height: certificate.height,
+            block_hash: certificate.block_hash.clone(),
+        })),
+        _ => Ok(None),
+    }
+}
+
 fn node_rpc_error_response(error: NodeError) -> RpcResponse {
     RpcResponse::Error(RpcErrorBody {
         code: node_rpc_error_code(&error).into(),
@@ -1880,6 +1967,10 @@ fn node_rpc_error_code(error: &NodeError) -> &'static str {
         }
         NodeError::UnsignedValidatorSetMetadataUpdate => {
             "node.unsigned_validator_set_metadata_update"
+        }
+        NodeError::ConsensusSigningConflict { .. } => "node.consensus_signing_conflict",
+        NodeError::ConsensusMessageSignerMismatch { .. } => {
+            "node.consensus_message_signer_mismatch"
         }
         NodeError::Signature(_) => "node.validator_signature_error",
         NodeError::ValidatorKeyNotFound(_) => "node.validator_key_not_found",
@@ -2358,6 +2449,132 @@ mod tests {
 
         fs::remove_dir_all(proposer_dir).unwrap();
         fs::remove_dir_all(peer_dir).unwrap();
+    }
+
+    #[test]
+    fn persistent_validator_refuses_conflicting_vote_after_restart() {
+        let dir = temp_dir("consensus-signing-vote-lock");
+        let key = validator_key("validator-1", 7);
+        let node = PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &dir).unwrap();
+        let vote_a = Vote {
+            validator_id: "validator-1".into(),
+            height: 7,
+            block_hash: "block-a".into(),
+        };
+        let vote_b = Vote {
+            block_hash: "block-b".into(),
+            ..vote_a.clone()
+        };
+
+        assert!(matches!(
+            node.sign_validator_message(&key, NetworkMessage::Vote(vote_a.clone()))
+                .unwrap(),
+            NetworkMessage::SignedValidator(_)
+        ));
+        assert_eq!(
+            node.storage
+                .maybe_load_consensus_signing_record(
+                    "validator-1",
+                    ValidatorSignatureDomain::Vote,
+                    7,
+                )
+                .unwrap()
+                .unwrap()
+                .block_hash,
+            "block-a"
+        );
+
+        let restarted = PersistentValidatorNode::restart("validator-1", &dir).unwrap();
+        assert!(matches!(
+            restarted
+                .sign_validator_message(&key, NetworkMessage::Vote(vote_a))
+                .unwrap(),
+            NetworkMessage::SignedValidator(_)
+        ));
+        assert_eq!(
+            restarted
+                .sign_validator_message(&key, NetworkMessage::Vote(vote_b))
+                .unwrap_err(),
+            NodeError::ConsensusSigningConflict {
+                validator_id: "validator-1".into(),
+                domain: ValidatorSignatureDomain::Vote,
+                height: 7,
+                existing_block_hash: "block-a".into(),
+                attempted_block_hash: "block-b".into(),
+            }
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn persistent_validator_refuses_conflicting_block_proposal_after_partition_restart() {
+        let dir = temp_dir("consensus-signing-block-lock");
+        let key = validator_key("validator-1", 7);
+        let state = seeded_state();
+        let (block_a, _) =
+            state.build_block(1, vec![transfer_tx()], 1_000, "validator-1", "cert-a");
+        let (block_b, _) =
+            state.build_block(1, vec![transfer_tx()], 2_000, "validator-1", "cert-b");
+        let block_a_hash = block_a.block_hash();
+        let block_b_hash = block_b.block_hash();
+        assert_ne!(block_a_hash, block_b_hash);
+        let node = PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &dir).unwrap();
+
+        assert!(matches!(
+            node.sign_validator_message(&key, NetworkMessage::Block(Box::new(block_a)))
+                .unwrap(),
+            NetworkMessage::SignedValidator(_)
+        ));
+
+        let restarted = PersistentValidatorNode::restart("validator-1", &dir).unwrap();
+        assert_eq!(
+            restarted
+                .sign_validator_message(&key, NetworkMessage::Block(Box::new(block_b)))
+                .unwrap_err(),
+            NodeError::ConsensusSigningConflict {
+                validator_id: "validator-1".into(),
+                domain: ValidatorSignatureDomain::BlockProposal,
+                height: 1,
+                existing_block_hash: block_a_hash,
+                attempted_block_hash: block_b_hash,
+            }
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn persistent_validator_rejects_mismatched_consensus_message_signer() {
+        let dir = temp_dir("consensus-signing-signer-mismatch");
+        let key = validator_key("validator-1", 7);
+        let node = PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &dir).unwrap();
+        let vote = Vote {
+            validator_id: "validator-2".into(),
+            height: 7,
+            block_hash: "block-a".into(),
+        };
+
+        assert_eq!(
+            node.sign_validator_message(&key, NetworkMessage::Vote(vote))
+                .unwrap_err(),
+            NodeError::ConsensusMessageSignerMismatch {
+                expected: "validator-1".into(),
+                actual: "validator-2".into(),
+            }
+        );
+        assert_eq!(
+            node.storage
+                .maybe_load_consensus_signing_record(
+                    "validator-1",
+                    ValidatorSignatureDomain::Vote,
+                    7,
+                )
+                .unwrap(),
+            None
+        );
+
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
