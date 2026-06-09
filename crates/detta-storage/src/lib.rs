@@ -1,6 +1,6 @@
 use bincode::Options;
 use detta_consensus::{FinalityCertificate, SlashingRecord};
-use detta_core::{Block, DeTTaState, SnapshotError, StateSnapshot, Transaction};
+use detta_core::{Block, DeTTaState, Receipt, SnapshotError, StateSnapshot, Transaction};
 use detta_protocol::{SignedValidatorMessage, ValidatorSetMetadata};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -160,6 +160,63 @@ impl FileStorage {
 
     pub fn load_block(&self, height: u64) -> Result<Block, StorageError> {
         read_json(&self.block_path(height))
+    }
+
+    pub fn maybe_load_block(&self, height: u64) -> Result<Option<Block>, StorageError> {
+        let path = self.block_path(height);
+        if !path.exists() {
+            return Ok(None);
+        }
+        read_json(&path).map(Some)
+    }
+
+    pub fn load_blocks(&self) -> Result<Vec<Block>, StorageError> {
+        let mut heights = Vec::new();
+        for entry in fs::read_dir(self.root.join("blocks")).map_err(io_error)? {
+            let path = entry.map_err(io_error)?.path();
+            if path.extension().and_then(|extension| extension.to_str()) != Some("bin") {
+                continue;
+            }
+            let Some(height) = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .and_then(|stem| stem.parse::<u64>().ok())
+            else {
+                continue;
+            };
+            heights.push(height);
+        }
+        heights.sort_unstable();
+        heights
+            .into_iter()
+            .map(|height| self.load_block(height))
+            .collect()
+    }
+
+    pub fn find_transaction(&self, tx_hash: &str) -> Result<Option<Transaction>, StorageError> {
+        for block in self.load_blocks()? {
+            if let Some(transaction) = block
+                .transactions
+                .into_iter()
+                .find(|transaction| transaction.tx_hash == tx_hash)
+            {
+                return Ok(Some(transaction));
+            }
+        }
+        Ok(None)
+    }
+
+    pub fn find_receipt(&self, tx_hash: &str) -> Result<Option<Receipt>, StorageError> {
+        for block in self.load_blocks()? {
+            if let Some(receipt) = block
+                .receipts
+                .into_iter()
+                .find(|receipt| receipt.tx_hash == tx_hash)
+            {
+                return Ok(Some(receipt));
+            }
+        }
+        Ok(None)
     }
 
     pub fn commit_finality_certificate(
@@ -717,11 +774,39 @@ mod tests {
         let proposer = ValidatorNode::new("validator-1", seeded_state());
         let block = proposer.propose_block(1, vec![transfer_tx()], 1_000);
 
+        assert_eq!(storage.maybe_load_block(1).unwrap(), None);
         storage.commit_block(&block).unwrap();
         let loaded = storage.load_block(1).unwrap();
+        let maybe_loaded = storage.maybe_load_block(1).unwrap();
 
         assert_eq!(loaded.block_hash(), block.block_hash());
+        assert_eq!(maybe_loaded.unwrap().block_hash(), block.block_hash());
         assert_eq!(loaded.header.storage_root, block.header.storage_root);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn indexes_transactions_and_receipts_from_durable_blocks() {
+        let dir = temp_dir("block-history-index");
+        let storage = FileStorage::open(&dir).unwrap();
+        let proposer = ValidatorNode::new("validator-1", seeded_state());
+        let block = proposer.propose_block(1, vec![transfer_tx()], 1_000);
+
+        storage.commit_block(&block).unwrap();
+
+        let blocks = storage.load_blocks().unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].block_hash(), block.block_hash());
+        assert_eq!(
+            storage.find_transaction("tx1").unwrap(),
+            Some(block.transactions[0].clone())
+        );
+        assert_eq!(
+            storage.find_receipt("tx1").unwrap(),
+            Some(block.receipts[0].clone())
+        );
+        assert_eq!(storage.find_transaction("missing").unwrap(), None);
+        assert_eq!(storage.find_receipt("missing").unwrap(), None);
         fs::remove_dir_all(dir).unwrap();
     }
 

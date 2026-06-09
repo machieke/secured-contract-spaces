@@ -388,6 +388,9 @@ Completed production-plan slices:
   pre-execution checks.
 - [x] Persistent validator nodes serve upgrade rehearsal reports over the TCP
   JSON RPC transport used by production operators.
+- [x] Persistent validator nodes serve finalized block, transaction, and
+  receipt history from durable block storage after restart over node-aware and
+  TCP JSON RPC paths.
 
 Next implementation slices:
 

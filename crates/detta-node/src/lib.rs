@@ -735,6 +735,24 @@ impl PersistentValidatorNode {
 
     pub fn handle_rpc_request(&mut self, request: RpcRequest) -> RpcResponse {
         match request {
+            RpcRequest::GetBlock { height } => match self.storage.maybe_load_block(height) {
+                Ok(Some(block)) => RpcResponse::Ok(RpcResult::Block(Box::new(block))),
+                Ok(None) => Err(RpcError::BlockNotFound).into(),
+                Err(error) => node_rpc_error_response(NodeError::Storage(error)),
+            },
+            RpcRequest::GetTransaction { tx_hash } => match self.storage.find_transaction(&tx_hash)
+            {
+                Ok(Some(transaction)) => {
+                    RpcResponse::Ok(RpcResult::Transaction(Box::new(transaction)))
+                }
+                Ok(None) => Err(RpcError::TransactionNotFound).into(),
+                Err(error) => node_rpc_error_response(NodeError::Storage(error)),
+            },
+            RpcRequest::GetReceipt { tx_hash } => match self.storage.find_receipt(&tx_hash) {
+                Ok(Some(receipt)) => RpcResponse::Ok(RpcResult::Receipt(Box::new(receipt))),
+                Ok(None) => Err(RpcError::ReceiptNotFound).into(),
+                Err(error) => node_rpc_error_response(NodeError::Storage(error)),
+            },
             RpcRequest::GetNodeHealth => RpcResponse::Ok(RpcResult::NodeHealth(Box::new(
                 self.persistent_node_health(),
             ))),
@@ -1958,7 +1976,9 @@ mod tests {
         node.submit_transaction(transfer_tx()).unwrap();
 
         let block = node.produce_block(1, 1_000).unwrap();
-        let restarted = PersistentValidatorNode::restart("validator-1", &dir).unwrap();
+        let expected_transaction = block.transactions[0].clone();
+        let expected_receipt = block.receipts[0].clone();
+        let mut restarted = PersistentValidatorNode::restart("validator-1", &dir).unwrap();
 
         assert_eq!(restarted.validator_id(), "validator-1");
         assert_eq!(
@@ -1968,6 +1988,22 @@ mod tests {
         assert_eq!(
             restarted.rpc().call_balance_view("TokenA", "Bob", "USDC"),
             60
+        );
+        assert_eq!(
+            restarted.handle_rpc_request(RpcRequest::GetBlock { height: 1 }),
+            RpcResponse::Ok(RpcResult::Block(Box::new(block.clone())))
+        );
+        assert_eq!(
+            restarted.handle_rpc_request(RpcRequest::GetTransaction {
+                tx_hash: "tx1".into(),
+            }),
+            RpcResponse::Ok(RpcResult::Transaction(Box::new(expected_transaction)))
+        );
+        assert_eq!(
+            restarted.handle_rpc_request(RpcRequest::GetReceipt {
+                tx_hash: "tx1".into(),
+            }),
+            RpcResponse::Ok(RpcResult::Receipt(Box::new(expected_receipt)))
         );
         fs::remove_dir_all(dir).unwrap();
     }
@@ -3877,6 +3913,58 @@ mod tests {
         assert_eq!(*report, expected_report);
         assert_eq!(report.report_root(), expected_report_root);
         assert_eq!(report.report_root().len(), 64);
+
+        stream.shutdown(Shutdown::Write).unwrap();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn persistent_node_json_rpc_tcp_serves_durable_history_after_restart() {
+        let dir = temp_dir("durable-history-json-rpc");
+        let mut node =
+            PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &dir).unwrap();
+        node.submit_transaction(transfer_tx()).unwrap();
+        let block = node.produce_block(1, 1_000).unwrap();
+        let expected_transaction = block.transactions[0].clone();
+        let expected_receipt = block.receipts[0].clone();
+        let restarted = PersistentValidatorNode::restart("validator-1", &dir).unwrap();
+        let server = JsonRpcServer::bind("127.0.0.1:0").unwrap();
+        let addr = server.local_addr().unwrap();
+        let handle = thread::spawn(move || {
+            let mut node = restarted;
+            server
+                .serve_next_connection_with_handler(&mut node)
+                .unwrap();
+            fs::remove_dir_all(dir).unwrap();
+        });
+
+        let mut stream = TcpStream::connect(addr).unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        write_rpc_request(&mut stream, &RpcRequest::GetBlock { height: 1 });
+        assert_eq!(
+            read_rpc_response(&mut reader),
+            RpcResponse::Ok(RpcResult::Block(Box::new(block)))
+        );
+        write_rpc_request(
+            &mut stream,
+            &RpcRequest::GetTransaction {
+                tx_hash: "tx1".into(),
+            },
+        );
+        assert_eq!(
+            read_rpc_response(&mut reader),
+            RpcResponse::Ok(RpcResult::Transaction(Box::new(expected_transaction)))
+        );
+        write_rpc_request(
+            &mut stream,
+            &RpcRequest::GetReceipt {
+                tx_hash: "tx1".into(),
+            },
+        );
+        assert_eq!(
+            read_rpc_response(&mut reader),
+            RpcResponse::Ok(RpcResult::Receipt(Box::new(expected_receipt)))
+        );
 
         stream.shutdown(Shutdown::Write).unwrap();
         handle.join().unwrap();
