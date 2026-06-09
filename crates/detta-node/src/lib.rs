@@ -1869,7 +1869,8 @@ fn node_rpc_error_code(error: &NodeError) -> &'static str {
 mod tests {
     use super::*;
     use detta_core::{
-        Argument, Method, TxStatus, DEFAULT_BLOCK_RESOURCE_LIMIT, DEFAULT_MEMPOOL_MAX_PENDING,
+        Argument, Method, PolicyEffect, ScheduledPolicyUpdate, ScheduledUpgrade, TxStatus,
+        DEFAULT_BLOCK_RESOURCE_LIMIT, DEFAULT_MEMPOOL_MAX_PENDING,
         DEFAULT_MEMPOOL_MAX_PENDING_PER_SENDER, DEFAULT_MEMPOOL_MAX_TRANSACTION_BYTES,
     };
     use detta_network::{InMemoryTransport, TcpProtocolStream};
@@ -4000,6 +4001,39 @@ mod tests {
             budget: 1_000_000,
         });
         assert_eq!(schedule.status, TxStatus::Committed);
+        let policy_schedule = state.apply_transaction(Transaction {
+            chain_id: "detta-local".into(),
+            tx_hash: "tx-schedule-policy".into(),
+            sender: "Admin".into(),
+            nonce: 2,
+            target: "GovA".into(),
+            method: Method::SchedulePolicyUpdate,
+            args: vec![
+                Argument::Text("policy-update-1".into()),
+                Argument::Text("transfer".into()),
+                Argument::Text("registryWrite".into()),
+            ],
+            signature_ok: true,
+            budget: 1_000_000,
+        });
+        assert_eq!(policy_schedule.status, TxStatus::Committed);
+        let expected_scheduled_upgrades = vec![ScheduledUpgrade {
+            upgrade_id: "upgrade-1".into(),
+            governance_contract: "GovA".into(),
+            target_contract: "TokenA".into(),
+            new_code_hash: "token-code-v2".into(),
+            execute_after_height: 2,
+            executed: false,
+        }];
+        let expected_scheduled_policy_updates = vec![ScheduledPolicyUpdate {
+            update_id: "policy-update-1".into(),
+            governance_contract: "GovA".into(),
+            target_contract: "TokenA".into(),
+            method: Method::Transfer,
+            effect: PolicyEffect::RegistryWrite,
+            execute_after_height: 2,
+            executed: false,
+        }];
         let expected_report = state.rehearse_scheduled_upgrade("upgrade-1").unwrap();
         let expected_report_root = expected_report.report_root();
         let server = JsonRpcServer::bind("127.0.0.1:0").unwrap();
@@ -4018,6 +4052,18 @@ mod tests {
 
         let mut stream = TcpStream::connect(addr).unwrap();
         let mut reader = BufReader::new(stream.try_clone().unwrap());
+        write_rpc_request(&mut stream, &RpcRequest::GetScheduledUpgrades);
+        assert_eq!(
+            read_rpc_response(&mut reader),
+            RpcResponse::Ok(RpcResult::ScheduledUpgrades(expected_scheduled_upgrades))
+        );
+        write_rpc_request(&mut stream, &RpcRequest::GetScheduledPolicyUpdates);
+        assert_eq!(
+            read_rpc_response(&mut reader),
+            RpcResponse::Ok(RpcResult::ScheduledPolicyUpdates(
+                expected_scheduled_policy_updates
+            ))
+        );
         write_rpc_request(
             &mut stream,
             &RpcRequest::GetUpgradeRehearsalReport {
