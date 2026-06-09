@@ -1820,7 +1820,7 @@ fn node_rpc_error_code(error: &NodeError) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use detta_core::{Argument, Method};
+    use detta_core::{Argument, Method, TxStatus};
     use detta_network::{InMemoryTransport, TcpProtocolStream};
     use detta_protocol::{
         ProtocolMessage, SignatureError, SnapshotChunkRequest, SnapshotChunkSet,
@@ -3816,6 +3816,67 @@ mod tests {
         );
         assert!(!status.using_imported_validator_set_metadata_audit_root);
         assert!(status.persisted_matches_local_validator_set_metadata_audit_root);
+
+        stream.shutdown(Shutdown::Write).unwrap();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn persistent_node_json_rpc_tcp_serves_upgrade_rehearsal_reports() {
+        let dir = temp_dir("upgrade-rehearsal-json-rpc");
+        let mut state = seeded_state();
+        state
+            .deploy_governance_with_timelock("GovA", "TokenA", "Admin", 2)
+            .unwrap();
+        let old_code_hash = state.code_hash("TokenA").unwrap().to_string();
+        let schedule = state.apply_transaction(Transaction {
+            chain_id: "detta-local".into(),
+            tx_hash: "tx-schedule-upgrade".into(),
+            sender: "Admin".into(),
+            nonce: 1,
+            target: "GovA".into(),
+            method: Method::ScheduleUpgrade,
+            args: vec![
+                Argument::Text("upgrade-1".into()),
+                Argument::Text("token-code-v2".into()),
+            ],
+            signature_ok: true,
+            budget: 1_000_000,
+        });
+        assert_eq!(schedule.status, TxStatus::Committed);
+        let expected_report = state.rehearse_scheduled_upgrade("upgrade-1").unwrap();
+        let expected_report_root = expected_report.report_root();
+        let server = JsonRpcServer::bind("127.0.0.1:0").unwrap();
+        let addr = server.local_addr().unwrap();
+        let handle = thread::spawn(move || {
+            let mut node = PersistentValidatorNode::bootstrap("validator-1", state, &dir).unwrap();
+            server
+                .serve_next_connection_with_handler(&mut node)
+                .unwrap();
+            assert_eq!(
+                node.rpc.node().state().code_hash("TokenA"),
+                Some(old_code_hash.as_str())
+            );
+            fs::remove_dir_all(dir).unwrap();
+        });
+
+        let mut stream = TcpStream::connect(addr).unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        write_rpc_request(
+            &mut stream,
+            &RpcRequest::GetUpgradeRehearsalReport {
+                upgrade_id: "upgrade-1".into(),
+            },
+        );
+
+        let RpcResponse::Ok(RpcResult::UpgradeRehearsalReport(report)) =
+            read_rpc_response(&mut reader)
+        else {
+            panic!("expected upgrade rehearsal report");
+        };
+        assert_eq!(*report, expected_report);
+        assert_eq!(report.report_root(), expected_report_root);
+        assert_eq!(report.report_root().len(), 64);
 
         stream.shutdown(Shutdown::Write).unwrap();
         handle.join().unwrap();

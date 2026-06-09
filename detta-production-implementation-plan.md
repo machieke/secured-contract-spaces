@@ -386,6 +386,8 @@ Completed production-plan slices:
   failures and authenticated roots before execution.
 - [x] Upgrade rehearsal reports are exposed over shared RPC for operator
   pre-execution checks.
+- [x] Persistent validator nodes serve upgrade rehearsal reports over the TCP
+  JSON RPC transport used by production operators.
 
 Next implementation slices:
 
