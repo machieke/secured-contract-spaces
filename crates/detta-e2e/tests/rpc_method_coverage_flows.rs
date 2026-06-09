@@ -1,9 +1,9 @@
 use detta_consensus::{EquivocationEvidence, FinalityCertificate};
-use detta_core::{Block, GrantKey, Method, StateKey};
+use detta_core::{AspectModuleRecord, AspectModuleRoots, Block, GrantKey, Method, StateKey};
 use detta_e2e::client::TcpRpcClient;
 use detta_e2e::fixtures::{
     amount, asset, defi_genesis_state, principal, temp_dir, text, tx_to, ADMIN, BRIDGE_CONTRACT,
-    CHAIN_ID, GOVERNANCE_CONTRACT, TOKEN_CONTRACT, USDC,
+    CHAIN_ID, FACTORY_CONTRACT, GOVERNANCE_CONTRACT, TOKEN_CONTRACT, USDC,
 };
 use detta_e2e::network::{spawn_tcp_persistent_node, spawn_tcp_rpc_server};
 use detta_node::PersistentValidatorNode;
@@ -72,6 +72,7 @@ fn public_rpc_method_coverage_guard_calls_every_openapi_method() {
             ProtocolMessage::ValidatorSetMetadataUpdate(metadata_update),
         )
         .unwrap();
+    let aspect_module_hash = aspect_module_record().module_hash;
 
     let (addr, server) = spawn_tcp_persistent_node(node).unwrap();
     let mut client = TcpRpcClient::connect(addr).unwrap();
@@ -296,6 +297,14 @@ fn public_rpc_method_coverage_guard_calls_every_openapi_method() {
             contract: TOKEN_CONTRACT.into(),
         },
     );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetAspectModule {
+            module_hash: aspect_module_hash,
+        },
+    );
+    call_ok(&mut client, &mut covered, RpcRequest::GetAspectModules);
     call_ok(&mut client, &mut covered, RpcRequest::GetScheduledUpgrades);
     call_ok(
         &mut client,
@@ -409,6 +418,16 @@ fn seed_coverage_state(node: &mut PersistentValidatorNode) -> Block {
         ],
     ))
     .unwrap();
+    let module = aspect_module_record();
+    node.submit_transaction(tx_to(
+        FACTORY_CONTRACT,
+        "coverage-setup-submit-aspect-module-1",
+        "Alice",
+        4,
+        Method::SubmitAspectModule,
+        aspect_module_submission_args(&module),
+    ))
+    .unwrap();
     node.submit_transaction(tx_to(
         GOVERNANCE_CONTRACT,
         "coverage-setup-schedule-upgrade-1",
@@ -432,6 +451,36 @@ fn seed_coverage_state(node: &mut PersistentValidatorNode) -> Block {
     ))
     .unwrap();
     node.produce_block(1, 1_000).unwrap()
+}
+
+fn aspect_module_record() -> AspectModuleRecord {
+    AspectModuleRecord::new(
+        "MinimalTransferToken",
+        "NormalizedBalanceFirst.v1",
+        AspectModuleRoots {
+            source_root: "source-root".into(),
+            ir_root: "ir-root".into(),
+            abi_root: "abi-root".into(),
+            policy_root: "policy-root".into(),
+            storage_schema_root: "storage-schema-root".into(),
+            registry_schema_root: "registry-schema-root".into(),
+            invariant_root: "invariant-root".into(),
+        },
+    )
+}
+
+fn aspect_module_submission_args(module: &AspectModuleRecord) -> Vec<detta_core::Argument> {
+    vec![
+        text(&module.module_id),
+        text(&module.taxonomy_version),
+        text(&module.source_root),
+        text(&module.ir_root),
+        text(&module.abi_root),
+        text(&module.policy_root),
+        text(&module.storage_schema_root),
+        text(&module.registry_schema_root),
+        text(&module.invariant_root),
+    ]
 }
 
 fn call_import_block_method(covered: &mut BTreeSet<String>) {

@@ -1,10 +1,10 @@
 use detta_consensus::{FinalityCertificate, SlashingRecord};
 use detta_core::{
-    Amount, AssetId, Block, BlockError, ContractId, ContractRecord, DeTTaState, Event, EventProof,
-    ExecutionError, GrantKey, MempoolError, OutboxMessageProof, Principal, Receipt, ReceiptProof,
-    RegistryNonInclusionProof, RegistryProof, ScheduledPolicyUpdate, ScheduledUpgrade, StateKey,
-    StateSnapshot, StorageNonInclusionProof, StorageProof, Transaction, UpgradeRehearsalReport,
-    ValidatorNode,
+    Amount, AspectModuleRecord, AssetId, Block, BlockError, ContractId, ContractRecord, DeTTaState,
+    Event, EventProof, ExecutionError, GrantKey, MempoolError, OutboxMessageProof, Principal,
+    Receipt, ReceiptProof, RegistryNonInclusionProof, RegistryProof, ScheduledPolicyUpdate,
+    ScheduledUpgrade, StateKey, StateSnapshot, StorageNonInclusionProof, StorageProof, Transaction,
+    UpgradeRehearsalReport, ValidatorNode,
 };
 use detta_evaluator::{
     canonical_script_source, parse_restricted_script, restricted_evaluator_fixture_inventory,
@@ -39,6 +39,7 @@ pub enum RpcError {
     ReceiptNotFound,
     TransactionNotFound,
     ContractNotFound,
+    AspectModuleNotFound,
     ProofNotFound,
     SubscriptionNotFound,
     Execution(ExecutionError),
@@ -267,6 +268,10 @@ pub enum RpcRequest {
     GetContract {
         contract: ContractId,
     },
+    GetAspectModule {
+        module_hash: String,
+    },
+    GetAspectModules,
     GetScheduledUpgrades,
     GetScheduledPolicyUpdates,
     GetUpgradeRehearsalReport {
@@ -565,6 +570,8 @@ pub enum RpcResult {
     SubscriptionStatus(SubscriptionStatus),
     SubscriptionEvents(SubscriptionEventPage),
     Contract(Box<ContractRecord>),
+    AspectModule(Box<AspectModuleRecord>),
+    AspectModules(Vec<AspectModuleRecord>),
     ScheduledUpgrades(Vec<ScheduledUpgrade>),
     ScheduledPolicyUpdates(Vec<ScheduledPolicyUpdate>),
     UpgradeRehearsalReport(Box<UpgradeRehearsalReport>),
@@ -1107,6 +1114,18 @@ impl RpcService {
             .ok_or(RpcError::ContractNotFound)
     }
 
+    pub fn get_aspect_module(&self, module_hash: &str) -> Result<AspectModuleRecord, RpcError> {
+        self.node
+            .state()
+            .aspect_module(module_hash)
+            .cloned()
+            .ok_or(RpcError::AspectModuleNotFound)
+    }
+
+    pub fn get_aspect_modules(&self) -> Vec<AspectModuleRecord> {
+        self.node.state().aspect_module_records().cloned().collect()
+    }
+
     pub fn get_scheduled_upgrades(&self) -> Vec<ScheduledUpgrade> {
         self.node.state().scheduled_upgrades().cloned().collect()
     }
@@ -1264,6 +1283,13 @@ impl RpcService {
                 .get_contract(contract)
                 .map(|contract| RpcResult::Contract(Box::new(contract)))
                 .into(),
+            RpcRequest::GetAspectModule { module_hash } => self
+                .get_aspect_module(&module_hash)
+                .map(|module| RpcResult::AspectModule(Box::new(module)))
+                .into(),
+            RpcRequest::GetAspectModules => {
+                RpcResponse::Ok(RpcResult::AspectModules(self.get_aspect_modules()))
+            }
             RpcRequest::GetScheduledUpgrades => {
                 RpcResponse::Ok(RpcResult::ScheduledUpgrades(self.get_scheduled_upgrades()))
             }
@@ -1619,6 +1645,7 @@ fn rpc_error_code(error: &RpcError) -> &'static str {
         RpcError::ReceiptNotFound => "rpc.receipt_not_found",
         RpcError::TransactionNotFound => "rpc.transaction_not_found",
         RpcError::ContractNotFound => "rpc.contract_not_found",
+        RpcError::AspectModuleNotFound => "rpc.aspect_module_not_found",
         RpcError::ProofNotFound => "rpc.proof_not_found",
         RpcError::SubscriptionNotFound => "rpc.subscription_not_found",
         RpcError::Execution(ExecutionError::UpgradeNotFound) => "execution.upgrade_not_found",
@@ -1698,6 +1725,7 @@ fn rpc_error_message(error: &RpcError) -> &'static str {
         RpcError::ReceiptNotFound => "receipt was not found",
         RpcError::TransactionNotFound => "transaction was not found",
         RpcError::ContractNotFound => "contract was not found",
+        RpcError::AspectModuleNotFound => "aspect module was not found",
         RpcError::ProofNotFound => "proof was not found",
         RpcError::SubscriptionNotFound => "subscription was not found",
         RpcError::Execution(ExecutionError::UpgradeNotFound) => "upgrade was not found",
@@ -1727,9 +1755,10 @@ mod tests {
     use super::*;
     use detta_consensus::EquivocationEvidence;
     use detta_core::{
-        Argument, ContractInvariant, DeTTaState, EventPayload, MerkleProof, Method, PolicyEffect,
-        TxStatus, DEFAULT_BLOCK_RESOURCE_LIMIT, DEFAULT_MEMPOOL_MAX_PENDING,
-        DEFAULT_MEMPOOL_MAX_PENDING_PER_SENDER, DEFAULT_MEMPOOL_MAX_TRANSACTION_BYTES,
+        Argument, AspectModuleRecord, AspectModuleRoots, ContractInvariant, DeTTaState,
+        EventPayload, MerkleProof, Method, PolicyEffect, TxStatus, DEFAULT_BLOCK_RESOURCE_LIMIT,
+        DEFAULT_MEMPOOL_MAX_PENDING, DEFAULT_MEMPOOL_MAX_PENDING_PER_SENDER,
+        DEFAULT_MEMPOOL_MAX_TRANSACTION_BYTES,
     };
     use detta_protocol::{ProtocolMessage, ValidatorSetMetadataUpdate, ValidatorSignatureDomain};
     use std::io::{BufRead, BufReader, Read, Write};
@@ -1745,6 +1774,22 @@ mod tests {
             )
             .unwrap();
         RpcService::new(ValidatorNode::new("validator-1", state))
+    }
+
+    fn aspect_module_record() -> AspectModuleRecord {
+        AspectModuleRecord::new(
+            "MinimalTransferToken",
+            "NormalizedBalanceFirst.v1",
+            AspectModuleRoots {
+                source_root: "source-root".into(),
+                ir_root: "ir-root".into(),
+                abi_root: "abi-root".into(),
+                policy_root: "policy-root".into(),
+                storage_schema_root: "storage-schema-root".into(),
+                registry_schema_root: "registry-schema-root".into(),
+                invariant_root: "invariant-root".into(),
+            },
+        )
     }
 
     fn transfer_tx() -> Transaction {
@@ -1878,6 +1923,8 @@ mod tests {
             "subscribe",
             "get_subscription_events",
             "get_contract",
+            "get_aspect_module",
+            "get_aspect_modules",
             "get_scheduled_upgrades",
             "get_scheduled_policy_updates",
             "get_upgrade_rehearsal_report",
@@ -2816,6 +2863,41 @@ mod tests {
             .declared_invariants()
             .contains(&ContractInvariant::TokenSupplyMatchesBalances));
         assert_eq!(rpc.get_state_root(), block.header.global_state_root);
+    }
+
+    #[test]
+    fn rpc_returns_registered_aspect_modules() {
+        let mut state = DeTTaState::new("detta-local");
+        let module = aspect_module_record();
+        let module_hash = module.module_hash.clone();
+        state.register_aspect_module(module.clone()).unwrap();
+        let mut rpc = RpcService::new(ValidatorNode::new("validator-1", state));
+
+        assert_eq!(
+            rpc.handle_request(RpcRequest::GetAspectModule {
+                module_hash: module_hash.clone(),
+            }),
+            RpcResponse::Ok(RpcResult::AspectModule(Box::new(module.clone())))
+        );
+        assert_eq!(
+            rpc.handle_request(RpcRequest::GetAspectModules),
+            RpcResponse::Ok(RpcResult::AspectModules(vec![module]))
+        );
+    }
+
+    #[test]
+    fn rpc_rejects_missing_aspect_module_query() {
+        let mut rpc = seeded_rpc();
+
+        assert_eq!(
+            rpc.handle_request(RpcRequest::GetAspectModule {
+                module_hash: "missing-module".into(),
+            }),
+            RpcResponse::Error(RpcErrorBody {
+                code: "rpc.aspect_module_not_found".into(),
+                message: "aspect module was not found".into(),
+            })
+        );
     }
 
     #[test]

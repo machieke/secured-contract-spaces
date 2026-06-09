@@ -1265,7 +1265,7 @@ Acceptance criteria:
 
 - [x] Add module registry state.
 - [x] Add programmable contract descriptor.
-- [ ] Add module submission path.
+- [x] Add module submission path.
 - [x] Add aspect contract deployment path.
 - [ ] Dispatch programmable methods through evaluator.
 - [ ] Integrate invariant checks.
@@ -1273,10 +1273,10 @@ Acceptance criteria:
 
 Progress note: the first runtime slice stores authenticated aspect module
 records by deterministic module hash, includes them in the global state root,
-and deploys fail-closed programmable contract descriptors that reference a
-registered module hash and bundle id. Transaction/RPC module submission,
-method dispatch, invariant execution, and receipt/proof integration remain
-pending.
+admits modules through a consensus-replayed factory transaction, exposes
+module inspection over RPC, and deploys fail-closed programmable contract
+descriptors that reference a registered module hash and bundle id. Method
+dispatch, invariant execution, and receipt/proof integration remain pending.
 
 Acceptance criteria:
 

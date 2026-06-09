@@ -125,6 +125,8 @@
           "subscribe",
           "get_subscription_events",
           "get_contract",
+          "get_aspect_module",
+          "get_aspect_modules",
           "get_scheduled_upgrades",
           "get_scheduled_policy_updates",
           "get_upgrade_rehearsal_report",

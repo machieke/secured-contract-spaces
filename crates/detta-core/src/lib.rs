@@ -38,6 +38,8 @@ pub enum Method {
     RouteTransferFrom,
     DeployToken,
     DeployAmmPool,
+    SubmitAspectModule,
+    DeployAspectContract,
     RegisterAccountKey,
     RevokeAccountKey,
     Other(String),
@@ -356,6 +358,18 @@ impl AspectModuleRecord {
             &self.invariant_root,
         ))
     }
+
+    pub fn roots_are_complete(&self) -> bool {
+        !self.module_id.is_empty()
+            && !self.taxonomy_version.is_empty()
+            && !self.source_root.is_empty()
+            && !self.ir_root.is_empty()
+            && !self.abi_root.is_empty()
+            && !self.policy_root.is_empty()
+            && !self.storage_schema_root.is_empty()
+            && !self.registry_schema_root.is_empty()
+            && !self.invariant_root.is_empty()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -508,6 +522,7 @@ pub enum PolicyEffect {
     StorageWrite,
     RegistryWrite,
     EventEmit,
+    ModuleRegister,
     ContractPause,
     UpgradeSchedule,
     ContractCodeUpgrade,
@@ -948,6 +963,22 @@ impl ContractRecord {
                         [invariant.clone()],
                     ),
                 ),
+                (
+                    Method::SubmitAspectModule,
+                    method_policy(
+                        PolicyAuthority::TxSender,
+                        [PolicyEffect::ModuleRegister, PolicyEffect::EventEmit],
+                        [invariant.clone()],
+                    ),
+                ),
+                (
+                    Method::DeployAspectContract,
+                    method_policy(
+                        PolicyAuthority::TxSender,
+                        [PolicyEffect::ContractDeploy, PolicyEffect::EventEmit],
+                        [invariant.clone()],
+                    ),
+                ),
             ]),
             BTreeSet::from([invariant]),
         )
@@ -1051,6 +1082,8 @@ fn method_resource_units(method: &Method) -> u64 {
         Method::Liquidate => 46,
         Method::RouteTransferFrom => 55,
         Method::DeployToken | Method::DeployAmmPool => 60,
+        Method::SubmitAspectModule => 80,
+        Method::DeployAspectContract => 64,
         Method::RegisterAccountKey | Method::RevokeAccountKey => 24,
         Method::Other(_) => 10,
     }
@@ -1208,6 +1241,11 @@ pub enum EventPayload {
         contract: ContractId,
         kind: String,
         code_hash: String,
+    },
+    AspectModuleSubmitted {
+        module_id: String,
+        module_hash: String,
+        taxonomy_version: String,
     },
     AccountKeyRegistered {
         account: Principal,
@@ -2830,6 +2868,9 @@ impl DeTTaState {
         module: AspectModuleRecord,
     ) -> Result<String, ExecutionError> {
         let computed_hash = module.computed_hash();
+        if !module.roots_are_complete() {
+            return Err(ExecutionError::InvalidArguments);
+        }
         if module.module_hash != computed_hash {
             return Err(ExecutionError::InvalidArguments);
         }
@@ -2850,6 +2891,12 @@ impl DeTTaState {
         let contract = contract.into();
         let module_hash = module_hash.into();
         let bundle_id = bundle_id.into();
+        if contract.is_empty() || module_hash.is_empty() || bundle_id.is_empty() {
+            return Err(ExecutionError::InvalidArguments);
+        }
+        if self.contracts.contains_key(&contract) {
+            return Err(ExecutionError::InvalidArguments);
+        }
         let module = self
             .aspect_modules
             .get(&module_hash)
@@ -2898,6 +2945,7 @@ impl DeTTaState {
         let checkpoint_certificate_nonces = self.used_certificate_nonces.clone();
         let checkpoint_paused_contracts = self.paused_contracts.clone();
         let checkpoint_contracts = self.contracts.clone();
+        let checkpoint_aspect_modules = self.aspect_modules.clone();
         let checkpoint_scheduled_upgrades = self.scheduled_upgrades.clone();
         let checkpoint_scheduled_policy_updates = self.scheduled_policy_updates.clone();
         let checkpoint_outbound_message_ids = self.outbound_message_ids.clone();
@@ -2911,6 +2959,7 @@ impl DeTTaState {
             }
             Err(error) => {
                 self.contracts = checkpoint_contracts;
+                self.aspect_modules = checkpoint_aspect_modules;
                 self.storage = checkpoint_storage;
                 self.registry = checkpoint_registry;
                 self.events = checkpoint_events;
@@ -3775,6 +3824,8 @@ impl DeTTaState {
                 ContractKind::Factory => match tx.method {
                     Method::DeployToken => self.deploy_token_from_factory(tx),
                     Method::DeployAmmPool => self.deploy_amm_pool_from_factory(tx),
+                    Method::SubmitAspectModule => self.submit_aspect_module_from_factory(tx),
+                    Method::DeployAspectContract => self.deploy_aspect_contract_from_factory(tx),
                     _ => Err(ExecutionError::PolicyMissing),
                 },
                 ContractKind::AccountRegistry => match tx.method {
@@ -5333,6 +5384,65 @@ impl DeTTaState {
         Ok(ReturnValue::Unit)
     }
 
+    fn submit_aspect_module_from_factory(
+        &mut self,
+        tx: &Transaction,
+    ) -> Result<ReturnValue, ExecutionError> {
+        let [module_id, taxonomy_version, source_root, ir_root, abi_root, policy_root, storage_schema_root, registry_schema_root, invariant_root] =
+            expect_args(&tx.args)?;
+        let module = AspectModuleRecord::new(
+            expect_text(module_id)?,
+            expect_text(taxonomy_version)?,
+            AspectModuleRoots {
+                source_root: expect_text(source_root)?,
+                ir_root: expect_text(ir_root)?,
+                abi_root: expect_text(abi_root)?,
+                policy_root: expect_text(policy_root)?,
+                storage_schema_root: expect_text(storage_schema_root)?,
+                registry_schema_root: expect_text(registry_schema_root)?,
+                invariant_root: expect_text(invariant_root)?,
+            },
+        );
+        let module_hash = self.register_aspect_module(module.clone())?;
+        self.emit(
+            &tx.target,
+            &tx.tx_hash,
+            EventPayload::AspectModuleSubmitted {
+                module_id: module.module_id,
+                module_hash,
+                taxonomy_version: module.taxonomy_version,
+            },
+        );
+        Ok(ReturnValue::Unit)
+    }
+
+    fn deploy_aspect_contract_from_factory(
+        &mut self,
+        tx: &Transaction,
+    ) -> Result<ReturnValue, ExecutionError> {
+        let [contract, module_hash, bundle_id] = expect_args(&tx.args)?;
+        let contract = expect_text(contract)?;
+        let module_hash = expect_text(module_hash)?;
+        let bundle_id = expect_text(bundle_id)?;
+        self.deploy_aspect_contract(contract.clone(), module_hash, bundle_id)?;
+        let code_hash = self
+            .contracts
+            .get(&contract)
+            .ok_or(ExecutionError::ContractNotFound)?
+            .code_hash
+            .clone();
+        self.emit(
+            &tx.target,
+            &tx.tx_hash,
+            EventPayload::ContractDeployed {
+                contract,
+                kind: "aspect_module".into(),
+                code_hash,
+            },
+        );
+        Ok(ReturnValue::Unit)
+    }
+
     fn register_account_key_from_contract(
         &mut self,
         tx: &Transaction,
@@ -5561,12 +5671,24 @@ impl DeTTaState {
             ContractInvariant::RouterDoesNotInheritCallerWriteScope => true,
             ContractInvariant::FactoryDeploymentsDeclarePolicies => {
                 self.contracts.values().all(|record| {
-                    !record.exported_methods.is_empty()
-                        && !record.declared_invariants.is_empty()
-                        && record
-                            .exported_methods
-                            .iter()
-                            .all(|method| record.method_policies.contains_key(method))
+                    if let ContractKind::AspectModule {
+                        abi_root,
+                        policy_root,
+                        invariant_root,
+                        ..
+                    } = &record.kind
+                    {
+                        !abi_root.is_empty()
+                            && !policy_root.is_empty()
+                            && !invariant_root.is_empty()
+                    } else {
+                        !record.exported_methods.is_empty()
+                            && !record.declared_invariants.is_empty()
+                            && record
+                                .exported_methods
+                                .iter()
+                                .all(|method| record.method_policies.contains_key(method))
+                    }
                 })
             }
             ContractInvariant::AccountSignerKeysCanonical => self.account_signer_keys_canonical(),
@@ -5895,6 +6017,8 @@ fn parse_policy_method(value: &str) -> Result<Method, ExecutionError> {
         "routeTransferFrom" => Ok(Method::RouteTransferFrom),
         "deployToken" => Ok(Method::DeployToken),
         "deployAmmPool" => Ok(Method::DeployAmmPool),
+        "submitAspectModule" => Ok(Method::SubmitAspectModule),
+        "deployAspectContract" => Ok(Method::DeployAspectContract),
         "registerAccountKey" => Ok(Method::RegisterAccountKey),
         "revokeAccountKey" => Ok(Method::RevokeAccountKey),
         _ => Err(ExecutionError::InvalidArguments),
@@ -5906,6 +6030,7 @@ fn parse_policy_effect(value: &str) -> Result<PolicyEffect, ExecutionError> {
         "storageWrite" => Ok(PolicyEffect::StorageWrite),
         "registryWrite" => Ok(PolicyEffect::RegistryWrite),
         "eventEmit" => Ok(PolicyEffect::EventEmit),
+        "moduleRegister" => Ok(PolicyEffect::ModuleRegister),
         "contractPause" => Ok(PolicyEffect::ContractPause),
         "upgradeSchedule" => Ok(PolicyEffect::UpgradeSchedule),
         "contractCodeUpgrade" => Ok(PolicyEffect::ContractCodeUpgrade),
@@ -6394,6 +6519,20 @@ mod tests {
         )
     }
 
+    fn aspect_module_submission_args(module: &AspectModuleRecord) -> Vec<Argument> {
+        vec![
+            text(&module.module_id),
+            text(&module.taxonomy_version),
+            text(&module.source_root),
+            text(&module.ir_root),
+            text(&module.abi_root),
+            text(&module.policy_root),
+            text(&module.storage_schema_root),
+            text(&module.registry_schema_root),
+            text(&module.invariant_root),
+        ]
+    }
+
     #[test]
     fn aspect_module_registration_authenticates_record_hash() {
         let mut state = DeTTaState::new("detta-local");
@@ -6468,6 +6607,118 @@ mod tests {
             state.deploy_aspect_contract("AspectToken", "missing-module", "Bundle"),
             Err(ExecutionError::InvalidArguments)
         );
+        assert!(state.contract("AspectToken").is_none());
+    }
+
+    #[test]
+    fn factory_transaction_submits_aspect_module() {
+        let mut state = DeTTaState::new("detta-local");
+        state.deploy_factory("Factory").unwrap();
+        let module = aspect_module_record();
+        let module_hash = module.module_hash.clone();
+
+        let receipt = state.apply_transaction(tx_to(
+            "Factory",
+            "tx-submit-aspect-module",
+            "Alice",
+            1,
+            Method::SubmitAspectModule,
+            aspect_module_submission_args(&module),
+        ));
+
+        assert_eq!(receipt.status, TxStatus::Committed);
+        assert_eq!(state.aspect_module(&module_hash), Some(&module));
+        assert!(matches!(
+            state.events().last().map(|event| &event.payload),
+            Some(EventPayload::AspectModuleSubmitted {
+                module_id,
+                module_hash: event_module_hash,
+                taxonomy_version,
+            }) if module_id == "MinimalTransferToken"
+                && event_module_hash == &module_hash
+                && taxonomy_version == "NormalizedBalanceFirst.v1"
+        ));
+    }
+
+    #[test]
+    fn factory_transaction_deploys_registered_aspect_contract() {
+        let mut state = DeTTaState::new("detta-local");
+        state.deploy_factory("Factory").unwrap();
+        let module = aspect_module_record();
+        let module_hash = module.module_hash.clone();
+        state.register_aspect_module(module).unwrap();
+
+        let receipt = state.apply_transaction(tx_to(
+            "Factory",
+            "tx-deploy-aspect-contract",
+            "Alice",
+            1,
+            Method::DeployAspectContract,
+            vec![
+                text("AspectToken"),
+                text(&module_hash),
+                text("MinimalTransferToken"),
+            ],
+        ));
+
+        assert_eq!(receipt.status, TxStatus::Committed);
+        assert!(matches!(
+            state.contract("AspectToken").map(|record| &record.kind),
+            Some(ContractKind::AspectModule {
+                module_hash: deployed_hash,
+                bundle_id,
+                ..
+            }) if deployed_hash == &module_hash && bundle_id == "MinimalTransferToken"
+        ));
+        assert!(matches!(
+            state.events().last().map(|event| &event.payload),
+            Some(EventPayload::ContractDeployed {
+                contract,
+                kind,
+                code_hash,
+            }) if contract == "AspectToken" && kind == "aspect_module" && code_hash == &module_hash
+        ));
+    }
+
+    #[test]
+    fn failed_aspect_module_submission_rolls_back_registry() {
+        let mut state = DeTTaState::new("detta-local");
+        state.deploy_factory("Factory").unwrap();
+        let mut module = aspect_module_record();
+        module.policy_root.clear();
+        let aspect_module_root_before = state.aspect_module_root();
+
+        let receipt = state.apply_transaction(tx_to(
+            "Factory",
+            "tx-submit-bad-aspect-module",
+            "Alice",
+            1,
+            Method::SubmitAspectModule,
+            aspect_module_submission_args(&module),
+        ));
+
+        assert_eq!(receipt.status, TxStatus::Reverted);
+        assert_eq!(receipt.error, Some(ExecutionError::InvalidArguments));
+        assert_eq!(state.aspect_module_records().count(), 0);
+        assert_eq!(state.aspect_module_root(), aspect_module_root_before);
+    }
+
+    #[test]
+    fn factory_aspect_contract_deployment_rejects_unknown_module_atomically() {
+        let mut state = DeTTaState::new("detta-local");
+        state.deploy_factory("Factory").unwrap();
+
+        let receipt = state.apply_transaction(tx_to(
+            "Factory",
+            "tx-deploy-missing-aspect-contract",
+            "Alice",
+            1,
+            Method::DeployAspectContract,
+            vec![text("AspectToken"), text("missing-module"), text("Bundle")],
+        ));
+
+        assert_eq!(receipt.status, TxStatus::Reverted);
+        assert_eq!(receipt.error, Some(ExecutionError::InvalidArguments));
         assert!(state.contract("AspectToken").is_none());
     }
 
