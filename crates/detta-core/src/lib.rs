@@ -2474,6 +2474,12 @@ struct LendingConfig {
     liquidation_threshold_bps: u64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum AssetLedger {
+    NativeToken { contract: ContractId },
+    AspectToken { contract: ContractId },
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AmmParameters {
     pub swap_fee_bps: u64,
@@ -2740,6 +2746,20 @@ impl DeTTaState {
         let code_hash = root_of(&("detta-token-v1", &contract));
         let mut total = 0u128;
 
+        if self.contracts.contains_key(&contract)
+            || self.storage.keys().any(|key| {
+                matches!(
+                    key,
+                    StateKey::TotalSupply {
+                        contract: existing_contract,
+                        asset: existing_asset,
+                    } if existing_contract != &contract && existing_asset == &asset
+                )
+            })
+        {
+            return Err(ExecutionError::InvalidArguments);
+        }
+
         self.contracts.insert(
             contract.clone(),
             ContractRecord::token(contract.clone(), code_hash),
@@ -2799,6 +2819,8 @@ impl DeTTaState {
         if parameters.swap_fee_bps > 10_000 {
             return Err(ExecutionError::InvalidArguments);
         }
+        self.resolve_asset_ledger(&asset_a)?;
+        self.resolve_asset_ledger(&asset_b)?;
 
         let code_hash = root_of(&(
             "detta-amm-v2",
@@ -4547,6 +4569,9 @@ impl DeTTaState {
         let [amount_a, amount_b] = expect_args(&tx.args)?;
         let amount_a = expect_amount(amount_a)?;
         let amount_b = expect_amount(amount_b)?;
+        if amount_a == 0 || amount_b == 0 {
+            return Err(ExecutionError::InvalidArguments);
+        }
         let minted_lp = amount_a
             .checked_add(amount_b)
             .ok_or(ExecutionError::ArithmeticOverflow)?;
@@ -4556,6 +4581,8 @@ impl DeTTaState {
         let reserve_b_key = reserve_key(&tx.target, &asset_b);
         let lp_supply_key = lp_supply_key(&tx.target);
         let lp_balance_key = lp_balance_key(&tx.target, &provider);
+        let asset_a_ledger = self.resolve_asset_ledger(&asset_a)?;
+        let asset_b_ledger = self.resolve_asset_ledger(&asset_b)?;
         let frame = AuthorizedFrame {
             contract: tx.target.clone(),
             msg_sender: provider.clone(),
@@ -4572,6 +4599,22 @@ impl DeTTaState {
         let lp_supply = self.uint_at(&lp_supply_key);
         let lp_balance = self.uint_at(&lp_balance_key);
 
+        self.transfer_asset_balance(
+            tx,
+            &asset_a_ledger,
+            &provider,
+            &tx.target,
+            &asset_a,
+            amount_a,
+        )?;
+        self.transfer_asset_balance(
+            tx,
+            &asset_b_ledger,
+            &provider,
+            &tx.target,
+            &asset_b,
+            amount_b,
+        )?;
         self.state_set(
             &frame,
             reserve_a_key,
@@ -4640,6 +4683,9 @@ impl DeTTaState {
         let input_asset = expect_asset(input_asset)?;
         let amount_in = expect_amount(amount_in)?;
         let min_output = expect_amount(min_output)?;
+        if amount_in == 0 {
+            return Err(ExecutionError::InvalidArguments);
+        }
         let output_asset = if input_asset == asset_a {
             asset_b
         } else if input_asset == asset_b {
@@ -4651,6 +4697,8 @@ impl DeTTaState {
         let input_key = reserve_key(&tx.target, &input_asset);
         let output_key = reserve_key(&tx.target, &output_asset);
         let fee_key = amm_fee_collected_key(&tx.target, &input_asset);
+        let input_ledger = self.resolve_asset_ledger(&input_asset)?;
+        let output_ledger = self.resolve_asset_ledger(&output_asset)?;
         let frame = AuthorizedFrame {
             contract: tx.target.clone(),
             msg_sender: tx.sender.clone(),
@@ -4680,6 +4728,22 @@ impl DeTTaState {
             return Err(ExecutionError::SlippageExceeded);
         }
 
+        self.transfer_asset_balance(
+            tx,
+            &input_ledger,
+            &msg_sender,
+            &tx.target,
+            &input_asset,
+            amount_in,
+        )?;
+        self.transfer_asset_balance(
+            tx,
+            &output_ledger,
+            &tx.target,
+            &msg_sender,
+            &output_asset,
+            amount_out,
+        )?;
         self.state_set(
             &frame,
             input_key,
@@ -4724,6 +4788,218 @@ impl DeTTaState {
             },
         );
         Ok(ReturnValue::UInt(amount_out))
+    }
+
+    fn resolve_asset_ledger(&self, asset: &AssetId) -> Result<AssetLedger, ExecutionError> {
+        let mut native_contracts = self
+            .storage
+            .keys()
+            .filter_map(|key| match key {
+                StateKey::TotalSupply {
+                    contract,
+                    asset: supply_asset,
+                } if supply_asset == asset
+                    && self
+                        .contracts
+                        .get(contract)
+                        .is_some_and(|record| matches!(record.kind, ContractKind::Token)) =>
+                {
+                    Some(contract.clone())
+                }
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter();
+        let native = native_contracts.next();
+        if native_contracts.next().is_some() {
+            return Err(ExecutionError::InvalidPoolAsset);
+        }
+
+        let aspect = self
+            .contracts
+            .get(asset)
+            .and_then(|record| match &record.kind {
+                ContractKind::AspectModule { .. }
+                    if record
+                        .exported_methods
+                        .contains(&Method::Other("ERC20-transfer".into())) =>
+                {
+                    Some(asset.clone())
+                }
+                _ => None,
+            });
+
+        match (native, aspect) {
+            (Some(_), Some(_)) => Err(ExecutionError::InvalidPoolAsset),
+            (Some(contract), None) => Ok(AssetLedger::NativeToken { contract }),
+            (None, Some(contract)) => Ok(AssetLedger::AspectToken { contract }),
+            (None, None) => Err(ExecutionError::InvalidPoolAsset),
+        }
+    }
+
+    fn transfer_asset_balance(
+        &mut self,
+        tx: &Transaction,
+        ledger: &AssetLedger,
+        from: &Principal,
+        to: &Principal,
+        asset: &AssetId,
+        amount: Amount,
+    ) -> Result<(), ExecutionError> {
+        match ledger {
+            AssetLedger::NativeToken { contract } => {
+                self.transfer_native_asset_balance(contract, from, to, asset, amount)
+            }
+            AssetLedger::AspectToken { contract } => {
+                self.transfer_aspect_asset_balance(tx, contract, from, to, amount)
+            }
+        }
+    }
+
+    fn mint_asset_balance(
+        &mut self,
+        _tx: &Transaction,
+        ledger: &AssetLedger,
+        to: &Principal,
+        asset: &AssetId,
+        amount: Amount,
+    ) -> Result<(), ExecutionError> {
+        match ledger {
+            AssetLedger::NativeToken { contract } => {
+                self.mint_native_asset_balance(contract, to, asset, amount)
+            }
+            AssetLedger::AspectToken { .. } => Err(ExecutionError::InvalidPoolAsset),
+        }
+    }
+
+    fn mint_bridge_asset_balance(
+        &mut self,
+        _tx: &Transaction,
+        ledger: &AssetLedger,
+        to: &Principal,
+        asset: &AssetId,
+        amount: Amount,
+    ) -> Result<(), ExecutionError> {
+        match ledger {
+            AssetLedger::NativeToken { contract } => {
+                self.mint_native_asset_balance(contract, to, asset, amount)
+            }
+            AssetLedger::AspectToken { .. } => Err(ExecutionError::InvalidBridgeMessage),
+        }
+    }
+
+    fn transfer_native_asset_balance(
+        &mut self,
+        token_contract: &ContractId,
+        from: &Principal,
+        to: &Principal,
+        asset: &AssetId,
+        amount: Amount,
+    ) -> Result<(), ExecutionError> {
+        let from_key = balance_key(token_contract, from, asset);
+        let to_key = balance_key(token_contract, to, asset);
+        let frame = AuthorizedFrame {
+            contract: token_contract.clone(),
+            msg_sender: from.clone(),
+            write_scope: BTreeSet::from([from_key.clone(), to_key.clone()]),
+        };
+
+        let from_balance = self.uint_at(&from_key);
+        if from_balance < amount {
+            return Err(ExecutionError::InsufficientBalance);
+        }
+        let to_balance = self.uint_at(&to_key);
+        let new_to = to_balance
+            .checked_add(amount)
+            .ok_or(ExecutionError::ArithmeticOverflow)?;
+
+        self.state_set(&frame, from_key, StateValue::UInt(from_balance - amount))?;
+        self.state_set(&frame, to_key, StateValue::UInt(new_to))?;
+        if !self.token_invariants_hold(token_contract, asset) {
+            return Err(ExecutionError::InvariantViolation);
+        }
+        Ok(())
+    }
+
+    fn mint_native_asset_balance(
+        &mut self,
+        token_contract: &ContractId,
+        to: &Principal,
+        asset: &AssetId,
+        amount: Amount,
+    ) -> Result<(), ExecutionError> {
+        let total_key = StateKey::TotalSupply {
+            contract: token_contract.clone(),
+            asset: asset.clone(),
+        };
+        let to_key = balance_key(token_contract, to, asset);
+        let frame = AuthorizedFrame {
+            contract: token_contract.clone(),
+            msg_sender: to.clone(),
+            write_scope: BTreeSet::from([total_key.clone(), to_key.clone()]),
+        };
+
+        let total_supply = self.uint_at(&total_key);
+        let to_balance = self.uint_at(&to_key);
+        let new_total_supply = total_supply
+            .checked_add(amount)
+            .ok_or(ExecutionError::ArithmeticOverflow)?;
+        let new_to = to_balance
+            .checked_add(amount)
+            .ok_or(ExecutionError::ArithmeticOverflow)?;
+
+        self.state_set(&frame, total_key, StateValue::UInt(new_total_supply))?;
+        self.state_set(&frame, to_key, StateValue::UInt(new_to))?;
+        if !self.token_invariants_hold(token_contract, asset) {
+            return Err(ExecutionError::InvariantViolation);
+        }
+        Ok(())
+    }
+
+    fn transfer_aspect_asset_balance(
+        &mut self,
+        tx: &Transaction,
+        aspect_contract: &ContractId,
+        from: &Principal,
+        to: &Principal,
+        amount: Amount,
+    ) -> Result<(), ExecutionError> {
+        let contract = self
+            .contracts
+            .get(aspect_contract)
+            .cloned()
+            .ok_or(ExecutionError::ContractNotFound)?;
+        let ContractKind::AspectModule {
+            module_hash,
+            bundle_id,
+            ..
+        } = contract.kind
+        else {
+            return Err(ExecutionError::InvalidPoolAsset);
+        };
+        if !contract
+            .exported_methods
+            .contains(&Method::Other("ERC20-transfer".into()))
+        {
+            return Err(ExecutionError::MethodNotExported);
+        }
+        let child_tx = Transaction {
+            chain_id: tx.chain_id.clone(),
+            tx_hash: format!(
+                "{}:asset-transfer:{}:{}:{}",
+                tx.tx_hash, aspect_contract, from, to
+            ),
+            sender: from.clone(),
+            nonce: tx.nonce,
+            valid_until_height: tx.valid_until_height,
+            target: aspect_contract.clone(),
+            method: Method::Other("ERC20-transfer".into()),
+            args: vec![Argument::Principal(to.clone()), Argument::Amount(amount)],
+            signature_ok: true,
+            budget: tx.budget,
+        };
+        self.execute_aspect_module_method(&child_tx, from.clone(), module_hash, bundle_id)?;
+        Ok(())
     }
 
     fn submit_price(
@@ -4778,7 +5054,7 @@ impl DeTTaState {
     fn queue_bridge_message(
         &mut self,
         tx: &Transaction,
-        _msg_sender: Principal,
+        msg_sender: Principal,
     ) -> Result<ReturnValue, ExecutionError> {
         let [destination_chain, destination_contract, message_id, recipient, asset, amount] =
             expect_args(&tx.args)?;
@@ -4788,10 +5064,14 @@ impl DeTTaState {
         let recipient = expect_principal(recipient)?;
         let asset = expect_asset(asset)?;
         let amount = expect_amount(amount)?;
+        if amount == 0 {
+            return Err(ExecutionError::InvalidArguments);
+        }
 
         if self.outbound_message_ids.contains(&message_id) {
             return Err(ExecutionError::OutboundMessageReplay);
         }
+        let asset_ledger = self.resolve_asset_ledger(&asset)?;
 
         let message = CrossShardMessage {
             source_chain: self.chain_id.clone(),
@@ -4804,6 +5084,7 @@ impl DeTTaState {
             asset: asset.clone(),
             amount,
         };
+        self.transfer_asset_balance(tx, &asset_ledger, &msg_sender, &tx.target, &asset, amount)?;
         self.outbound_message_ids.insert(message_id.clone());
         self.cross_shard_outbox.push(message);
 
@@ -4834,6 +5115,9 @@ impl DeTTaState {
         let asset = expect_asset(asset)?;
         let amount = expect_amount(amount)?;
         let certificate = expect_certificate(certificate)?;
+        if amount == 0 {
+            return Err(ExecutionError::InvalidArguments);
+        }
 
         let expected = ExpectedBridgeMessage {
             destination_chain: &self.chain_id,
@@ -4854,12 +5138,14 @@ impl DeTTaState {
         if self.uint_at(&consumed_key) != 0 {
             return Err(ExecutionError::BridgeMessageReplay);
         }
+        let asset_ledger = self.resolve_asset_ledger(&asset)?;
 
         let frame = AuthorizedFrame {
             contract: tx.target.clone(),
             msg_sender,
             write_scope: BTreeSet::from([consumed_key.clone()]),
         };
+        self.mint_bridge_asset_balance(tx, &asset_ledger, &recipient, &asset, amount)?;
         self.state_set(&frame, consumed_key, StateValue::UInt(1))?;
 
         self.emit(
@@ -5150,8 +5436,12 @@ impl DeTTaState {
         if asset != collateral_asset {
             return Err(ExecutionError::InvalidPoolAsset);
         }
+        if amount == 0 {
+            return Err(ExecutionError::InvalidArguments);
+        }
 
         let borrower = tx.sender.clone();
+        let collateral_ledger = self.resolve_asset_ledger(&asset)?;
         let collateral_key = collateral_key(&tx.target, &borrower, &asset);
         let frame = AuthorizedFrame {
             contract: tx.target.clone(),
@@ -5159,6 +5449,14 @@ impl DeTTaState {
             write_scope: BTreeSet::from([collateral_key.clone()]),
         };
         let current = self.uint_at(&collateral_key);
+        self.transfer_asset_balance(
+            tx,
+            &collateral_ledger,
+            &borrower,
+            &tx.target,
+            &asset,
+            amount,
+        )?;
         self.state_set(
             &frame,
             collateral_key,
@@ -5193,6 +5491,9 @@ impl DeTTaState {
         if asset != config.debt_asset {
             return Err(ExecutionError::InvalidPoolAsset);
         }
+        if amount == 0 {
+            return Err(ExecutionError::InvalidArguments);
+        }
 
         let borrower = msg_sender;
         let price = self.fresh_lending_collateral_price(&config)?;
@@ -5215,6 +5516,15 @@ impl DeTTaState {
             return Err(ExecutionError::InsufficientCollateral);
         }
 
+        let debt_ledger = self.resolve_asset_ledger(&config.debt_asset)?;
+        self.transfer_asset_balance(
+            tx,
+            &debt_ledger,
+            &tx.target,
+            &borrower,
+            &config.debt_asset,
+            amount,
+        )?;
         self.state_set(&frame, debt_key, StateValue::UInt(next_debt))?;
 
         self.emit(
@@ -5297,6 +5607,26 @@ impl DeTTaState {
             }
         }
 
+        let debt_ledger = self.resolve_asset_ledger(&config.debt_asset)?;
+        let collateral_ledger = self.resolve_asset_ledger(&config.collateral_asset)?;
+        self.transfer_asset_balance(
+            tx,
+            &debt_ledger,
+            &msg_sender,
+            &tx.target,
+            &config.debt_asset,
+            repaid_debt,
+        )?;
+        if seized_collateral != 0 {
+            self.transfer_asset_balance(
+                tx,
+                &collateral_ledger,
+                &tx.target,
+                &msg_sender,
+                &config.collateral_asset,
+                seized_collateral,
+            )?;
+        }
         self.state_set(&frame, debt_key, StateValue::UInt(debt_after))?;
         self.state_set(&frame, collateral_key, StateValue::UInt(collateral_after))?;
 
@@ -5384,6 +5714,9 @@ impl DeTTaState {
         if asset != staking_asset {
             return Err(ExecutionError::InvalidPoolAsset);
         }
+        if amount == 0 {
+            return Err(ExecutionError::InvalidArguments);
+        }
 
         let staker = msg_sender;
         let stake_key = stake_balance_key(&tx.target, &staker, &asset);
@@ -5405,6 +5738,8 @@ impl DeTTaState {
 
         let current_stake = self.uint_at(&stake_key);
         let total_staked = self.uint_at(&total_key);
+        let staking_ledger = self.resolve_asset_ledger(&asset)?;
+        self.transfer_asset_balance(tx, &staking_ledger, &staker, &tx.target, &asset, amount)?;
         self.state_set(
             &frame,
             stake_key,
@@ -5462,6 +5797,9 @@ impl DeTTaState {
         if asset != staking_asset {
             return Err(ExecutionError::InvalidPoolAsset);
         }
+        if amount == 0 {
+            return Err(ExecutionError::InvalidArguments);
+        }
 
         let staker = msg_sender;
         let stake_key = stake_balance_key(&tx.target, &staker, &asset);
@@ -5492,6 +5830,7 @@ impl DeTTaState {
             return Err(ExecutionError::InvariantViolation);
         }
         let (released_amount, penalty_amount) = apply_staking_penalty(amount, unstake_penalty_bps)?;
+        let staking_ledger = self.resolve_asset_ledger(&asset)?;
 
         self.state_set(&frame, stake_key, StateValue::UInt(current_stake - amount))?;
         self.state_set(&frame, total_key, StateValue::UInt(total_staked - amount))?;
@@ -5505,6 +5844,16 @@ impl DeTTaState {
                         .checked_add(penalty_amount)
                         .ok_or(ExecutionError::ArithmeticOverflow)?,
                 ),
+            )?;
+        }
+        if released_amount != 0 {
+            self.transfer_asset_balance(
+                tx,
+                &staking_ledger,
+                &tx.target,
+                &staker,
+                &asset,
+                released_amount,
             )?;
         }
 
@@ -5554,6 +5903,9 @@ impl DeTTaState {
         let amount = expect_amount(amount)?;
         if asset != staking_asset {
             return Err(ExecutionError::InvalidPoolAsset);
+        }
+        if amount == 0 {
+            return Err(ExecutionError::InvalidArguments);
         }
 
         let staker = msg_sender;
@@ -5677,6 +6029,9 @@ impl DeTTaState {
         if asset != staking_asset {
             return Err(ExecutionError::InvalidPoolAsset);
         }
+        if amount == 0 {
+            return Err(ExecutionError::InvalidArguments);
+        }
 
         let staker = msg_sender;
         let pending_key = pending_unbond_key(&tx.target, &staker, &asset);
@@ -5708,6 +6063,8 @@ impl DeTTaState {
             total_pending_key,
             StateValue::UInt(total_pending - amount),
         )?;
+        let staking_ledger = self.resolve_asset_ledger(&asset)?;
+        self.transfer_asset_balance(tx, &staking_ledger, &tx.target, &staker, &asset, amount)?;
 
         if !self.staking_pending_unbonding_invariants_hold(&tx.target, &asset) {
             return Err(ExecutionError::InvariantViolation);
@@ -5750,6 +6107,10 @@ impl DeTTaState {
         self.accrue_staking_rewards(&frame, &tx.target, &staker, &asset, reward_per_block)?;
         let claimed = self.uint_at(&reward_key);
         self.state_set(&frame, reward_key, StateValue::UInt(0))?;
+        if claimed != 0 {
+            let reward_ledger = self.resolve_asset_ledger(&asset)?;
+            self.mint_asset_balance(tx, &reward_ledger, &staker, &asset, claimed)?;
+        }
 
         self.emit(
             &tx.target,
@@ -7187,6 +7548,49 @@ mod tests {
             )
             .unwrap();
         state
+    }
+
+    fn seeded_amm_state() -> DeTTaState {
+        let mut state = DeTTaState::new("detta-local");
+        state
+            .deploy_token(
+                "TokenUSDC",
+                "USDC",
+                vec![("Alice".into(), 2_000), ("Bob".into(), 1_000)],
+            )
+            .unwrap();
+        state
+            .deploy_token(
+                "TokenATOM",
+                "ATOM",
+                vec![("Alice".into(), 1_000), ("Bob".into(), 1_000)],
+            )
+            .unwrap();
+        state.deploy_amm_pool("PoolAB", "USDC", "ATOM").unwrap();
+        state
+    }
+
+    fn deploy_lending_assets(state: &mut DeTTaState) {
+        state
+            .deploy_token(
+                "TokenATOM",
+                "ATOM",
+                vec![("Alice".into(), 1_000), ("Liquidator".into(), 1_000)],
+            )
+            .unwrap();
+        state
+            .deploy_token(
+                "TokenUSDC",
+                "USDC",
+                vec![("VaultA".into(), 1_000), ("Liquidator".into(), 1_000)],
+            )
+            .unwrap();
+    }
+
+    fn deploy_staking_asset(state: &mut DeTTaState) {
+        state
+            .deploy_token("TokenATOM", "ATOM", vec![("Alice".into(), 1_000)])
+            .unwrap();
     }
 
     fn aspect_module_record() -> AspectModuleRecord {
@@ -9390,6 +9794,13 @@ mod tests {
         bridge_amount: Amount,
     ) -> CrossShardFinalityProof {
         let mut source = DeTTaState::new("SourceChain");
+        source
+            .deploy_token(
+                "SourceTokenUSDC",
+                asset_id,
+                vec![("Alice".into(), bridge_amount)],
+            )
+            .unwrap();
         source.deploy_bridge("BridgeSource", "detta-local").unwrap();
         let (block, next_state) = source.build_block(
             1,
@@ -9451,6 +9862,7 @@ mod tests {
     }
 
     fn deploy_inbound_bridge(state: &mut DeTTaState) {
+        state.deploy_token("TokenUSDC", "USDC", Vec::new()).unwrap();
         state
             .deploy_bridge_with_validator_set(
                 "BridgeA",
@@ -9468,6 +9880,9 @@ mod tests {
     #[test]
     fn deployed_defi_contracts_declare_invariants() {
         let mut state = seeded_state();
+        state
+            .deploy_token("TokenETH", "ETH", vec![("Alice".into(), 100)])
+            .unwrap();
         state.deploy_amm_pool("PoolA", "USDC", "ETH").unwrap();
         state
             .deploy_oracle("OracleA", "USDC", "Reporter", 10)
@@ -10686,8 +11101,7 @@ mod tests {
 
     #[test]
     fn amm_add_liquidity_updates_reserves_and_lp_accounting() {
-        let mut state = DeTTaState::new("detta-local");
-        state.deploy_amm_pool("PoolAB", "USDC", "ATOM").unwrap();
+        let mut state = seeded_amm_state();
 
         let receipt = state.apply_transaction(tx_to(
             "PoolAB",
@@ -10704,12 +11118,15 @@ mod tests {
         assert_eq!(state.reserve("PoolAB", "ATOM"), 500);
         assert_eq!(state.lp_supply("PoolAB"), 1_500);
         assert_eq!(state.lp_balance("PoolAB", "Alice"), 1_500);
+        assert_eq!(state.balance("TokenUSDC", "Alice", "USDC"), 1_000);
+        assert_eq!(state.balance("TokenUSDC", "PoolAB", "USDC"), 1_000);
+        assert_eq!(state.balance("TokenATOM", "Alice", "ATOM"), 500);
+        assert_eq!(state.balance("TokenATOM", "PoolAB", "ATOM"), 500);
     }
 
     #[test]
     fn amm_swap_respects_constant_product_formula_and_slippage_bound() {
-        let mut state = DeTTaState::new("detta-local");
-        state.deploy_amm_pool("PoolAB", "USDC", "ATOM").unwrap();
+        let mut state = seeded_amm_state();
         state.apply_transaction(tx_to(
             "PoolAB",
             "tx1",
@@ -10735,6 +11152,10 @@ mod tests {
         assert_eq!(state.amm_fee_collected("PoolAB", "USDC"), 1);
         assert_eq!(state.lp_supply("PoolAB"), 1_500);
         assert_eq!(state.lp_balance("PoolAB", "Alice"), 1_500);
+        assert_eq!(state.balance("TokenUSDC", "Bob", "USDC"), 900);
+        assert_eq!(state.balance("TokenUSDC", "PoolAB", "USDC"), 1_100);
+        assert_eq!(state.balance("TokenATOM", "Bob", "ATOM"), 1_045);
+        assert_eq!(state.balance("TokenATOM", "PoolAB", "ATOM"), 455);
         assert!(matches!(
             state.events().last().unwrap().payload,
             EventPayload::Swap {
@@ -10759,6 +11180,20 @@ mod tests {
         );
 
         let mut state = DeTTaState::new("detta-local");
+        state
+            .deploy_token(
+                "TokenUSDC",
+                "USDC",
+                vec![("Alice".into(), 2_000), ("Bob".into(), 1_000)],
+            )
+            .unwrap();
+        state
+            .deploy_token(
+                "TokenATOM",
+                "ATOM",
+                vec![("Alice".into(), 1_000), ("Bob".into(), 1_000)],
+            )
+            .unwrap();
         state
             .deploy_amm_pool_with_parameters("PoolAB", "USDC", "ATOM", AmmParameters::new(1_000))
             .unwrap();
@@ -10785,6 +11220,10 @@ mod tests {
         assert_eq!(state.reserve("PoolAB", "USDC"), 1_100);
         assert_eq!(state.reserve("PoolAB", "ATOM"), 459);
         assert_eq!(state.amm_fee_collected("PoolAB", "USDC"), 10);
+        assert_eq!(state.balance("TokenUSDC", "Bob", "USDC"), 900);
+        assert_eq!(state.balance("TokenUSDC", "PoolAB", "USDC"), 1_100);
+        assert_eq!(state.balance("TokenATOM", "Bob", "ATOM"), 1_041);
+        assert_eq!(state.balance("TokenATOM", "PoolAB", "ATOM"), 459);
         assert_eq!(state.check_declared_invariants(), vec![]);
         assert!(matches!(
             state.events().last().unwrap().payload,
@@ -10798,8 +11237,7 @@ mod tests {
 
     #[test]
     fn amm_slippage_failure_reverts_reserves_and_events() {
-        let mut state = DeTTaState::new("detta-local");
-        state.deploy_amm_pool("PoolAB", "USDC", "ATOM").unwrap();
+        let mut state = seeded_amm_state();
         state.apply_transaction(tx_to(
             "PoolAB",
             "tx1",
@@ -10826,6 +11264,22 @@ mod tests {
         assert_eq!(state.event_root(), event_before);
         assert_eq!(state.reserve("PoolAB", "USDC"), 1_000);
         assert_eq!(state.reserve("PoolAB", "ATOM"), 500);
+        assert_eq!(state.balance("TokenUSDC", "Bob", "USDC"), 1_000);
+        assert_eq!(state.balance("TokenATOM", "Bob", "ATOM"), 1_000);
+    }
+
+    #[test]
+    fn amm_rejects_pool_assets_without_supported_token_ledger() {
+        let mut state = DeTTaState::new("detta-local");
+        state
+            .deploy_token("TokenUSDC", "USDC", vec![("Alice".into(), 1_000)])
+            .unwrap();
+
+        assert_eq!(
+            state.deploy_amm_pool("PoolBad", "USDC", "UNKNOWN"),
+            Err(ExecutionError::InvalidPoolAsset)
+        );
+        assert!(state.contract("PoolBad").is_none());
     }
 
     #[test]
@@ -11122,6 +11576,9 @@ mod tests {
     #[test]
     fn bridge_queues_cross_shard_message_with_proof() {
         let mut state = DeTTaState::new("ShardA");
+        state
+            .deploy_token("TokenUSDC", "USDC", vec![("Alice".into(), 200)])
+            .unwrap();
         state.deploy_bridge("BridgeA", "ShardB").unwrap();
         let storage_before = state.storage_root();
         let registry_before = state.registry_root();
@@ -11149,8 +11606,10 @@ mod tests {
 
         assert_eq!(block.receipts[0].status, TxStatus::Committed);
         assert_eq!(next_state.cross_shard_outbox().len(), 1);
-        assert_eq!(next_state.storage_root(), storage_before);
+        assert_ne!(next_state.storage_root(), storage_before);
         assert_eq!(next_state.registry_root(), registry_before);
+        assert_eq!(next_state.balance("TokenUSDC", "Alice", "USDC"), 100);
+        assert_eq!(next_state.balance("TokenUSDC", "BridgeA", "USDC"), 100);
         assert_eq!(block.header.outbox_root, next_state.outbox_root());
 
         let proof = next_state.outbox_message_proof(0).unwrap();
@@ -11163,6 +11622,9 @@ mod tests {
     #[test]
     fn bridge_rejects_duplicate_outbound_message_id() {
         let mut state = DeTTaState::new("ShardA");
+        state
+            .deploy_token("TokenUSDC", "USDC", vec![("Alice".into(), 200)])
+            .unwrap();
         state.deploy_bridge("BridgeA", "ShardB").unwrap();
 
         let first = state.apply_transaction(Transaction {
@@ -11211,6 +11673,8 @@ mod tests {
         assert_eq!(duplicate.error, Some(ExecutionError::OutboundMessageReplay));
         assert_eq!(state.outbox_root(), outbox_root);
         assert_eq!(state.cross_shard_outbox().len(), 1);
+        assert_eq!(state.balance("TokenUSDC", "Alice", "USDC"), 100);
+        assert_eq!(state.balance("TokenUSDC", "BridgeA", "USDC"), 100);
     }
 
     #[test]
@@ -11515,6 +11979,7 @@ mod tests {
     #[test]
     fn lending_vault_allows_borrow_with_sufficient_collateral() {
         let mut state = DeTTaState::new("detta-local");
+        deploy_lending_assets(&mut state);
         state
             .deploy_oracle("OracleA", "ATOM", "Reporter", 10)
             .unwrap();
@@ -11550,11 +12015,16 @@ mod tests {
         assert_eq!(borrow.status, TxStatus::Committed);
         assert_eq!(state.collateral("VaultA", "Alice", "ATOM"), 100);
         assert_eq!(state.debt("VaultA", "Alice", "USDC"), 100);
+        assert_eq!(state.balance("TokenATOM", "Alice", "ATOM"), 900);
+        assert_eq!(state.balance("TokenATOM", "VaultA", "ATOM"), 100);
+        assert_eq!(state.balance("TokenUSDC", "Alice", "USDC"), 100);
+        assert_eq!(state.balance("TokenUSDC", "VaultA", "USDC"), 900);
     }
 
     #[test]
     fn lending_vault_rejects_undercollateralized_borrow() {
         let mut state = DeTTaState::new("detta-local");
+        deploy_lending_assets(&mut state);
         state
             .deploy_oracle("OracleA", "ATOM", "Reporter", 10)
             .unwrap();
@@ -11591,11 +12061,16 @@ mod tests {
         assert_eq!(borrow.status, TxStatus::Reverted);
         assert_eq!(borrow.error, Some(ExecutionError::InsufficientCollateral));
         assert_eq!(state.debt("VaultA", "Alice", "USDC"), debt_before);
+        assert_eq!(state.balance("TokenATOM", "Alice", "ATOM"), 900);
+        assert_eq!(state.balance("TokenATOM", "VaultA", "ATOM"), 100);
+        assert_eq!(state.balance("TokenUSDC", "Alice", "USDC"), 0);
+        assert_eq!(state.balance("TokenUSDC", "VaultA", "USDC"), 1_000);
     }
 
     #[test]
     fn lending_vault_rejects_stale_oracle_price() {
         let mut state = DeTTaState::new("detta-local");
+        deploy_lending_assets(&mut state);
         state
             .deploy_oracle("OracleA", "ATOM", "Reporter", 10)
             .unwrap();
@@ -11635,11 +12110,14 @@ mod tests {
             Some(ExecutionError::StaleOraclePrice)
         );
         assert_eq!(next_state.debt("VaultA", "Alice", "USDC"), 0);
+        assert_eq!(next_state.balance("TokenUSDC", "Alice", "USDC"), 0);
+        assert_eq!(next_state.balance("TokenUSDC", "VaultA", "USDC"), 1_000);
     }
 
     #[test]
     fn lending_vault_accrues_interest_and_records_bad_debt_on_liquidation() {
         let mut state = DeTTaState::new("detta-local");
+        deploy_lending_assets(&mut state);
         state
             .deploy_oracle("OracleA", "ATOM", "Reporter", 20)
             .unwrap();
@@ -11709,6 +12187,11 @@ mod tests {
         assert_eq!(next_state.debt("VaultA", "Alice", "USDC"), 0);
         assert_eq!(next_state.collateral("VaultA", "Alice", "ATOM"), 0);
         assert_eq!(next_state.bad_debt("VaultA", "USDC"), 100);
+        assert_eq!(next_state.balance("TokenUSDC", "Alice", "USDC"), 100);
+        assert_eq!(next_state.balance("TokenUSDC", "Liquidator", "USDC"), 900);
+        assert_eq!(next_state.balance("TokenUSDC", "VaultA", "USDC"), 1_000);
+        assert_eq!(next_state.balance("TokenATOM", "VaultA", "ATOM"), 0);
+        assert_eq!(next_state.balance("TokenATOM", "Liquidator", "ATOM"), 1_100);
         assert_eq!(next_state.check_declared_invariants(), vec![]);
         assert!(matches!(
             next_state.events().last().unwrap().payload,
@@ -11724,6 +12207,7 @@ mod tests {
     #[test]
     fn staking_updates_staker_balance_and_total_staked() {
         let mut state = DeTTaState::new("detta-local");
+        deploy_staking_asset(&mut state);
         state.deploy_staking("StakeA", "ATOM").unwrap();
 
         let stake = state.apply_transaction(tx_to(
@@ -11737,6 +12221,8 @@ mod tests {
         assert_eq!(stake.status, TxStatus::Committed);
         assert_eq!(state.stake_balance("StakeA", "Alice", "ATOM"), 100);
         assert_eq!(state.total_staked("StakeA", "ATOM"), 100);
+        assert_eq!(state.balance("TokenATOM", "Alice", "ATOM"), 900);
+        assert_eq!(state.balance("TokenATOM", "StakeA", "ATOM"), 100);
 
         let unstake = state.apply_transaction(tx_to(
             "StakeA",
@@ -11749,11 +12235,14 @@ mod tests {
         assert_eq!(unstake.status, TxStatus::Committed);
         assert_eq!(state.stake_balance("StakeA", "Alice", "ATOM"), 60);
         assert_eq!(state.total_staked("StakeA", "ATOM"), 60);
+        assert_eq!(state.balance("TokenATOM", "Alice", "ATOM"), 940);
+        assert_eq!(state.balance("TokenATOM", "StakeA", "ATOM"), 60);
     }
 
     #[test]
     fn staking_reverts_over_unstake() {
         let mut state = DeTTaState::new("detta-local");
+        deploy_staking_asset(&mut state);
         state.deploy_staking("StakeA", "ATOM").unwrap();
         state.apply_transaction(tx_to(
             "StakeA",
@@ -11779,11 +12268,14 @@ mod tests {
         assert_eq!(state.storage_root(), storage_before);
         assert_eq!(state.stake_balance("StakeA", "Alice", "ATOM"), 50);
         assert_eq!(state.total_staked("StakeA", "ATOM"), 50);
+        assert_eq!(state.balance("TokenATOM", "Alice", "ATOM"), 950);
+        assert_eq!(state.balance("TokenATOM", "StakeA", "ATOM"), 50);
     }
 
     #[test]
     fn staking_rewards_accrue_and_unbonding_requires_delay() {
         let mut state = DeTTaState::new("detta-local");
+        deploy_staking_asset(&mut state);
         state
             .deploy_staking_with_rewards("StakeA", "ATOM", 2, 1)
             .unwrap();
@@ -11816,6 +12308,9 @@ mod tests {
             claim_block.receipts[0].return_value,
             Some(ReturnValue::UInt(500))
         );
+        assert_eq!(claimed_state.balance("TokenATOM", "Alice", "ATOM"), 1_400);
+        assert_eq!(claimed_state.balance("TokenATOM", "StakeA", "ATOM"), 100);
+        assert_eq!(claimed_state.total_supply("TokenATOM", "ATOM"), 1_500);
         assert_eq!(
             claimed_state.staking_reward_balance("StakeA", "Alice", "ATOM"),
             0
@@ -11851,6 +12346,8 @@ mod tests {
             requested_state.staking_reward_balance("StakeA", "Alice", "ATOM"),
             100
         );
+        assert_eq!(requested_state.balance("TokenATOM", "Alice", "ATOM"), 1_400);
+        assert_eq!(requested_state.balance("TokenATOM", "StakeA", "ATOM"), 100);
         assert_eq!(requested_state.check_declared_invariants(), vec![]);
 
         let (early_block, early_state) = requested_state.build_block(
@@ -11894,6 +12391,8 @@ mod tests {
         assert_eq!(completed_state.total_pending_unbond("StakeA", "ATOM"), 0);
         assert_eq!(completed_state.stake_balance("StakeA", "Alice", "ATOM"), 60);
         assert_eq!(completed_state.total_staked("StakeA", "ATOM"), 60);
+        assert_eq!(completed_state.balance("TokenATOM", "Alice", "ATOM"), 1_440);
+        assert_eq!(completed_state.balance("TokenATOM", "StakeA", "ATOM"), 60);
         assert_eq!(completed_state.check_declared_invariants(), vec![]);
     }
 
@@ -11910,6 +12409,7 @@ mod tests {
         );
 
         let mut state = DeTTaState::new("detta-local");
+        deploy_staking_asset(&mut state);
         state
             .deploy_staking_with_parameters("StakeA", "ATOM", StakingParameters::new(0, 0, 2_500))
             .unwrap();
@@ -11934,6 +12434,8 @@ mod tests {
         assert_eq!(state.stake_balance("StakeA", "Alice", "ATOM"), 60);
         assert_eq!(state.total_staked("StakeA", "ATOM"), 60);
         assert_eq!(state.staking_penalty_collected("StakeA", "ATOM"), 10);
+        assert_eq!(state.balance("TokenATOM", "Alice", "ATOM"), 930);
+        assert_eq!(state.balance("TokenATOM", "StakeA", "ATOM"), 70);
         assert_eq!(state.check_declared_invariants(), vec![]);
         assert!(matches!(
             state.events().iter().rev().nth(1).unwrap().payload,
@@ -11950,6 +12452,7 @@ mod tests {
         ));
 
         let mut delayed = DeTTaState::new("detta-local");
+        deploy_staking_asset(&mut delayed);
         delayed
             .deploy_staking_with_parameters("StakeB", "ATOM", StakingParameters::new(2, 0, 1_000))
             .unwrap();
@@ -11986,6 +12489,8 @@ mod tests {
             requested_state.staking_penalty_collected("StakeB", "ATOM"),
             4
         );
+        assert_eq!(requested_state.balance("TokenATOM", "Alice", "ATOM"), 900);
+        assert_eq!(requested_state.balance("TokenATOM", "StakeB", "ATOM"), 100);
         assert_eq!(requested_state.check_declared_invariants(), vec![]);
         assert!(matches!(
             requested_state

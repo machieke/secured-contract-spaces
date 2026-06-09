@@ -2325,7 +2325,17 @@ mod tests {
     }
 
     fn seeded_defi_state() -> DeTTaState {
-        let mut state = seeded_state();
+        let mut state = DeTTaState::new("detta-local");
+        state
+            .deploy_token(
+                "TokenA",
+                "USDC",
+                vec![("Alice".into(), 200), ("Bob".into(), 50)],
+            )
+            .unwrap();
+        state
+            .deploy_token("TokenETH", "ETH", vec![("Alice".into(), 100)])
+            .unwrap();
         state.deploy_amm_pool("PoolA", "USDC", "ETH").unwrap();
         state
     }
@@ -6257,7 +6267,8 @@ mod tests {
 
         let reloaded = PersistentValidatorNode::restart("full-node-1", &full_node_dirs[0]).unwrap();
         let state = reloaded.rpc().node().state();
-        assert_eq!(state.balance("TokenA", "Bob", "USDC"), 60);
+        assert_eq!(state.balance("TokenA", "Bob", "USDC"), 50);
+        assert_eq!(state.balance("TokenETH", "Bob", "ETH"), 4);
         assert_eq!(state.reserve("PoolA", "USDC"), 110);
         assert_eq!(state.reserve("PoolA", "ETH"), 46);
         assert_eq!(state.lp_supply("PoolA"), 150);

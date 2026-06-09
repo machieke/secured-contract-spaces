@@ -11,6 +11,7 @@ run_e2e_gate() {
       ;;
     *)
       cargo test -p detta-e2e --test aspect_module_client_flows -- --test-threads=1
+      cargo test -p detta-e2e --test aspect_amm_client_flows -- --test-threads=1
       cargo test -p detta-e2e --test full_client_flows -- --test-threads=1
       cargo test -p detta-e2e --test defi_method_edge_flows -- --test-threads=1
       cargo test -p detta-e2e --test factory_client_flows -- --test-threads=1

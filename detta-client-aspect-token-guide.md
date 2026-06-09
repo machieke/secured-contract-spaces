@@ -121,6 +121,11 @@ Fetch and verify the module inclusion proof:
 Clients should verify the returned Merkle proof against the current state root
 or a finalized block/snapshot root before trusting artifact contents.
 
+The integration test
+`crates/detta-e2e/tests/aspect_amm_client_flows.rs` extends this workflow by
+using the deployed aspect-token contract ID as an AMM asset identifier, creating
+a pool, adding liquidity, and executing buy and sell swaps through public RPC.
+
 ## 3. Deploy The Aspect Token
 
 Deploy a contract that references the registered module and bundle. The fourth

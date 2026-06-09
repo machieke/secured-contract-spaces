@@ -5,7 +5,8 @@ use detta_e2e::client::TcpRpcClient;
 use detta_e2e::fixtures::{
     amount, asset, bridge_finality_certificate, certificate, defi_genesis_state, principal, text,
     tx_to, ADMIN, ATOM, BRIDGE_CONTRACT, GOVERNANCE_CONTRACT, ORACLE_CONTRACT, REPORTER,
-    ROUTER_CONTRACT, STAKE_CONTRACT, TOKEN_CONTRACT, USDC, VAULT_CONTRACT,
+    ROUTER_CONTRACT, SECONDARY_TOKEN_CONTRACT, STAKE_CONTRACT, TOKEN_CONTRACT, USDC,
+    VAULT_CONTRACT,
 };
 use detta_e2e::network::spawn_tcp_rpc_server;
 use detta_e2e::proofs::{assert_outbox_proof_matches_root, assert_storage_proof_matches_root};
@@ -84,6 +85,14 @@ fn client_executes_oracle_lending_staking_governance_bridge_and_router_flows() {
         100,
         &deposit_block.header.storage_root,
     );
+    assert_eq!(
+        asset_balance(&mut client, SECONDARY_TOKEN_CONTRACT, "Alice", ATOM),
+        900
+    );
+    assert_eq!(
+        asset_balance(&mut client, SECONDARY_TOKEN_CONTRACT, VAULT_CONTRACT, ATOM),
+        100
+    );
 
     submit_ok(
         &mut client,
@@ -108,6 +117,8 @@ fn client_executes_oracle_lending_staking_governance_bridge_and_router_flows() {
         100,
         &borrow_block.header.storage_root,
     );
+    assert_eq!(token_balance(&mut client, "Alice"), 300);
+    assert_eq!(token_balance(&mut client, VAULT_CONTRACT), 900);
 
     submit_ok(
         &mut client,
@@ -163,6 +174,14 @@ fn client_executes_oracle_lending_staking_governance_bridge_and_router_flows() {
         100,
         &stake_block.header.storage_root,
     );
+    assert_eq!(
+        asset_balance(&mut client, SECONDARY_TOKEN_CONTRACT, "Alice", ATOM),
+        800
+    );
+    assert_eq!(
+        asset_balance(&mut client, SECONDARY_TOKEN_CONTRACT, STAKE_CONTRACT, ATOM),
+        100
+    );
 
     submit_ok(
         &mut client,
@@ -179,6 +198,14 @@ fn client_executes_oracle_lending_staking_governance_bridge_and_router_flows() {
     let claim_receipt = receipt(&mut client, "e2e-staking-claim-1");
     assert_eq!(claim_receipt.status, TxStatus::Committed);
     assert_eq!(claim_receipt.return_value, Some(ReturnValue::UInt(100)));
+    assert_eq!(
+        asset_balance(&mut client, SECONDARY_TOKEN_CONTRACT, "Alice", ATOM),
+        900
+    );
+    assert_eq!(
+        asset_balance(&mut client, SECONDARY_TOKEN_CONTRACT, STAKE_CONTRACT, ATOM),
+        100
+    );
 
     submit_ok(
         &mut client,
@@ -248,6 +275,14 @@ fn client_executes_oracle_lending_staking_governance_bridge_and_router_flows() {
         },
         0,
         &complete_unstake_block.header.storage_root,
+    );
+    assert_eq!(
+        asset_balance(&mut client, SECONDARY_TOKEN_CONTRACT, "Alice", ATOM),
+        940
+    );
+    assert_eq!(
+        asset_balance(&mut client, SECONDARY_TOKEN_CONTRACT, STAKE_CONTRACT, ATOM),
+        60
     );
 
     submit_ok(
@@ -471,6 +506,7 @@ fn client_executes_oracle_lending_staking_governance_bridge_and_router_flows() {
         1,
         &bridge_redeem_block.header.storage_root,
     );
+    assert_eq!(token_balance(&mut client, "Alice"), 399);
 
     submit_ok(
         &mut client,
@@ -525,6 +561,8 @@ fn client_executes_oracle_lending_staking_governance_bridge_and_router_flows() {
     };
     assert_eq!(outbox_proof.message.message_id, "outbound-msg-1");
     assert_outbox_proof_matches_root(&outbox_proof, &bridge_queue_block.header.outbox_root);
+    assert_eq!(token_balance(&mut client, "Alice"), 374);
+    assert_eq!(token_balance(&mut client, BRIDGE_CONTRACT), 25);
 
     submit_ok(
         &mut client,
@@ -559,6 +597,7 @@ fn client_executes_oracle_lending_staking_governance_bridge_and_router_flows() {
     produce_block(&mut client, 25, 25_000);
     assert_committed(&mut client, "e2e-router-transfer-1");
     assert_eq!(token_balance(&mut client, "Dave"), 7);
+    assert_eq!(token_balance(&mut client, "Alice"), 367);
 
     submit_ok(
         &mut client,
@@ -662,11 +701,15 @@ fn storage_proof(client: &mut TcpRpcClient, key: StateKey) -> detta_core::Storag
 }
 
 fn token_balance(client: &mut TcpRpcClient, owner: &str) -> u128 {
+    asset_balance(client, TOKEN_CONTRACT, owner, USDC)
+}
+
+fn asset_balance(client: &mut TcpRpcClient, contract: &str, owner: &str, asset: &str) -> u128 {
     match client
         .ok(RpcRequest::GetBalance {
-            contract: TOKEN_CONTRACT.into(),
+            contract: contract.into(),
             owner: owner.into(),
-            asset: USDC.into(),
+            asset: asset.into(),
         })
         .unwrap()
     {

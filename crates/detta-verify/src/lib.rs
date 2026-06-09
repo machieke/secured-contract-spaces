@@ -1693,7 +1693,15 @@ pub fn deterministic_defi_corpus(chain_id: ChainId, seed: u64) -> (DeTTaState, V
                 ("Alice".into(), 10_000),
                 ("Bob".into(), 10_000),
                 ("Carol".into(), 10_000),
+                ("VaultA".into(), 10_000),
             ],
+        )
+        .unwrap();
+    state
+        .deploy_token(
+            "TokenATOM",
+            "ATOM",
+            vec![("Alice".into(), 10_000), ("Bob".into(), 10_000)],
         )
         .unwrap();
     state
@@ -1936,6 +1944,9 @@ mod tests {
     #[test]
     fn linter_accepts_deployed_defi_contracts_with_invariant_manifests() {
         let mut state = seeded_state();
+        state
+            .deploy_token("TokenETH", "ETH", vec![("Alice".into(), 100)])
+            .unwrap();
         state.deploy_amm_pool("PoolA", "USDC", "ETH").unwrap();
         state
             .deploy_oracle("OracleA", "USDC", "Reporter", 10)

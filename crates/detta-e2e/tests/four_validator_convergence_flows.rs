@@ -2,8 +2,8 @@ use detta_core::{Block, Method, StateKey, StateValue, Transaction};
 use detta_e2e::client::TcpRpcClient;
 use detta_e2e::fixtures::{
     amount, asset, defi_genesis_state, principal, temp_dir, text, tx_to, ADMIN, ATOM,
-    BRIDGE_CONTRACT, GOVERNANCE_CONTRACT, ORACLE_CONTRACT, POOL_CONTRACT, REPORTER, STAKE_CONTRACT,
-    TOKEN_CONTRACT, USDC, VAULT_CONTRACT,
+    BRIDGE_CONTRACT, GOVERNANCE_CONTRACT, ORACLE_CONTRACT, POOL_CONTRACT, REPORTER,
+    SECONDARY_TOKEN_CONTRACT, STAKE_CONTRACT, TOKEN_CONTRACT, USDC, VAULT_CONTRACT,
 };
 use detta_e2e::network::spawn_tcp_persistent_node;
 use detta_e2e::proofs::{assert_outbox_proof_matches_root, assert_storage_proof_matches_root};
@@ -334,6 +334,27 @@ fn assert_broader_workload_state(client: &mut TcpRpcClient, final_block: &Block)
         },
         25,
         &final_block.header.storage_root,
+    );
+    assert_eq!(balance(client, TOKEN_CONTRACT, "Alice", USDC), 190);
+    assert_eq!(balance(client, TOKEN_CONTRACT, "Bob", USDC), 61);
+    assert_eq!(balance(client, TOKEN_CONTRACT, POOL_CONTRACT, USDC), 40);
+    assert_eq!(balance(client, TOKEN_CONTRACT, VAULT_CONTRACT, USDC), 950);
+    assert_eq!(balance(client, TOKEN_CONTRACT, BRIDGE_CONTRACT, USDC), 9);
+    assert_eq!(
+        balance(client, SECONDARY_TOKEN_CONTRACT, "Alice", ATOM),
+        795
+    );
+    assert_eq!(
+        balance(client, SECONDARY_TOKEN_CONTRACT, POOL_CONTRACT, ATOM),
+        80
+    );
+    assert_eq!(
+        balance(client, SECONDARY_TOKEN_CONTRACT, VAULT_CONTRACT, ATOM),
+        100
+    );
+    assert_eq!(
+        balance(client, SECONDARY_TOKEN_CONTRACT, STAKE_CONTRACT, ATOM),
+        25
     );
     assert!(scheduled_upgrade_exists(
         client,

@@ -42,6 +42,7 @@ Create a dedicated E2E package:
 - `crates/detta-e2e/src/fixtures.rs`
 - `crates/detta-e2e/src/proofs.rs`
 - `crates/detta-e2e/tests/full_client_flows.rs`
+- `crates/detta-e2e/tests/aspect_amm_client_flows.rs`
 
 If the workspace layout favors root integration tests, the same modules can live under `tests/detta_e2e/`, but a dedicated crate is preferred because the client harness, proof verifier, fixtures, and network supervisor will become reusable release-gate tooling.
 
@@ -165,6 +166,8 @@ Acceptance criteria:
 Validate:
 
 - AMM pool deployment through the chosen deployment model.
+- AMM pool deployment for an asset identifier matching a deployed restricted
+  MeTTa aspect-token contract.
 - Liquidity creation with `addLiquidity`.
 - LP share accounting.
 - Swap token A for token B.

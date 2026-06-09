@@ -2,7 +2,7 @@ use detta_core::{DeTTaState, ExecutionError, GrantKey, Method, StateKey, StateVa
 use detta_e2e::client::TcpRpcClient;
 use detta_e2e::fixtures::{
     amount, asset, certificate, defi_genesis_state, principal, tx_to, ATOM, CHAIN_ID,
-    STAKE_CONTRACT, TOKEN_CONTRACT, USDC, VAULT_CONTRACT,
+    SECONDARY_TOKEN_CONTRACT, STAKE_CONTRACT, TOKEN_CONTRACT, USDC, VAULT_CONTRACT,
 };
 use detta_e2e::network::spawn_tcp_rpc_server;
 use detta_e2e::proofs::{assert_registry_proof_matches_root, assert_storage_proof_matches_root};
@@ -101,6 +101,14 @@ fn client_exercises_permit_liquidation_and_direct_unstake_edges() {
     );
     produce_block(&mut client, 4, 4_000);
     assert_committed(&mut client, "e2e-edge-lending-deposit-1");
+    assert_eq!(
+        balance(&mut client, SECONDARY_TOKEN_CONTRACT, "Alice", ATOM),
+        900
+    );
+    assert_eq!(
+        balance(&mut client, SECONDARY_TOKEN_CONTRACT, VAULT_CONTRACT, ATOM),
+        100
+    );
 
     submit_ok(
         &mut client,
@@ -115,6 +123,11 @@ fn client_exercises_permit_liquidation_and_direct_unstake_edges() {
     );
     produce_block(&mut client, 5, 5_000);
     assert_committed(&mut client, "e2e-edge-lending-borrow-1");
+    assert_eq!(balance(&mut client, TOKEN_CONTRACT, "Alice", USDC), 300);
+    assert_eq!(
+        balance(&mut client, TOKEN_CONTRACT, VAULT_CONTRACT, USDC),
+        900
+    );
 
     submit_ok(
         &mut client,
@@ -169,6 +182,22 @@ fn client_exercises_permit_liquidation_and_direct_unstake_edges() {
             contract: VAULT_CONTRACT.into(),
             asset: USDC.into(),
         },
+    );
+    assert_eq!(
+        balance(&mut client, TOKEN_CONTRACT, "Liquidator", USDC),
+        900
+    );
+    assert_eq!(
+        balance(&mut client, TOKEN_CONTRACT, VAULT_CONTRACT, USDC),
+        1_000
+    );
+    assert_eq!(
+        balance(&mut client, SECONDARY_TOKEN_CONTRACT, "Liquidator", ATOM),
+        100
+    );
+    assert_eq!(
+        balance(&mut client, SECONDARY_TOKEN_CONTRACT, VAULT_CONTRACT, ATOM),
+        0
     );
 
     submit_ok(
@@ -226,6 +255,19 @@ fn client_exercises_permit_liquidation_and_direct_unstake_edges() {
         20,
         &instant_unstake_block.header.storage_root,
     );
+    assert_eq!(
+        balance(&mut client, SECONDARY_TOKEN_CONTRACT, "Alice", ATOM),
+        880
+    );
+    assert_eq!(
+        balance(
+            &mut client,
+            SECONDARY_TOKEN_CONTRACT,
+            INSTANT_STAKE_CONTRACT,
+            ATOM
+        ),
+        20
+    );
 
     submit_ok(
         &mut client,
@@ -257,6 +299,14 @@ fn client_exercises_permit_liquidation_and_direct_unstake_edges() {
         &mut client,
         "e2e-edge-delayed-unstake-1",
         ExecutionError::TimelockNotReady,
+    );
+    assert_eq!(
+        balance(&mut client, SECONDARY_TOKEN_CONTRACT, "Alice", ATOM),
+        850
+    );
+    assert_eq!(
+        balance(&mut client, SECONDARY_TOKEN_CONTRACT, STAKE_CONTRACT, ATOM),
+        30
     );
 
     client.close();
@@ -311,6 +361,20 @@ fn assert_reverted(client: &mut TcpRpcClient, tx_hash: &str, error: ExecutionErr
     let receipt = receipt(client, tx_hash);
     assert_eq!(receipt.status, TxStatus::Reverted);
     assert_eq!(receipt.error, Some(error));
+}
+
+fn balance(client: &mut TcpRpcClient, contract: &str, owner: &str, asset: &str) -> u128 {
+    match client
+        .ok(RpcRequest::GetBalance {
+            contract: contract.into(),
+            owner: owner.into(),
+            asset: asset.into(),
+        })
+        .unwrap()
+    {
+        RpcResult::Amount(amount) => amount,
+        result => panic!("expected balance amount, got {result:?}"),
+    }
 }
 
 fn registry_proof(client: &mut TcpRpcClient, key: GrantKey) -> detta_core::RegistryProof {

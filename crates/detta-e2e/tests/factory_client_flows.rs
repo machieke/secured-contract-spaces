@@ -3,7 +3,8 @@ use detta_core::{
 };
 use detta_e2e::client::TcpRpcClient;
 use detta_e2e::fixtures::{
-    amount, asset, defi_genesis_state, principal, text, tx_to, FACTORY_CONTRACT, USDC,
+    amount, asset, defi_genesis_state, principal, text, tx_to, FACTORY_CONTRACT, TOKEN_CONTRACT,
+    USDC,
 };
 use detta_e2e::network::spawn_tcp_rpc_server;
 use detta_e2e::proofs::assert_storage_proof_matches_root;
@@ -29,7 +30,7 @@ fn client_deploys_token_creates_liquidity_and_swaps_on_new_pool() {
             vec![
                 text(CLIENT_TOKEN),
                 asset(CLIENT_ASSET),
-                principal("Issuer"),
+                principal("Alice"),
                 amount(1_000),
             ],
         ),
@@ -42,7 +43,7 @@ fn client_deploys_token_creates_liquidity_and_swaps_on_new_pool() {
     );
     assert_eq!(total_supply(&mut client, CLIENT_TOKEN, CLIENT_ASSET), 1_000);
     assert_eq!(
-        balance(&mut client, CLIENT_TOKEN, "Issuer", CLIENT_ASSET),
+        balance(&mut client, CLIENT_TOKEN, "Alice", CLIENT_ASSET),
         1_000
     );
     assert!(matches!(
@@ -123,8 +124,8 @@ fn client_deploys_token_creates_liquidity_and_swaps_on_new_pool() {
         tx_to(
             CLIENT_POOL,
             "e2e-factory-pool-liquidity-1",
-            "Issuer",
-            5,
+            "Alice",
+            1,
             Method::AddLiquidity,
             vec![amount(100), amount(50)],
         ),
@@ -149,39 +150,53 @@ fn client_deploys_token_creates_liquidity_and_swaps_on_new_pool() {
         50,
         &liquidity_block.header.storage_root,
     );
+    assert_eq!(
+        balance(&mut client, CLIENT_TOKEN, "Alice", CLIENT_ASSET),
+        900
+    );
+    assert_eq!(
+        balance(&mut client, CLIENT_TOKEN, CLIENT_POOL, CLIENT_ASSET),
+        100
+    );
+    assert_eq!(balance(&mut client, TOKEN_CONTRACT, "Alice", USDC), 150);
+    assert_eq!(balance(&mut client, TOKEN_CONTRACT, CLIENT_POOL, USDC), 50);
 
     submit_ok(
         &mut client,
         tx_to(
             CLIENT_POOL,
             "e2e-factory-pool-buy-1",
-            "Buyer",
+            "Bob",
             1,
             Method::Swap,
-            vec![asset(CLIENT_ASSET), amount(10), amount(4)],
+            vec![asset(USDC), amount(10), amount(15)],
         ),
     );
     produce_block(&mut client, 6, 6_000);
     let buy_receipt = receipt(&mut client, "e2e-factory-pool-buy-1");
     assert_eq!(buy_receipt.status, TxStatus::Committed);
-    assert_eq!(reserve(&mut client, CLIENT_POOL, CLIENT_ASSET), 110);
-    assert_eq!(reserve(&mut client, CLIENT_POOL, USDC), 46);
+    assert_eq!(reserve(&mut client, CLIENT_POOL, CLIENT_ASSET), 85);
+    assert_eq!(reserve(&mut client, CLIENT_POOL, USDC), 60);
+    assert_eq!(balance(&mut client, CLIENT_TOKEN, "Bob", CLIENT_ASSET), 15);
+    assert_eq!(balance(&mut client, TOKEN_CONTRACT, "Bob", USDC), 40);
 
     submit_ok(
         &mut client,
         tx_to(
             CLIENT_POOL,
             "e2e-factory-pool-sell-1",
-            "Buyer",
+            "Bob",
             2,
             Method::Swap,
-            vec![asset(USDC), amount(5), amount(8)],
+            vec![asset(CLIENT_ASSET), amount(15), amount(8)],
         ),
     );
     let sell_block = produce_block(&mut client, 7, 7_000);
     assert_committed(&mut client, "e2e-factory-pool-sell-1");
-    assert_eq!(reserve(&mut client, CLIENT_POOL, CLIENT_ASSET), 102);
-    assert_eq!(reserve(&mut client, CLIENT_POOL, USDC), 51);
+    assert_eq!(reserve(&mut client, CLIENT_POOL, CLIENT_ASSET), 100);
+    assert_eq!(reserve(&mut client, CLIENT_POOL, USDC), 52);
+    assert_eq!(balance(&mut client, CLIENT_TOKEN, "Bob", CLIENT_ASSET), 0);
+    assert_eq!(balance(&mut client, TOKEN_CONTRACT, "Bob", USDC), 48);
 
     assert!(matches!(
         events(&mut client).last().map(|event| &event.payload),
@@ -190,7 +205,7 @@ fn client_deploys_token_creates_liquidity_and_swaps_on_new_pool() {
             output_asset,
             amount_out: 8,
             ..
-        }) if input_asset == USDC && output_asset == CLIENT_ASSET
+        }) if input_asset == CLIENT_ASSET && output_asset == USDC
     ));
     assert_eq!(
         storage_proof(

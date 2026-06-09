@@ -5,7 +5,7 @@ use detta_core::{
 use detta_e2e::client::{ClientError, HttpRpcClient, TcpRpcClient};
 use detta_e2e::fixtures::{
     amount, asset, defi_genesis_state, invalid_signature_tx, principal, tx_to, ATOM, CHAIN_ID,
-    POOL_CONTRACT, TOKEN_CONTRACT, USDC,
+    POOL_CONTRACT, SECONDARY_TOKEN_CONTRACT, TOKEN_CONTRACT, USDC,
 };
 use detta_e2e::network::{spawn_http_rpc_server, spawn_tcp_rpc_server};
 use detta_e2e::proofs::{
@@ -52,7 +52,7 @@ fn http_and_tcp_clients_execute_token_and_amm_flows() {
             contract: TOKEN_CONTRACT.into(),
             asset: USDC.into(),
         })),
-        250
+        2_250
     );
     assert_eq!(token_balance(&mut client, "Alice"), 200);
     assert_eq!(token_balance(&mut client, "Bob"), 50);
@@ -214,18 +214,25 @@ fn http_and_tcp_clients_execute_token_and_amm_flows() {
             "Alice",
             3,
             Method::AddLiquidity,
-            vec![amount(1_000), amount(500)],
+            vec![amount(50), amount(100)],
         ),
     );
     let liquidity_block = produce_block(&mut client, 4, 4_000);
     let liquidity_receipt = receipt(&mut client, "e2e-amm-add-liquidity-1");
     assert_eq!(liquidity_receipt.status, TxStatus::Committed);
+    assert_eq!(liquidity_receipt.return_value, Some(ReturnValue::UInt(150)));
+    assert_eq!(reserve(&mut client, USDC), 50);
+    assert_eq!(reserve(&mut client, ATOM), 100);
+    assert_eq!(token_balance(&mut client, "Alice"), 95);
+    assert_eq!(token_balance(&mut client, POOL_CONTRACT), 50);
     assert_eq!(
-        liquidity_receipt.return_value,
-        Some(ReturnValue::UInt(1_500))
+        asset_balance(&mut client, SECONDARY_TOKEN_CONTRACT, "Alice", ATOM),
+        900
     );
-    assert_eq!(reserve(&mut client, USDC), 1_000);
-    assert_eq!(reserve(&mut client, ATOM), 500);
+    assert_eq!(
+        asset_balance(&mut client, SECONDARY_TOKEN_CONTRACT, POOL_CONTRACT, ATOM),
+        100
+    );
     let reserve_proof = storage_proof(
         &mut client,
         StateKey::Reserve {
@@ -233,7 +240,7 @@ fn http_and_tcp_clients_execute_token_and_amm_flows() {
             asset: USDC.into(),
         },
     );
-    assert_eq!(reserve_proof.value, StateValue::UInt(1_000));
+    assert_eq!(reserve_proof.value, StateValue::UInt(50));
     assert_storage_proof_matches_root(&reserve_proof, &liquidity_block.header.storage_root);
 
     submit_ok(
@@ -244,15 +251,20 @@ fn http_and_tcp_clients_execute_token_and_amm_flows() {
             "Bob",
             2,
             Method::Swap,
-            vec![asset(USDC), amount(100), amount(45)],
+            vec![asset(USDC), amount(10), amount(15)],
         ),
     );
     let buy_block = produce_block(&mut client, 5, 5_000);
     let buy_receipt = receipt(&mut client, "e2e-amm-buy-atom-1");
     assert_eq!(buy_receipt.status, TxStatus::Committed);
-    assert_eq!(buy_receipt.return_value, Some(ReturnValue::UInt(45)));
-    assert_eq!(reserve(&mut client, USDC), 1_100);
-    assert_eq!(reserve(&mut client, ATOM), 455);
+    assert_eq!(buy_receipt.return_value, Some(ReturnValue::UInt(15)));
+    assert_eq!(reserve(&mut client, USDC), 60);
+    assert_eq!(reserve(&mut client, ATOM), 85);
+    assert_eq!(token_balance(&mut client, "Bob"), 65);
+    assert_eq!(
+        asset_balance(&mut client, SECONDARY_TOKEN_CONTRACT, "Bob", ATOM),
+        1_015
+    );
     let fee_proof = storage_proof(
         &mut client,
         StateKey::AmmFeeCollected {
@@ -271,15 +283,20 @@ fn http_and_tcp_clients_execute_token_and_amm_flows() {
             "Bob",
             3,
             Method::Swap,
-            vec![asset(ATOM), amount(45), amount(96)],
+            vec![asset(ATOM), amount(15), amount(8)],
         ),
     );
     let sell_block = produce_block(&mut client, 6, 6_000);
     let sell_receipt = receipt(&mut client, "e2e-amm-sell-atom-1");
     assert_eq!(sell_receipt.status, TxStatus::Committed);
-    assert_eq!(sell_receipt.return_value, Some(ReturnValue::UInt(96)));
-    assert_eq!(reserve(&mut client, USDC), 1_004);
-    assert_eq!(reserve(&mut client, ATOM), 500);
+    assert_eq!(sell_receipt.return_value, Some(ReturnValue::UInt(8)));
+    assert_eq!(reserve(&mut client, USDC), 52);
+    assert_eq!(reserve(&mut client, ATOM), 100);
+    assert_eq!(token_balance(&mut client, "Bob"), 73);
+    assert_eq!(
+        asset_balance(&mut client, SECONDARY_TOKEN_CONTRACT, "Bob", ATOM),
+        1_000
+    );
     let sell_fee_proof = storage_proof(
         &mut client,
         StateKey::AmmFeeCollected {
@@ -316,8 +333,8 @@ fn http_and_tcp_clients_execute_token_and_amm_flows() {
         slippage_block.header.event_root,
         sell_block.header.event_root
     );
-    assert_eq!(reserve(&mut client, USDC), 1_004);
-    assert_eq!(reserve(&mut client, ATOM), 500);
+    assert_eq!(reserve(&mut client, USDC), 52);
+    assert_eq!(reserve(&mut client, ATOM), 100);
 
     let event_page = match client
         .ok(RpcRequest::GetEventsPage {
@@ -333,8 +350,8 @@ fn http_and_tcp_clients_execute_token_and_amm_flows() {
     assert!(matches!(
         event_page.events.last().map(|event| &event.payload),
         Some(EventPayload::Swap {
-            amount_in: 45,
-            amount_out: 96,
+            amount_in: 15,
+            amount_out: 8,
             ..
         })
     ));
@@ -450,10 +467,14 @@ fn pending_mempool_transactions(client: &mut TcpRpcClient) -> usize {
 }
 
 fn token_balance(client: &mut TcpRpcClient, owner: &str) -> u128 {
+    asset_balance(client, TOKEN_CONTRACT, owner, USDC)
+}
+
+fn asset_balance(client: &mut TcpRpcClient, contract: &str, owner: &str, asset: &str) -> u128 {
     amount_result(client.ok(RpcRequest::GetBalance {
-        contract: TOKEN_CONTRACT.into(),
+        contract: contract.into(),
         owner: owner.into(),
-        asset: USDC.into(),
+        asset: asset.into(),
     }))
 }
 

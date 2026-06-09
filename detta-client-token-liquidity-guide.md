@@ -434,5 +434,7 @@ by an already active signer for the account.
 - Query storage proofs or event proofs when a client needs verifiable state for
   reserves, balances, receipts, or swap events.
 
-The complete tested Rust flow for token deployment, pool creation, liquidity,
-and swaps is in `crates/detta-e2e/tests/factory_client_flows.rs`.
+The complete tested Rust flow for native token deployment, pool creation,
+liquidity, and swaps is in `crates/detta-e2e/tests/factory_client_flows.rs`.
+The corresponding aspect-token asset flow is in
+`crates/detta-e2e/tests/aspect_amm_client_flows.rs`.

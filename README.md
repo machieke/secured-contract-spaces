@@ -100,6 +100,8 @@ The current implementation includes slices for:
   verifier, executable aspect runtime, module artifacts, and proof obligations;
 - token, AMM, oracle, bridge-security, lending, staking, governance, timelock,
   upgrade, and account-registry contract flows;
+- economic settlement for native token ledgers and supported aspect-token
+  ledgers across AMM, lending, staking, and bridge flows;
 - taxonomy-aligned programmable token bundles for ERC20-like transfer/approval,
   fees, pauses, restrictions, locks, mint/burn/caps, snapshots, vault shares,
   wrapping, rewarded staking, and bridge mint/burn adapters;
@@ -248,15 +250,38 @@ implementation traces can be compared against the abstract model, contract
 invariants can be checked around committed transitions, and canonical roots can
 bind receipts, events, snapshots, and audit metadata.
 
+## Economic Settlement Model
+
+Native DeFi methods are not reserve-only accounting shims. The executor routes
+asset movement through a ledger adapter before committing protocol accounting:
+
+- AMM liquidity and swaps debit/credit user and pool token balances as well as
+  reserves.
+- Lending collateral deposits, borrows, and liquidations move collateral and
+  debt assets between users and the vault.
+- Staking stake, unstake, unbond completion, penalties, and rewards update
+  explicit token custody; rewards are minted as protocol emissions through the
+  token ledger.
+- Bridge outbound messages lock source balances before queueing the outbox
+  message; inbound native redemptions mint destination balances after verified
+  finality and replay checks.
+
+Aspect-token AMM integration is supported when the pool asset is the deployed
+aspect-token contract and the bundle exports the guarded `ERC20-transfer`
+method. Other aspect bundles such as vault shares, wrapping, and rewarded
+staking are tested as aspect-owned accounting modules unless a kernel adapter is
+explicitly used; they do not silently move unrelated native token ledgers.
+
 ## DeFi Client Coverage
 
 The E2E client harness is intended to exercise DeTTa as an external user would:
 
 - deploy new tokens and AMM pools;
+- submit and deploy restricted MeTTa aspect tokens;
 - register account signer keys;
 - submit signed transactions;
 - create liquidity;
-- buy and sell through AMM methods;
+- buy and sell native and aspect-token assets through AMM methods;
 - query balances, reserves, receipts, events, and proofs;
 - exercise oracle, bridge, lending, staking, governance, timelock, and upgrade
   flows;
@@ -265,7 +290,10 @@ The E2E client harness is intended to exercise DeTTa as an external user would:
 - restart nodes and verify persistence, state sync, and proof continuity.
 
 See `detta-e2e-client-integration-test-plan.md` and `crates/detta-e2e` for the
-client integration plan and implementation.
+client integration plan and implementation. The aspect-token AMM coverage is in
+`crates/detta-e2e/tests/aspect_amm_client_flows.rs`; it verifies the current
+AMM custody and reserve integration for an asset identifier matching a deployed
+aspect-token contract.
 
 ## Safety Notice
 

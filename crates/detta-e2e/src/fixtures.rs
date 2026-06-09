@@ -29,7 +29,12 @@ pub fn defi_genesis_state() -> DeTTaState {
         .deploy_token(
             TOKEN_CONTRACT,
             USDC,
-            vec![("Alice".into(), 200), ("Bob".into(), 50)],
+            vec![
+                ("Alice".into(), 200),
+                ("Bob".into(), 50),
+                (VAULT_CONTRACT.into(), 1_000),
+                ("Liquidator".into(), 1_000),
+            ],
         )
         .expect("token genesis fixture should deploy");
     state
@@ -131,6 +136,9 @@ pub fn bridge_finality_certificate() -> String {
 
 pub fn bridge_finality_proof() -> CrossShardFinalityProof {
     let mut source = DeTTaState::new("SourceChain");
+    source
+        .deploy_token("SourceTokenUSDC", USDC, vec![("Alice".into(), 100)])
+        .expect("source token fixture should deploy");
     source
         .deploy_bridge("BridgeSource", CHAIN_ID)
         .expect("source bridge fixture should deploy");
