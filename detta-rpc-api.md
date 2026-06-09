@@ -61,6 +61,8 @@ The shared `RpcService` supports:
 - `get_outbox_message_proof`: fetch a cross-shard outbox message proof.
 - `get_event_proof`: fetch a Merkle proof for an event by global event index.
 - `get_events`: fetch the current event log.
+- `get_events_page`: fetch a bounded event-log page with `offset`, effective
+  `limit`, and `total_events` for indexer catch-up.
 - `get_contract`: fetch a deployed contract descriptor.
 - `get_upgrade_rehearsal_report`: rehearse a scheduled upgrade on forked state
   and return invariant failures plus authenticated roots.

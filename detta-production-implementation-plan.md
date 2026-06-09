@@ -404,6 +404,8 @@ Completed production-plan slices:
 - [x] Validator block proposal and import enforce deterministic block-level
   resource limits, leaving overflow mempool transactions pending and returning
   stable RPC errors for oversized blocks.
+- [x] RPC exposes bounded paginated event-history reads for indexer catch-up
+  while preserving the existing full event-log query.
 
 Next implementation slices:
 

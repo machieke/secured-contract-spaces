@@ -14,6 +14,7 @@ use std::io::{self, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, ToSocketAddrs};
 
 pub const DEFAULT_MAX_RPC_REQUEST_BYTES: usize = 1024 * 1024;
+pub const DEFAULT_MAX_EVENT_PAGE_SIZE: usize = 1_000;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RpcError {
@@ -89,6 +90,10 @@ pub enum RpcRequest {
         index: usize,
     },
     GetEvents,
+    GetEventsPage {
+        offset: usize,
+        limit: usize,
+    },
     GetContract {
         contract: ContractId,
     },
@@ -208,6 +213,14 @@ pub struct NodeHealthReport {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct EventPage {
+    pub events: Vec<Event>,
+    pub offset: usize,
+    pub limit: usize,
+    pub total_events: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "result", content = "data", rename_all = "snake_case")]
 pub enum RpcResult {
     Submitted,
@@ -231,6 +244,7 @@ pub enum RpcResult {
     ReceiptProof(Box<ReceiptProof>),
     EventProof(Box<EventProof>),
     Events(Vec<Event>),
+    EventsPage(EventPage),
     Contract(Box<ContractRecord>),
     UpgradeRehearsalReport(Box<UpgradeRehearsalReport>),
     ValidatorSetMetadataUpdateStatus(ValidatorSetMetadataUpdateStatus),
@@ -540,6 +554,22 @@ impl RpcService {
         self.node.state().events().to_vec()
     }
 
+    pub fn get_events_page(&self, offset: usize, limit: usize) -> EventPage {
+        let events = self.node.state().events();
+        let effective_limit = limit.min(DEFAULT_MAX_EVENT_PAGE_SIZE);
+        EventPage {
+            events: events
+                .iter()
+                .skip(offset)
+                .take(effective_limit)
+                .cloned()
+                .collect(),
+            offset,
+            limit: effective_limit,
+            total_events: events.len(),
+        }
+    }
+
     pub fn get_contract(
         &self,
         contract: impl Into<ContractId>,
@@ -635,6 +665,9 @@ impl RpcService {
                 .map(|proof| RpcResult::EventProof(Box::new(proof)))
                 .into(),
             RpcRequest::GetEvents => RpcResponse::Ok(RpcResult::Events(self.get_events())),
+            RpcRequest::GetEventsPage { offset, limit } => {
+                RpcResponse::Ok(RpcResult::EventsPage(self.get_events_page(offset, limit)))
+            }
             RpcRequest::GetContract { contract } => self
                 .get_contract(contract)
                 .map(|contract| RpcResult::Contract(Box::new(contract)))
@@ -1227,6 +1260,8 @@ mod tests {
         let proof = rpc.get_storage_proof(&key).unwrap();
         let receipt_proof = rpc.get_receipt_proof(1, 0).unwrap();
         let event_proof = rpc.get_event_proof(0).unwrap();
+        let event_page = rpc.get_events_page(0, 10);
+        let capped_event_page = rpc.get_events_page(0, DEFAULT_MAX_EVENT_PAGE_SIZE + 1);
         let contract = rpc.get_contract("TokenA").unwrap();
 
         assert!(proof.verify());
@@ -1235,6 +1270,11 @@ mod tests {
         assert_eq!(receipt_proof.proof.root, block.header.receipt_root);
         assert!(event_proof.verify());
         assert_eq!(event_proof.proof.root, block.header.event_root);
+        assert_eq!(event_page.events, rpc.get_events());
+        assert_eq!(event_page.offset, 0);
+        assert_eq!(event_page.limit, 10);
+        assert_eq!(event_page.total_events, 1);
+        assert_eq!(capped_event_page.limit, DEFAULT_MAX_EVENT_PAGE_SIZE);
         assert_eq!(contract.contract_id, "TokenA");
         assert!(contract.method_policy(&Method::Transfer).is_some());
         assert!(contract
@@ -1509,6 +1549,23 @@ mod tests {
                 assert!(proof.verify());
             }
             response => panic!("expected event proof, got {response:?}"),
+        }
+
+        write_request(
+            &mut stream,
+            &RpcRequest::GetEventsPage {
+                offset: 0,
+                limit: 10,
+            },
+        );
+        match read_response(&mut reader) {
+            RpcResponse::Ok(RpcResult::EventsPage(page)) => {
+                assert_eq!(page.events.len(), 1);
+                assert_eq!(page.offset, 0);
+                assert_eq!(page.limit, 10);
+                assert_eq!(page.total_events, 1);
+            }
+            response => panic!("expected event page, got {response:?}"),
         }
 
         write_request(
