@@ -406,6 +406,8 @@ Completed production-plan slices:
   stable RPC errors for oversized blocks.
 - [x] RPC exposes bounded paginated event-history reads for indexer catch-up
   while preserving the existing full event-log query.
+- [x] Persistent validator nodes expose stored finality certificates through
+  typed RPC with stable not-found errors after restart.
 
 Next implementation slices:
 

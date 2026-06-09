@@ -763,6 +763,15 @@ impl PersistentValidatorNode {
                     Err(error) => node_rpc_error_response(NodeError::Storage(error)),
                 }
             }
+            RpcRequest::GetFinalityCertificate { height } => {
+                match self.storage.maybe_load_finality_certificate(height) {
+                    Ok(Some(certificate)) => {
+                        RpcResponse::Ok(RpcResult::FinalityCertificate(Box::new(certificate)))
+                    }
+                    Ok(None) => Err(RpcError::CertificateNotFound).into(),
+                    Err(error) => node_rpc_error_response(NodeError::Storage(error)),
+                }
+            }
             RpcRequest::GetNodeHealth => RpcResponse::Ok(RpcResult::NodeHealth(Box::new(
                 self.persistent_node_health(),
             ))),
@@ -2601,10 +2610,23 @@ mod tests {
             proposer.load_finality_certificate(3).unwrap(),
             certificate.clone()
         );
-        let reloaded = PersistentValidatorNode::restart("validator-1", &proposer_dir).unwrap();
+        let mut reloaded = PersistentValidatorNode::restart("validator-1", &proposer_dir).unwrap();
         assert_eq!(
             reloaded.load_finality_certificate(3).unwrap(),
             certificate.clone()
+        );
+        assert_eq!(
+            reloaded.handle_rpc_request(RpcRequest::GetFinalityCertificate { height: 3 }),
+            RpcResponse::Ok(RpcResult::FinalityCertificate(Box::new(
+                certificate.clone()
+            )))
+        );
+        assert_eq!(
+            reloaded.handle_rpc_request(RpcRequest::GetFinalityCertificate { height: 4 }),
+            RpcResponse::Error(RpcErrorBody {
+                code: "rpc.certificate_not_found".into(),
+                message: "finality certificate was not found".into(),
+            })
         );
 
         let envelope = transport.drain_peer("validator-2").unwrap().pop().unwrap();

@@ -1,3 +1,4 @@
+use detta_consensus::FinalityCertificate;
 use detta_core::{
     Amount, AssetId, Block, BlockError, ContractId, ContractRecord, Event, EventProof,
     ExecutionError, GrantKey, MempoolError, OutboxMessageProof, Principal, Receipt, ReceiptProof,
@@ -21,6 +22,7 @@ pub enum RpcError {
     Mempool(MempoolError),
     Block(BlockError),
     BlockNotFound,
+    CertificateNotFound,
     ReceiptNotFound,
     TransactionNotFound,
     ContractNotFound,
@@ -53,6 +55,9 @@ pub enum RpcRequest {
         index: usize,
     },
     GetBlock {
+        height: u64,
+    },
+    GetFinalityCertificate {
         height: u64,
     },
     GetNodeHealth,
@@ -226,6 +231,7 @@ pub enum RpcResult {
     Submitted,
     Imported,
     Block(Box<Block>),
+    FinalityCertificate(Box<FinalityCertificate>),
     Transaction(Box<Transaction>),
     Receipt(Box<Receipt>),
     NodeHealth(Box<NodeHealthReport>),
@@ -677,6 +683,7 @@ impl RpcService {
                 .map(|report| RpcResult::UpgradeRehearsalReport(Box::new(report)))
                 .into(),
             RpcRequest::ProposeValidatorSetMetadataUpdate { .. }
+            | RpcRequest::GetFinalityCertificate { .. }
             | RpcRequest::GetValidatorSetMetadataUpdateStatus { .. }
             | RpcRequest::GetValidatorSetMetadataAuditRecords { .. }
             | RpcRequest::GetSnapshotImportAuditRecords { .. }
@@ -834,6 +841,7 @@ fn rpc_error_code(error: &RpcError) -> &'static str {
             "block.resource_limit_exceeded"
         }
         RpcError::BlockNotFound => "rpc.block_not_found",
+        RpcError::CertificateNotFound => "rpc.certificate_not_found",
         RpcError::ReceiptNotFound => "rpc.receipt_not_found",
         RpcError::TransactionNotFound => "rpc.transaction_not_found",
         RpcError::ContractNotFound => "rpc.contract_not_found",
@@ -892,6 +900,7 @@ fn rpc_error_message(error: &RpcError) -> &'static str {
             "block resource limit exceeded"
         }
         RpcError::BlockNotFound => "block was not found",
+        RpcError::CertificateNotFound => "finality certificate was not found",
         RpcError::ReceiptNotFound => "receipt was not found",
         RpcError::TransactionNotFound => "transaction was not found",
         RpcError::ContractNotFound => "contract was not found",

@@ -233,6 +233,17 @@ impl FileStorage {
         read_json(&self.certificate_path(height))
     }
 
+    pub fn maybe_load_finality_certificate(
+        &self,
+        height: u64,
+    ) -> Result<Option<FinalityCertificate>, StorageError> {
+        let path = self.certificate_path(height);
+        if !path.exists() {
+            return Ok(None);
+        }
+        read_json(&path).map(Some)
+    }
+
     pub fn commit_slashing_record(&self, record: &SlashingRecord) -> Result<(), StorageError> {
         write_json_atomic(&self.slashing_path(&record.validator_id), record)
     }
@@ -820,10 +831,13 @@ mod tests {
             signers: vec!["validator-1".into(), "validator-2".into()],
         };
 
+        assert_eq!(storage.maybe_load_finality_certificate(7).unwrap(), None);
         storage.commit_finality_certificate(&certificate).unwrap();
         let loaded = storage.load_finality_certificate(7).unwrap();
+        let maybe_loaded = storage.maybe_load_finality_certificate(7).unwrap();
 
         assert_eq!(loaded, certificate);
+        assert_eq!(maybe_loaded, Some(certificate));
         fs::remove_dir_all(dir).unwrap();
     }
 

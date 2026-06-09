@@ -192,6 +192,7 @@ dependencies = [
 name = "detta-rpc"
 version = "0.1.0"
 dependencies = [
+ "detta-consensus",
  "detta-core",
  "detta-protocol",
  "detta-storage",

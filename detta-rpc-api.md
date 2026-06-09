@@ -74,6 +74,8 @@ or global roots.
 
 Persistent validator nodes additionally handle:
 
+- `get_finality_certificate`: fetch a persisted finality certificate by block
+  height for light-client and audit verification.
 - `propose_validator_set_metadata_update`: submit a signed validator-set update
   authorization.
 - `get_validator_set_metadata_update_status`: report pending authorization
