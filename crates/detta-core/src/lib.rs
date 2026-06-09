@@ -119,6 +119,10 @@ pub enum StateKey {
         contract: ContractId,
         asset: AssetId,
     },
+    StakingPenaltyCollected {
+        contract: ContractId,
+        asset: AssetId,
+    },
     UnbondReadyHeight {
         contract: ContractId,
         staker: Principal,
@@ -155,6 +159,7 @@ impl StateKey {
             StateKey::TotalStaked { contract, .. } => contract,
             StateKey::PendingUnbond { contract, .. } => contract,
             StateKey::TotalPendingUnbond { contract, .. } => contract,
+            StateKey::StakingPenaltyCollected { contract, .. } => contract,
             StateKey::UnbondReadyHeight { contract, .. } => contract,
             StateKey::StakingRewardBalance { contract, .. } => contract,
             StateKey::StakingLastRewardHeight { contract, .. } => contract,
@@ -330,6 +335,7 @@ pub enum ContractKind {
         asset: AssetId,
         unbonding_delay: u64,
         reward_per_block: Amount,
+        unstake_penalty_bps: u64,
     },
     Router {
         token_contract: ContractId,
@@ -707,8 +713,7 @@ impl ContractRecord {
         contract_id: ContractId,
         code_hash: String,
         asset: AssetId,
-        unbonding_delay: u64,
-        reward_per_block: Amount,
+        parameters: StakingParameters,
     ) -> Self {
         let active_invariant = ContractInvariant::StakingTotalMatchesBalances;
         let pending_invariant = ContractInvariant::StakingPendingUnbondingMatchesTotal;
@@ -717,8 +722,9 @@ impl ContractRecord {
             code_hash,
             ContractKind::Staking {
                 asset,
-                unbonding_delay,
-                reward_per_block,
+                unbonding_delay: parameters.unbonding_delay,
+                reward_per_block: parameters.reward_per_block,
+                unstake_penalty_bps: parameters.unstake_penalty_bps,
             },
             BTreeMap::from([
                 (
@@ -972,6 +978,13 @@ pub enum EventPayload {
         staker: Principal,
         asset: AssetId,
         amount: Amount,
+    },
+    StakingPenaltyApplied {
+        staker: Principal,
+        asset: AssetId,
+        requested_amount: Amount,
+        penalty_amount: Amount,
+        released_amount: Amount,
     },
 }
 
@@ -1777,6 +1790,27 @@ impl LendingRiskParameters {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct StakingParameters {
+    pub unbonding_delay: u64,
+    pub reward_per_block: Amount,
+    pub unstake_penalty_bps: u64,
+}
+
+impl StakingParameters {
+    pub const fn new(
+        unbonding_delay: u64,
+        reward_per_block: Amount,
+        unstake_penalty_bps: u64,
+    ) -> Self {
+        Self {
+            unbonding_delay,
+            reward_per_block,
+            unstake_penalty_bps,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DeTTaState {
     chain_id: ChainId,
@@ -2123,7 +2157,7 @@ impl DeTTaState {
         contract: impl Into<ContractId>,
         asset: impl Into<AssetId>,
     ) -> Result<(), ExecutionError> {
-        self.deploy_staking_with_rewards(contract, asset, 0, 0)
+        self.deploy_staking_with_parameters(contract, asset, StakingParameters::new(0, 0, 0))
     }
 
     pub fn deploy_staking_with_rewards(
@@ -2133,24 +2167,35 @@ impl DeTTaState {
         unbonding_delay: u64,
         reward_per_block: Amount,
     ) -> Result<(), ExecutionError> {
+        self.deploy_staking_with_parameters(
+            contract,
+            asset,
+            StakingParameters::new(unbonding_delay, reward_per_block, 0),
+        )
+    }
+
+    pub fn deploy_staking_with_parameters(
+        &mut self,
+        contract: impl Into<ContractId>,
+        asset: impl Into<AssetId>,
+        parameters: StakingParameters,
+    ) -> Result<(), ExecutionError> {
+        if parameters.unstake_penalty_bps > 10_000 {
+            return Err(ExecutionError::InvalidArguments);
+        }
         let contract = contract.into();
         let asset = asset.into();
         let code_hash = root_of(&(
-            "detta-staking-v1",
+            "detta-staking-v2",
             &contract,
             &asset,
-            unbonding_delay,
-            reward_per_block,
+            parameters.unbonding_delay,
+            parameters.reward_per_block,
+            parameters.unstake_penalty_bps,
         ));
         self.contracts.insert(
             contract.clone(),
-            ContractRecord::staking(
-                contract.clone(),
-                code_hash,
-                asset.clone(),
-                unbonding_delay,
-                reward_per_block,
-            ),
+            ContractRecord::staking(contract.clone(), code_hash, asset.clone(), parameters),
         );
         self.storage.insert(
             StateKey::TotalStaked {
@@ -2160,7 +2205,14 @@ impl DeTTaState {
             StateValue::UInt(0),
         );
         self.storage.insert(
-            StateKey::TotalPendingUnbond { contract, asset },
+            StateKey::TotalPendingUnbond {
+                contract: contract.clone(),
+                asset: asset.clone(),
+            },
+            StateValue::UInt(0),
+        );
+        self.storage.insert(
+            StateKey::StakingPenaltyCollected { contract, asset },
             StateValue::UInt(0),
         );
         Ok(())
@@ -2599,6 +2651,21 @@ impl DeTTaState {
             .unwrap_or_default()
     }
 
+    pub fn staking_penalty_collected(
+        &self,
+        contract: impl Into<ContractId>,
+        asset: impl Into<AssetId>,
+    ) -> Amount {
+        let key = StateKey::StakingPenaltyCollected {
+            contract: contract.into(),
+            asset: asset.into(),
+        };
+        self.storage
+            .get(&key)
+            .map(StateValue::as_uint)
+            .unwrap_or_default()
+    }
+
     pub fn staking_reward_balance(
         &self,
         contract: impl Into<ContractId>,
@@ -2926,17 +2993,24 @@ impl DeTTaState {
                     asset,
                     unbonding_delay,
                     reward_per_block,
+                    unstake_penalty_bps,
                 } => match tx.method {
                     Method::Stake => self.stake(tx, msg_sender, asset, reward_per_block),
-                    Method::Unstake => {
-                        self.unstake(tx, msg_sender, asset, reward_per_block, unbonding_delay)
-                    }
+                    Method::Unstake => self.unstake(
+                        tx,
+                        msg_sender,
+                        asset,
+                        reward_per_block,
+                        unbonding_delay,
+                        unstake_penalty_bps,
+                    ),
                     Method::RequestUnstake => self.request_unstake(
                         tx,
                         msg_sender,
                         asset,
                         reward_per_block,
                         unbonding_delay,
+                        unstake_penalty_bps,
                     ),
                     Method::CompleteUnstake => self.complete_unstake(tx, msg_sender, asset),
                     Method::ClaimStakingRewards => {
@@ -4033,6 +4107,7 @@ impl DeTTaState {
         staking_asset: AssetId,
         reward_per_block: Amount,
         unbonding_delay: u64,
+        unstake_penalty_bps: u64,
     ) -> Result<ReturnValue, ExecutionError> {
         if unbonding_delay > 0 {
             return Err(ExecutionError::TimelockNotReady);
@@ -4048,6 +4123,7 @@ impl DeTTaState {
         let staker = msg_sender;
         let stake_key = stake_balance_key(&tx.target, &staker, &asset);
         let total_key = total_staked_key(&tx.target, &asset);
+        let penalty_key = staking_penalty_collected_key(&tx.target, &asset);
         let reward_key = staking_reward_balance_key(&tx.target, &staker, &asset);
         let last_reward_key = staking_last_reward_height_key(&tx.target, &staker, &asset);
         let frame = AuthorizedFrame {
@@ -4056,6 +4132,7 @@ impl DeTTaState {
             write_scope: BTreeSet::from([
                 stake_key.clone(),
                 total_key.clone(),
+                penalty_key.clone(),
                 reward_key,
                 last_reward_key,
             ]),
@@ -4071,9 +4148,22 @@ impl DeTTaState {
         if total_staked < amount {
             return Err(ExecutionError::InvariantViolation);
         }
+        let (released_amount, penalty_amount) = apply_staking_penalty(amount, unstake_penalty_bps)?;
 
         self.state_set(&frame, stake_key, StateValue::UInt(current_stake - amount))?;
         self.state_set(&frame, total_key, StateValue::UInt(total_staked - amount))?;
+        if penalty_amount != 0 {
+            let current_penalty = self.uint_at(&penalty_key);
+            self.state_set(
+                &frame,
+                penalty_key,
+                StateValue::UInt(
+                    current_penalty
+                        .checked_add(penalty_amount)
+                        .ok_or(ExecutionError::ArithmeticOverflow)?,
+                ),
+            )?;
+        }
 
         if !self.staking_invariants_hold(&tx.target, &asset) {
             return Err(ExecutionError::InvariantViolation);
@@ -4082,13 +4172,26 @@ impl DeTTaState {
             return Err(ExecutionError::InvariantViolation);
         }
 
+        if penalty_amount != 0 {
+            self.emit(
+                &tx.target,
+                &tx.tx_hash,
+                EventPayload::StakingPenaltyApplied {
+                    staker: staker.clone(),
+                    asset: asset.clone(),
+                    requested_amount: amount,
+                    penalty_amount,
+                    released_amount,
+                },
+            );
+        }
         self.emit(
             &tx.target,
             &tx.tx_hash,
             EventPayload::Unstaked {
                 staker,
                 asset,
-                amount,
+                amount: released_amount,
             },
         );
         Ok(ReturnValue::Unit)
@@ -4101,6 +4204,7 @@ impl DeTTaState {
         staking_asset: AssetId,
         reward_per_block: Amount,
         unbonding_delay: u64,
+        unstake_penalty_bps: u64,
     ) -> Result<ReturnValue, ExecutionError> {
         let [asset, amount] = expect_args(&tx.args)?;
         let asset = expect_asset(asset)?;
@@ -4114,6 +4218,7 @@ impl DeTTaState {
         let total_key = total_staked_key(&tx.target, &asset);
         let pending_key = pending_unbond_key(&tx.target, &staker, &asset);
         let total_pending_key = total_pending_unbond_key(&tx.target, &asset);
+        let penalty_key = staking_penalty_collected_key(&tx.target, &asset);
         let ready_key = unbond_ready_height_key(&tx.target, &staker, &asset);
         let reward_key = staking_reward_balance_key(&tx.target, &staker, &asset);
         let last_reward_key = staking_last_reward_height_key(&tx.target, &staker, &asset);
@@ -4125,6 +4230,7 @@ impl DeTTaState {
                 total_key.clone(),
                 pending_key.clone(),
                 total_pending_key.clone(),
+                penalty_key.clone(),
                 ready_key.clone(),
                 reward_key,
                 last_reward_key,
@@ -4147,6 +4253,7 @@ impl DeTTaState {
             .height
             .checked_add(unbonding_delay)
             .ok_or(ExecutionError::ArithmeticOverflow)?;
+        let (released_amount, penalty_amount) = apply_staking_penalty(amount, unstake_penalty_bps)?;
 
         self.state_set(&frame, stake_key, StateValue::UInt(current_stake - amount))?;
         self.state_set(&frame, total_key, StateValue::UInt(total_staked - amount))?;
@@ -4155,7 +4262,7 @@ impl DeTTaState {
             pending_key,
             StateValue::UInt(
                 current_pending
-                    .checked_add(amount)
+                    .checked_add(released_amount)
                     .ok_or(ExecutionError::ArithmeticOverflow)?,
             ),
         )?;
@@ -4164,10 +4271,22 @@ impl DeTTaState {
             total_pending_key,
             StateValue::UInt(
                 total_pending
-                    .checked_add(amount)
+                    .checked_add(released_amount)
                     .ok_or(ExecutionError::ArithmeticOverflow)?,
             ),
         )?;
+        if penalty_amount != 0 {
+            let current_penalty = self.uint_at(&penalty_key);
+            self.state_set(
+                &frame,
+                penalty_key,
+                StateValue::UInt(
+                    current_penalty
+                        .checked_add(penalty_amount)
+                        .ok_or(ExecutionError::ArithmeticOverflow)?,
+                ),
+            )?;
+        }
         self.state_set(&frame, ready_key, StateValue::UInt(ready_height as Amount))?;
 
         if !self.staking_invariants_hold(&tx.target, &asset) {
@@ -4177,13 +4296,26 @@ impl DeTTaState {
             return Err(ExecutionError::InvariantViolation);
         }
 
+        if penalty_amount != 0 {
+            self.emit(
+                &tx.target,
+                &tx.tx_hash,
+                EventPayload::StakingPenaltyApplied {
+                    staker: staker.clone(),
+                    asset: asset.clone(),
+                    requested_amount: amount,
+                    penalty_amount,
+                    released_amount,
+                },
+            );
+        }
         self.emit(
             &tx.target,
             &tx.tx_hash,
             EventPayload::UnstakeRequested {
                 staker,
                 asset,
-                amount,
+                amount: released_amount,
                 ready_height,
             },
         );
@@ -4980,6 +5112,13 @@ fn total_pending_unbond_key(contract: &ContractId, asset: &AssetId) -> StateKey 
     }
 }
 
+fn staking_penalty_collected_key(contract: &ContractId, asset: &AssetId) -> StateKey {
+    StateKey::StakingPenaltyCollected {
+        contract: contract.clone(),
+        asset: asset.clone(),
+    }
+}
+
 fn unbond_ready_height_key(contract: &ContractId, staker: &Principal, asset: &AssetId) -> StateKey {
     StateKey::UnbondReadyHeight {
         contract: contract.clone(),
@@ -5010,6 +5149,20 @@ fn staking_last_reward_height_key(
         staker: staker.clone(),
         asset: asset.clone(),
     }
+}
+
+fn apply_staking_penalty(
+    amount: Amount,
+    penalty_bps: u64,
+) -> Result<(Amount, Amount), ExecutionError> {
+    if penalty_bps > 10_000 {
+        return Err(ExecutionError::InvalidArguments);
+    }
+    let penalty = amount
+        .checked_mul(penalty_bps as Amount)
+        .ok_or(ExecutionError::ArithmeticOverflow)?
+        / 10_000;
+    Ok((amount - penalty, penalty))
 }
 
 fn verify_permit_certificate(
@@ -7379,5 +7532,116 @@ mod tests {
         assert_eq!(completed_state.stake_balance("StakeA", "Alice", "ATOM"), 60);
         assert_eq!(completed_state.total_staked("StakeA", "ATOM"), 60);
         assert_eq!(completed_state.check_declared_invariants(), vec![]);
+    }
+
+    #[test]
+    fn staking_applies_configured_exit_penalties() {
+        let mut invalid = DeTTaState::new("detta-local");
+        assert_eq!(
+            invalid.deploy_staking_with_parameters(
+                "StakeBad",
+                "ATOM",
+                StakingParameters::new(0, 0, 10_001)
+            ),
+            Err(ExecutionError::InvalidArguments)
+        );
+
+        let mut state = DeTTaState::new("detta-local");
+        state
+            .deploy_staking_with_parameters("StakeA", "ATOM", StakingParameters::new(0, 0, 2_500))
+            .unwrap();
+        state.apply_transaction(tx_to(
+            "StakeA",
+            "tx1",
+            "Alice",
+            1,
+            Method::Stake,
+            vec![asset("ATOM"), amount(100)],
+        ));
+
+        let unstake = state.apply_transaction(tx_to(
+            "StakeA",
+            "tx2",
+            "Alice",
+            2,
+            Method::Unstake,
+            vec![asset("ATOM"), amount(40)],
+        ));
+        assert_eq!(unstake.status, TxStatus::Committed);
+        assert_eq!(state.stake_balance("StakeA", "Alice", "ATOM"), 60);
+        assert_eq!(state.total_staked("StakeA", "ATOM"), 60);
+        assert_eq!(state.staking_penalty_collected("StakeA", "ATOM"), 10);
+        assert_eq!(state.check_declared_invariants(), vec![]);
+        assert!(matches!(
+            state.events().iter().rev().nth(1).unwrap().payload,
+            EventPayload::StakingPenaltyApplied {
+                requested_amount: 40,
+                penalty_amount: 10,
+                released_amount: 30,
+                ..
+            }
+        ));
+        assert!(matches!(
+            state.events().last().unwrap().payload,
+            EventPayload::Unstaked { amount: 30, .. }
+        ));
+
+        let mut delayed = DeTTaState::new("detta-local");
+        delayed
+            .deploy_staking_with_parameters("StakeB", "ATOM", StakingParameters::new(2, 0, 1_000))
+            .unwrap();
+        delayed.apply_transaction(tx_to(
+            "StakeB",
+            "tx3",
+            "Alice",
+            1,
+            Method::Stake,
+            vec![asset("ATOM"), amount(100)],
+        ));
+        let (request_block, requested_state) = delayed.build_block(
+            5,
+            vec![tx_to(
+                "StakeB",
+                "tx4",
+                "Alice",
+                2,
+                Method::RequestUnstake,
+                vec![asset("ATOM"), amount(40)],
+            )],
+            5_000,
+            "validator-1",
+            "cert-5",
+        );
+        assert_eq!(request_block.receipts[0].status, TxStatus::Committed);
+        assert_eq!(requested_state.stake_balance("StakeB", "Alice", "ATOM"), 60);
+        assert_eq!(
+            requested_state.pending_unbond("StakeB", "Alice", "ATOM"),
+            36
+        );
+        assert_eq!(requested_state.total_pending_unbond("StakeB", "ATOM"), 36);
+        assert_eq!(
+            requested_state.staking_penalty_collected("StakeB", "ATOM"),
+            4
+        );
+        assert_eq!(requested_state.check_declared_invariants(), vec![]);
+        assert!(matches!(
+            requested_state
+                .events()
+                .iter()
+                .rev()
+                .nth(1)
+                .unwrap()
+                .payload,
+            EventPayload::StakingPenaltyApplied {
+                requested_amount: 40,
+                penalty_amount: 4,
+                released_amount: 36,
+                ..
+            }
+        ));
+        assert!(matches!(
+            requested_state.events().last().unwrap().payload,
+            EventPayload::UnstakeRequested { amount: 36, .. }
+        ));
     }
 }

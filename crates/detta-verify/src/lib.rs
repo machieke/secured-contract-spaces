@@ -698,6 +698,7 @@ fn owner_of_key(key: &StateKey) -> &str {
         | StateKey::TotalStaked { contract, .. }
         | StateKey::PendingUnbond { contract, .. }
         | StateKey::TotalPendingUnbond { contract, .. }
+        | StateKey::StakingPenaltyCollected { contract, .. }
         | StateKey::UnbondReadyHeight { contract, .. }
         | StateKey::StakingRewardBalance { contract, .. }
         | StateKey::StakingLastRewardHeight { contract, .. } => contract,
