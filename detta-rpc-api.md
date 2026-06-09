@@ -76,6 +76,8 @@ Persistent validator nodes additionally handle:
 
 - `get_finality_certificate`: fetch a persisted finality certificate by block
   height for light-client and audit verification.
+- `get_slashing_record`: fetch a persisted slashing record by validator ID for
+  equivocation evidence audits.
 - `propose_validator_set_metadata_update`: submit a signed validator-set update
   authorization.
 - `get_validator_set_metadata_update_status`: report pending authorization

@@ -1,4 +1,4 @@
-use detta_consensus::FinalityCertificate;
+use detta_consensus::{FinalityCertificate, SlashingRecord};
 use detta_core::{
     Amount, AssetId, Block, BlockError, ContractId, ContractRecord, Event, EventProof,
     ExecutionError, GrantKey, MempoolError, OutboxMessageProof, Principal, Receipt, ReceiptProof,
@@ -23,6 +23,7 @@ pub enum RpcError {
     Block(BlockError),
     BlockNotFound,
     CertificateNotFound,
+    SlashingRecordNotFound,
     ReceiptNotFound,
     TransactionNotFound,
     ContractNotFound,
@@ -59,6 +60,9 @@ pub enum RpcRequest {
     },
     GetFinalityCertificate {
         height: u64,
+    },
+    GetSlashingRecord {
+        validator_id: String,
     },
     GetNodeHealth,
     GetStateRoot,
@@ -232,6 +236,7 @@ pub enum RpcResult {
     Imported,
     Block(Box<Block>),
     FinalityCertificate(Box<FinalityCertificate>),
+    SlashingRecord(Box<SlashingRecord>),
     Transaction(Box<Transaction>),
     Receipt(Box<Receipt>),
     NodeHealth(Box<NodeHealthReport>),
@@ -684,6 +689,7 @@ impl RpcService {
                 .into(),
             RpcRequest::ProposeValidatorSetMetadataUpdate { .. }
             | RpcRequest::GetFinalityCertificate { .. }
+            | RpcRequest::GetSlashingRecord { .. }
             | RpcRequest::GetValidatorSetMetadataUpdateStatus { .. }
             | RpcRequest::GetValidatorSetMetadataAuditRecords { .. }
             | RpcRequest::GetSnapshotImportAuditRecords { .. }
@@ -842,6 +848,7 @@ fn rpc_error_code(error: &RpcError) -> &'static str {
         }
         RpcError::BlockNotFound => "rpc.block_not_found",
         RpcError::CertificateNotFound => "rpc.certificate_not_found",
+        RpcError::SlashingRecordNotFound => "rpc.slashing_record_not_found",
         RpcError::ReceiptNotFound => "rpc.receipt_not_found",
         RpcError::TransactionNotFound => "rpc.transaction_not_found",
         RpcError::ContractNotFound => "rpc.contract_not_found",
@@ -901,6 +908,7 @@ fn rpc_error_message(error: &RpcError) -> &'static str {
         }
         RpcError::BlockNotFound => "block was not found",
         RpcError::CertificateNotFound => "finality certificate was not found",
+        RpcError::SlashingRecordNotFound => "slashing record was not found",
         RpcError::ReceiptNotFound => "receipt was not found",
         RpcError::TransactionNotFound => "transaction was not found",
         RpcError::ContractNotFound => "contract was not found",
@@ -918,6 +926,7 @@ fn rpc_error_message(error: &RpcError) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use detta_consensus::EquivocationEvidence;
     use detta_core::{
         Argument, ContractInvariant, DeTTaState, EventPayload, MerkleProof, Method, TxStatus,
     };
@@ -1290,6 +1299,59 @@ mod tests {
     }
 
     #[test]
+    fn slashing_record_json_fixture_is_stable() {
+        let request = RpcRequest::GetSlashingRecord {
+            validator_id: "validator-1".into(),
+        };
+        let request_fixture =
+            r#"{"method":"get_slashing_record","params":{"validator_id":"validator-1"}}"#;
+        assert_eq!(serde_json::to_string(&request).unwrap(), request_fixture);
+        assert_eq!(
+            serde_json::from_str::<RpcRequest>(request_fixture).unwrap(),
+            request
+        );
+
+        let response = RpcResponse::Ok(RpcResult::SlashingRecord(Box::new(SlashingRecord {
+            validator_id: "validator-1".into(),
+            slashed_at_height: 11,
+            evidence: EquivocationEvidence {
+                validator_id: "validator-1".into(),
+                height: 11,
+                first_block_hash: "block-a".into(),
+                second_block_hash: "block-b".into(),
+            },
+        })));
+        let response_fixture = concat!(
+            r#"{"status":"ok","body":{"result":"slashing_record","data":{"#,
+            r#""validator_id":"validator-1","slashed_at_height":11,"#,
+            r#""evidence":{"validator_id":"validator-1","height":11,"#,
+            r#""first_block_hash":"block-a","second_block_hash":"block-b"}}}}"#,
+        );
+        assert_eq!(serde_json::to_string(&response).unwrap(), response_fixture);
+        assert_eq!(
+            serde_json::from_str::<RpcResponse>(response_fixture).unwrap(),
+            response
+        );
+
+        let missing_response = RpcResponse::Error(RpcErrorBody {
+            code: "rpc.slashing_record_not_found".into(),
+            message: "slashing record was not found".into(),
+        });
+        let missing_fixture = concat!(
+            r#"{"status":"error","body":{"code":"rpc.slashing_record_not_found","#,
+            r#""message":"slashing record was not found"}}"#,
+        );
+        assert_eq!(
+            serde_json::to_string(&missing_response).unwrap(),
+            missing_fixture
+        );
+        assert_eq!(
+            serde_json::from_str::<RpcResponse>(missing_fixture).unwrap(),
+            missing_response
+        );
+    }
+
+    #[test]
     fn rpc_submits_transaction_produces_block_and_returns_receipt() {
         let mut rpc = seeded_rpc();
         rpc.submit_transaction(transfer_tx()).unwrap();
@@ -1530,6 +1592,15 @@ mod tests {
         );
         assert_eq!(
             rpc.handle_request(RpcRequest::GetSnapshotImportAuditConfig),
+            RpcResponse::Error(RpcErrorBody {
+                code: "rpc.unsupported_node_method".into(),
+                message: "method must be handled by a persistent validator node".into(),
+            })
+        );
+        assert_eq!(
+            rpc.handle_request(RpcRequest::GetSlashingRecord {
+                validator_id: "validator-1".into(),
+            }),
             RpcResponse::Error(RpcErrorBody {
                 code: "rpc.unsupported_node_method".into(),
                 message: "method must be handled by a persistent validator node".into(),

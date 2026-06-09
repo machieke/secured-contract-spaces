@@ -410,6 +410,8 @@ Completed production-plan slices:
   typed RPC with stable not-found errors after restart.
 - [x] Finality-certificate RPC compatibility is covered by stable JSON client
   fixtures and persistent-node TCP JSON after-restart tests.
+- [x] Persistent validator nodes expose durable slashing/equivocation records
+  through typed RPC, stable JSON fixtures, and TCP JSON after-restart tests.
 
 Next implementation slices:
 

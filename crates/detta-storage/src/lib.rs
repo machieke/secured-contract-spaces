@@ -252,6 +252,17 @@ impl FileStorage {
         read_json(&self.slashing_path(validator_id))
     }
 
+    pub fn maybe_load_slashing_record(
+        &self,
+        validator_id: &str,
+    ) -> Result<Option<SlashingRecord>, StorageError> {
+        let path = self.slashing_path(validator_id);
+        if !path.exists() {
+            return Ok(None);
+        }
+        read_json(&path).map(Some)
+    }
+
     pub fn commit_validator_set_metadata(
         &self,
         metadata: &ValidatorSetMetadata,
@@ -858,8 +869,14 @@ mod tests {
 
         storage.commit_slashing_record(&record).unwrap();
         let loaded = storage.load_slashing_record("validator/1").unwrap();
+        let maybe_loaded = storage.maybe_load_slashing_record("validator/1").unwrap();
 
         assert_eq!(loaded, record);
+        assert_eq!(maybe_loaded, Some(record));
+        assert_eq!(
+            storage.maybe_load_slashing_record("validator/2").unwrap(),
+            None
+        );
         fs::remove_dir_all(dir).unwrap();
     }
 

@@ -772,6 +772,15 @@ impl PersistentValidatorNode {
                     Err(error) => node_rpc_error_response(NodeError::Storage(error)),
                 }
             }
+            RpcRequest::GetSlashingRecord { validator_id } => {
+                match self.storage.maybe_load_slashing_record(&validator_id) {
+                    Ok(Some(record)) => {
+                        RpcResponse::Ok(RpcResult::SlashingRecord(Box::new(record)))
+                    }
+                    Ok(None) => Err(RpcError::SlashingRecordNotFound).into(),
+                    Err(error) => node_rpc_error_response(NodeError::Storage(error)),
+                }
+            }
             RpcRequest::GetNodeHealth => RpcResponse::Ok(RpcResult::NodeHealth(Box::new(
                 self.persistent_node_health(),
             ))),
@@ -2702,13 +2711,37 @@ mod tests {
             }
         );
 
-        let reloaded_peer = PersistentValidatorNode::restart("validator-3", &peer_dir).unwrap();
+        let mut reloaded_peer = PersistentValidatorNode::restart("validator-3", &peer_dir).unwrap();
         assert_eq!(
             reloaded_peer
                 .load_slashing_record("validator-1")
                 .unwrap()
                 .slashed_at_height,
             11
+        );
+        assert_eq!(
+            reloaded_peer.handle_rpc_request(RpcRequest::GetSlashingRecord {
+                validator_id: "validator-1".into(),
+            }),
+            RpcResponse::Ok(RpcResult::SlashingRecord(Box::new(SlashingRecord {
+                validator_id: "validator-1".into(),
+                slashed_at_height: 11,
+                evidence: EquivocationEvidence {
+                    validator_id: "validator-1".into(),
+                    height: 11,
+                    first_block_hash: "block-a".into(),
+                    second_block_hash: "block-b".into(),
+                },
+            })))
+        );
+        assert_eq!(
+            reloaded_peer.handle_rpc_request(RpcRequest::GetSlashingRecord {
+                validator_id: "validator-9".into(),
+            }),
+            RpcResponse::Error(RpcErrorBody {
+                code: "rpc.slashing_record_not_found".into(),
+                message: "slashing record was not found".into(),
+            })
         );
 
         fs::remove_dir_all(reporter_dir).unwrap();
@@ -4082,6 +4115,63 @@ mod tests {
             RpcResponse::Error(RpcErrorBody {
                 code: "rpc.certificate_not_found".into(),
                 message: "finality certificate was not found".into(),
+            })
+        );
+
+        stream.shutdown(Shutdown::Write).unwrap();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn persistent_node_json_rpc_tcp_serves_slashing_records_after_restart() {
+        let dir = temp_dir("slashing-record-json-rpc");
+        let node = PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &dir).unwrap();
+        let record = SlashingRecord {
+            validator_id: "validator-1".into(),
+            slashed_at_height: 11,
+            evidence: EquivocationEvidence {
+                validator_id: "validator-1".into(),
+                height: 11,
+                first_block_hash: "block-a".into(),
+                second_block_hash: "block-b".into(),
+            },
+        };
+        node.storage.commit_slashing_record(&record).unwrap();
+        let restarted = PersistentValidatorNode::restart("validator-1", &dir).unwrap();
+        let expected_record = record.clone();
+        let server = JsonRpcServer::bind("127.0.0.1:0").unwrap();
+        let addr = server.local_addr().unwrap();
+        let handle = thread::spawn(move || {
+            let mut node = restarted;
+            server
+                .serve_next_connection_with_handler(&mut node)
+                .unwrap();
+            fs::remove_dir_all(dir).unwrap();
+        });
+
+        let mut stream = TcpStream::connect(addr).unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        write_rpc_request(
+            &mut stream,
+            &RpcRequest::GetSlashingRecord {
+                validator_id: "validator-1".into(),
+            },
+        );
+        assert_eq!(
+            read_rpc_response(&mut reader),
+            RpcResponse::Ok(RpcResult::SlashingRecord(Box::new(expected_record)))
+        );
+        write_rpc_request(
+            &mut stream,
+            &RpcRequest::GetSlashingRecord {
+                validator_id: "validator-9".into(),
+            },
+        );
+        assert_eq!(
+            read_rpc_response(&mut reader),
+            RpcResponse::Error(RpcErrorBody {
+                code: "rpc.slashing_record_not_found".into(),
+                message: "slashing record was not found".into(),
             })
         );
 
