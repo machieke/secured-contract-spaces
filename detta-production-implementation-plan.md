@@ -399,6 +399,8 @@ Completed production-plan slices:
 - [x] JSON RPC exposes opt-in operator endpoint wrappers for bearer-token
   authentication and per-connection request limiting without breaking public
   request compatibility.
+- [x] JSON RPC request, response, proof, persistent-node, and operator-guard
+  semantics are documented for client and operator implementers.
 
 Next implementation slices:
 
