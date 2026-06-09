@@ -8,7 +8,7 @@
 
 # 0. Implementation Progress
 
-Updated: 2026-06-08
+Updated: 2026-06-09
 
 Completed production-plan slices:
 
@@ -374,6 +374,8 @@ Completed production-plan slices:
   aggregate pending-unbond invariants and block-height tests.
 - [x] Node health RPC reports chain/network identity, height, mempool size,
   validator-key counts, pending validator-set updates, and authenticated roots.
+- [x] Lending vaults support per-block debt interest, liquidation thresholds,
+  collateral seizure, and explicit bad-debt accounting tests.
 
 Next implementation slices:
 

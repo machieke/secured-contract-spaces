@@ -692,6 +692,8 @@ fn owner_of_key(key: &StateKey) -> &str {
         | StateKey::BridgeMessageConsumed { contract, .. }
         | StateKey::Collateral { contract, .. }
         | StateKey::Debt { contract, .. }
+        | StateKey::DebtLastAccrualHeight { contract, .. }
+        | StateKey::BadDebt { contract, .. }
         | StateKey::StakeBalance { contract, .. }
         | StateKey::TotalStaked { contract, .. }
         | StateKey::PendingUnbond { contract, .. }

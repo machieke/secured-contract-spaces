@@ -29,6 +29,7 @@ pub enum Method {
     ExecutePolicyUpdate,
     DepositCollateral,
     Borrow,
+    Liquidate,
     Stake,
     Unstake,
     RequestUnstake,
@@ -91,6 +92,15 @@ pub enum StateKey {
         borrower: Principal,
         asset: AssetId,
     },
+    DebtLastAccrualHeight {
+        contract: ContractId,
+        borrower: Principal,
+        asset: AssetId,
+    },
+    BadDebt {
+        contract: ContractId,
+        asset: AssetId,
+    },
     StakeBalance {
         contract: ContractId,
         staker: Principal,
@@ -139,6 +149,8 @@ impl StateKey {
             StateKey::BridgeMessageConsumed { contract, .. } => contract,
             StateKey::Collateral { contract, .. } => contract,
             StateKey::Debt { contract, .. } => contract,
+            StateKey::DebtLastAccrualHeight { contract, .. } => contract,
+            StateKey::BadDebt { contract, .. } => contract,
             StateKey::StakeBalance { contract, .. } => contract,
             StateKey::TotalStaked { contract, .. } => contract,
             StateKey::PendingUnbond { contract, .. } => contract,
@@ -311,6 +323,8 @@ pub enum ContractKind {
         oracle_contract: ContractId,
         ltv_bps: u64,
         max_oracle_age: u64,
+        interest_bps_per_block: u64,
+        liquidation_threshold_bps: u64,
     },
     Staking {
         asset: AssetId,
@@ -645,8 +659,7 @@ impl ContractRecord {
         collateral_asset: AssetId,
         debt_asset: AssetId,
         oracle_contract: ContractId,
-        ltv_bps: u64,
-        max_oracle_age: u64,
+        risk: LendingRiskParameters,
     ) -> Self {
         Self::with_policy_manifest(
             contract_id,
@@ -655,8 +668,10 @@ impl ContractRecord {
                 collateral_asset,
                 debt_asset,
                 oracle_contract,
-                ltv_bps,
-                max_oracle_age,
+                ltv_bps: risk.ltv_bps,
+                max_oracle_age: risk.max_oracle_age,
+                interest_bps_per_block: risk.interest_bps_per_block,
+                liquidation_threshold_bps: risk.liquidation_threshold_bps,
             },
             BTreeMap::from([
                 (
@@ -669,6 +684,14 @@ impl ContractRecord {
                 ),
                 (
                     Method::Borrow,
+                    method_policy(
+                        PolicyAuthority::TxSender,
+                        [PolicyEffect::StorageWrite, PolicyEffect::EventEmit],
+                        [ContractInvariant::LendingBorrowWithinCollateralLimit],
+                    ),
+                ),
+                (
+                    Method::Liquidate,
                     method_policy(
                         PolicyAuthority::TxSender,
                         [PolicyEffect::StorageWrite, PolicyEffect::EventEmit],
@@ -798,6 +821,7 @@ fn method_resource_units(method: &Method) -> u64 {
         Method::DepositCollateral | Method::Stake | Method::Unstake => 22,
         Method::RequestUnstake | Method::CompleteUnstake | Method::ClaimStakingRewards => 26,
         Method::Borrow => 38,
+        Method::Liquidate => 46,
         Method::RouteTransferFrom => 55,
         Method::Other(_) => 10,
     }
@@ -913,6 +937,15 @@ pub enum EventPayload {
         borrower: Principal,
         asset: AssetId,
         amount: Amount,
+    },
+    Liquidated {
+        borrower: Principal,
+        liquidator: Principal,
+        debt_asset: AssetId,
+        repaid_debt: Amount,
+        collateral_asset: AssetId,
+        seized_collateral: Amount,
+        remaining_bad_debt: Amount,
     },
     Staked {
         staker: Principal,
@@ -1716,6 +1749,32 @@ struct LendingConfig {
     oracle_contract: ContractId,
     ltv_bps: u64,
     max_oracle_age: u64,
+    interest_bps_per_block: u64,
+    liquidation_threshold_bps: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct LendingRiskParameters {
+    pub ltv_bps: u64,
+    pub max_oracle_age: u64,
+    pub interest_bps_per_block: u64,
+    pub liquidation_threshold_bps: u64,
+}
+
+impl LendingRiskParameters {
+    pub const fn new(
+        ltv_bps: u64,
+        max_oracle_age: u64,
+        interest_bps_per_block: u64,
+        liquidation_threshold_bps: u64,
+    ) -> Self {
+        Self {
+            ltv_bps,
+            max_oracle_age,
+            interest_bps_per_block,
+            liquidation_threshold_bps,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -2007,18 +2066,43 @@ impl DeTTaState {
         ltv_bps: u64,
         max_oracle_age: u64,
     ) -> Result<(), ExecutionError> {
+        self.deploy_lending_vault_with_risk(
+            contract,
+            collateral_asset,
+            debt_asset,
+            oracle_contract,
+            LendingRiskParameters::new(ltv_bps, max_oracle_age, 0, ltv_bps),
+        )
+    }
+
+    pub fn deploy_lending_vault_with_risk(
+        &mut self,
+        contract: impl Into<ContractId>,
+        collateral_asset: impl Into<AssetId>,
+        debt_asset: impl Into<AssetId>,
+        oracle_contract: impl Into<ContractId>,
+        risk: LendingRiskParameters,
+    ) -> Result<(), ExecutionError> {
         let contract = contract.into();
         let collateral_asset = collateral_asset.into();
         let debt_asset = debt_asset.into();
         let oracle_contract = oracle_contract.into();
+        if risk.ltv_bps > 10_000
+            || risk.liquidation_threshold_bps > 10_000
+            || risk.liquidation_threshold_bps < risk.ltv_bps
+        {
+            return Err(ExecutionError::InvalidArguments);
+        }
         let code_hash = root_of(&(
             "detta-lending-vault-v1",
             &contract,
             &collateral_asset,
             &debt_asset,
             &oracle_contract,
-            ltv_bps,
-            max_oracle_age,
+            risk.ltv_bps,
+            risk.max_oracle_age,
+            risk.interest_bps_per_block,
+            risk.liquidation_threshold_bps,
         ));
         self.contracts.insert(
             contract.clone(),
@@ -2028,8 +2112,7 @@ impl DeTTaState {
                 collateral_asset,
                 debt_asset,
                 oracle_contract,
-                ltv_bps,
-                max_oracle_age,
+                risk,
             ),
         );
         Ok(())
@@ -2441,6 +2524,17 @@ impl DeTTaState {
             .unwrap_or_default()
     }
 
+    pub fn bad_debt(&self, contract: impl Into<ContractId>, asset: impl Into<AssetId>) -> Amount {
+        let key = StateKey::BadDebt {
+            contract: contract.into(),
+            asset: asset.into(),
+        };
+        self.storage
+            .get(&key)
+            .map(StateValue::as_uint)
+            .unwrap_or_default()
+    }
+
     pub fn stake_balance(
         &self,
         contract: impl Into<ContractId>,
@@ -2796,6 +2890,8 @@ impl DeTTaState {
                     oracle_contract,
                     ltv_bps,
                     max_oracle_age,
+                    interest_bps_per_block,
+                    liquidation_threshold_bps,
                 } => match tx.method {
                     Method::DepositCollateral => self.deposit_collateral(tx, collateral_asset),
                     Method::Borrow => self.borrow(
@@ -2807,6 +2903,21 @@ impl DeTTaState {
                             oracle_contract,
                             ltv_bps,
                             max_oracle_age,
+                            interest_bps_per_block,
+                            liquidation_threshold_bps,
+                        },
+                    ),
+                    Method::Liquidate => self.liquidate(
+                        tx,
+                        msg_sender,
+                        LendingConfig {
+                            collateral_asset,
+                            debt_asset,
+                            oracle_contract,
+                            ltv_bps,
+                            max_oracle_age,
+                            interest_bps_per_block,
+                            liquidation_threshold_bps,
                         },
                     ),
                     _ => Err(ExecutionError::PolicyMissing),
@@ -3667,41 +3778,26 @@ impl DeTTaState {
         }
 
         let borrower = msg_sender;
-        let oracle_timestamp =
-            self.oracle_timestamp(&config.oracle_contract, &config.collateral_asset);
-        if oracle_timestamp.saturating_add(config.max_oracle_age) < self.height {
-            return Err(ExecutionError::StaleOraclePrice);
-        }
-
-        let price = self.oracle_price(&config.oracle_contract, &config.collateral_asset);
-        if price == 0 {
-            return Err(ExecutionError::StaleOraclePrice);
-        }
-
+        let price = self.fresh_lending_collateral_price(&config)?;
         let collateral = self.collateral(&tx.target, &borrower, &config.collateral_asset);
         let debt_key = debt_key(&tx.target, &borrower, &config.debt_asset);
-        let current_debt = self.uint_at(&debt_key);
+        let accrual_key = debt_last_accrual_height_key(&tx.target, &borrower, &config.debt_asset);
+        let frame = AuthorizedFrame {
+            contract: tx.target.clone(),
+            msg_sender: borrower.clone(),
+            write_scope: BTreeSet::from([debt_key.clone(), accrual_key]),
+        };
+
+        let current_debt = self.accrue_lending_debt(&frame, &tx.target, &borrower, &config)?;
         let next_debt = current_debt
             .checked_add(amount)
             .ok_or(ExecutionError::ArithmeticOverflow)?;
-
-        let collateral_value = collateral
-            .checked_mul(price)
-            .ok_or(ExecutionError::ArithmeticOverflow)?;
-        let max_debt = collateral_value
-            .checked_mul(config.ltv_bps as Amount)
-            .ok_or(ExecutionError::ArithmeticOverflow)?
-            / 10_000;
+        let max_debt = lending_debt_limit(collateral, price, config.ltv_bps)?;
 
         if next_debt > max_debt {
             return Err(ExecutionError::InsufficientCollateral);
         }
 
-        let frame = AuthorizedFrame {
-            contract: tx.target.clone(),
-            msg_sender: borrower.clone(),
-            write_scope: BTreeSet::from([debt_key.clone()]),
-        };
         self.state_set(&frame, debt_key, StateValue::UInt(next_debt))?;
 
         self.emit(
@@ -3714,6 +3810,148 @@ impl DeTTaState {
             },
         );
         Ok(ReturnValue::Unit)
+    }
+
+    fn liquidate(
+        &mut self,
+        tx: &Transaction,
+        msg_sender: Principal,
+        config: LendingConfig,
+    ) -> Result<ReturnValue, ExecutionError> {
+        let [borrower_arg, asset_arg, repay_arg] = expect_args(&tx.args)?;
+        let borrower = expect_principal(borrower_arg)?;
+        let asset = expect_asset(asset_arg)?;
+        let repay_amount = expect_amount(repay_arg)?;
+        if asset != config.debt_asset || repay_amount == 0 {
+            return Err(ExecutionError::InvalidArguments);
+        }
+
+        let price = self.fresh_lending_collateral_price(&config)?;
+        let debt_key = debt_key(&tx.target, &borrower, &config.debt_asset);
+        let accrual_key = debt_last_accrual_height_key(&tx.target, &borrower, &config.debt_asset);
+        let collateral_key = collateral_key(&tx.target, &borrower, &config.collateral_asset);
+        let bad_debt_key = bad_debt_key(&tx.target, &config.debt_asset);
+        let frame = AuthorizedFrame {
+            contract: tx.target.clone(),
+            msg_sender: msg_sender.clone(),
+            write_scope: BTreeSet::from([
+                debt_key.clone(),
+                accrual_key,
+                collateral_key.clone(),
+                bad_debt_key.clone(),
+            ]),
+        };
+
+        let debt = self.accrue_lending_debt(&frame, &tx.target, &borrower, &config)?;
+        if debt == 0 {
+            return Err(ExecutionError::InsufficientCollateral);
+        }
+        let collateral = self.uint_at(&collateral_key);
+        let liquidation_threshold =
+            lending_debt_limit(collateral, price, config.liquidation_threshold_bps)?;
+        if debt <= liquidation_threshold {
+            return Err(ExecutionError::InsufficientCollateral);
+        }
+
+        let repaid_debt = repay_amount.min(debt);
+        let requested_seize = div_ceil(repaid_debt, price)?;
+        let seized_collateral = requested_seize.min(collateral);
+        let collateral_after = collateral - seized_collateral;
+        let mut debt_after = debt - repaid_debt;
+        let mut remaining_bad_debt = 0;
+
+        if collateral_after == 0 && debt_after != 0 {
+            remaining_bad_debt = debt_after;
+            debt_after = 0;
+            let current_bad_debt = self.uint_at(&bad_debt_key);
+            self.state_set(
+                &frame,
+                bad_debt_key,
+                StateValue::UInt(
+                    current_bad_debt
+                        .checked_add(remaining_bad_debt)
+                        .ok_or(ExecutionError::ArithmeticOverflow)?,
+                ),
+            )?;
+        } else {
+            let max_debt_after = lending_debt_limit(collateral_after, price, config.ltv_bps)?;
+            if debt_after > max_debt_after {
+                return Err(ExecutionError::InsufficientCollateral);
+            }
+        }
+
+        self.state_set(&frame, debt_key, StateValue::UInt(debt_after))?;
+        self.state_set(&frame, collateral_key, StateValue::UInt(collateral_after))?;
+
+        if !self.lending_invariants_hold(
+            self.contract(tx.target.clone())
+                .ok_or(ExecutionError::ContractNotFound)?,
+        ) {
+            return Err(ExecutionError::InvariantViolation);
+        }
+
+        self.emit(
+            &tx.target,
+            &tx.tx_hash,
+            EventPayload::Liquidated {
+                borrower,
+                liquidator: msg_sender,
+                debt_asset: asset,
+                repaid_debt,
+                collateral_asset: config.collateral_asset,
+                seized_collateral,
+                remaining_bad_debt,
+            },
+        );
+        Ok(ReturnValue::UInt(repaid_debt))
+    }
+
+    fn fresh_lending_collateral_price(
+        &self,
+        config: &LendingConfig,
+    ) -> Result<Amount, ExecutionError> {
+        let oracle_timestamp =
+            self.oracle_timestamp(&config.oracle_contract, &config.collateral_asset);
+        if oracle_timestamp.saturating_add(config.max_oracle_age) < self.height {
+            return Err(ExecutionError::StaleOraclePrice);
+        }
+
+        let price = self.oracle_price(&config.oracle_contract, &config.collateral_asset);
+        if price == 0 {
+            return Err(ExecutionError::StaleOraclePrice);
+        }
+        Ok(price)
+    }
+
+    fn accrue_lending_debt(
+        &mut self,
+        frame: &AuthorizedFrame,
+        contract: &ContractId,
+        borrower: &Principal,
+        config: &LendingConfig,
+    ) -> Result<Amount, ExecutionError> {
+        let debt_key = debt_key(contract, borrower, &config.debt_asset);
+        let accrual_key = debt_last_accrual_height_key(contract, borrower, &config.debt_asset);
+        let current_debt = self.uint_at(&debt_key);
+        let last_height = u64::try_from(self.uint_at(&accrual_key))
+            .map_err(|_| ExecutionError::ArithmeticOverflow)?;
+        let elapsed = self.height.saturating_sub(last_height);
+
+        let interest = current_debt
+            .checked_mul(config.interest_bps_per_block as Amount)
+            .and_then(|value| value.checked_mul(elapsed as Amount))
+            .ok_or(ExecutionError::ArithmeticOverflow)?
+            / 10_000;
+        let next_debt = current_debt
+            .checked_add(interest)
+            .ok_or(ExecutionError::ArithmeticOverflow)?;
+
+        if next_debt != current_debt {
+            self.state_set(frame, debt_key, StateValue::UInt(next_debt))?;
+        }
+        self.state_set(frame, accrual_key, StateValue::UInt(self.height as Amount))?;
+
+        Ok(next_debt)
     }
 
     fn stake(
@@ -4572,6 +4810,7 @@ fn parse_policy_method(value: &str) -> Result<Method, ExecutionError> {
         "executePolicyUpdate" => Ok(Method::ExecutePolicyUpdate),
         "depositCollateral" => Ok(Method::DepositCollateral),
         "borrow" => Ok(Method::Borrow),
+        "liquidate" => Ok(Method::Liquidate),
         "stake" => Ok(Method::Stake),
         "unstake" => Ok(Method::Unstake),
         "requestUnstake" => Ok(Method::RequestUnstake),
@@ -4668,6 +4907,47 @@ fn debt_key(contract: &ContractId, borrower: &Principal, asset: &AssetId) -> Sta
         borrower: borrower.clone(),
         asset: asset.clone(),
     }
+}
+
+fn debt_last_accrual_height_key(
+    contract: &ContractId,
+    borrower: &Principal,
+    asset: &AssetId,
+) -> StateKey {
+    StateKey::DebtLastAccrualHeight {
+        contract: contract.clone(),
+        borrower: borrower.clone(),
+        asset: asset.clone(),
+    }
+}
+
+fn bad_debt_key(contract: &ContractId, asset: &AssetId) -> StateKey {
+    StateKey::BadDebt {
+        contract: contract.clone(),
+        asset: asset.clone(),
+    }
+}
+
+fn lending_debt_limit(
+    collateral: Amount,
+    price: Amount,
+    bps: u64,
+) -> Result<Amount, ExecutionError> {
+    Ok(collateral
+        .checked_mul(price)
+        .and_then(|value| value.checked_mul(bps as Amount))
+        .ok_or(ExecutionError::ArithmeticOverflow)?
+        / 10_000)
+}
+
+fn div_ceil(numerator: Amount, denominator: Amount) -> Result<Amount, ExecutionError> {
+    if denominator == 0 {
+        return Err(ExecutionError::ArithmeticOverflow);
+    }
+    numerator
+        .checked_add(denominator - 1)
+        .ok_or(ExecutionError::ArithmeticOverflow)
+        .map(|value| value / denominator)
 }
 
 fn stake_balance_key(contract: &ContractId, staker: &Principal, asset: &AssetId) -> StateKey {
@@ -6839,6 +7119,90 @@ mod tests {
             Some(ExecutionError::StaleOraclePrice)
         );
         assert_eq!(next_state.debt("VaultA", "Alice", "USDC"), 0);
+    }
+
+    #[test]
+    fn lending_vault_accrues_interest_and_records_bad_debt_on_liquidation() {
+        let mut state = DeTTaState::new("detta-local");
+        state
+            .deploy_oracle("OracleA", "ATOM", "Reporter", 20)
+            .unwrap();
+        state
+            .deploy_lending_vault_with_risk(
+                "VaultA",
+                "ATOM",
+                "USDC",
+                "OracleA",
+                LendingRiskParameters::new(5_000, 20, 1_000, 7_500),
+            )
+            .unwrap();
+        state.apply_transaction(tx_to(
+            "OracleA",
+            "tx1",
+            "Reporter",
+            1,
+            Method::SubmitPrice,
+            vec![asset("ATOM"), amount(2), amount(0)],
+        ));
+        state.apply_transaction(tx_to(
+            "VaultA",
+            "tx2",
+            "Alice",
+            1,
+            Method::DepositCollateral,
+            vec![asset("ATOM"), amount(100)],
+        ));
+        let borrow = state.apply_transaction(tx_to(
+            "VaultA",
+            "tx3",
+            "Alice",
+            2,
+            Method::Borrow,
+            vec![asset("USDC"), amount(100)],
+        ));
+        assert_eq!(borrow.status, TxStatus::Committed);
+
+        let (block, next_state) = state.build_block(
+            10,
+            vec![
+                tx_to(
+                    "OracleA",
+                    "tx4",
+                    "Reporter",
+                    2,
+                    Method::SubmitPrice,
+                    vec![asset("ATOM"), amount(1), amount(10)],
+                ),
+                tx_to(
+                    "VaultA",
+                    "tx5",
+                    "Liquidator",
+                    1,
+                    Method::Liquidate,
+                    vec![principal("Alice"), asset("USDC"), amount(100)],
+                ),
+            ],
+            10_000,
+            "validator-1",
+            "cert-10",
+        );
+
+        assert_eq!(block.receipts[0].status, TxStatus::Committed);
+        assert_eq!(block.receipts[1].status, TxStatus::Committed);
+        assert_eq!(block.receipts[1].return_value, Some(ReturnValue::UInt(100)));
+        assert_eq!(next_state.debt("VaultA", "Alice", "USDC"), 0);
+        assert_eq!(next_state.collateral("VaultA", "Alice", "ATOM"), 0);
+        assert_eq!(next_state.bad_debt("VaultA", "USDC"), 100);
+        assert_eq!(next_state.check_declared_invariants(), vec![]);
+        assert!(matches!(
+            next_state.events().last().unwrap().payload,
+            EventPayload::Liquidated {
+                repaid_debt: 100,
+                seized_collateral: 100,
+                remaining_bad_debt: 100,
+                ..
+            }
+        ));
     }
 
     #[test]
