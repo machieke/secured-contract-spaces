@@ -263,6 +263,8 @@ Completed production-plan slices:
   all-or-none proof-trace-only optionality in verify.
 - [x] Evaluator fixture inventory fixture order is checked for deterministic
   stability in verify.
+- [x] Restricted evaluator source parser and canonical instruction renderer
+  round-trip the supported kernel-facing subset.
 - [x] Proof manifest model artifact order is checked for deterministic
   stability in verify.
 - [x] Proof manifest runtime artifact order is checked for deterministic

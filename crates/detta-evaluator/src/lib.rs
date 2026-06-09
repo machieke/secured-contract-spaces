@@ -147,6 +147,245 @@ pub struct EvaluatorFixtureInventory {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ParseError {
+    UnexpectedEof,
+    UnexpectedToken { expected: String, found: String },
+    UnknownInstruction(String),
+    UnknownMethod(String),
+    UnknownPrimitive(String),
+    UnknownStateKey(String),
+    UnknownStateValue(String),
+    InvalidNumber(String),
+    TrailingTokens(String),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum Token {
+    LParen,
+    RParen,
+    Atom(String),
+}
+
+pub fn parse_restricted_script(source: &str) -> Result<Vec<Instruction>, ParseError> {
+    let tokens = tokenize(source);
+    let mut parser = Parser {
+        tokens,
+        position: 0,
+    };
+    let mut instructions = Vec::new();
+
+    while !parser.is_eof() {
+        instructions.push(parser.parse_instruction()?);
+    }
+
+    Ok(instructions)
+}
+
+pub fn canonical_script_source(instructions: &[Instruction]) -> String {
+    instructions
+        .iter()
+        .map(canonical_instruction)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+struct Parser {
+    tokens: Vec<Token>,
+    position: usize,
+}
+
+impl Parser {
+    fn is_eof(&self) -> bool {
+        self.position >= self.tokens.len()
+    }
+
+    fn next(&mut self) -> Option<Token> {
+        let token = self.tokens.get(self.position).cloned();
+        if token.is_some() {
+            self.position += 1;
+        }
+        token
+    }
+
+    fn expect_lparen(&mut self) -> Result<(), ParseError> {
+        match self.next() {
+            Some(Token::LParen) => Ok(()),
+            Some(token) => Err(ParseError::UnexpectedToken {
+                expected: "(".into(),
+                found: describe_token(&token),
+            }),
+            None => Err(ParseError::UnexpectedEof),
+        }
+    }
+
+    fn expect_rparen(&mut self) -> Result<(), ParseError> {
+        match self.next() {
+            Some(Token::RParen) => Ok(()),
+            Some(token) => Err(ParseError::UnexpectedToken {
+                expected: ")".into(),
+                found: describe_token(&token),
+            }),
+            None => Err(ParseError::UnexpectedEof),
+        }
+    }
+
+    fn expect_atom(&mut self) -> Result<String, ParseError> {
+        match self.next() {
+            Some(Token::Atom(atom)) => Ok(atom),
+            Some(token) => Err(ParseError::UnexpectedToken {
+                expected: "atom".into(),
+                found: describe_token(&token),
+            }),
+            None => Err(ParseError::UnexpectedEof),
+        }
+    }
+
+    fn parse_instruction(&mut self) -> Result<Instruction, ParseError> {
+        self.expect_lparen()?;
+        let op = self.expect_atom()?;
+        let instruction = match op.as_str() {
+            "use-primitive" => {
+                let primitive = parse_primitive(&self.expect_atom()?)?;
+                Instruction::UsePrimitive(primitive)
+            }
+            "state-get" => Instruction::StateGet(self.parse_state_key()?),
+            "state-set" => {
+                let key = self.parse_state_key()?;
+                let value = self.parse_state_value()?;
+                Instruction::StateSet(key, value)
+            }
+            "call-contract" => {
+                let contract = self.expect_atom()?;
+                let method = parse_method(&self.expect_atom()?)?;
+                Instruction::CallContract { contract, method }
+            }
+            "pure-add" => {
+                let left = parse_amount(&self.expect_atom()?)?;
+                let right = parse_amount(&self.expect_atom()?)?;
+                Instruction::PureAdd { left, right }
+            }
+            "abort" => Instruction::Abort,
+            _ => return Err(ParseError::UnknownInstruction(op)),
+        };
+        self.expect_rparen()?;
+        Ok(instruction)
+    }
+
+    fn parse_state_key(&mut self) -> Result<StateKey, ParseError> {
+        self.expect_lparen()?;
+        let key_kind = self.expect_atom()?;
+        let key = match key_kind.as_str() {
+            "balance" => StateKey::Balance {
+                contract: self.expect_atom()?,
+                owner: self.expect_atom()?,
+                asset: self.expect_atom()?,
+            },
+            "total-supply" => StateKey::TotalSupply {
+                contract: self.expect_atom()?,
+                asset: self.expect_atom()?,
+            },
+            "reserve" => StateKey::Reserve {
+                contract: self.expect_atom()?,
+                asset: self.expect_atom()?,
+            },
+            "amm-fee-collected" => StateKey::AmmFeeCollected {
+                contract: self.expect_atom()?,
+                asset: self.expect_atom()?,
+            },
+            "lp-supply" => StateKey::LpSupply {
+                contract: self.expect_atom()?,
+            },
+            "lp-balance" => StateKey::LpBalance {
+                contract: self.expect_atom()?,
+                owner: self.expect_atom()?,
+            },
+            "oracle-price" => StateKey::OraclePrice {
+                contract: self.expect_atom()?,
+                asset: self.expect_atom()?,
+            },
+            "oracle-timestamp" => StateKey::OracleTimestamp {
+                contract: self.expect_atom()?,
+                asset: self.expect_atom()?,
+            },
+            "bridge-message-consumed" => StateKey::BridgeMessageConsumed {
+                contract: self.expect_atom()?,
+                message_id: self.expect_atom()?,
+            },
+            "collateral" => StateKey::Collateral {
+                contract: self.expect_atom()?,
+                borrower: self.expect_atom()?,
+                asset: self.expect_atom()?,
+            },
+            "debt" => StateKey::Debt {
+                contract: self.expect_atom()?,
+                borrower: self.expect_atom()?,
+                asset: self.expect_atom()?,
+            },
+            "debt-last-accrual-height" => StateKey::DebtLastAccrualHeight {
+                contract: self.expect_atom()?,
+                borrower: self.expect_atom()?,
+                asset: self.expect_atom()?,
+            },
+            "bad-debt" => StateKey::BadDebt {
+                contract: self.expect_atom()?,
+                asset: self.expect_atom()?,
+            },
+            "stake-balance" => StateKey::StakeBalance {
+                contract: self.expect_atom()?,
+                staker: self.expect_atom()?,
+                asset: self.expect_atom()?,
+            },
+            "total-staked" => StateKey::TotalStaked {
+                contract: self.expect_atom()?,
+                asset: self.expect_atom()?,
+            },
+            "pending-unbond" => StateKey::PendingUnbond {
+                contract: self.expect_atom()?,
+                staker: self.expect_atom()?,
+                asset: self.expect_atom()?,
+            },
+            "total-pending-unbond" => StateKey::TotalPendingUnbond {
+                contract: self.expect_atom()?,
+                asset: self.expect_atom()?,
+            },
+            "staking-penalty-collected" => StateKey::StakingPenaltyCollected {
+                contract: self.expect_atom()?,
+                asset: self.expect_atom()?,
+            },
+            "unbond-ready-height" => StateKey::UnbondReadyHeight {
+                contract: self.expect_atom()?,
+                staker: self.expect_atom()?,
+                asset: self.expect_atom()?,
+            },
+            "staking-reward-balance" => StateKey::StakingRewardBalance {
+                contract: self.expect_atom()?,
+                staker: self.expect_atom()?,
+                asset: self.expect_atom()?,
+            },
+            "staking-last-reward-height" => StateKey::StakingLastRewardHeight {
+                contract: self.expect_atom()?,
+                staker: self.expect_atom()?,
+                asset: self.expect_atom()?,
+            },
+            _ => return Err(ParseError::UnknownStateKey(key_kind)),
+        };
+        self.expect_rparen()?;
+        Ok(key)
+    }
+
+    fn parse_state_value(&mut self) -> Result<StateValue, ParseError> {
+        self.expect_lparen()?;
+        let value_kind = self.expect_atom()?;
+        let value = match value_kind.as_str() {
+            "uint" => StateValue::UInt(parse_amount(&self.expect_atom()?)?),
+            _ => return Err(ParseError::UnknownStateValue(value_kind)),
+        };
+        self.expect_rparen()?;
+        Ok(value)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RestrictedScriptEvaluator {
     primitive_gate: RestrictedEvaluator,
     max_steps: u64,
@@ -472,6 +711,173 @@ fn map_execution_error(error: ExecutionError) -> EvaluatorError {
     }
 }
 
+fn tokenize(source: &str) -> Vec<Token> {
+    let mut tokens = Vec::new();
+    let mut atom = String::new();
+
+    for ch in source.chars() {
+        match ch {
+            '(' => {
+                push_atom(&mut tokens, &mut atom);
+                tokens.push(Token::LParen);
+            }
+            ')' => {
+                push_atom(&mut tokens, &mut atom);
+                tokens.push(Token::RParen);
+            }
+            ch if ch.is_whitespace() => push_atom(&mut tokens, &mut atom),
+            _ => atom.push(ch),
+        }
+    }
+    push_atom(&mut tokens, &mut atom);
+
+    tokens
+}
+
+fn push_atom(tokens: &mut Vec<Token>, atom: &mut String) {
+    if !atom.is_empty() {
+        tokens.push(Token::Atom(std::mem::take(atom)));
+    }
+}
+
+fn describe_token(token: &Token) -> String {
+    match token {
+        Token::LParen => "(".into(),
+        Token::RParen => ")".into(),
+        Token::Atom(atom) => atom.clone(),
+    }
+}
+
+fn parse_primitive(value: &str) -> Result<EvaluatorPrimitive, ParseError> {
+    serde_json::from_value(serde_json::Value::String(value.to_string()))
+        .map_err(|_| ParseError::UnknownPrimitive(value.to_string()))
+}
+
+fn parse_method(value: &str) -> Result<detta_core::Method, ParseError> {
+    serde_json::from_value(serde_json::Value::String(value.to_string()))
+        .map_err(|_| ParseError::UnknownMethod(value.to_string()))
+}
+
+fn parse_amount(value: &str) -> Result<u128, ParseError> {
+    value
+        .parse::<u128>()
+        .map_err(|_| ParseError::InvalidNumber(value.to_string()))
+}
+
+fn canonical_instruction(instruction: &Instruction) -> String {
+    match instruction {
+        Instruction::UsePrimitive(primitive) => {
+            format!("(use-primitive {})", canonical_primitive(primitive))
+        }
+        Instruction::StateGet(key) => format!("(state-get {})", canonical_state_key(key)),
+        Instruction::StateSet(key, value) => {
+            format!(
+                "(state-set {} {})",
+                canonical_state_key(key),
+                canonical_state_value(value)
+            )
+        }
+        Instruction::CallContract { contract, method } => {
+            format!("(call-contract {} {})", contract, canonical_method(method))
+        }
+        Instruction::PureAdd { left, right } => format!("(pure-add {left} {right})"),
+        Instruction::Abort => "(abort)".into(),
+    }
+}
+
+fn canonical_primitive(primitive: &EvaluatorPrimitive) -> String {
+    format!("{primitive:?}")
+}
+
+fn canonical_method(method: &detta_core::Method) -> String {
+    format!("{method:?}")
+}
+
+fn canonical_state_value(value: &StateValue) -> String {
+    match value {
+        StateValue::UInt(value) => format!("(uint {value})"),
+    }
+}
+
+fn canonical_state_key(key: &StateKey) -> String {
+    match key {
+        StateKey::Balance {
+            contract,
+            owner,
+            asset,
+        } => format!("(balance {contract} {owner} {asset})"),
+        StateKey::TotalSupply { contract, asset } => {
+            format!("(total-supply {contract} {asset})")
+        }
+        StateKey::Reserve { contract, asset } => format!("(reserve {contract} {asset})"),
+        StateKey::AmmFeeCollected { contract, asset } => {
+            format!("(amm-fee-collected {contract} {asset})")
+        }
+        StateKey::LpSupply { contract } => format!("(lp-supply {contract})"),
+        StateKey::LpBalance { contract, owner } => format!("(lp-balance {contract} {owner})"),
+        StateKey::OraclePrice { contract, asset } => {
+            format!("(oracle-price {contract} {asset})")
+        }
+        StateKey::OracleTimestamp { contract, asset } => {
+            format!("(oracle-timestamp {contract} {asset})")
+        }
+        StateKey::BridgeMessageConsumed {
+            contract,
+            message_id,
+        } => format!("(bridge-message-consumed {contract} {message_id})"),
+        StateKey::Collateral {
+            contract,
+            borrower,
+            asset,
+        } => format!("(collateral {contract} {borrower} {asset})"),
+        StateKey::Debt {
+            contract,
+            borrower,
+            asset,
+        } => format!("(debt {contract} {borrower} {asset})"),
+        StateKey::DebtLastAccrualHeight {
+            contract,
+            borrower,
+            asset,
+        } => format!("(debt-last-accrual-height {contract} {borrower} {asset})"),
+        StateKey::BadDebt { contract, asset } => format!("(bad-debt {contract} {asset})"),
+        StateKey::StakeBalance {
+            contract,
+            staker,
+            asset,
+        } => format!("(stake-balance {contract} {staker} {asset})"),
+        StateKey::TotalStaked { contract, asset } => {
+            format!("(total-staked {contract} {asset})")
+        }
+        StateKey::PendingUnbond {
+            contract,
+            staker,
+            asset,
+        } => format!("(pending-unbond {contract} {staker} {asset})"),
+        StateKey::TotalPendingUnbond { contract, asset } => {
+            format!("(total-pending-unbond {contract} {asset})")
+        }
+        StateKey::StakingPenaltyCollected { contract, asset } => {
+            format!("(staking-penalty-collected {contract} {asset})")
+        }
+        StateKey::UnbondReadyHeight {
+            contract,
+            staker,
+            asset,
+        } => format!("(unbond-ready-height {contract} {staker} {asset})"),
+        StateKey::StakingRewardBalance {
+            contract,
+            staker,
+            asset,
+        } => format!("(staking-reward-balance {contract} {staker} {asset})"),
+        StateKey::StakingLastRewardHeight {
+            contract,
+            staker,
+            asset,
+        } => format!("(staking-last-reward-height {contract} {staker} {asset})"),
+    }
+}
+
 fn bytes_root(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     hex_lower(&digest)
@@ -605,6 +1011,77 @@ mod tests {
             Argument::Asset("USDC".into()),
             Argument::Amount(10),
         ];
+    }
+
+    #[test]
+    fn restricted_parser_round_trips_canonical_script_source() {
+        let source = "
+            (state-get (balance TokenA Alice USDC))
+            (state-set (balance TokenA Alice USDC) (uint 90))
+            (call-contract AMM Swap)
+            (pure-add 40 2)
+        ";
+        let alice = balance_key("Alice");
+        let expected = vec![
+            Instruction::StateGet(alice.clone()),
+            Instruction::StateSet(alice.clone(), StateValue::UInt(90)),
+            Instruction::CallContract {
+                contract: "AMM".into(),
+                method: Method::Swap,
+            },
+            Instruction::PureAdd { left: 40, right: 2 },
+        ];
+
+        let parsed = parse_restricted_script(source).unwrap();
+        let canonical = canonical_script_source(&parsed);
+
+        assert_eq!(parsed, expected);
+        assert_eq!(
+            canonical,
+            "(state-get (balance TokenA Alice USDC))\n\
+             (state-set (balance TokenA Alice USDC) (uint 90))\n\
+             (call-contract AMM Swap)\n\
+             (pure-add 40 2)"
+        );
+        assert_eq!(parse_restricted_script(&canonical).unwrap(), expected);
+
+        let report = RestrictedScriptEvaluator::new(10).execute(&parsed).unwrap();
+        assert_eq!(report.steps_used, 4);
+        assert_eq!(report.values, vec![42]);
+        assert_eq!(
+            report.trace,
+            vec![
+                TraceOp::StateGet(alice.clone()),
+                TraceOp::StateSet(alice),
+                TraceOp::CallContract {
+                    contract: "AMM".into(),
+                    method: Method::Swap,
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn restricted_parser_rejects_unknown_terms() {
+        let unknown_key = parse_restricted_script("(state-get (raw-space Public))").unwrap_err();
+        assert_eq!(unknown_key, ParseError::UnknownStateKey("raw-space".into()));
+
+        let unknown_method =
+            parse_restricted_script("(call-contract AMM DefinitelyNotAMethod)").unwrap_err();
+        assert_eq!(
+            unknown_method,
+            ParseError::UnknownMethod("DefinitelyNotAMethod".into())
+        );
+    }
+
+    #[test]
+    fn parsed_forbidden_primitive_still_traps_at_execution() {
+        let script = parse_restricted_script("(use-primitive RawAddAtom)").unwrap();
+        let error = RestrictedScriptEvaluator::new(1)
+            .execute(&script)
+            .unwrap_err();
+
+        assert_eq!(error, EvaluatorError::ForbiddenPrimitive);
     }
 
     #[test]

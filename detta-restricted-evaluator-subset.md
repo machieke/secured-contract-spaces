@@ -5,7 +5,9 @@ the checked-in fixture schemas used to keep evaluator behavior stable.
 
 The production target remains a restricted MeTTa/PeTTa evaluator. The current
 `detta-evaluator` crate is the deterministic kernel-facing subset used by DeTTa
-tests until a full parser and canonical AST are added.
+tests. It exposes a small restricted source parser, a canonical instruction
+AST, canonical source rendering, primitive gating, metered execution, and
+kernel trace emission.
 
 ## Versioning
 
@@ -26,6 +28,56 @@ The evaluator fixtures are versioned independently:
 Schema-compatible changes may add optional fields only after readers tolerate
 them. Field removal, renamed variants, changed enum encodings, or changed root
 calculation require a new schema name and schema version.
+
+## Restricted Source and Canonical AST
+
+The canonical AST is `detta_evaluator::Instruction`. The restricted source
+parser accepts one parenthesized instruction form after another, using bare
+atoms only. Whitespace is insignificant. Strings with whitespace, host-language
+escapes, raw MeTTa spaces, Prolog terms, imports, macros, reflection, and
+nondeterministic forms are outside this source subset.
+
+Supported instruction forms:
+
+- `(use-primitive PrimitiveName)`
+- `(state-get StateKey)`
+- `(state-set StateKey StateValue)`
+- `(call-contract ContractId MethodName)`
+- `(pure-add LeftU128 RightU128)`
+- `(abort)`
+
+Supported state key forms cover the durable DeTTa key variants, including:
+
+- `(balance Contract Owner Asset)`
+- `(total-supply Contract Asset)`
+- `(reserve Contract Asset)`
+- `(amm-fee-collected Contract Asset)`
+- `(lp-supply Contract)`
+- `(lp-balance Contract Owner)`
+- `(oracle-price Contract Asset)`
+- `(oracle-timestamp Contract Asset)`
+- `(bridge-message-consumed Contract MessageId)`
+- `(collateral Contract Borrower Asset)`
+- `(debt Contract Borrower Asset)`
+- `(debt-last-accrual-height Contract Borrower Asset)`
+- `(bad-debt Contract Asset)`
+- `(stake-balance Contract Staker Asset)`
+- `(total-staked Contract Asset)`
+- `(pending-unbond Contract Staker Asset)`
+- `(total-pending-unbond Contract Asset)`
+- `(staking-penalty-collected Contract Asset)`
+- `(unbond-ready-height Contract Staker Asset)`
+- `(staking-reward-balance Contract Staker Asset)`
+- `(staking-last-reward-height Contract Staker Asset)`
+
+The only supported state value form is `(uint U128)`. Method and primitive
+names use the Rust enum variant names, for example `Swap`, `StateSet`, and
+`RawAddAtom`.
+
+`parse_restricted_script` converts restricted source to the canonical
+instruction AST. `canonical_script_source` renders the AST back to normalized
+source with one instruction per line. The parser and renderer are tested for
+round-trip stability.
 
 ## Supported Instruction Subset
 
