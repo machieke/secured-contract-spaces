@@ -408,6 +408,8 @@ Completed production-plan slices:
   while preserving the existing full event-log query.
 - [x] Persistent validator nodes expose stored finality certificates through
   typed RPC with stable not-found errors after restart.
+- [x] Finality-certificate RPC compatibility is covered by stable JSON client
+  fixtures and persistent-node TCP JSON after-restart tests.
 
 Next implementation slices:
 

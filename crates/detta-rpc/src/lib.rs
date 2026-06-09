@@ -1240,6 +1240,56 @@ mod tests {
     }
 
     #[test]
+    fn finality_certificate_json_fixture_is_stable() {
+        let request = RpcRequest::GetFinalityCertificate { height: 7 };
+        let request_fixture = r#"{"method":"get_finality_certificate","params":{"height":7}}"#;
+        assert_eq!(serde_json::to_string(&request).unwrap(), request_fixture);
+        assert_eq!(
+            serde_json::from_str::<RpcRequest>(request_fixture).unwrap(),
+            request
+        );
+
+        let response = RpcResponse::Ok(RpcResult::FinalityCertificate(Box::new(
+            FinalityCertificate {
+                height: 7,
+                block_hash: "block-hash-7".into(),
+                signers: vec![
+                    "validator-1".into(),
+                    "validator-2".into(),
+                    "validator-3".into(),
+                ],
+            },
+        )));
+        let response_fixture = concat!(
+            r#"{"status":"ok","body":{"result":"finality_certificate","data":{"#,
+            r#""height":7,"block_hash":"block-hash-7","#,
+            r#""signers":["validator-1","validator-2","validator-3"]}}}"#,
+        );
+        assert_eq!(serde_json::to_string(&response).unwrap(), response_fixture);
+        assert_eq!(
+            serde_json::from_str::<RpcResponse>(response_fixture).unwrap(),
+            response
+        );
+
+        let missing_response = RpcResponse::Error(RpcErrorBody {
+            code: "rpc.certificate_not_found".into(),
+            message: "finality certificate was not found".into(),
+        });
+        let missing_fixture = concat!(
+            r#"{"status":"error","body":{"code":"rpc.certificate_not_found","#,
+            r#""message":"finality certificate was not found"}}"#,
+        );
+        assert_eq!(
+            serde_json::to_string(&missing_response).unwrap(),
+            missing_fixture
+        );
+        assert_eq!(
+            serde_json::from_str::<RpcResponse>(missing_fixture).unwrap(),
+            missing_response
+        );
+    }
+
+    #[test]
     fn rpc_submits_transaction_produces_block_and_returns_receipt() {
         let mut rpc = seeded_rpc();
         rpc.submit_transaction(transfer_tx()).unwrap();

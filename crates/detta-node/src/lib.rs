@@ -4034,6 +4034,62 @@ mod tests {
     }
 
     #[test]
+    fn persistent_node_json_rpc_tcp_serves_finality_certificates_after_restart() {
+        let dir = temp_dir("finality-certificate-json-rpc");
+        let node = PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &dir).unwrap();
+        let certificate = FinalityCertificate {
+            height: 7,
+            block_hash: "block-hash-7".into(),
+            signers: vec![
+                "validator-1".into(),
+                "validator-2".into(),
+                "validator-3".into(),
+            ],
+        };
+        node.storage
+            .commit_finality_certificate(&certificate)
+            .unwrap();
+        let restarted = PersistentValidatorNode::restart("validator-1", &dir).unwrap();
+        let expected_certificate = certificate.clone();
+        let server = JsonRpcServer::bind("127.0.0.1:0").unwrap();
+        let addr = server.local_addr().unwrap();
+        let handle = thread::spawn(move || {
+            let mut node = restarted;
+            server
+                .serve_next_connection_with_handler(&mut node)
+                .unwrap();
+            fs::remove_dir_all(dir).unwrap();
+        });
+
+        let mut stream = TcpStream::connect(addr).unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        write_rpc_request(
+            &mut stream,
+            &RpcRequest::GetFinalityCertificate { height: 7 },
+        );
+        assert_eq!(
+            read_rpc_response(&mut reader),
+            RpcResponse::Ok(RpcResult::FinalityCertificate(Box::new(
+                expected_certificate
+            )))
+        );
+        write_rpc_request(
+            &mut stream,
+            &RpcRequest::GetFinalityCertificate { height: 8 },
+        );
+        assert_eq!(
+            read_rpc_response(&mut reader),
+            RpcResponse::Error(RpcErrorBody {
+                code: "rpc.certificate_not_found".into(),
+                message: "finality certificate was not found".into(),
+            })
+        );
+
+        stream.shutdown(Shutdown::Write).unwrap();
+        handle.join().unwrap();
+    }
+
+    #[test]
     fn persistent_node_rejects_mismatched_validator_set_metadata_update_quorum() {
         let dir = temp_dir("validator-set-mismatch");
         let signer_key = validator_key("validator-1", 7);
