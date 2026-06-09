@@ -286,6 +286,28 @@ pub struct ScheduledUpgrade {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct UpgradeRehearsalReport {
+    pub upgrade_id: String,
+    pub governance_contract: ContractId,
+    pub target_contract: ContractId,
+    pub old_code_hash: String,
+    pub new_code_hash: String,
+    pub execute_after_height: u64,
+    pub ready_at_height: bool,
+    pub invariant_failures: Vec<InvariantFailure>,
+    pub storage_root: String,
+    pub registry_root: String,
+    pub policy_root: String,
+    pub global_state_root: String,
+}
+
+impl UpgradeRehearsalReport {
+    pub fn report_root(&self) -> String {
+        root_of(self)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ScheduledPolicyUpdate {
     pub update_id: String,
     pub governance_contract: ContractId,
@@ -2577,6 +2599,60 @@ impl DeTTaState {
 
     pub fn scheduled_upgrade(&self, upgrade_id: &str) -> Option<&ScheduledUpgrade> {
         self.scheduled_upgrades.get(upgrade_id)
+    }
+
+    pub fn rehearse_scheduled_upgrade(
+        &self,
+        upgrade_id: &str,
+    ) -> Result<UpgradeRehearsalReport, ExecutionError> {
+        let upgrade = self
+            .scheduled_upgrades
+            .get(upgrade_id)
+            .ok_or(ExecutionError::UpgradeNotFound)?;
+        if upgrade.executed {
+            return Err(ExecutionError::UpgradeAlreadyExecuted);
+        }
+
+        let governance = self
+            .contracts
+            .get(&upgrade.governance_contract)
+            .ok_or(ExecutionError::ContractNotFound)?;
+        match &governance.kind {
+            ContractKind::Governance {
+                governed_contract, ..
+            } if governed_contract == &upgrade.target_contract => {}
+            _ => return Err(ExecutionError::UpgradeNotFound),
+        }
+
+        let old_code_hash = self
+            .contracts
+            .get(&upgrade.target_contract)
+            .ok_or(ExecutionError::ContractNotFound)?
+            .code_hash
+            .clone();
+
+        let mut rehearsed_state = self.clone();
+        let target = rehearsed_state
+            .contracts
+            .get_mut(&upgrade.target_contract)
+            .ok_or(ExecutionError::ContractNotFound)?;
+        target.code_hash = upgrade.new_code_hash.clone();
+        let invariant_failures = rehearsed_state.check_declared_invariants();
+
+        Ok(UpgradeRehearsalReport {
+            upgrade_id: upgrade.upgrade_id.clone(),
+            governance_contract: upgrade.governance_contract.clone(),
+            target_contract: upgrade.target_contract.clone(),
+            old_code_hash,
+            new_code_hash: upgrade.new_code_hash.clone(),
+            execute_after_height: upgrade.execute_after_height,
+            ready_at_height: self.height >= upgrade.execute_after_height,
+            invariant_failures,
+            storage_root: rehearsed_state.storage_root(),
+            registry_root: rehearsed_state.registry_root(),
+            policy_root: rehearsed_state.policy_root(),
+            global_state_root: rehearsed_state.global_state_root(),
+        })
     }
 
     pub fn contract_records(&self) -> impl Iterator<Item = &ContractRecord> {
@@ -7129,6 +7205,19 @@ mod tests {
                 .execute_after_height,
             2
         );
+        let rehearsal = state.rehearse_scheduled_upgrade("upgrade-1").unwrap();
+        assert_eq!(rehearsal.upgrade_id, "upgrade-1");
+        assert_eq!(rehearsal.governance_contract, "GovA");
+        assert_eq!(rehearsal.target_contract, "TokenA");
+        assert_eq!(rehearsal.old_code_hash, old_code_hash);
+        assert_eq!(rehearsal.new_code_hash, "token-code-v2");
+        assert_eq!(rehearsal.execute_after_height, 2);
+        assert!(!rehearsal.ready_at_height);
+        assert_eq!(rehearsal.invariant_failures, vec![]);
+        assert_eq!(rehearsal.storage_root, storage_before);
+        assert_eq!(rehearsal.registry_root, registry_before);
+        assert_eq!(rehearsal.report_root(), root_of(&rehearsal));
+        assert_eq!(state.code_hash("TokenA"), Some(old_code_hash.as_str()));
 
         let early_state = state.clone();
         let (early_block, _) = early_state.build_block(
@@ -7173,6 +7262,10 @@ mod tests {
         assert_eq!(next_state.storage_root(), storage_before);
         assert_eq!(next_state.registry_root(), registry_before);
         assert_eq!(next_state.check_declared_invariants(), vec![]);
+        assert_eq!(
+            next_state.rehearse_scheduled_upgrade("upgrade-1"),
+            Err(ExecutionError::UpgradeAlreadyExecuted)
+        );
         assert!(matches!(
             next_state.events().last().unwrap().payload,
             EventPayload::UpgradeExecuted { .. }

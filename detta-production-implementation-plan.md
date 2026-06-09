@@ -382,6 +382,8 @@ Completed production-plan slices:
   validator-key counts, pending validator-set updates, and authenticated roots.
 - [x] Lending vaults support per-block debt interest, liquidation thresholds,
   collateral seizure, and explicit bad-debt accounting tests.
+- [x] Governance upgrades expose forked-state rehearsal reports with invariant
+  failures and authenticated roots before execution.
 
 Next implementation slices:
 
