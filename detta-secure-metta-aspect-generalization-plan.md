@@ -1175,12 +1175,12 @@ Acceptance criteria:
 
 ### Phase 1: Aspect Parser and Canonicalizer
 
-- [ ] Create `crates/detta-aspects`.
-- [ ] Parse accepted declaration forms.
-- [ ] Reject forbidden top-level and executable forms.
-- [ ] Render canonical source.
-- [ ] Compute source roots.
-- [ ] Add fixtures for selected taxonomy snippets.
+- [x] Create `crates/detta-aspects`.
+- [x] Parse accepted declaration forms.
+- [x] Reject forbidden top-level and executable forms.
+- [x] Render canonical source.
+- [x] Compute source roots.
+- [x] Add fixtures for selected taxonomy snippets.
 
 Acceptance criteria:
 

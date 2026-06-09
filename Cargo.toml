@@ -5,6 +5,7 @@ members = [
     "crates/detta-verify",
     "crates/detta-consensus",
     "crates/detta-storage",
+    "crates/detta-aspects",
     "crates/detta-evaluator",
     "crates/detta-node",
     "crates/detta-network",

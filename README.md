@@ -161,6 +161,8 @@ Rust workspace crates:
   TCP protocol streams.
 - `crates/detta-storage`: durable blocks, mempool records, snapshots, metadata,
   audit records, and sync diagnostics.
+- `crates/detta-aspects`: parser, canonicalizer, and source-root tooling for
+  secure taxonomy-aligned MeTTa aspect modules.
 - `crates/detta-node`: persistent validator node orchestration.
 - `crates/detta-rpc`: HTTP/TCP JSON-RPC server and client-facing wire types.
 - `crates/detta-evaluator`: restricted MeTTa/PeTTa-style evaluator subset.

@@ -125,6 +125,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "detta-aspects"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "sha2",
+]
+
+[[package]]
 name = "detta-consensus"
 version = "0.1.0"
 dependencies = [
