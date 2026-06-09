@@ -685,6 +685,7 @@ fn owner_of_key(key: &StateKey) -> &str {
         StateKey::Balance { contract, .. }
         | StateKey::TotalSupply { contract, .. }
         | StateKey::Reserve { contract, .. }
+        | StateKey::AmmFeeCollected { contract, .. }
         | StateKey::LpSupply { contract }
         | StateKey::LpBalance { contract, .. }
         | StateKey::OraclePrice { contract, .. }

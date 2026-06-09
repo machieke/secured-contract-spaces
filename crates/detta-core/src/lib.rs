@@ -63,6 +63,10 @@ pub enum StateKey {
         contract: ContractId,
         asset: AssetId,
     },
+    AmmFeeCollected {
+        contract: ContractId,
+        asset: AssetId,
+    },
     LpSupply {
         contract: ContractId,
     },
@@ -146,6 +150,7 @@ impl StateKey {
             StateKey::Balance { contract, .. } => contract,
             StateKey::TotalSupply { contract, .. } => contract,
             StateKey::Reserve { contract, .. } => contract,
+            StateKey::AmmFeeCollected { contract, .. } => contract,
             StateKey::LpSupply { contract } => contract,
             StateKey::LpBalance { contract, .. } => contract,
             StateKey::OraclePrice { contract, .. } => contract,
@@ -310,6 +315,7 @@ pub enum ContractKind {
     AmmPool {
         asset_a: AssetId,
         asset_b: AssetId,
+        swap_fee_bps: u64,
     },
     Oracle {
         asset: AssetId,
@@ -496,12 +502,17 @@ impl ContractRecord {
         code_hash: String,
         asset_a: AssetId,
         asset_b: AssetId,
+        parameters: AmmParameters,
     ) -> Self {
         let lp_invariant = ContractInvariant::AmmLpSupplyMatchesBalances;
         Self::with_policy_manifest(
             contract_id,
             code_hash,
-            ContractKind::AmmPool { asset_a, asset_b },
+            ContractKind::AmmPool {
+                asset_a,
+                asset_b,
+                swap_fee_bps: parameters.swap_fee_bps,
+            },
             BTreeMap::from([
                 (
                     Method::AddLiquidity,
@@ -873,6 +884,7 @@ pub enum EventPayload {
         input_asset: AssetId,
         output_asset: AssetId,
         amount_in: Amount,
+        fee_amount: Amount,
         amount_out: Amount,
     },
     PriceUpdated {
@@ -1767,6 +1779,17 @@ struct LendingConfig {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AmmParameters {
+    pub swap_fee_bps: u64,
+}
+
+impl AmmParameters {
+    pub const fn new(swap_fee_bps: u64) -> Self {
+        Self { swap_fee_bps }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct LendingRiskParameters {
     pub ltv_bps: u64,
     pub max_oracle_age: u64,
@@ -1946,14 +1969,33 @@ impl DeTTaState {
         asset_a: impl Into<AssetId>,
         asset_b: impl Into<AssetId>,
     ) -> Result<(), ExecutionError> {
+        self.deploy_amm_pool_with_parameters(contract, asset_a, asset_b, AmmParameters::new(30))
+    }
+
+    pub fn deploy_amm_pool_with_parameters(
+        &mut self,
+        contract: impl Into<ContractId>,
+        asset_a: impl Into<AssetId>,
+        asset_b: impl Into<AssetId>,
+        parameters: AmmParameters,
+    ) -> Result<(), ExecutionError> {
         let contract = contract.into();
         let asset_a = asset_a.into();
         let asset_b = asset_b.into();
         if asset_a == asset_b {
             return Err(ExecutionError::InvalidPoolAsset);
         }
+        if parameters.swap_fee_bps > 10_000 {
+            return Err(ExecutionError::InvalidArguments);
+        }
 
-        let code_hash = root_of(&("detta-amm-v1", &contract, &asset_a, &asset_b));
+        let code_hash = root_of(&(
+            "detta-amm-v2",
+            &contract,
+            &asset_a,
+            &asset_b,
+            parameters.swap_fee_bps,
+        ));
         self.contracts.insert(
             contract.clone(),
             ContractRecord::amm_pool(
@@ -1961,17 +2003,32 @@ impl DeTTaState {
                 code_hash,
                 asset_a.clone(),
                 asset_b.clone(),
+                parameters,
             ),
         );
         self.storage.insert(
             StateKey::Reserve {
+                contract: contract.clone(),
+                asset: asset_a.clone(),
+            },
+            StateValue::UInt(0),
+        );
+        self.storage.insert(
+            StateKey::Reserve {
+                contract: contract.clone(),
+                asset: asset_b.clone(),
+            },
+            StateValue::UInt(0),
+        );
+        self.storage.insert(
+            StateKey::AmmFeeCollected {
                 contract: contract.clone(),
                 asset: asset_a,
             },
             StateValue::UInt(0),
         );
         self.storage.insert(
-            StateKey::Reserve {
+            StateKey::AmmFeeCollected {
                 contract: contract.clone(),
                 asset: asset_b,
             },
@@ -2422,6 +2479,21 @@ impl DeTTaState {
 
     pub fn reserve(&self, contract: impl Into<ContractId>, asset: impl Into<AssetId>) -> Amount {
         let key = StateKey::Reserve {
+            contract: contract.into(),
+            asset: asset.into(),
+        };
+        self.storage
+            .get(&key)
+            .map(StateValue::as_uint)
+            .unwrap_or_default()
+    }
+
+    pub fn amm_fee_collected(
+        &self,
+        contract: impl Into<ContractId>,
+        asset: impl Into<AssetId>,
+    ) -> Amount {
+        let key = StateKey::AmmFeeCollected {
             contract: contract.into(),
             asset: asset.into(),
         };
@@ -2910,9 +2982,13 @@ impl DeTTaState {
                     Method::Permit => self.permit(tx),
                     _ => Err(ExecutionError::PolicyMissing),
                 },
-                ContractKind::AmmPool { asset_a, asset_b } => match tx.method {
+                ContractKind::AmmPool {
+                    asset_a,
+                    asset_b,
+                    swap_fee_bps,
+                } => match tx.method {
                     Method::AddLiquidity => self.add_liquidity(tx, msg_sender, asset_a, asset_b),
-                    Method::Swap => self.swap(tx, msg_sender, asset_a, asset_b),
+                    Method::Swap => self.swap(tx, msg_sender, asset_a, asset_b, swap_fee_bps),
                     _ => Err(ExecutionError::PolicyMissing),
                 },
                 ContractKind::Oracle { asset, max_age } => match tx.method {
@@ -3308,6 +3384,7 @@ impl DeTTaState {
         msg_sender: Principal,
         asset_a: AssetId,
         asset_b: AssetId,
+        swap_fee_bps: u64,
     ) -> Result<ReturnValue, ExecutionError> {
         let [input_asset, amount_in, min_output] = expect_args(&tx.args)?;
         let input_asset = expect_asset(input_asset)?;
@@ -3323,10 +3400,11 @@ impl DeTTaState {
 
         let input_key = reserve_key(&tx.target, &input_asset);
         let output_key = reserve_key(&tx.target, &output_asset);
+        let fee_key = amm_fee_collected_key(&tx.target, &input_asset);
         let frame = AuthorizedFrame {
             contract: tx.target.clone(),
             msg_sender: tx.sender.clone(),
-            write_scope: BTreeSet::from([input_key.clone(), output_key.clone()]),
+            write_scope: BTreeSet::from([input_key.clone(), output_key.clone(), fee_key.clone()]),
         };
 
         let reserve_in = self.uint_at(&input_key);
@@ -3335,10 +3413,8 @@ impl DeTTaState {
             return Err(ExecutionError::InsufficientLiquidity);
         }
 
-        let amount_in_with_fee = amount_in
-            .checked_mul(997)
-            .ok_or(ExecutionError::ArithmeticOverflow)?
-            / 1000;
+        let amount_in_with_fee = amount_after_fee(amount_in, swap_fee_bps)?;
+        let fee_amount = amount_in - amount_in_with_fee;
         let numerator = reserve_out
             .checked_mul(amount_in_with_fee)
             .ok_or(ExecutionError::ArithmeticOverflow)?;
@@ -3363,6 +3439,18 @@ impl DeTTaState {
                     .ok_or(ExecutionError::ArithmeticOverflow)?,
             ),
         )?;
+        if fee_amount != 0 {
+            let current_fee = self.uint_at(&fee_key);
+            self.state_set(
+                &frame,
+                fee_key,
+                StateValue::UInt(
+                    current_fee
+                        .checked_add(fee_amount)
+                        .ok_or(ExecutionError::ArithmeticOverflow)?,
+                ),
+            )?;
+        }
         self.state_set(
             &frame,
             output_key,
@@ -3381,6 +3469,7 @@ impl DeTTaState {
                 input_asset,
                 output_asset,
                 amount_in,
+                fee_amount,
                 amount_out,
             },
         );
@@ -4608,7 +4697,9 @@ impl DeTTaState {
                 .into_iter()
                 .all(|asset| self.token_invariants_hold(&record.contract_id, &asset)),
             ContractInvariant::AmmPoolAssetsDistinct => match &record.kind {
-                ContractKind::AmmPool { asset_a, asset_b } => asset_a != asset_b,
+                ContractKind::AmmPool {
+                    asset_a, asset_b, ..
+                } => asset_a != asset_b,
                 _ => false,
             },
             ContractInvariant::AmmLpSupplyMatchesBalances => {
@@ -4989,6 +5080,23 @@ fn reserve_key(contract: &ContractId, asset: &AssetId) -> StateKey {
         contract: contract.clone(),
         asset: asset.clone(),
     }
+}
+
+fn amm_fee_collected_key(contract: &ContractId, asset: &AssetId) -> StateKey {
+    StateKey::AmmFeeCollected {
+        contract: contract.clone(),
+        asset: asset.clone(),
+    }
+}
+
+fn amount_after_fee(amount: Amount, fee_bps: u64) -> Result<Amount, ExecutionError> {
+    if fee_bps > 10_000 {
+        return Err(ExecutionError::InvalidArguments);
+    }
+    amount
+        .checked_mul(10_000 - fee_bps as Amount)
+        .ok_or(ExecutionError::ArithmeticOverflow)
+        .map(|value| value / 10_000)
 }
 
 fn lp_supply_key(contract: &ContractId) -> StateKey {
@@ -6578,8 +6686,68 @@ mod tests {
         assert_eq!(receipt.return_value, Some(ReturnValue::UInt(45)));
         assert_eq!(state.reserve("PoolAB", "USDC"), 1_100);
         assert_eq!(state.reserve("PoolAB", "ATOM"), 455);
+        assert_eq!(state.amm_fee_collected("PoolAB", "USDC"), 1);
         assert_eq!(state.lp_supply("PoolAB"), 1_500);
         assert_eq!(state.lp_balance("PoolAB", "Alice"), 1_500);
+        assert!(matches!(
+            state.events().last().unwrap().payload,
+            EventPayload::Swap {
+                fee_amount: 1,
+                amount_out: 45,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn amm_swap_uses_configured_fee_accounting() {
+        let mut invalid = DeTTaState::new("detta-local");
+        assert_eq!(
+            invalid.deploy_amm_pool_with_parameters(
+                "PoolBad",
+                "USDC",
+                "ATOM",
+                AmmParameters::new(10_001)
+            ),
+            Err(ExecutionError::InvalidArguments)
+        );
+
+        let mut state = DeTTaState::new("detta-local");
+        state
+            .deploy_amm_pool_with_parameters("PoolAB", "USDC", "ATOM", AmmParameters::new(1_000))
+            .unwrap();
+        state.apply_transaction(tx_to(
+            "PoolAB",
+            "tx1",
+            "Alice",
+            1,
+            Method::AddLiquidity,
+            vec![amount(1_000), amount(500)],
+        ));
+
+        let receipt = state.apply_transaction(tx_to(
+            "PoolAB",
+            "tx2",
+            "Bob",
+            1,
+            Method::Swap,
+            vec![asset("USDC"), amount(100), amount(41)],
+        ));
+
+        assert_eq!(receipt.status, TxStatus::Committed);
+        assert_eq!(receipt.return_value, Some(ReturnValue::UInt(41)));
+        assert_eq!(state.reserve("PoolAB", "USDC"), 1_100);
+        assert_eq!(state.reserve("PoolAB", "ATOM"), 459);
+        assert_eq!(state.amm_fee_collected("PoolAB", "USDC"), 10);
+        assert_eq!(state.check_declared_invariants(), vec![]);
+        assert!(matches!(
+            state.events().last().unwrap().payload,
+            EventPayload::Swap {
+                fee_amount: 10,
+                amount_out: 41,
+                ..
+            }
+        ));
     }
 
     #[test]
