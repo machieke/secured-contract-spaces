@@ -5,6 +5,8 @@ edition = "2021"
 license = "MIT"
 
 [dependencies]
+detta-aspect-runtime = { path = "../detta-aspect-runtime" }
+detta-aspects = { path = "../detta-aspects" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"

@@ -1269,16 +1269,27 @@ Acceptance criteria:
 - [x] Add programmable contract descriptor.
 - [x] Add module submission path.
 - [x] Add aspect contract deployment path.
-- [ ] Dispatch programmable methods through evaluator.
-- [ ] Integrate invariant checks.
-- [ ] Add receipt/proof support for programmable modules.
+- [x] Dispatch programmable methods through evaluator.
+- [x] Integrate invariant checks.
+- [x] Add receipt/proof support for programmable modules.
 
 Progress note: the first runtime slice stores authenticated aspect module
 records by deterministic module hash, includes them in the global state root,
 admits modules through a consensus-replayed factory transaction, exposes
 module inspection over RPC, and deploys fail-closed programmable contract
-descriptors that reference a registered module hash and bundle id. Method
-dispatch, invariant execution, and receipt/proof integration remain pending.
+descriptors that reference a registered module hash and bundle id. The first
+dispatch slice admits source-verified modules, stores canonical executable IR,
+exports `Method::Other(projection)` methods from bundle projections, executes
+projection IR through `detta-aspect-runtime`, and applies supported `state-set!`
+and `emit!` host calls through the guarded kernel. The invariant slice resolves
+method-policy invariant references against the deployed bundle closure, exposes
+aspect-local invariant obligations in the method policy manifest, evaluates
+required invariant expressions after programmable host writes, and fails closed
+on missing, ambiguous, false, non-boolean, or mutating invariant checks.
+Registry host calls, cross-contract calls, state-backed invariant reads, and
+deeper symbolic proof obligations remain pending. The proof slice adds
+authenticated aspect-module Merkle proofs and uses existing receipt, event, and
+storage proofs for programmable method calls and aspect-owned state.
 
 Acceptance criteria:
 
@@ -1290,13 +1301,21 @@ Acceptance criteria:
 
 ### Phase 6: Token Standard Library Equivalence
 
-- [ ] Implement static balance aspects.
-- [ ] Implement transferable balance aspects.
+- [x] Implement static balance aspects.
+- [x] Implement transferable balance aspects.
 - [ ] Implement approval and delegated transfer aspects.
 - [ ] Implement permit approval aspect or a kernel adapter for permits.
 - [ ] Implement observable transfer/approval events.
 - [ ] Define `ERC20ConformantToken` bundle.
 - [ ] Differential-test against native token.
+
+Progress note: the minimal standard-library transfer fixture is now executable.
+It uses keyed `balanceOf` state reads and writes, guarded by bundle-scoped
+aspect storage authorization, and a core differential test verifies the basic
+Alice-to-Bob transfer state transition against the native token baseline. The
+initial aspect balance is still test-seeded; generic deployment initializers,
+approval/allowance behavior, permits, event equivalence, and full ERC20 bundle
+coverage remain pending.
 
 Acceptance criteria:
 

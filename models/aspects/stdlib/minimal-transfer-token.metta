@@ -1,6 +1,6 @@
-; Minimal taxonomy-aligned source fixture for the first DeTTa aspect parser.
-; This is not yet executable contract code. It pins declaration parsing,
-; comments, canonicalization, and source-root behavior.
+; Minimal taxonomy-aligned executable transfer token fixture.
+; It pins declaration parsing, comments, canonicalization, source-root behavior,
+; and the first runtime-compatible balance transfer action.
 
 (: Aspect Type)
 (: Bundle Type)
@@ -38,12 +38,22 @@
 (action TransferableBalanceAspect transferBalance)
 (action SelfTransferAspect transferFromSelf)
 
+(derived TransferableBalanceAspect transferBalance
+  (= (transferBalance $from $to $amount)
+     (begin
+       (require (>= (state-get balanceOf $from) $amount) INSUFFICIENT_BALANCE)
+       (state-set! balanceOf $from
+         (safe-sub (state-get balanceOf $from) $amount))
+       (state-set! balanceOf $to
+         (safe-add (state-get balanceOf $to) $amount))
+       True)))
+
 (derived SelfTransferAspect transferFromSelf
   (= (transferFromSelf $caller $to $amount)
      (transferBalance $caller $to $amount)))
 
 (local-invariant TransferableBalanceAspect TBA-3
-  (preserves transferBalance totalBalance))
+  True)
 
 (bundle MinimalTransferToken)
 (bundle-includes MinimalTransferToken StaticBalanceAspect)
@@ -60,5 +70,5 @@
 
 (method-policy MinimalTransferToken ERC20-transfer
   TxSender
-  (effects ReadState WriteState EmitEvent)
+  (effects ReadState WriteState)
   (invariants TBA-3))

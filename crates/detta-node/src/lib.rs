@@ -2114,6 +2114,7 @@ fn records_proof_latency(request: &RpcRequest) -> bool {
     matches!(
         request,
         RpcRequest::GetReceiptProof { .. }
+            | RpcRequest::GetAspectModuleProof { .. }
             | RpcRequest::GetStorageProof { .. }
             | RpcRequest::GetStorageNonInclusionProof { .. }
             | RpcRequest::GetRegistryProof { .. }

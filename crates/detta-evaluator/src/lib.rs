@@ -879,6 +879,15 @@ fn canonical_state_key(key: &StateKey) -> String {
             staker,
             asset,
         } => format!("(staking-last-reward-height {contract} {staker} {asset})"),
+        StateKey::AspectState {
+            contract,
+            aspect,
+            state,
+            key,
+        } => {
+            let key = key.join(",");
+            format!("(aspect-state {contract} {aspect} {state} {key})")
+        }
     }
 }
 
@@ -943,6 +952,7 @@ mod tests {
             report.trace,
             vec![AspectHostOp::StateSet {
                 state: "balance".into(),
+                key: Vec::new(),
                 value: AspectValue::Amount(10),
             }]
         );

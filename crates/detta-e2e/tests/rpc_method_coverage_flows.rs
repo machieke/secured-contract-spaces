@@ -301,6 +301,13 @@ fn public_rpc_method_coverage_guard_calls_every_openapi_method() {
         &mut client,
         &mut covered,
         RpcRequest::GetAspectModule {
+            module_hash: aspect_module_hash.clone(),
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetAspectModuleProof {
             module_hash: aspect_module_hash,
         },
     );

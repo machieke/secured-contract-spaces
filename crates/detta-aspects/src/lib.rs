@@ -2121,7 +2121,7 @@ mod tests {
     #[test]
     fn parser_accepts_minimal_transfer_token_fixture() {
         let ast = parse_aspect_package(MINIMAL_TRANSFER_TOKEN_FIXTURE).unwrap();
-        assert_eq!(ast.declarations.len(), 38);
+        assert_eq!(ast.declarations.len(), 39);
 
         let canonical = canonical_aspect_source(&ast);
         assert!(canonical.contains("(bundle MinimalTransferToken)"));

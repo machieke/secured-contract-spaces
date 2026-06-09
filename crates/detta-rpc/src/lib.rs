@@ -1,10 +1,10 @@
 use detta_consensus::{FinalityCertificate, SlashingRecord};
 use detta_core::{
-    Amount, AspectModuleRecord, AssetId, Block, BlockError, ContractId, ContractRecord, DeTTaState,
-    Event, EventProof, ExecutionError, GrantKey, MempoolError, OutboxMessageProof, Principal,
-    Receipt, ReceiptProof, RegistryNonInclusionProof, RegistryProof, ScheduledPolicyUpdate,
-    ScheduledUpgrade, StateKey, StateSnapshot, StorageNonInclusionProof, StorageProof, Transaction,
-    UpgradeRehearsalReport, ValidatorNode,
+    Amount, AspectModuleProof, AspectModuleRecord, AssetId, Block, BlockError, ContractId,
+    ContractRecord, DeTTaState, Event, EventProof, ExecutionError, GrantKey, MempoolError,
+    OutboxMessageProof, Principal, Receipt, ReceiptProof, RegistryNonInclusionProof, RegistryProof,
+    ScheduledPolicyUpdate, ScheduledUpgrade, StateKey, StateSnapshot, StorageNonInclusionProof,
+    StorageProof, Transaction, UpgradeRehearsalReport, ValidatorNode,
 };
 use detta_evaluator::{
     canonical_script_source, parse_restricted_script, restricted_evaluator_fixture_inventory,
@@ -269,6 +269,9 @@ pub enum RpcRequest {
         contract: ContractId,
     },
     GetAspectModule {
+        module_hash: String,
+    },
+    GetAspectModuleProof {
         module_hash: String,
     },
     GetAspectModules,
@@ -571,6 +574,7 @@ pub enum RpcResult {
     SubscriptionEvents(SubscriptionEventPage),
     Contract(Box<ContractRecord>),
     AspectModule(Box<AspectModuleRecord>),
+    AspectModuleProof(Box<AspectModuleProof>),
     AspectModules(Vec<AspectModuleRecord>),
     ScheduledUpgrades(Vec<ScheduledUpgrade>),
     ScheduledPolicyUpdates(Vec<ScheduledPolicyUpdate>),
@@ -1122,6 +1126,16 @@ impl RpcService {
             .ok_or(RpcError::AspectModuleNotFound)
     }
 
+    pub fn get_aspect_module_proof(
+        &self,
+        module_hash: &str,
+    ) -> Result<AspectModuleProof, RpcError> {
+        self.node
+            .state()
+            .aspect_module_proof(module_hash)
+            .ok_or(RpcError::ProofNotFound)
+    }
+
     pub fn get_aspect_modules(&self) -> Vec<AspectModuleRecord> {
         self.node.state().aspect_module_records().cloned().collect()
     }
@@ -1286,6 +1300,10 @@ impl RpcService {
             RpcRequest::GetAspectModule { module_hash } => self
                 .get_aspect_module(&module_hash)
                 .map(|module| RpcResult::AspectModule(Box::new(module)))
+                .into(),
+            RpcRequest::GetAspectModuleProof { module_hash } => self
+                .get_aspect_module_proof(&module_hash)
+                .map(|proof| RpcResult::AspectModuleProof(Box::new(proof)))
                 .into(),
             RpcRequest::GetAspectModules => {
                 RpcResponse::Ok(RpcResult::AspectModules(self.get_aspect_modules()))
@@ -1924,6 +1942,7 @@ mod tests {
             "get_subscription_events",
             "get_contract",
             "get_aspect_module",
+            "get_aspect_module_proof",
             "get_aspect_modules",
             "get_scheduled_upgrades",
             "get_scheduled_policy_updates",
@@ -2879,6 +2898,14 @@ mod tests {
             }),
             RpcResponse::Ok(RpcResult::AspectModule(Box::new(module.clone())))
         );
+        let proof_response = rpc.handle_request(RpcRequest::GetAspectModuleProof {
+            module_hash: module_hash.clone(),
+        });
+        let RpcResponse::Ok(RpcResult::AspectModuleProof(proof)) = proof_response else {
+            panic!("expected aspect module proof");
+        };
+        assert!(proof.verify());
+        assert_eq!(proof.proof.root, rpc.node().state().aspect_module_root());
         assert_eq!(
             rpc.handle_request(RpcRequest::GetAspectModules),
             RpcResponse::Ok(RpcResult::AspectModules(vec![module]))

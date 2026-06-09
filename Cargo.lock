@@ -155,6 +155,8 @@ dependencies = [
 name = "detta-core"
 version = "0.1.0"
 dependencies = [
+ "detta-aspect-runtime",
+ "detta-aspects",
  "serde",
  "serde_json",
  "sha2",

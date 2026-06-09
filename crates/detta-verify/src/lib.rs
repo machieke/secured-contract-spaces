@@ -1449,7 +1449,8 @@ fn owner_of_key(key: &StateKey) -> &str {
         | StateKey::StakingPenaltyCollected { contract, .. }
         | StateKey::UnbondReadyHeight { contract, .. }
         | StateKey::StakingRewardBalance { contract, .. }
-        | StateKey::StakingLastRewardHeight { contract, .. } => contract,
+        | StateKey::StakingLastRewardHeight { contract, .. }
+        | StateKey::AspectState { contract, .. } => contract,
     }
 }
 

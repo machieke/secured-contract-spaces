@@ -1,3 +1,6 @@
+use detta_aspect_runtime::{
+    AspectActionEvaluator, AspectExecutionContext, AspectHostOp, AspectStateReads, AspectValue,
+};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -148,6 +151,12 @@ pub enum StateKey {
         staker: Principal,
         asset: AssetId,
     },
+    AspectState {
+        contract: ContractId,
+        aspect: String,
+        state: String,
+        key: Vec<String>,
+    },
 }
 
 impl StateKey {
@@ -174,6 +183,7 @@ impl StateKey {
             StateKey::UnbondReadyHeight { contract, .. } => contract,
             StateKey::StakingRewardBalance { contract, .. } => contract,
             StateKey::StakingLastRewardHeight { contract, .. } => contract,
+            StateKey::AspectState { contract, .. } => contract,
         }
     }
 }
@@ -294,6 +304,7 @@ pub struct ContractRecord {
     pub code_hash: String,
     pub kind: ContractKind,
     exported_methods: BTreeSet<Method>,
+    #[serde(with = "method_policy_map_entries")]
     method_policies: BTreeMap<Method, MethodPolicy>,
     declared_invariants: BTreeSet<ContractInvariant>,
 }
@@ -304,7 +315,9 @@ pub struct AspectModuleRecord {
     pub module_hash: String,
     pub taxonomy_version: String,
     pub source_root: String,
+    pub canonical_source: Option<String>,
     pub ir_root: String,
+    pub ir: Option<detta_aspects::AspectModuleIr>,
     pub abi_root: String,
     pub policy_root: String,
     pub storage_schema_root: String,
@@ -334,7 +347,9 @@ impl AspectModuleRecord {
             module_hash: String::new(),
             taxonomy_version: taxonomy_version.into(),
             source_root: roots.source_root,
+            canonical_source: None,
             ir_root: roots.ir_root,
+            ir: None,
             abi_root: roots.abi_root,
             policy_root: roots.policy_root,
             storage_schema_root: roots.storage_schema_root,
@@ -343,6 +358,34 @@ impl AspectModuleRecord {
         };
         record.module_hash = record.computed_hash();
         record
+    }
+
+    pub fn from_verified_source(
+        module_id: impl Into<String>,
+        source: &str,
+    ) -> Result<Self, ExecutionError> {
+        let module_id = module_id.into();
+        if module_id.is_empty() {
+            return Err(ExecutionError::InvalidArguments);
+        }
+        let (canonical_source, ir, verified) = detta_aspects::parse_verify_module(source)
+            .map_err(|_| ExecutionError::InvalidArguments)?;
+        if !verified.ir.bundles.contains_key(&module_id) {
+            return Err(ExecutionError::InvalidArguments);
+        }
+        let roots = AspectModuleRoots {
+            source_root: verified.ir.source_root.clone(),
+            ir_root: verified.roots.ir_root.clone(),
+            abi_root: verified.roots.abi_root.clone(),
+            policy_root: verified.roots.policy_root.clone(),
+            storage_schema_root: verified.roots.storage_schema_root.clone(),
+            registry_schema_root: verified.roots.registry_schema_root.clone(),
+            invariant_root: verified.roots.invariant_root.clone(),
+        };
+        let mut record = Self::new(module_id, verified.ir.taxonomy_version.clone(), roots);
+        record.canonical_source = Some(canonical_source);
+        record.ir = Some(ir);
+        Ok(record)
     }
 
     pub fn computed_hash(&self) -> String {
@@ -493,6 +536,11 @@ pub enum ContractInvariant {
     RouterDoesNotInheritCallerWriteScope,
     FactoryDeploymentsDeclarePolicies,
     AccountSignerKeysCanonical,
+    AspectLocalInvariant {
+        module_hash: String,
+        aspect: String,
+        invariant: String,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1016,8 +1064,9 @@ impl ContractRecord {
         contract_id: ContractId,
         module: &AspectModuleRecord,
         bundle_id: String,
-    ) -> Self {
-        Self::with_policy_manifest(
+    ) -> Result<Self, ExecutionError> {
+        let method_policies = aspect_module_method_policies(module, &bundle_id)?;
+        Ok(Self::with_policy_manifest(
             contract_id,
             module.module_hash.clone(),
             ContractKind::AspectModule {
@@ -1027,10 +1076,210 @@ impl ContractRecord {
                 policy_root: module.policy_root.clone(),
                 invariant_root: module.invariant_root.clone(),
             },
-            BTreeMap::new(),
+            method_policies,
             BTreeSet::new(),
-        )
+        ))
     }
+}
+
+fn aspect_module_method_policies(
+    module: &AspectModuleRecord,
+    bundle_id: &str,
+) -> Result<BTreeMap<Method, MethodPolicy>, ExecutionError> {
+    let Some(ir) = &module.ir else {
+        return Ok(BTreeMap::new());
+    };
+    if !ir.bundles.contains_key(bundle_id) {
+        return Err(ExecutionError::InvalidArguments);
+    }
+
+    let mut policies = BTreeMap::new();
+    for projection in ir
+        .projections
+        .values()
+        .filter(|projection| projection.bundle == bundle_id)
+    {
+        let key = qualified_aspect_symbol(&projection.bundle, &projection.projection);
+        let policy = ir
+            .policies
+            .get(&key)
+            .ok_or(ExecutionError::InvalidArguments)?;
+        policies.insert(
+            Method::Other(projection.projection.clone()),
+            core_method_policy_from_aspect(module, bundle_id, policy)?,
+        );
+    }
+    if policies.is_empty() {
+        return Err(ExecutionError::InvalidArguments);
+    }
+    Ok(policies)
+}
+
+fn core_method_policy_from_aspect(
+    module: &AspectModuleRecord,
+    bundle_id: &str,
+    policy: &detta_aspects::MethodPolicyIr,
+) -> Result<MethodPolicy, ExecutionError> {
+    let authority = match policy.authority {
+        detta_aspects::AuthorityKind::TxSender => PolicyAuthority::TxSender,
+        _ => return Err(ExecutionError::InvalidArguments),
+    };
+    let mut effects = BTreeSet::new();
+    for effect in &policy.effects {
+        match effect {
+            detta_aspects::EffectKind::ReadState
+            | detta_aspects::EffectKind::ReadRegistry
+            | detta_aspects::EffectKind::Abort => {}
+            detta_aspects::EffectKind::WriteState => {
+                effects.insert(PolicyEffect::StorageWrite);
+            }
+            detta_aspects::EffectKind::WriteRegistry
+            | detta_aspects::EffectKind::ConsumeRegistryGrant => {
+                effects.insert(PolicyEffect::RegistryWrite);
+            }
+            detta_aspects::EffectKind::EmitEvent => {
+                effects.insert(PolicyEffect::EventEmit);
+            }
+            detta_aspects::EffectKind::CallContract => {
+                effects.insert(PolicyEffect::CrossContractCall);
+            }
+            detta_aspects::EffectKind::DeployContract => {
+                effects.insert(PolicyEffect::ContractDeploy);
+            }
+            detta_aspects::EffectKind::ScheduleUpgrade => {
+                effects.insert(PolicyEffect::UpgradeSchedule);
+            }
+            detta_aspects::EffectKind::ExecuteUpgrade => {
+                effects.insert(PolicyEffect::ContractCodeUpgrade);
+            }
+            detta_aspects::EffectKind::CrossShardOutboxAppend => {
+                effects.insert(PolicyEffect::CrossShardOutboxAppend);
+            }
+        }
+    }
+
+    Ok(MethodPolicy {
+        authority,
+        reentrancy: ReentrancyMode::NonReentrant,
+        effects,
+        invariants: aspect_policy_invariant_refs(module, bundle_id, policy)?,
+    })
+}
+
+fn aspect_policy_invariant_refs(
+    module: &AspectModuleRecord,
+    bundle_id: &str,
+    policy: &detta_aspects::MethodPolicyIr,
+) -> Result<BTreeSet<ContractInvariant>, ExecutionError> {
+    let ir = module.ir.as_ref().ok_or(ExecutionError::PolicyMissing)?;
+    policy
+        .invariants
+        .iter()
+        .map(|invariant_ref| {
+            let invariant = resolve_aspect_invariant(ir, bundle_id, invariant_ref)?;
+            Ok(ContractInvariant::AspectLocalInvariant {
+                module_hash: module.module_hash.clone(),
+                aspect: invariant.aspect.clone(),
+                invariant: invariant.invariant.clone(),
+            })
+        })
+        .collect()
+}
+
+fn resolve_aspect_invariant<'a>(
+    ir: &'a detta_aspects::AspectModuleIr,
+    bundle_id: &str,
+    invariant_ref: &str,
+) -> Result<&'a detta_aspects::InvariantDef, ExecutionError> {
+    let closure = aspect_bundle_aspect_closure(ir, bundle_id)?;
+    let exact_key = if ir.invariants.contains_key(invariant_ref) {
+        Some(invariant_ref.to_owned())
+    } else if let Some((aspect, invariant)) = invariant_ref.split_once("::") {
+        Some(qualified_aspect_symbol(aspect, invariant))
+    } else {
+        invariant_ref
+            .split_once('.')
+            .map(|(aspect, invariant)| qualified_aspect_symbol(aspect, invariant))
+    };
+
+    if let Some(exact_key) = exact_key {
+        let invariant = ir
+            .invariants
+            .get(&exact_key)
+            .ok_or(ExecutionError::InvalidArguments)?;
+        if closure.contains(&invariant.aspect) {
+            return Ok(invariant);
+        }
+        return Err(ExecutionError::InvalidArguments);
+    }
+
+    let mut matches = ir.invariants.values().filter(|invariant| {
+        invariant.invariant == invariant_ref && closure.contains(&invariant.aspect)
+    });
+    let invariant = matches.next().ok_or(ExecutionError::InvalidArguments)?;
+    if matches.next().is_some() {
+        return Err(ExecutionError::InvalidArguments);
+    }
+    Ok(invariant)
+}
+
+fn aspect_bundle_aspect_closure(
+    ir: &detta_aspects::AspectModuleIr,
+    bundle_id: &str,
+) -> Result<BTreeSet<String>, ExecutionError> {
+    let mut closure = BTreeSet::new();
+    let mut visiting_bundles = BTreeSet::new();
+    collect_bundle_aspects(ir, bundle_id, &mut visiting_bundles, &mut closure)?;
+    Ok(closure)
+}
+
+fn collect_bundle_aspects(
+    ir: &detta_aspects::AspectModuleIr,
+    bundle_id: &str,
+    visiting_bundles: &mut BTreeSet<String>,
+    closure: &mut BTreeSet<String>,
+) -> Result<(), ExecutionError> {
+    if !visiting_bundles.insert(bundle_id.into()) {
+        return Ok(());
+    }
+    let bundle = ir
+        .bundles
+        .get(bundle_id)
+        .ok_or(ExecutionError::InvalidArguments)?;
+    for parent in &bundle.extends {
+        collect_bundle_aspects(ir, parent, visiting_bundles, closure)?;
+    }
+    let mut visiting_aspects = BTreeSet::new();
+    for aspect in &bundle.includes {
+        collect_aspect_with_parents(ir, aspect, &mut visiting_aspects, closure)?;
+    }
+    visiting_bundles.remove(bundle_id);
+    Ok(())
+}
+
+fn collect_aspect_with_parents(
+    ir: &detta_aspects::AspectModuleIr,
+    aspect_id: &str,
+    visiting_aspects: &mut BTreeSet<String>,
+    closure: &mut BTreeSet<String>,
+) -> Result<(), ExecutionError> {
+    if !visiting_aspects.insert(aspect_id.into()) {
+        return Ok(());
+    }
+    let aspect = ir
+        .aspects
+        .get(aspect_id)
+        .ok_or(ExecutionError::InvalidArguments)?;
+    for parent in &aspect.extends {
+        collect_aspect_with_parents(ir, parent, visiting_aspects, closure)?;
+    }
+    closure.insert(aspect_id.into());
+    visiting_aspects.remove(aspect_id);
+    Ok(())
+}
+
+fn qualified_aspect_symbol(namespace: &str, name: &str) -> String {
+    format!("{namespace}::{name}")
 }
 
 fn method_policy<const E: usize, const I: usize>(
@@ -1246,6 +1495,10 @@ pub enum EventPayload {
         module_id: String,
         module_hash: String,
         taxonomy_version: String,
+    },
+    AspectEvent {
+        module_hash: String,
+        event: String,
     },
     AccountKeyRegistered {
         account: Principal,
@@ -1818,6 +2071,20 @@ impl RegistryNonInclusionProof {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AspectModuleProof {
+    pub module_hash: String,
+    pub module: AspectModuleRecord,
+    pub proof: MerkleProof,
+}
+
+impl AspectModuleProof {
+    pub fn verify(&self) -> bool {
+        self.proof
+            .verify(&(self.module_hash.clone(), self.module.clone()))
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct EventProof {
     pub event: Event,
     pub proof: MerkleProof,
@@ -2252,6 +2519,31 @@ impl StakingParameters {
             reward_per_block,
             unstake_penalty_bps,
         }
+    }
+}
+
+mod method_policy_map_entries {
+    use super::*;
+
+    pub fn serialize<S>(
+        map: &BTreeMap<Method, MethodPolicy>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        map.iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect::<Vec<_>>()
+            .serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<BTreeMap<Method, MethodPolicy>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Vec::<(Method, MethodPolicy)>::deserialize(deserializer)
+            .map(|entries| entries.into_iter().collect())
     }
 }
 
@@ -2874,6 +3166,20 @@ impl DeTTaState {
         if module.module_hash != computed_hash {
             return Err(ExecutionError::InvalidArguments);
         }
+        if let Some(ir) = &module.ir {
+            let verified =
+                detta_aspects::verify_module(ir).map_err(|_| ExecutionError::InvalidArguments)?;
+            if module.source_root != ir.source_root
+                || module.ir_root != verified.roots.ir_root
+                || module.abi_root != verified.roots.abi_root
+                || module.policy_root != verified.roots.policy_root
+                || module.storage_schema_root != verified.roots.storage_schema_root
+                || module.registry_schema_root != verified.roots.registry_schema_root
+                || module.invariant_root != verified.roots.invariant_root
+            {
+                return Err(ExecutionError::InvalidArguments);
+            }
+        }
         if self.aspect_modules.contains_key(&module.module_hash) {
             return Err(ExecutionError::InvalidArguments);
         }
@@ -2901,10 +3207,8 @@ impl DeTTaState {
             .aspect_modules
             .get(&module_hash)
             .ok_or(ExecutionError::InvalidArguments)?;
-        self.contracts.insert(
-            contract.clone(),
-            ContractRecord::aspect_module_contract(contract, module, bundle_id),
-        );
+        let record = ContractRecord::aspect_module_contract(contract.clone(), module, bundle_id)?;
+        self.contracts.insert(contract.clone(), record);
         Ok(())
     }
 
@@ -3578,6 +3882,20 @@ impl DeTTaState {
         Some(OutboxMessageProof { message, proof })
     }
 
+    pub fn aspect_module_proof(&self, module_hash: &str) -> Option<AspectModuleProof> {
+        let entries = self.aspect_module_entries();
+        let index = entries
+            .iter()
+            .position(|(candidate_hash, _)| candidate_hash == module_hash)?;
+        let module = entries[index].1.clone();
+        let proof = merkle_proof(&entries, index)?;
+        Some(AspectModuleProof {
+            module_hash: module_hash.into(),
+            module,
+            proof,
+        })
+    }
+
     pub fn storage_root(&self) -> String {
         merkle_root(&self.storage_entries())
     }
@@ -3837,11 +4155,126 @@ impl DeTTaState {
                     }
                     _ => Err(ExecutionError::PolicyMissing),
                 },
-                ContractKind::AspectModule { .. } => Err(ExecutionError::PolicyMissing),
+                ContractKind::AspectModule {
+                    module_hash,
+                    bundle_id,
+                    ..
+                } => self.execute_aspect_module_method(tx, msg_sender, module_hash, bundle_id),
             }
         })();
         call_context.exit();
         result
+    }
+
+    fn execute_aspect_module_method(
+        &mut self,
+        tx: &Transaction,
+        msg_sender: Principal,
+        module_hash: String,
+        bundle_id: String,
+    ) -> Result<ReturnValue, ExecutionError> {
+        let Method::Other(projection) = &tx.method else {
+            return Err(ExecutionError::MethodNotExported);
+        };
+        let module = self
+            .aspect_modules
+            .get(&module_hash)
+            .cloned()
+            .ok_or(ExecutionError::InvalidArguments)?;
+        let ir = module.ir.as_ref().ok_or(ExecutionError::PolicyMissing)?;
+        let context = AspectExecutionContext {
+            tx_sender: tx.sender.clone(),
+            msg_sender: msg_sender.clone(),
+            current_contract: tx.target.clone(),
+            block_height: self.height,
+            block_timestamp: 0,
+        };
+        let state_reads = aspect_state_reads(self, &tx.target, &bundle_id, &module)?;
+        let report = AspectActionEvaluator::new(ir, tx.budget)
+            .execute_projection_with_state(
+                &bundle_id,
+                projection,
+                tx.args.iter().map(aspect_value_from_argument).collect(),
+                context.clone(),
+                state_reads,
+            )
+            .map_err(|_| ExecutionError::InvalidArguments)?;
+        let frame = AuthorizedFrame {
+            contract: tx.target.clone(),
+            msg_sender,
+            write_scope: aspect_write_scope(&tx.target, &bundle_id, &module)?,
+        };
+        for op in report.trace {
+            self.apply_aspect_host_op(tx, &module, &bundle_id, &frame, op)?;
+        }
+        self.check_aspect_method_invariants(&module, &bundle_id, projection, tx.budget, context)?;
+        aspect_value_to_return(report.return_value)
+    }
+
+    fn check_aspect_method_invariants(
+        &self,
+        module: &AspectModuleRecord,
+        bundle_id: &str,
+        projection: &str,
+        budget: u64,
+        context: AspectExecutionContext,
+    ) -> Result<(), ExecutionError> {
+        let ir = module.ir.as_ref().ok_or(ExecutionError::PolicyMissing)?;
+        let policy_key = qualified_aspect_symbol(bundle_id, projection);
+        let policy = ir
+            .policies
+            .get(&policy_key)
+            .ok_or(ExecutionError::PolicyMissing)?;
+        let evaluator = AspectActionEvaluator::new(ir, budget);
+        let state_reads = aspect_state_reads(self, &context.current_contract, bundle_id, module)?;
+        for invariant_ref in &policy.invariants {
+            let invariant = resolve_aspect_invariant(ir, bundle_id, invariant_ref)?;
+            let report = evaluator
+                .evaluate_invariant_expr_with_state(
+                    &invariant.expr,
+                    context.clone(),
+                    state_reads.clone(),
+                )
+                .map_err(|_| ExecutionError::InvariantViolation)?;
+            if report.return_value != AspectValue::Bool(true)
+                || report.trace.iter().any(aspect_invariant_op_is_mutating)
+            {
+                return Err(ExecutionError::InvariantViolation);
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_aspect_host_op(
+        &mut self,
+        tx: &Transaction,
+        module: &AspectModuleRecord,
+        bundle_id: &str,
+        frame: &AuthorizedFrame,
+        op: AspectHostOp,
+    ) -> Result<(), ExecutionError> {
+        match op {
+            AspectHostOp::StateGet { .. } => Ok(()),
+            AspectHostOp::StateSet { state, key, value } => {
+                let key = aspect_state_key(&tx.target, bundle_id, module, &state, key)?;
+                self.state_set(frame, key, state_value_from_aspect(value)?)
+            }
+            AspectHostOp::Emit { event } => {
+                self.emit(
+                    &tx.target,
+                    &tx.tx_hash,
+                    EventPayload::AspectEvent {
+                        module_hash: module.module_hash.clone(),
+                        event,
+                    },
+                );
+                Ok(())
+            }
+            AspectHostOp::RegistryGet { .. }
+            | AspectHostOp::RegistrySet { .. }
+            | AspectHostOp::RegistryConsume { .. }
+            | AspectHostOp::CallContract { .. } => Err(ExecutionError::InvalidArguments),
+        }
     }
 
     fn transfer(
@@ -5388,21 +5821,33 @@ impl DeTTaState {
         &mut self,
         tx: &Transaction,
     ) -> Result<ReturnValue, ExecutionError> {
-        let [module_id, taxonomy_version, source_root, ir_root, abi_root, policy_root, storage_schema_root, registry_schema_root, invariant_root] =
-            expect_args(&tx.args)?;
-        let module = AspectModuleRecord::new(
-            expect_text(module_id)?,
-            expect_text(taxonomy_version)?,
-            AspectModuleRoots {
-                source_root: expect_text(source_root)?,
-                ir_root: expect_text(ir_root)?,
-                abi_root: expect_text(abi_root)?,
-                policy_root: expect_text(policy_root)?,
-                storage_schema_root: expect_text(storage_schema_root)?,
-                registry_schema_root: expect_text(registry_schema_root)?,
-                invariant_root: expect_text(invariant_root)?,
-            },
-        );
+        let module = match tx.args.len() {
+            2 => {
+                let [module_id, source] = expect_args(&tx.args)?;
+                AspectModuleRecord::from_verified_source(
+                    expect_text(module_id)?,
+                    &expect_text(source)?,
+                )?
+            }
+            9 => {
+                let [module_id, taxonomy_version, source_root, ir_root, abi_root, policy_root, storage_schema_root, registry_schema_root, invariant_root] =
+                    expect_args(&tx.args)?;
+                AspectModuleRecord::new(
+                    expect_text(module_id)?,
+                    expect_text(taxonomy_version)?,
+                    AspectModuleRoots {
+                        source_root: expect_text(source_root)?,
+                        ir_root: expect_text(ir_root)?,
+                        abi_root: expect_text(abi_root)?,
+                        policy_root: expect_text(policy_root)?,
+                        storage_schema_root: expect_text(storage_schema_root)?,
+                        registry_schema_root: expect_text(registry_schema_root)?,
+                        invariant_root: expect_text(invariant_root)?,
+                    },
+                )
+            }
+            _ => return Err(ExecutionError::InvalidArguments),
+        };
         let module_hash = self.register_aspect_module(module.clone())?;
         self.emit(
             &tx.target,
@@ -5605,7 +6050,7 @@ impl DeTTaState {
         if key.owner_contract() != &frame.contract {
             return Err(ExecutionError::ContractIsolationViolation);
         }
-        if !frame.write_scope.contains(&key) {
+        if !write_scope_contains(&frame.write_scope, &key) {
             return Err(ExecutionError::WriteScopeViolation);
         }
         self.storage.insert(key, value);
@@ -5692,6 +6137,7 @@ impl DeTTaState {
                 })
             }
             ContractInvariant::AccountSignerKeysCanonical => self.account_signer_keys_canonical(),
+            ContractInvariant::AspectLocalInvariant { .. } => false,
         }
     }
 
@@ -5987,6 +6433,137 @@ fn expect_text(arg: &Argument) -> Result<String, ExecutionError> {
         Argument::Text(value) => Ok(value.clone()),
         _ => Err(ExecutionError::InvalidArguments),
     }
+}
+
+fn aspect_value_from_argument(arg: &Argument) -> AspectValue {
+    match arg {
+        Argument::Principal(value)
+        | Argument::Asset(value)
+        | Argument::Text(value)
+        | Argument::Certificate(value) => AspectValue::Atom(value.clone()),
+        Argument::Amount(value) => AspectValue::Amount(*value),
+    }
+}
+
+fn aspect_value_to_return(value: AspectValue) -> Result<ReturnValue, ExecutionError> {
+    match value {
+        AspectValue::Unit => Ok(ReturnValue::Unit),
+        AspectValue::Amount(value) => Ok(ReturnValue::UInt(value)),
+        AspectValue::Bool(value) => Ok(ReturnValue::UInt(u128::from(value))),
+        AspectValue::Atom(_) => Err(ExecutionError::InvalidArguments),
+    }
+}
+
+fn state_value_from_aspect(value: AspectValue) -> Result<StateValue, ExecutionError> {
+    match value {
+        AspectValue::Amount(value) => Ok(StateValue::UInt(value)),
+        AspectValue::Bool(value) => Ok(StateValue::UInt(u128::from(value))),
+        AspectValue::Unit | AspectValue::Atom(_) => Err(ExecutionError::InvalidArguments),
+    }
+}
+
+fn aspect_value_from_state_value(value: &StateValue) -> AspectValue {
+    match value {
+        StateValue::UInt(value) => AspectValue::Amount(*value),
+    }
+}
+
+fn aspect_write_scope(
+    contract: &ContractId,
+    bundle_id: &str,
+    module: &AspectModuleRecord,
+) -> Result<BTreeSet<StateKey>, ExecutionError> {
+    let ir = module.ir.as_ref().ok_or(ExecutionError::PolicyMissing)?;
+    let closure = aspect_bundle_aspect_closure(ir, bundle_id)?;
+    Ok(ir
+        .storage_schema
+        .values()
+        .filter(|schema| closure.contains(&schema.aspect))
+        .map(|schema| StateKey::AspectState {
+            contract: contract.clone(),
+            aspect: schema.aspect.clone(),
+            state: schema.state.clone(),
+            key: Vec::new(),
+        })
+        .collect())
+}
+
+fn aspect_state_key(
+    contract: &ContractId,
+    bundle_id: &str,
+    module: &AspectModuleRecord,
+    state: &str,
+    key: Vec<String>,
+) -> Result<StateKey, ExecutionError> {
+    let ir = module.ir.as_ref().ok_or(ExecutionError::PolicyMissing)?;
+    let closure = aspect_bundle_aspect_closure(ir, bundle_id)?;
+    let mut matches = ir
+        .storage_schema
+        .values()
+        .filter(|schema| schema.state == state && closure.contains(&schema.aspect));
+    let schema = matches.next().ok_or(ExecutionError::WriteScopeViolation)?;
+    if matches.next().is_some() {
+        return Err(ExecutionError::InvalidArguments);
+    }
+    Ok(StateKey::AspectState {
+        contract: contract.clone(),
+        aspect: schema.aspect.clone(),
+        state: schema.state.clone(),
+        key,
+    })
+}
+
+fn aspect_state_reads(
+    state: &DeTTaState,
+    contract: &ContractId,
+    bundle_id: &str,
+    module: &AspectModuleRecord,
+) -> Result<AspectStateReads, ExecutionError> {
+    let ir = module.ir.as_ref().ok_or(ExecutionError::PolicyMissing)?;
+    let closure = aspect_bundle_aspect_closure(ir, bundle_id)?;
+    Ok(state
+        .storage
+        .iter()
+        .filter_map(|(key, value)| match key {
+            StateKey::AspectState {
+                contract: stored_contract,
+                aspect,
+                state,
+                key,
+            } if stored_contract == contract && closure.contains(aspect) => Some((
+                (state.clone(), key.clone()),
+                aspect_value_from_state_value(value),
+            )),
+            _ => None,
+        })
+        .collect())
+}
+
+fn write_scope_contains(write_scope: &BTreeSet<StateKey>, key: &StateKey) -> bool {
+    if write_scope.contains(key) {
+        return true;
+    }
+    match key {
+        StateKey::AspectState {
+            contract,
+            aspect,
+            state,
+            key,
+        } if !key.is_empty() => write_scope.contains(&StateKey::AspectState {
+            contract: contract.clone(),
+            aspect: aspect.clone(),
+            state: state.clone(),
+            key: Vec::new(),
+        }),
+        _ => false,
+    }
+}
+
+fn aspect_invariant_op_is_mutating(op: &AspectHostOp) -> bool {
+    !matches!(
+        op,
+        AspectHostOp::StateGet { .. } | AspectHostOp::RegistryGet { .. }
+    )
 }
 
 fn parse_policy_method(value: &str) -> Result<Method, ExecutionError> {
@@ -6491,6 +7068,9 @@ fn hex_value(value: u8) -> Option<u8> {
 mod tests {
     use super::*;
 
+    const MINIMAL_TRANSFER_TOKEN_FIXTURE: &str =
+        include_str!("../../../models/aspects/stdlib/minimal-transfer-token.metta");
+
     fn seeded_state() -> DeTTaState {
         let mut state = DeTTaState::new("detta-local");
         state
@@ -6533,6 +7113,64 @@ mod tests {
         ]
     }
 
+    fn executable_counter_aspect_source() -> &'static str {
+        "
+        (: Amount Type)
+        (: Bool Type)
+        (aspect CounterAspect)
+        (owns CounterAspect counter Amount)
+        (action CounterAspect setCounter)
+        (derived CounterAspect setCounter
+          (= (setCounter $amount)
+             (state-set! counter $amount)))
+        (bundle CounterBundle)
+        (bundle-includes CounterBundle CounterAspect)
+        (projection CounterBundle Set (= (API.set $amount) (setCounter $amount)))
+        (method-abi CounterBundle Set (args (amount Amount)) Bool)
+        (method-policy CounterBundle Set TxSender (effects WriteState) (invariants))
+        "
+    }
+
+    fn executable_counter_aspect_source_with_invariant(invariant_expr: &str) -> String {
+        format!(
+            "
+        (: Amount Type)
+        (: Bool Type)
+        (: Address Type)
+        (aspect CounterAspect)
+        (owns CounterAspect counter Amount)
+        (local-invariant CounterAspect SenderIsAlice {invariant_expr})
+        (action CounterAspect setCounter)
+        (derived CounterAspect setCounter
+          (= (setCounter $amount)
+             (state-set! counter $amount)))
+        (bundle CounterBundle)
+        (bundle-includes CounterBundle CounterAspect)
+        (projection CounterBundle Set (= (API.set $amount) (setCounter $amount)))
+        (method-abi CounterBundle Set (args (amount Amount)) Bool)
+        (method-policy CounterBundle Set TxSender (effects WriteState) (invariants SenderIsAlice))
+        "
+        )
+    }
+
+    fn executable_counter_aspect_source_with_missing_invariant() -> &'static str {
+        "
+        (: Amount Type)
+        (: Bool Type)
+        (aspect CounterAspect)
+        (owns CounterAspect counter Amount)
+        (action CounterAspect setCounter)
+        (derived CounterAspect setCounter
+          (= (setCounter $amount)
+             (state-set! counter $amount)))
+        (bundle CounterBundle)
+        (bundle-includes CounterBundle CounterAspect)
+        (projection CounterBundle Set (= (API.set $amount) (setCounter $amount)))
+        (method-abi CounterBundle Set (args (amount Amount)) Bool)
+        (method-policy CounterBundle Set TxSender (effects WriteState) (invariants MissingInvariant))
+        "
+    }
+
     #[test]
     fn aspect_module_registration_authenticates_record_hash() {
         let mut state = DeTTaState::new("detta-local");
@@ -6559,6 +7197,9 @@ mod tests {
         );
         assert_eq!(state.aspect_module(&module_hash), Some(&module));
         assert_eq!(state.aspect_module_records().count(), 1);
+        let proof = state.aspect_module_proof(&module_hash).unwrap();
+        assert!(proof.verify());
+        assert_eq!(proof.proof.root, state.aspect_module_root());
         assert_ne!(
             state.aspect_module_root(),
             merkle_root::<(String, String)>(&[])
@@ -6638,6 +7279,267 @@ mod tests {
                 && event_module_hash == &module_hash
                 && taxonomy_version == "NormalizedBalanceFirst.v1"
         ));
+    }
+
+    #[test]
+    fn factory_source_submission_deploys_callable_aspect_contract() {
+        let mut state = DeTTaState::new("detta-local");
+        state.deploy_factory("Factory").unwrap();
+
+        let submit = state.apply_transaction(tx_to(
+            "Factory",
+            "tx-submit-aspect-source",
+            "Alice",
+            1,
+            Method::SubmitAspectModule,
+            vec![
+                text("CounterBundle"),
+                text(executable_counter_aspect_source()),
+            ],
+        ));
+        assert_eq!(submit.status, TxStatus::Committed);
+        let module = state.aspect_module_records().next().unwrap().clone();
+        assert!(module.ir.is_some());
+        assert!(module.canonical_source.is_some());
+
+        let deploy = state.apply_transaction(tx_to(
+            "Factory",
+            "tx-deploy-counter-aspect",
+            "Alice",
+            2,
+            Method::DeployAspectContract,
+            vec![
+                text("AspectCounter"),
+                text(&module.module_hash),
+                text("CounterBundle"),
+            ],
+        ));
+        assert_eq!(deploy.status, TxStatus::Committed);
+        let contract = state.contract("AspectCounter").unwrap();
+        assert!(contract
+            .exported_methods()
+            .contains(&Method::Other("Set".into())));
+
+        let call = state.apply_transaction(tx_to(
+            "AspectCounter",
+            "tx-call-counter-aspect",
+            "Alice",
+            3,
+            Method::Other("Set".into()),
+            vec![amount(42)],
+        ));
+        assert_eq!(call.status, TxStatus::Committed);
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "AspectCounter".into(),
+                aspect: "CounterAspect".into(),
+                state: "counter".into(),
+                key: Vec::new(),
+            }),
+            Some(&StateValue::UInt(42))
+        );
+    }
+
+    #[test]
+    fn aspect_method_policy_invariants_commit_or_revert_programmable_calls() {
+        let mut state = DeTTaState::new("detta-local");
+        state.deploy_factory("Factory").unwrap();
+        let source = executable_counter_aspect_source_with_invariant("(= tx.sender Alice)");
+
+        let submit = state.apply_transaction(tx_to(
+            "Factory",
+            "tx-submit-aspect-source",
+            "Alice",
+            1,
+            Method::SubmitAspectModule,
+            vec![text("CounterBundle"), text(&source)],
+        ));
+        assert_eq!(submit.status, TxStatus::Committed);
+        let module = state.aspect_module_records().next().unwrap().clone();
+
+        let deploy = state.apply_transaction(tx_to(
+            "Factory",
+            "tx-deploy-counter-aspect",
+            "Alice",
+            2,
+            Method::DeployAspectContract,
+            vec![
+                text("AspectCounter"),
+                text(&module.module_hash),
+                text("CounterBundle"),
+            ],
+        ));
+        assert_eq!(deploy.status, TxStatus::Committed);
+        let policy = state
+            .contract("AspectCounter")
+            .unwrap()
+            .method_policy(&Method::Other("Set".into()))
+            .unwrap();
+        assert_eq!(
+            policy.invariants,
+            BTreeSet::from([ContractInvariant::AspectLocalInvariant {
+                module_hash: module.module_hash.clone(),
+                aspect: "CounterAspect".into(),
+                invariant: "SenderIsAlice".into(),
+            }])
+        );
+
+        let alice_call = state.apply_transaction(tx_to(
+            "AspectCounter",
+            "tx-alice-call-counter-aspect",
+            "Alice",
+            3,
+            Method::Other("Set".into()),
+            vec![amount(42)],
+        ));
+        assert_eq!(alice_call.status, TxStatus::Committed);
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "AspectCounter".into(),
+                aspect: "CounterAspect".into(),
+                state: "counter".into(),
+                key: Vec::new(),
+            }),
+            Some(&StateValue::UInt(42))
+        );
+
+        let bob_call = state.apply_transaction(tx_to(
+            "AspectCounter",
+            "tx-bob-call-counter-aspect",
+            "Bob",
+            1,
+            Method::Other("Set".into()),
+            vec![amount(7)],
+        ));
+        assert_eq!(bob_call.status, TxStatus::Reverted);
+        assert_eq!(bob_call.error, Some(ExecutionError::InvariantViolation));
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "AspectCounter".into(),
+                aspect: "CounterAspect".into(),
+                state: "counter".into(),
+                key: Vec::new(),
+            }),
+            Some(&StateValue::UInt(42))
+        );
+    }
+
+    #[test]
+    fn aspect_contract_deployment_rejects_missing_policy_invariant() {
+        let mut state = DeTTaState::new("detta-local");
+        state.deploy_factory("Factory").unwrap();
+
+        let submit = state.apply_transaction(tx_to(
+            "Factory",
+            "tx-submit-aspect-source",
+            "Alice",
+            1,
+            Method::SubmitAspectModule,
+            vec![
+                text("CounterBundle"),
+                text(executable_counter_aspect_source_with_missing_invariant()),
+            ],
+        ));
+        assert_eq!(submit.status, TxStatus::Committed);
+        let module = state.aspect_module_records().next().unwrap().clone();
+
+        let deploy = state.apply_transaction(tx_to(
+            "Factory",
+            "tx-deploy-counter-aspect",
+            "Alice",
+            2,
+            Method::DeployAspectContract,
+            vec![
+                text("AspectCounter"),
+                text(&module.module_hash),
+                text("CounterBundle"),
+            ],
+        ));
+        assert_eq!(deploy.status, TxStatus::Reverted);
+        assert_eq!(deploy.error, Some(ExecutionError::InvalidArguments));
+        assert!(state.contract("AspectCounter").is_none());
+    }
+
+    #[test]
+    fn aspect_minimal_transfer_matches_native_token_state_transition() {
+        let mut native_state = DeTTaState::new("detta-local");
+        native_state
+            .deploy_token("NativeToken", "USDC", vec![("Alice".into(), 100)])
+            .unwrap();
+
+        let mut aspect_state = DeTTaState::new("detta-local");
+        let module = AspectModuleRecord::from_verified_source(
+            "MinimalTransferToken",
+            MINIMAL_TRANSFER_TOKEN_FIXTURE,
+        )
+        .unwrap();
+        let module_hash = aspect_state.register_aspect_module(module).unwrap();
+        aspect_state
+            .deploy_aspect_contract("AspectToken", module_hash, "MinimalTransferToken")
+            .unwrap();
+        aspect_state.storage.insert(
+            StateKey::AspectState {
+                contract: "AspectToken".into(),
+                aspect: "StaticBalanceAspect".into(),
+                state: "balanceOf".into(),
+                key: vec!["Alice".into()],
+            },
+            StateValue::UInt(100),
+        );
+
+        let native_receipt = native_state.apply_transaction(tx_to(
+            "NativeToken",
+            "tx-native-transfer",
+            "Alice",
+            1,
+            Method::Transfer,
+            vec![principal("Bob"), asset("USDC"), amount(25)],
+        ));
+        let aspect_receipt = aspect_state.apply_transaction(tx_to(
+            "AspectToken",
+            "tx-aspect-transfer",
+            "Alice",
+            1,
+            Method::Other("ERC20-transfer".into()),
+            vec![principal("Bob"), amount(25)],
+        ));
+
+        assert_eq!(native_receipt.status, TxStatus::Committed);
+        assert_eq!(aspect_receipt.status, TxStatus::Committed);
+        assert_eq!(
+            native_state.storage.get(&StateKey::Balance {
+                contract: "NativeToken".into(),
+                owner: "Alice".into(),
+                asset: "USDC".into(),
+            }),
+            Some(&StateValue::UInt(75))
+        );
+        assert_eq!(
+            native_state.storage.get(&StateKey::Balance {
+                contract: "NativeToken".into(),
+                owner: "Bob".into(),
+                asset: "USDC".into(),
+            }),
+            Some(&StateValue::UInt(25))
+        );
+        assert_eq!(
+            aspect_state.storage.get(&StateKey::AspectState {
+                contract: "AspectToken".into(),
+                aspect: "StaticBalanceAspect".into(),
+                state: "balanceOf".into(),
+                key: vec!["Alice".into()],
+            }),
+            Some(&StateValue::UInt(75))
+        );
+        assert_eq!(
+            aspect_state.storage.get(&StateKey::AspectState {
+                contract: "AspectToken".into(),
+                aspect: "StaticBalanceAspect".into(),
+                state: "balanceOf".into(),
+                key: vec!["Bob".into()],
+            }),
+            Some(&StateValue::UInt(25))
+        );
     }
 
     #[test]

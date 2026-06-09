@@ -11,13 +11,17 @@ pub enum AspectValue {
     Atom(String),
 }
 
+pub type AspectStateReads = BTreeMap<(String, Vec<String>), AspectValue>;
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum AspectHostOp {
     StateGet {
         state: String,
+        key: Vec<String>,
     },
     StateSet {
         state: String,
+        key: Vec<String>,
         value: AspectValue,
     },
     RegistryGet {
@@ -49,8 +53,18 @@ pub struct AspectExecutionReport {
     pub trace_root: String,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AspectExecutionContext {
+    pub tx_sender: String,
+    pub msg_sender: String,
+    pub current_contract: String,
+    pub block_height: u64,
+    pub block_timestamp: u64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum AspectEvalError {
+    UnknownProjection { bundle: String, projection: String },
     UnknownAction { aspect: String, action: String },
     MissingActionBody { aspect: String, action: String },
     InvalidActionBody(String),
@@ -89,9 +103,95 @@ impl<'a> AspectActionEvaluator<'a> {
             steps_used: 0,
             trace: Vec::new(),
             bindings: BTreeMap::new(),
+            context: AspectExecutionContext::default(),
+            state_reads: BTreeMap::new(),
             stack_depth: 0,
         };
         let return_value = self.execute_named_action(aspect, action, args, &mut state)?;
+        let trace_root = aspect_trace_root(&state.trace);
+        Ok(AspectExecutionReport {
+            trace: state.trace,
+            return_value,
+            steps_used: state.steps_used,
+            trace_root,
+        })
+    }
+
+    pub fn execute_projection(
+        &self,
+        bundle: &str,
+        projection: &str,
+        args: Vec<AspectValue>,
+        context: AspectExecutionContext,
+    ) -> Result<AspectExecutionReport, AspectEvalError> {
+        self.execute_projection_with_state(bundle, projection, args, context, BTreeMap::new())
+    }
+
+    pub fn execute_projection_with_state(
+        &self,
+        bundle: &str,
+        projection: &str,
+        args: Vec<AspectValue>,
+        context: AspectExecutionContext,
+        state_reads: AspectStateReads,
+    ) -> Result<AspectExecutionReport, AspectEvalError> {
+        let key = qualified(bundle, projection);
+        let projection_def = self.module.projections.get(&key).ok_or_else(|| {
+            AspectEvalError::UnknownProjection {
+                bundle: bundle.into(),
+                projection: projection.into(),
+            }
+        })?;
+        let (params, rhs) = projection_body_parts(&projection_def.expr)?;
+        if params.len() != args.len() {
+            return Err(AspectEvalError::InvalidActionBody(format!(
+                "expected {} args for projection {projection}, got {}",
+                params.len(),
+                args.len()
+            )));
+        }
+
+        let mut state = AspectEvalState {
+            steps_used: 0,
+            trace: Vec::new(),
+            bindings: params.into_iter().zip(args).collect(),
+            context,
+            state_reads,
+            stack_depth: 0,
+        };
+        let return_value = self.eval_expr(rhs, &mut state)?;
+        let trace_root = aspect_trace_root(&state.trace);
+        Ok(AspectExecutionReport {
+            trace: state.trace,
+            return_value,
+            steps_used: state.steps_used,
+            trace_root,
+        })
+    }
+
+    pub fn evaluate_invariant_expr(
+        &self,
+        expr: &Expr,
+        context: AspectExecutionContext,
+    ) -> Result<AspectExecutionReport, AspectEvalError> {
+        self.evaluate_invariant_expr_with_state(expr, context, BTreeMap::new())
+    }
+
+    pub fn evaluate_invariant_expr_with_state(
+        &self,
+        expr: &Expr,
+        context: AspectExecutionContext,
+        state_reads: AspectStateReads,
+    ) -> Result<AspectExecutionReport, AspectEvalError> {
+        let mut state = AspectEvalState {
+            steps_used: 0,
+            trace: Vec::new(),
+            bindings: BTreeMap::new(),
+            context,
+            state_reads,
+            stack_depth: 0,
+        };
+        let return_value = self.eval_expr(expr, &mut state)?;
         let trace_root = aspect_trace_root(&state.trace);
         Ok(AspectExecutionReport {
             trace: state.trace,
@@ -177,6 +277,7 @@ impl<'a> AspectActionEvaluator<'a> {
                     "safe-div" => self.eval_div(items, state),
                     "require" => self.eval_require(items, state),
                     "if" => self.eval_if(items, state),
+                    "begin" => self.eval_begin(items, state),
                     "and" => self.eval_and(items, state),
                     "or" => self.eval_or(items, state),
                     "not" => self.eval_not(items, state),
@@ -215,6 +316,18 @@ impl<'a> AspectActionEvaluator<'a> {
         }
         if atom == "False" {
             return Ok(AspectValue::Bool(false));
+        }
+        match atom {
+            "tx.sender" => return Ok(AspectValue::Atom(state.context.tx_sender.clone())),
+            "msg.sender" => return Ok(AspectValue::Atom(state.context.msg_sender.clone())),
+            "current-contract" => {
+                return Ok(AspectValue::Atom(state.context.current_contract.clone()));
+            }
+            "block-height" => return Ok(AspectValue::Amount(state.context.block_height as u128)),
+            "block-timestamp" => {
+                return Ok(AspectValue::Amount(state.context.block_timestamp as u128));
+            }
+            _ => {}
         }
         if let Ok(value) = atom.parse::<u128>() {
             return Ok(AspectValue::Amount(value));
@@ -297,6 +410,23 @@ impl<'a> AspectActionEvaluator<'a> {
         } else {
             self.eval_expr(&items[3], state)
         }
+    }
+
+    fn eval_begin(
+        &self,
+        items: &[Expr],
+        state: &mut AspectEvalState,
+    ) -> Result<AspectValue, AspectEvalError> {
+        if items.len() < 2 {
+            return Err(AspectEvalError::InvalidExpression(
+                "expected begin with at least 1 expression".into(),
+            ));
+        }
+        let mut result = AspectValue::Unit;
+        for item in items.iter().skip(1) {
+            result = self.eval_expr(item, state)?;
+        }
+        Ok(result)
     }
 
     fn eval_and(
@@ -394,10 +524,16 @@ impl<'a> AspectActionEvaluator<'a> {
         state: &mut AspectEvalState,
     ) -> Result<AspectValue, AspectEvalError> {
         let state_name = atom_arg(items, 1, "state-get")?;
+        let key = self.eval_key_parts(&items[2..], state)?;
         state.trace.push(AspectHostOp::StateGet {
             state: state_name.into(),
+            key: key.clone(),
         });
-        Ok(AspectValue::Unit)
+        Ok(state
+            .state_reads
+            .get(&(state_name.into(), key))
+            .cloned()
+            .unwrap_or(AspectValue::Amount(0)))
     }
 
     fn eval_state_set(
@@ -405,19 +541,36 @@ impl<'a> AspectActionEvaluator<'a> {
         items: &[Expr],
         state: &mut AspectEvalState,
     ) -> Result<AspectValue, AspectEvalError> {
-        if items.len() != 3 {
+        if items.len() < 3 {
             return Err(AspectEvalError::InvalidExpression(format!(
-                "expected state-set! with 2 args, got {}",
+                "expected state-set! with state, optional keys, and value, got {}",
                 items.len() - 1
             )));
         }
         let state_name = atom_arg(items, 1, "state-set!")?;
-        let value = self.eval_expr(&items[2], state)?;
+        let key = if items.len() == 3 {
+            Vec::new()
+        } else {
+            self.eval_key_parts(&items[2..items.len() - 1], state)?
+        };
+        let value = self.eval_expr(&items[items.len() - 1], state)?;
         state.trace.push(AspectHostOp::StateSet {
             state: state_name.into(),
+            key,
             value,
         });
         Ok(AspectValue::Unit)
+    }
+
+    fn eval_key_parts(
+        &self,
+        items: &[Expr],
+        state: &mut AspectEvalState,
+    ) -> Result<Vec<String>, AspectEvalError> {
+        items
+            .iter()
+            .map(|item| aspect_key_part(self.eval_expr(item, state)?))
+            .collect()
     }
 
     fn eval_registry_get(
@@ -548,6 +701,8 @@ struct AspectEvalState {
     steps_used: u64,
     trace: Vec<AspectHostOp>,
     bindings: BTreeMap<String, AspectValue>,
+    context: AspectExecutionContext,
+    state_reads: AspectStateReads,
     stack_depth: usize,
 }
 
@@ -578,6 +733,17 @@ impl AspectValue {
                 "expected bool, got {value:?}"
             ))),
         }
+    }
+}
+
+fn aspect_key_part(value: AspectValue) -> Result<String, AspectEvalError> {
+    match value {
+        AspectValue::Atom(value) => Ok(value),
+        AspectValue::Amount(value) => Ok(value.to_string()),
+        AspectValue::Bool(value) => Ok(value.to_string()),
+        AspectValue::Unit => Err(AspectEvalError::TypeMismatch(
+            "state keys cannot contain Unit".into(),
+        )),
     }
 }
 
@@ -615,6 +781,33 @@ fn action_body_parts<'a>(
         };
         let Some(name) = param.strip_prefix('$') else {
             return Err(AspectEvalError::InvalidActionBody(aspect_expr_source(body)));
+        };
+        params.push(name.into());
+    }
+    Ok((params, &items[2]))
+}
+
+fn projection_body_parts(expr: &Expr) -> Result<(Vec<String>, &Expr), AspectEvalError> {
+    let Expr::List(items) = expr else {
+        return Err(AspectEvalError::InvalidActionBody(aspect_expr_source(expr)));
+    };
+    if items.len() != 3 {
+        return Err(AspectEvalError::InvalidActionBody(aspect_expr_source(expr)));
+    }
+    match items.first() {
+        Some(Expr::Atom(head)) if head == "=" => {}
+        _ => return Err(AspectEvalError::InvalidActionBody(aspect_expr_source(expr))),
+    }
+    let Expr::List(signature) = &items[1] else {
+        return Err(AspectEvalError::InvalidActionBody(aspect_expr_source(expr)));
+    };
+    let mut params = Vec::new();
+    for param in signature.iter().skip(1) {
+        let Expr::Atom(param) = param else {
+            return Err(AspectEvalError::InvalidActionBody(aspect_expr_source(expr)));
+        };
+        let Some(name) = param.strip_prefix('$') else {
+            return Err(AspectEvalError::InvalidActionBody(aspect_expr_source(expr)));
         };
         params.push(name.into());
     }
@@ -699,12 +892,152 @@ mod tests {
             report.trace,
             vec![AspectHostOp::StateSet {
                 state: "balance".into(),
+                key: Vec::new(),
                 value: AspectValue::Amount(10),
             }]
         );
         assert_eq!(report.return_value, AspectValue::Unit);
         assert_eq!(report.trace_root, aspect_trace_root(&report.trace));
         assert!(report.steps_used > 0);
+    }
+
+    #[test]
+    fn aspect_projection_binds_args_and_execution_context() {
+        let module = aspect_module(
+            "
+            (: Bool Type)
+            (: Amount Type)
+            (: Address Type)
+            (aspect WriterAspect)
+            (owns WriterAspect balance Amount)
+            (action WriterAspect writeFromSender)
+            (derived WriterAspect writeFromSender
+              (= (writeFromSender $caller $amount)
+                 (state-set! balance (safe-add $amount 1))))
+            (bundle WriterBundle)
+            (bundle-includes WriterBundle WriterAspect)
+            (projection WriterBundle Write (= (API.write $amount) (writeFromSender tx.sender $amount)))
+            (method-abi WriterBundle Write (args (amount Amount)) Bool)
+            (method-policy WriterBundle Write TxSender (effects WriteState) (invariants))
+        ",
+        );
+        let report = AspectActionEvaluator::new(&module, 16)
+            .execute_projection(
+                "WriterBundle",
+                "Write",
+                vec![AspectValue::Amount(4)],
+                AspectExecutionContext {
+                    tx_sender: "Alice".into(),
+                    msg_sender: "Alice".into(),
+                    current_contract: "AspectToken".into(),
+                    block_height: 7,
+                    block_timestamp: 1_000,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            report.trace,
+            vec![AspectHostOp::StateSet {
+                state: "balance".into(),
+                key: Vec::new(),
+                value: AspectValue::Amount(5),
+            }]
+        );
+    }
+
+    #[test]
+    fn aspect_invariant_expression_evaluates_with_execution_context() {
+        let module = aspect_module(
+            "
+            (: Bool Type)
+            (: Amount Type)
+            (: Address Type)
+            (aspect GuardAspect)
+            (local-invariant GuardAspect SenderIsAlice (= tx.sender Alice))
+            (action GuardAspect noop)
+            (derived GuardAspect noop (= (noop) True))
+            (bundle GuardBundle)
+            (bundle-includes GuardBundle GuardAspect)
+            (projection GuardBundle Noop (= (API.noop) (noop)))
+            (method-abi GuardBundle Noop (args) Bool)
+            (method-policy GuardBundle Noop TxSender (effects) (invariants SenderIsAlice))
+        ",
+        );
+        let invariant = module.invariants.get("GuardAspect::SenderIsAlice").unwrap();
+
+        let report = AspectActionEvaluator::new(&module, 16)
+            .evaluate_invariant_expr(
+                &invariant.expr,
+                AspectExecutionContext {
+                    tx_sender: "Alice".into(),
+                    msg_sender: "Alice".into(),
+                    current_contract: "AspectGuard".into(),
+                    block_height: 7,
+                    block_timestamp: 1_000,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(report.return_value, AspectValue::Bool(true));
+        assert_eq!(report.trace, vec![]);
+    }
+
+    #[test]
+    fn aspect_projection_reads_and_writes_keyed_state() {
+        let module = aspect_module(include_str!(
+            "../../../models/aspects/stdlib/minimal-transfer-token.metta"
+        ));
+        let mut reads = BTreeMap::new();
+        reads.insert(
+            ("balanceOf".into(), vec!["Alice".into()]),
+            AspectValue::Amount(100),
+        );
+
+        let report = AspectActionEvaluator::new(&module, 64)
+            .execute_projection_with_state(
+                "MinimalTransferToken",
+                "ERC20-transfer",
+                vec![AspectValue::Atom("Bob".into()), AspectValue::Amount(25)],
+                AspectExecutionContext {
+                    tx_sender: "Alice".into(),
+                    msg_sender: "Alice".into(),
+                    current_contract: "AspectToken".into(),
+                    block_height: 7,
+                    block_timestamp: 1_000,
+                },
+                reads,
+            )
+            .unwrap();
+
+        assert_eq!(report.return_value, AspectValue::Bool(true));
+        assert_eq!(
+            report.trace,
+            vec![
+                AspectHostOp::StateGet {
+                    state: "balanceOf".into(),
+                    key: vec!["Alice".into()],
+                },
+                AspectHostOp::StateGet {
+                    state: "balanceOf".into(),
+                    key: vec!["Alice".into()],
+                },
+                AspectHostOp::StateSet {
+                    state: "balanceOf".into(),
+                    key: vec!["Alice".into()],
+                    value: AspectValue::Amount(75),
+                },
+                AspectHostOp::StateGet {
+                    state: "balanceOf".into(),
+                    key: vec!["Bob".into()],
+                },
+                AspectHostOp::StateSet {
+                    state: "balanceOf".into(),
+                    key: vec!["Bob".into()],
+                    value: AspectValue::Amount(25),
+                },
+            ]
+        );
     }
 
     #[test]
