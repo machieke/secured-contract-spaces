@@ -1234,6 +1234,10 @@ impl Mempool {
         &self.pending
     }
 
+    pub fn admission_policy(&self) -> MempoolAdmissionPolicy {
+        self.policy
+    }
+
     pub fn retain_admissible(&mut self, state: &DeTTaState) {
         self.pending.retain(|tx| {
             tx.chain_id == state.chain_id
@@ -1726,6 +1730,10 @@ impl ValidatorNode {
 
     pub fn pending_transactions(&self) -> &[Transaction] {
         self.mempool.pending_transactions()
+    }
+
+    pub fn mempool_admission_policy(&self) -> MempoolAdmissionPolicy {
+        self.mempool.admission_policy()
     }
 
     pub fn block_resource_limit(&self) -> u64 {

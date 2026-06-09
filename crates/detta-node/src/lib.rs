@@ -1866,7 +1866,10 @@ fn node_rpc_error_code(error: &NodeError) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use detta_core::{Argument, Method, TxStatus};
+    use detta_core::{
+        Argument, Method, TxStatus, DEFAULT_BLOCK_RESOURCE_LIMIT, DEFAULT_MEMPOOL_MAX_PENDING,
+        DEFAULT_MEMPOOL_MAX_PENDING_PER_SENDER, DEFAULT_MEMPOOL_MAX_TRANSACTION_BYTES,
+    };
     use detta_network::{InMemoryTransport, TcpProtocolStream};
     use detta_protocol::{
         ProtocolMessage, SignatureError, SnapshotChunkRequest, SnapshotChunkSet,
@@ -2092,6 +2095,23 @@ mod tests {
 
         let mut restarted = PersistentValidatorNode::restart("validator-1", &dir).unwrap();
         assert_eq!(restarted.pending_len(), 1);
+        let RpcResponse::Ok(RpcResult::MempoolStatus(status)) =
+            restarted.handle_rpc_request(RpcRequest::GetMempoolStatus)
+        else {
+            panic!("expected mempool status response");
+        };
+        assert_eq!(status.pending_transactions, 1);
+        assert_eq!(status.pending_by_sender.get("Alice").copied(), Some(1));
+        assert_eq!(status.max_pending, DEFAULT_MEMPOOL_MAX_PENDING);
+        assert_eq!(
+            status.max_pending_per_sender,
+            DEFAULT_MEMPOOL_MAX_PENDING_PER_SENDER
+        );
+        assert_eq!(
+            status.max_transaction_bytes,
+            DEFAULT_MEMPOOL_MAX_TRANSACTION_BYTES
+        );
+        assert_eq!(status.block_resource_limit, DEFAULT_BLOCK_RESOURCE_LIMIT);
 
         let block = restarted.produce_block(1, 1_000).unwrap();
         assert_eq!(block.transactions.len(), 1);

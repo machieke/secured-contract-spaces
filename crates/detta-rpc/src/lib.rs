@@ -65,6 +65,7 @@ pub enum RpcRequest {
         validator_id: String,
     },
     GetNodeHealth,
+    GetMempoolStatus,
     GetStateRoot,
     GetSnapshot,
     GetPersistentNodeSnapshotRoots,
@@ -222,6 +223,16 @@ pub struct NodeHealthReport {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MempoolStatus {
+    pub pending_transactions: usize,
+    pub max_pending: usize,
+    pub max_pending_per_sender: usize,
+    pub max_transaction_bytes: usize,
+    pub block_resource_limit: u64,
+    pub pending_by_sender: BTreeMap<Principal, usize>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct EventPage {
     pub events: Vec<Event>,
     pub offset: usize,
@@ -240,6 +251,7 @@ pub enum RpcResult {
     Transaction(Box<Transaction>),
     Receipt(Box<Receipt>),
     NodeHealth(Box<NodeHealthReport>),
+    MempoolStatus(MempoolStatus),
     StateRoot(String),
     Snapshot(Box<StateSnapshot>),
     PersistentNodeSnapshotRoots(Box<PersistentNodeSnapshotRoots>),
@@ -492,6 +504,23 @@ impl RpcService {
         }
     }
 
+    pub fn mempool_status(&self) -> MempoolStatus {
+        let policy = self.node.mempool_admission_policy();
+        let mut pending_by_sender = BTreeMap::new();
+        for tx in self.node.pending_transactions() {
+            *pending_by_sender.entry(tx.sender.clone()).or_insert(0) += 1;
+        }
+
+        MempoolStatus {
+            pending_transactions: self.node.pending_len(),
+            max_pending: policy.max_pending,
+            max_pending_per_sender: policy.max_pending_per_sender,
+            max_transaction_bytes: policy.max_transaction_bytes,
+            block_resource_limit: self.node.block_resource_limit(),
+            pending_by_sender,
+        }
+    }
+
     pub fn snapshot(&self) -> StateSnapshot {
         self.node.state().snapshot()
     }
@@ -634,6 +663,9 @@ impl RpcService {
                 .into(),
             RpcRequest::GetNodeHealth => {
                 RpcResponse::Ok(RpcResult::NodeHealth(Box::new(self.node_health())))
+            }
+            RpcRequest::GetMempoolStatus => {
+                RpcResponse::Ok(RpcResult::MempoolStatus(self.mempool_status()))
             }
             RpcRequest::GetStateRoot => {
                 RpcResponse::Ok(RpcResult::StateRoot(self.get_state_root()))
@@ -929,6 +961,8 @@ mod tests {
     use detta_consensus::EquivocationEvidence;
     use detta_core::{
         Argument, ContractInvariant, DeTTaState, EventPayload, MerkleProof, Method, TxStatus,
+        DEFAULT_BLOCK_RESOURCE_LIMIT, DEFAULT_MEMPOOL_MAX_PENDING,
+        DEFAULT_MEMPOOL_MAX_PENDING_PER_SENDER, DEFAULT_MEMPOOL_MAX_TRANSACTION_BYTES,
     };
     use detta_protocol::{ProtocolMessage, ValidatorSetMetadataUpdate, ValidatorSignatureDomain};
     use std::io::{BufRead, BufReader, Write};
@@ -1165,6 +1199,34 @@ mod tests {
     }
 
     #[test]
+    fn mempool_status_json_fixture_is_stable() {
+        let mut pending_by_sender = BTreeMap::new();
+        pending_by_sender.insert("Alice".into(), 2);
+        pending_by_sender.insert("Bob".into(), 1);
+        let response = RpcResponse::Ok(RpcResult::MempoolStatus(MempoolStatus {
+            pending_transactions: 3,
+            max_pending: 100,
+            max_pending_per_sender: 4,
+            max_transaction_bytes: 4096,
+            block_resource_limit: 10_000,
+            pending_by_sender,
+        }));
+        let fixture = concat!(
+            r#"{"status":"ok","body":{"result":"mempool_status","data":{"#,
+            r#""pending_transactions":3,"max_pending":100,"#,
+            r#""max_pending_per_sender":4,"max_transaction_bytes":4096,"#,
+            r#""block_resource_limit":10000,"#,
+            r#""pending_by_sender":{"Alice":2,"Bob":1}}}}"#,
+        );
+
+        assert_eq!(serde_json::to_string(&response).unwrap(), fixture);
+        assert_eq!(
+            serde_json::from_str::<RpcResponse>(fixture).unwrap(),
+            response
+        );
+    }
+
+    #[test]
     fn proof_response_json_fixtures_are_stable() {
         let receipt_response = RpcResponse::Ok(RpcResult::ReceiptProof(Box::new(ReceiptProof {
             receipt: Receipt {
@@ -1355,12 +1417,34 @@ mod tests {
     fn rpc_submits_transaction_produces_block_and_returns_receipt() {
         let mut rpc = seeded_rpc();
         rpc.submit_transaction(transfer_tx()).unwrap();
+        let pending_status = rpc.mempool_status();
+        assert_eq!(pending_status.pending_transactions, 1);
+        assert_eq!(
+            pending_status.pending_by_sender.get("Alice").copied(),
+            Some(1)
+        );
+        assert_eq!(pending_status.max_pending, DEFAULT_MEMPOOL_MAX_PENDING);
+        assert_eq!(
+            pending_status.max_pending_per_sender,
+            DEFAULT_MEMPOOL_MAX_PENDING_PER_SENDER
+        );
+        assert_eq!(
+            pending_status.max_transaction_bytes,
+            DEFAULT_MEMPOOL_MAX_TRANSACTION_BYTES
+        );
+        assert_eq!(
+            pending_status.block_resource_limit,
+            DEFAULT_BLOCK_RESOURCE_LIMIT
+        );
 
         let block = rpc.produce_block(1, 1_000).unwrap();
         let receipt = rpc.get_receipt("tx1").unwrap();
+        let committed_status = rpc.mempool_status();
 
         assert_eq!(block.transactions.len(), 1);
         assert_eq!(receipt.status, TxStatus::Committed);
+        assert_eq!(committed_status.pending_transactions, 0);
+        assert!(committed_status.pending_by_sender.is_empty());
         assert_eq!(rpc.call_balance_view("TokenA", "Alice", "USDC"), 90);
         assert_eq!(rpc.call_balance_view("TokenA", "Bob", "USDC"), 60);
         assert_eq!(rpc.get_transaction("tx1").unwrap().tx_hash, "tx1");
@@ -1630,6 +1714,25 @@ mod tests {
             read_response(&mut reader),
             RpcResponse::Ok(RpcResult::Submitted)
         );
+
+        write_request(&mut stream, &RpcRequest::GetMempoolStatus);
+        match read_response(&mut reader) {
+            RpcResponse::Ok(RpcResult::MempoolStatus(status)) => {
+                assert_eq!(status.pending_transactions, 1);
+                assert_eq!(status.pending_by_sender.get("Alice").copied(), Some(1));
+                assert_eq!(status.max_pending, DEFAULT_MEMPOOL_MAX_PENDING);
+                assert_eq!(
+                    status.max_pending_per_sender,
+                    DEFAULT_MEMPOOL_MAX_PENDING_PER_SENDER
+                );
+                assert_eq!(
+                    status.max_transaction_bytes,
+                    DEFAULT_MEMPOOL_MAX_TRANSACTION_BYTES
+                );
+                assert_eq!(status.block_resource_limit, DEFAULT_BLOCK_RESOURCE_LIMIT);
+            }
+            response => panic!("expected mempool status, got {response:?}"),
+        }
 
         write_request(
             &mut stream,

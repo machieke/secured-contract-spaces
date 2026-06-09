@@ -50,6 +50,8 @@ The shared `RpcService` supports:
   receipt index.
 - `get_block`: fetch a committed block by height.
 - `get_node_health`: fetch chain, height, mempool, and root diagnostics.
+- `get_mempool_status`: fetch pending transaction count, per-sender pending
+  counts, admission limits, and the current block resource limit.
 - `get_state_root`: fetch the latest global state root.
 - `get_snapshot`: fetch the latest state snapshot.
 - `get_balance`: read a token balance view.

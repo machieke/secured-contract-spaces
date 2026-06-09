@@ -412,6 +412,8 @@ Completed production-plan slices:
   fixtures and persistent-node TCP JSON after-restart tests.
 - [x] Persistent validator nodes expose durable slashing/equivocation records
   through typed RPC, stable JSON fixtures, and TCP JSON after-restart tests.
+- [x] Mempool status RPC reports pending count, per-sender pressure, admission
+  limits, and block resource limits over in-memory, TCP, and restart paths.
 
 Next implementation slices:
 
