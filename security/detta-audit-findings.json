@@ -1,0 +1,8 @@
+{
+  "schema": "detta.audit-findings.v1",
+  "schema_version": 1,
+  "project": "DeTTa",
+  "scope": "Production distributed DeFi Atomspace release candidate",
+  "generated_at": "2026-06-09T00:00:00Z",
+  "findings": []
+}

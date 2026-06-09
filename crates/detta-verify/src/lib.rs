@@ -230,6 +230,30 @@ pub const PROOF_RELEASE_ATTESTATION_COUNT: usize = 7;
 pub const PROOF_RELEASE_JSON_TARGET_COUNT: usize = 6;
 pub const PROOF_RELEASE_TRACE_TARGET_COUNT: usize = 1;
 pub const SHA256_HEX_LENGTH: usize = 64;
+pub const AUDIT_FINDINGS_SCHEMA: &str = "detta.audit-findings.v1";
+pub const AUDIT_FINDINGS_SCHEMA_VERSION: u32 = 1;
+pub const AUDIT_FINDINGS_PROJECT: &str = "DeTTa";
+pub const PUBLIC_TESTNET_READINESS_SCHEMA: &str = "detta.public-testnet-readiness.v1";
+pub const PUBLIC_TESTNET_READINESS_SCHEMA_VERSION: u32 = 1;
+pub const PUBLIC_TESTNET_READINESS_PROJECT: &str = "DeTTa";
+pub const MIN_PUBLIC_TESTNET_STABILITY_WINDOW_HOURS: u64 = 168;
+pub const REQUIRED_PUBLIC_TESTNET_WORKFLOWS: [&str; 5] =
+    ["state_sync", "rpc", "governance", "bridge", "defi"];
+pub const MAINNET_CANDIDATE_READINESS_SCHEMA: &str = "detta.mainnet-candidate-readiness.v1";
+pub const MAINNET_CANDIDATE_READINESS_SCHEMA_VERSION: u32 = 1;
+pub const MAINNET_CANDIDATE_READINESS_PROJECT: &str = "DeTTa";
+pub const REQUIRED_MAINNET_CANDIDATE_GATES: [&str; 10] = [
+    "production_acceptance",
+    "public_testnet",
+    "external_audit",
+    "operator_launch_rehearsal",
+    "release_reproducibility",
+    "release_signing",
+    "finalized_genesis",
+    "validator_onboarding",
+    "governance_bootstrap",
+    "incident_response_drill",
+];
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ProofArtifactManifest {
@@ -255,6 +279,541 @@ pub fn proof_artifact_manifest() -> ProofArtifactManifest {
         theorem_count: coverage.len(),
         coverage,
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuditFindingSeverity {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuditFindingStatus {
+    Open,
+    InRemediation,
+    Closed,
+    AcceptedRisk,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AuditFinding {
+    pub id: String,
+    pub title: String,
+    pub severity: AuditFindingSeverity,
+    pub status: AuditFindingStatus,
+    pub owner: String,
+    pub reported_in: String,
+    pub closure_evidence: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accepted_risk_rationale: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AuditFindingsManifest {
+    pub schema: String,
+    pub schema_version: u32,
+    pub project: String,
+    pub scope: String,
+    pub generated_at: String,
+    pub findings: Vec<AuditFinding>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AuditFindingManifestError {
+    SchemaMismatch {
+        actual: String,
+    },
+    SchemaVersionMismatch {
+        actual: u32,
+    },
+    ProjectMismatch {
+        actual: String,
+    },
+    EmptyScope,
+    EmptyGeneratedAt,
+    EmptyFindingId,
+    DuplicateFindingId {
+        id: String,
+    },
+    EmptyFindingTitle {
+        id: String,
+    },
+    EmptyFindingOwner {
+        id: String,
+    },
+    EmptyFindingReport {
+        id: String,
+    },
+    ClosedFindingMissingEvidence {
+        id: String,
+    },
+    AcceptedRiskMissingRationale {
+        id: String,
+    },
+    UnresolvedFinding {
+        id: String,
+        status: AuditFindingStatus,
+    },
+}
+
+pub fn validate_audit_findings_manifest(
+    manifest: &AuditFindingsManifest,
+) -> Vec<AuditFindingManifestError> {
+    let mut errors = Vec::new();
+    if manifest.schema != AUDIT_FINDINGS_SCHEMA {
+        errors.push(AuditFindingManifestError::SchemaMismatch {
+            actual: manifest.schema.clone(),
+        });
+    }
+    if manifest.schema_version != AUDIT_FINDINGS_SCHEMA_VERSION {
+        errors.push(AuditFindingManifestError::SchemaVersionMismatch {
+            actual: manifest.schema_version,
+        });
+    }
+    if manifest.project != AUDIT_FINDINGS_PROJECT {
+        errors.push(AuditFindingManifestError::ProjectMismatch {
+            actual: manifest.project.clone(),
+        });
+    }
+    if manifest.scope.trim().is_empty() {
+        errors.push(AuditFindingManifestError::EmptyScope);
+    }
+    if manifest.generated_at.trim().is_empty() {
+        errors.push(AuditFindingManifestError::EmptyGeneratedAt);
+    }
+
+    let mut ids = BTreeSet::new();
+    for finding in &manifest.findings {
+        let id = finding.id.trim();
+        if id.is_empty() {
+            errors.push(AuditFindingManifestError::EmptyFindingId);
+            continue;
+        }
+        if !ids.insert(id.to_string()) {
+            errors.push(AuditFindingManifestError::DuplicateFindingId { id: id.into() });
+        }
+        if finding.title.trim().is_empty() {
+            errors.push(AuditFindingManifestError::EmptyFindingTitle { id: id.into() });
+        }
+        if finding.owner.trim().is_empty() {
+            errors.push(AuditFindingManifestError::EmptyFindingOwner { id: id.into() });
+        }
+        if finding.reported_in.trim().is_empty() {
+            errors.push(AuditFindingManifestError::EmptyFindingReport { id: id.into() });
+        }
+        match &finding.status {
+            AuditFindingStatus::Closed if finding.closure_evidence.is_empty() => {
+                errors.push(AuditFindingManifestError::ClosedFindingMissingEvidence {
+                    id: id.into(),
+                });
+            }
+            AuditFindingStatus::AcceptedRisk
+                if finding
+                    .accepted_risk_rationale
+                    .as_deref()
+                    .is_none_or(|rationale| rationale.trim().is_empty()) =>
+            {
+                errors.push(AuditFindingManifestError::AcceptedRiskMissingRationale {
+                    id: id.into(),
+                });
+            }
+            AuditFindingStatus::Open | AuditFindingStatus::InRemediation => {
+                errors.push(AuditFindingManifestError::UnresolvedFinding {
+                    id: id.into(),
+                    status: finding.status.clone(),
+                });
+            }
+            _ => {}
+        }
+    }
+
+    errors
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PublicTestnetReadinessManifest {
+    pub schema: String,
+    pub schema_version: u32,
+    pub project: String,
+    pub generated_at: String,
+    pub ready_for_public_testnet: bool,
+    pub planned_stability_window_hours: u64,
+    pub release_gate_command: String,
+    pub required_workflows: Vec<String>,
+    pub validated_workflows: Vec<String>,
+    pub evidence: Vec<String>,
+    pub blockers: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PublicTestnetReadinessError {
+    SchemaMismatch {
+        actual: String,
+    },
+    SchemaVersionMismatch {
+        actual: u32,
+    },
+    ProjectMismatch {
+        actual: String,
+    },
+    EmptyGeneratedAt,
+    StabilityWindowTooShort {
+        actual: u64,
+        minimum: u64,
+    },
+    EmptyReleaseGateCommand,
+    EmptyWorkflow,
+    DuplicateRequiredWorkflow {
+        workflow: String,
+    },
+    DuplicateValidatedWorkflow {
+        workflow: String,
+    },
+    MissingRequiredWorkflow {
+        workflow: String,
+    },
+    EmptyEvidence,
+    DuplicateEvidence {
+        evidence: String,
+    },
+    ReadyWithBlockers,
+    ReadyWithUnresolvedHighOrCriticalAuditFinding {
+        id: String,
+        severity: AuditFindingSeverity,
+        status: AuditFindingStatus,
+    },
+}
+
+pub fn validate_public_testnet_readiness_manifest(
+    manifest: &PublicTestnetReadinessManifest,
+    audit_manifest: &AuditFindingsManifest,
+) -> Vec<PublicTestnetReadinessError> {
+    let mut errors = Vec::new();
+    if manifest.schema != PUBLIC_TESTNET_READINESS_SCHEMA {
+        errors.push(PublicTestnetReadinessError::SchemaMismatch {
+            actual: manifest.schema.clone(),
+        });
+    }
+    if manifest.schema_version != PUBLIC_TESTNET_READINESS_SCHEMA_VERSION {
+        errors.push(PublicTestnetReadinessError::SchemaVersionMismatch {
+            actual: manifest.schema_version,
+        });
+    }
+    if manifest.project != PUBLIC_TESTNET_READINESS_PROJECT {
+        errors.push(PublicTestnetReadinessError::ProjectMismatch {
+            actual: manifest.project.clone(),
+        });
+    }
+    if manifest.generated_at.trim().is_empty() {
+        errors.push(PublicTestnetReadinessError::EmptyGeneratedAt);
+    }
+    if manifest.planned_stability_window_hours < MIN_PUBLIC_TESTNET_STABILITY_WINDOW_HOURS {
+        errors.push(PublicTestnetReadinessError::StabilityWindowTooShort {
+            actual: manifest.planned_stability_window_hours,
+            minimum: MIN_PUBLIC_TESTNET_STABILITY_WINDOW_HOURS,
+        });
+    }
+    if manifest.release_gate_command.trim().is_empty() {
+        errors.push(PublicTestnetReadinessError::EmptyReleaseGateCommand);
+    }
+
+    let required = collect_unique_workflows(&manifest.required_workflows, true, &mut errors);
+    let validated = collect_unique_workflows(&manifest.validated_workflows, false, &mut errors);
+    for workflow in REQUIRED_PUBLIC_TESTNET_WORKFLOWS {
+        if !required.contains(workflow) || !validated.contains(workflow) {
+            errors.push(PublicTestnetReadinessError::MissingRequiredWorkflow {
+                workflow: workflow.into(),
+            });
+        }
+    }
+
+    let mut evidence = BTreeSet::new();
+    for item in &manifest.evidence {
+        let item = item.trim();
+        if item.is_empty() {
+            errors.push(PublicTestnetReadinessError::EmptyEvidence);
+        } else if !evidence.insert(item.to_string()) {
+            errors.push(PublicTestnetReadinessError::DuplicateEvidence {
+                evidence: item.into(),
+            });
+        }
+    }
+
+    if manifest.ready_for_public_testnet && !manifest.blockers.is_empty() {
+        errors.push(PublicTestnetReadinessError::ReadyWithBlockers);
+    }
+    if manifest.ready_for_public_testnet {
+        for finding in &audit_manifest.findings {
+            if audit_finding_blocks_public_testnet(finding) {
+                errors.push(
+                    PublicTestnetReadinessError::ReadyWithUnresolvedHighOrCriticalAuditFinding {
+                        id: finding.id.clone(),
+                        severity: finding.severity.clone(),
+                        status: finding.status.clone(),
+                    },
+                );
+            }
+        }
+    }
+
+    errors
+}
+
+fn collect_unique_workflows(
+    workflows: &[String],
+    required_list: bool,
+    errors: &mut Vec<PublicTestnetReadinessError>,
+) -> BTreeSet<String> {
+    let mut unique = BTreeSet::new();
+    for workflow in workflows {
+        let workflow = workflow.trim();
+        if workflow.is_empty() {
+            errors.push(PublicTestnetReadinessError::EmptyWorkflow);
+        } else if !unique.insert(workflow.to_string()) {
+            if required_list {
+                errors.push(PublicTestnetReadinessError::DuplicateRequiredWorkflow {
+                    workflow: workflow.into(),
+                });
+            } else {
+                errors.push(PublicTestnetReadinessError::DuplicateValidatedWorkflow {
+                    workflow: workflow.into(),
+                });
+            }
+        }
+    }
+    unique
+}
+
+fn audit_finding_blocks_public_testnet(finding: &AuditFinding) -> bool {
+    matches!(
+        finding.severity,
+        AuditFindingSeverity::High | AuditFindingSeverity::Critical
+    ) && matches!(
+        finding.status,
+        AuditFindingStatus::Open | AuditFindingStatus::InRemediation
+    )
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SignedReleaseArtifact {
+    pub path: String,
+    pub sha256: String,
+    pub signature_path: String,
+    pub signer: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MainnetCandidateReadinessManifest {
+    pub schema: String,
+    pub schema_version: u32,
+    pub project: String,
+    pub generated_at: String,
+    pub ready_for_mainnet: bool,
+    pub release_candidate_id: String,
+    pub release_gate_command: String,
+    pub required_gates: Vec<String>,
+    pub satisfied_gates: Vec<String>,
+    pub signed_artifacts: Vec<SignedReleaseArtifact>,
+    pub evidence: Vec<String>,
+    pub blockers: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MainnetCandidateReadinessError {
+    SchemaMismatch {
+        actual: String,
+    },
+    SchemaVersionMismatch {
+        actual: u32,
+    },
+    ProjectMismatch {
+        actual: String,
+    },
+    EmptyGeneratedAt,
+    EmptyReleaseCandidateId,
+    EmptyReleaseGateCommand,
+    EmptyGate,
+    DuplicateRequiredGate {
+        gate: String,
+    },
+    DuplicateSatisfiedGate {
+        gate: String,
+    },
+    MissingRequiredGate {
+        gate: String,
+    },
+    MissingSatisfiedGate {
+        gate: String,
+    },
+    EmptyEvidence,
+    DuplicateEvidence {
+        evidence: String,
+    },
+    ArtifactPathMissing,
+    ArtifactSha256Invalid {
+        path: String,
+        sha256: String,
+    },
+    ArtifactSignaturePathMissing {
+        path: String,
+    },
+    ArtifactSignerMissing {
+        path: String,
+    },
+    ReadyWithBlockers,
+    ReadyBeforePublicTestnet,
+    ReadyWithAuditManifestErrors,
+    ReadyWithUnresolvedAuditFinding {
+        id: String,
+        status: AuditFindingStatus,
+    },
+    ReadyWithoutSignedArtifacts,
+}
+
+pub fn validate_mainnet_candidate_readiness_manifest(
+    manifest: &MainnetCandidateReadinessManifest,
+    public_testnet: &PublicTestnetReadinessManifest,
+    audit_manifest: &AuditFindingsManifest,
+) -> Vec<MainnetCandidateReadinessError> {
+    let mut errors = Vec::new();
+    if manifest.schema != MAINNET_CANDIDATE_READINESS_SCHEMA {
+        errors.push(MainnetCandidateReadinessError::SchemaMismatch {
+            actual: manifest.schema.clone(),
+        });
+    }
+    if manifest.schema_version != MAINNET_CANDIDATE_READINESS_SCHEMA_VERSION {
+        errors.push(MainnetCandidateReadinessError::SchemaVersionMismatch {
+            actual: manifest.schema_version,
+        });
+    }
+    if manifest.project != MAINNET_CANDIDATE_READINESS_PROJECT {
+        errors.push(MainnetCandidateReadinessError::ProjectMismatch {
+            actual: manifest.project.clone(),
+        });
+    }
+    if manifest.generated_at.trim().is_empty() {
+        errors.push(MainnetCandidateReadinessError::EmptyGeneratedAt);
+    }
+    if manifest.release_candidate_id.trim().is_empty() {
+        errors.push(MainnetCandidateReadinessError::EmptyReleaseCandidateId);
+    }
+    if manifest.release_gate_command.trim().is_empty() {
+        errors.push(MainnetCandidateReadinessError::EmptyReleaseGateCommand);
+    }
+
+    let required = collect_mainnet_gates(&manifest.required_gates, true, &mut errors);
+    let satisfied = collect_mainnet_gates(&manifest.satisfied_gates, false, &mut errors);
+    for gate in REQUIRED_MAINNET_CANDIDATE_GATES {
+        if !required.contains(gate) {
+            errors.push(MainnetCandidateReadinessError::MissingRequiredGate { gate: gate.into() });
+        }
+        if manifest.ready_for_mainnet && !satisfied.contains(gate) {
+            errors.push(MainnetCandidateReadinessError::MissingSatisfiedGate { gate: gate.into() });
+        }
+    }
+
+    let mut evidence = BTreeSet::new();
+    for item in &manifest.evidence {
+        let item = item.trim();
+        if item.is_empty() {
+            errors.push(MainnetCandidateReadinessError::EmptyEvidence);
+        } else if !evidence.insert(item.to_string()) {
+            errors.push(MainnetCandidateReadinessError::DuplicateEvidence {
+                evidence: item.into(),
+            });
+        }
+    }
+
+    for artifact in &manifest.signed_artifacts {
+        let artifact_path = artifact.path.trim();
+        if artifact_path.is_empty() {
+            errors.push(MainnetCandidateReadinessError::ArtifactPathMissing);
+        }
+        if !is_lowercase_sha256(&artifact.sha256) {
+            errors.push(MainnetCandidateReadinessError::ArtifactSha256Invalid {
+                path: artifact.path.clone(),
+                sha256: artifact.sha256.clone(),
+            });
+        }
+        if artifact.signature_path.trim().is_empty() {
+            errors.push(
+                MainnetCandidateReadinessError::ArtifactSignaturePathMissing {
+                    path: artifact.path.clone(),
+                },
+            );
+        }
+        if artifact.signer.trim().is_empty() {
+            errors.push(MainnetCandidateReadinessError::ArtifactSignerMissing {
+                path: artifact.path.clone(),
+            });
+        }
+    }
+
+    if manifest.ready_for_mainnet && !manifest.blockers.is_empty() {
+        errors.push(MainnetCandidateReadinessError::ReadyWithBlockers);
+    }
+    if manifest.ready_for_mainnet && !public_testnet.ready_for_public_testnet {
+        errors.push(MainnetCandidateReadinessError::ReadyBeforePublicTestnet);
+    }
+    if manifest.ready_for_mainnet && !validate_audit_findings_manifest(audit_manifest).is_empty() {
+        errors.push(MainnetCandidateReadinessError::ReadyWithAuditManifestErrors);
+    }
+    if manifest.ready_for_mainnet {
+        for finding in &audit_manifest.findings {
+            if matches!(
+                finding.status,
+                AuditFindingStatus::Open | AuditFindingStatus::InRemediation
+            ) {
+                errors.push(
+                    MainnetCandidateReadinessError::ReadyWithUnresolvedAuditFinding {
+                        id: finding.id.clone(),
+                        status: finding.status.clone(),
+                    },
+                );
+            }
+        }
+    }
+    if manifest.ready_for_mainnet && manifest.signed_artifacts.is_empty() {
+        errors.push(MainnetCandidateReadinessError::ReadyWithoutSignedArtifacts);
+    }
+
+    errors
+}
+
+fn collect_mainnet_gates(
+    gates: &[String],
+    required_list: bool,
+    errors: &mut Vec<MainnetCandidateReadinessError>,
+) -> BTreeSet<String> {
+    let mut unique = BTreeSet::new();
+    for gate in gates {
+        let gate = gate.trim();
+        if gate.is_empty() {
+            errors.push(MainnetCandidateReadinessError::EmptyGate);
+        } else if !unique.insert(gate.to_string()) {
+            if required_list {
+                errors.push(MainnetCandidateReadinessError::DuplicateRequiredGate {
+                    gate: gate.into(),
+                });
+            } else {
+                errors.push(MainnetCandidateReadinessError::DuplicateSatisfiedGate {
+                    gate: gate.into(),
+                });
+            }
+        }
+    }
+    unique
+}
+
+fn is_lowercase_sha256(value: &str) -> bool {
+    value.len() == SHA256_HEX_LENGTH
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 pub fn proof_model_artifacts() -> Vec<ModelArtifactRoot> {
@@ -956,6 +1515,221 @@ mod tests {
                 assert!(!evidence.reference.is_empty());
             }
         }
+    }
+
+    #[test]
+    fn checked_in_audit_findings_manifest_has_no_unresolved_findings() {
+        let manifest: AuditFindingsManifest =
+            serde_json::from_str(include_str!("../../../security/detta-audit-findings.json"))
+                .unwrap();
+
+        assert_eq!(validate_audit_findings_manifest(&manifest), vec![]);
+    }
+
+    #[test]
+    fn checked_in_public_testnet_readiness_manifest_is_valid_status() {
+        let readiness: PublicTestnetReadinessManifest = serde_json::from_str(include_str!(
+            "../../../ops/detta-public-testnet-readiness.json"
+        ))
+        .unwrap();
+        let audit: AuditFindingsManifest =
+            serde_json::from_str(include_str!("../../../security/detta-audit-findings.json"))
+                .unwrap();
+
+        assert_eq!(
+            validate_public_testnet_readiness_manifest(&readiness, &audit),
+            vec![]
+        );
+        assert!(
+            !readiness.ready_for_public_testnet,
+            "checked-in readiness status must not claim public testnet readiness before the stability window and external audit run"
+        );
+        assert!(!readiness.blockers.is_empty());
+    }
+
+    #[test]
+    fn checked_in_mainnet_candidate_readiness_manifest_is_valid_status() {
+        let mainnet: MainnetCandidateReadinessManifest = serde_json::from_str(include_str!(
+            "../../../ops/detta-mainnet-candidate-readiness.json"
+        ))
+        .unwrap();
+        let public_testnet: PublicTestnetReadinessManifest = serde_json::from_str(include_str!(
+            "../../../ops/detta-public-testnet-readiness.json"
+        ))
+        .unwrap();
+        let audit: AuditFindingsManifest =
+            serde_json::from_str(include_str!("../../../security/detta-audit-findings.json"))
+                .unwrap();
+
+        assert_eq!(
+            validate_mainnet_candidate_readiness_manifest(&mainnet, &public_testnet, &audit),
+            vec![]
+        );
+        assert!(
+            !mainnet.ready_for_mainnet,
+            "checked-in mainnet readiness status must not claim readiness before public testnet, audit, launch rehearsal, and signing gates pass"
+        );
+        assert!(!mainnet.blockers.is_empty());
+    }
+
+    #[test]
+    fn audit_findings_manifest_rejects_unresolved_findings() {
+        let manifest = AuditFindingsManifest {
+            schema: AUDIT_FINDINGS_SCHEMA.into(),
+            schema_version: AUDIT_FINDINGS_SCHEMA_VERSION,
+            project: AUDIT_FINDINGS_PROJECT.into(),
+            scope: "release candidate".into(),
+            generated_at: "2026-06-09T00:00:00Z".into(),
+            findings: vec![AuditFinding {
+                id: "AUD-001".into(),
+                title: "example unresolved finding".into(),
+                severity: AuditFindingSeverity::High,
+                status: AuditFindingStatus::Open,
+                owner: "security".into(),
+                reported_in: "external-audit".into(),
+                closure_evidence: vec![],
+                accepted_risk_rationale: None,
+            }],
+        };
+
+        assert_eq!(
+            validate_audit_findings_manifest(&manifest),
+            vec![AuditFindingManifestError::UnresolvedFinding {
+                id: "AUD-001".into(),
+                status: AuditFindingStatus::Open,
+            }]
+        );
+    }
+
+    #[test]
+    fn public_testnet_readiness_rejects_premature_ready_claims() {
+        let readiness = PublicTestnetReadinessManifest {
+            schema: PUBLIC_TESTNET_READINESS_SCHEMA.into(),
+            schema_version: PUBLIC_TESTNET_READINESS_SCHEMA_VERSION,
+            project: PUBLIC_TESTNET_READINESS_PROJECT.into(),
+            generated_at: "2026-06-09T00:00:00Z".into(),
+            ready_for_public_testnet: true,
+            planned_stability_window_hours: 24,
+            release_gate_command: "DETTA_E2E_FULL=1 scripts/detta-release-gate.sh".into(),
+            required_workflows: vec!["state_sync".into(), "rpc".into()],
+            validated_workflows: vec!["state_sync".into()],
+            evidence: vec!["crates/detta-e2e/tests/state_sync_client_flows.rs".into()],
+            blockers: vec!["external audit pending".into()],
+        };
+        let audit = AuditFindingsManifest {
+            schema: AUDIT_FINDINGS_SCHEMA.into(),
+            schema_version: AUDIT_FINDINGS_SCHEMA_VERSION,
+            project: AUDIT_FINDINGS_PROJECT.into(),
+            scope: "release candidate".into(),
+            generated_at: "2026-06-09T00:00:00Z".into(),
+            findings: vec![AuditFinding {
+                id: "AUD-002".into(),
+                title: "critical issue".into(),
+                severity: AuditFindingSeverity::Critical,
+                status: AuditFindingStatus::Open,
+                owner: "security".into(),
+                reported_in: "external-audit".into(),
+                closure_evidence: vec![],
+                accepted_risk_rationale: None,
+            }],
+        };
+        let errors = validate_public_testnet_readiness_manifest(&readiness, &audit);
+
+        assert!(
+            errors.contains(&PublicTestnetReadinessError::StabilityWindowTooShort {
+                actual: 24,
+                minimum: MIN_PUBLIC_TESTNET_STABILITY_WINDOW_HOURS,
+            })
+        );
+        assert!(errors.contains(&PublicTestnetReadinessError::ReadyWithBlockers));
+        assert!(errors.contains(
+            &PublicTestnetReadinessError::ReadyWithUnresolvedHighOrCriticalAuditFinding {
+                id: "AUD-002".into(),
+                severity: AuditFindingSeverity::Critical,
+                status: AuditFindingStatus::Open,
+            }
+        ));
+        assert!(REQUIRED_PUBLIC_TESTNET_WORKFLOWS.iter().any(|workflow| {
+            errors.contains(&PublicTestnetReadinessError::MissingRequiredWorkflow {
+                workflow: (*workflow).into(),
+            })
+        }));
+    }
+
+    #[test]
+    fn mainnet_candidate_readiness_rejects_premature_ready_claims() {
+        let mainnet = MainnetCandidateReadinessManifest {
+            schema: MAINNET_CANDIDATE_READINESS_SCHEMA.into(),
+            schema_version: MAINNET_CANDIDATE_READINESS_SCHEMA_VERSION,
+            project: MAINNET_CANDIDATE_READINESS_PROJECT.into(),
+            generated_at: "2026-06-09T00:00:00Z".into(),
+            ready_for_mainnet: true,
+            release_candidate_id: "rc-0".into(),
+            release_gate_command:
+                "DETTA_E2E_FULL=1 DETTA_REQUIRE_DEP_AUDIT=1 scripts/detta-release-gate.sh".into(),
+            required_gates: REQUIRED_MAINNET_CANDIDATE_GATES
+                .iter()
+                .map(|gate| (*gate).into())
+                .collect(),
+            satisfied_gates: vec!["production_acceptance".into()],
+            signed_artifacts: vec![],
+            evidence: vec!["scripts/detta-release-gate.sh".into()],
+            blockers: vec!["public testnet pending".into()],
+        };
+        let public_testnet = PublicTestnetReadinessManifest {
+            schema: PUBLIC_TESTNET_READINESS_SCHEMA.into(),
+            schema_version: PUBLIC_TESTNET_READINESS_SCHEMA_VERSION,
+            project: PUBLIC_TESTNET_READINESS_PROJECT.into(),
+            generated_at: "2026-06-09T00:00:00Z".into(),
+            ready_for_public_testnet: false,
+            planned_stability_window_hours: MIN_PUBLIC_TESTNET_STABILITY_WINDOW_HOURS,
+            release_gate_command: "DETTA_E2E_FULL=1 scripts/detta-release-gate.sh".into(),
+            required_workflows: REQUIRED_PUBLIC_TESTNET_WORKFLOWS
+                .iter()
+                .map(|workflow| (*workflow).into())
+                .collect(),
+            validated_workflows: REQUIRED_PUBLIC_TESTNET_WORKFLOWS
+                .iter()
+                .map(|workflow| (*workflow).into())
+                .collect(),
+            evidence: vec!["crates/detta-e2e/tests/state_sync_client_flows.rs".into()],
+            blockers: vec!["stability window pending".into()],
+        };
+        let audit = AuditFindingsManifest {
+            schema: AUDIT_FINDINGS_SCHEMA.into(),
+            schema_version: AUDIT_FINDINGS_SCHEMA_VERSION,
+            project: AUDIT_FINDINGS_PROJECT.into(),
+            scope: "release candidate".into(),
+            generated_at: "2026-06-09T00:00:00Z".into(),
+            findings: vec![AuditFinding {
+                id: "AUD-003".into(),
+                title: "open issue".into(),
+                severity: AuditFindingSeverity::Medium,
+                status: AuditFindingStatus::InRemediation,
+                owner: "security".into(),
+                reported_in: "external-audit".into(),
+                closure_evidence: vec![],
+                accepted_risk_rationale: None,
+            }],
+        };
+        let errors =
+            validate_mainnet_candidate_readiness_manifest(&mainnet, &public_testnet, &audit);
+
+        assert!(errors.contains(&MainnetCandidateReadinessError::ReadyWithBlockers));
+        assert!(errors.contains(&MainnetCandidateReadinessError::ReadyBeforePublicTestnet));
+        assert!(errors.contains(&MainnetCandidateReadinessError::ReadyWithAuditManifestErrors));
+        assert!(errors.contains(
+            &MainnetCandidateReadinessError::ReadyWithUnresolvedAuditFinding {
+                id: "AUD-003".into(),
+                status: AuditFindingStatus::InRemediation,
+            }
+        ));
+        assert!(errors.contains(&MainnetCandidateReadinessError::ReadyWithoutSignedArtifacts));
+        assert!(
+            errors.contains(&MainnetCandidateReadinessError::MissingSatisfiedGate {
+                gate: "public_testnet".into(),
+            })
+        );
     }
 
     #[test]

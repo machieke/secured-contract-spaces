@@ -24,6 +24,7 @@ run_e2e_gate() {
 
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
+scripts/detta-dependency-audit.sh
 cargo test --workspace --exclude detta-e2e
 run_e2e_gate
 cargo test -p detta-verify

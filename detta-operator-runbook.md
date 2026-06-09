@@ -27,6 +27,11 @@ Each validator data directory contains:
 Before joining a validator:
 
 - verify the binary with `scripts/detta-release-gate.sh`;
+- check `ops/detta-public-testnet-readiness.json` and confirm it does not claim
+  public-testnet readiness while blockers remain;
+- check `ops/detta-mainnet-candidate-readiness.json` and confirm it does not
+  claim mainnet readiness while launch, audit, signing, or rehearsal blockers
+  remain;
 - confirm `detta-rpc-openapi.json` matches the deployed binary version;
 - initialize the validator with the expected `network_id`, `chain_id`, and
   trusted validator-set metadata;
@@ -152,3 +157,42 @@ For bridge incidents:
   replayed message IDs;
 - rotate bridge trusted source validator sets only through the governed process
   adopted by the deployment.
+
+## Public Testnet Readiness
+
+The checked readiness manifest is `ops/detta-public-testnet-readiness.json`.
+Operators should treat `ready_for_public_testnet: false` as authoritative even
+when local release gates pass. Public-testnet launch requires:
+
+- a completed `DETTA_E2E_FULL=1 scripts/detta-release-gate.sh` run;
+- state sync, RPC, governance, bridge, and DeFi workflow evidence;
+- a planned stability window of at least 168 hours;
+- no unresolved high or critical audit findings;
+- finalized validator binary packaging, genesis tooling, faucet, and sample
+  client distribution.
+
+When those conditions are met, update the manifest, keep the blocker list
+empty, and run `cargo test -p detta-verify public_testnet_readiness` before
+publishing the launch candidate.
+
+## Mainnet Candidate Readiness
+
+The checked mainnet readiness manifest is
+`ops/detta-mainnet-candidate-readiness.json`. Operators should treat
+`ready_for_mainnet: false` as authoritative even when local release gates pass.
+Mainnet candidacy requires:
+
+- public-testnet readiness already achieved;
+- closed or governance-accepted audit findings;
+- all production acceptance gates passing;
+- finalized genesis artifacts;
+- validator onboarding evidence;
+- governance bootstrap evidence;
+- completed launch rehearsal and incident-response drill;
+- reproducible release artifacts with SHA-256 roots and detached signature
+  metadata.
+
+When those conditions are met, update the manifest, keep the blocker list
+empty, include every signed release artifact, and run
+`cargo test -p detta-verify mainnet_candidate_readiness` before proposing a
+mainnet release candidate.

@@ -131,10 +131,18 @@ SCS specification
 - `detta-production-implementation-plan.md`: production DeTTa implementation
   plan and progress tracker.
 - `detta-e2e-client-integration-test-plan.md`: E2E client integration plan.
+- `detta-client-token-liquidity-guide.md`: end-user client guide for deploying
+  a token, creating a liquidity pool, adding liquidity, and selling tokens.
 - `detta-rpc-api.md`: human-readable DeTTa RPC API documentation.
 - `detta-rpc-openapi.json`: machine-readable RPC API schema.
 - `detta-restricted-evaluator-subset.md`: restricted evaluator subset.
 - `models/`: TLA+ model, proof artifact manifests, and evaluator proof traces.
+- `ops/detta-public-testnet-readiness.json`: public-testnet readiness status
+  and blocker manifest validated by `detta-verify`.
+- `ops/detta-mainnet-candidate-readiness.json`: mainnet-candidate readiness
+  status and release-signing blocker manifest validated by `detta-verify`.
+- `security/detta-audit-findings.json`: release-candidate audit finding
+  tracker validated by `detta-verify`.
 - `scripts/detta-release-gate.sh`: release-gate verification script.
 - `docs/`: LaTeX rendering of the SCS specification.
 
@@ -180,8 +188,30 @@ DETTA_E2E_FULL=1 scripts/detta-release-gate.sh
 ```
 
 The release gate checks formatting, clippy, workspace tests, selected or full
-E2E client flows, verification crate tests, release builds, TLA+ model checking
-through `scripts/detta-model-check.sh`, and proof artifact hash manifests.
+E2E client flows, dependency advisory and supply-chain policy through
+`deny.toml`, verification crate tests, release builds, TLA+ model checking through
+`scripts/detta-model-check.sh`, and proof artifact hash manifests.
+
+Local dependency audits are run by `scripts/detta-dependency-audit.sh`. If
+`cargo-deny` is unavailable locally, the script prints a warning and lets the
+developer gate continue; set `DETTA_REQUIRE_DEP_AUDIT=1` to make that a hard
+failure. CI always installs and runs `cargo-deny`.
+
+Audit finding closure is represented by
+`security/detta-audit-findings.json`. `detta-verify` fails if that manifest has
+open or in-remediation findings, duplicate finding IDs, missing closure
+evidence for closed findings, or accepted-risk findings without a rationale.
+
+Public testnet readiness is represented by
+`ops/detta-public-testnet-readiness.json`. The checked-in status intentionally
+does not claim readiness until the stability window, packaging/genesis/faucet
+work, and external audit gate are completed.
+
+Mainnet-candidate readiness is represented by
+`ops/detta-mainnet-candidate-readiness.json`. The checked-in status
+intentionally does not claim readiness until public testnet, external audit,
+finalized genesis, validator onboarding, governance bootstrapping, launch
+rehearsal, incident-response drill, and release signing gates are complete.
 
 ## Formal Verification Surface
 

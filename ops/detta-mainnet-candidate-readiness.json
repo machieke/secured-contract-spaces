@@ -1,0 +1,37 @@
+{
+  "schema": "detta.mainnet-candidate-readiness.v1",
+  "schema_version": 1,
+  "project": "DeTTa",
+  "generated_at": "2026-06-09T00:00:00Z",
+  "ready_for_mainnet": false,
+  "release_candidate_id": "unreleased",
+  "release_gate_command": "DETTA_E2E_FULL=1 DETTA_REQUIRE_DEP_AUDIT=1 scripts/detta-release-gate.sh",
+  "required_gates": [
+    "production_acceptance",
+    "public_testnet",
+    "external_audit",
+    "operator_launch_rehearsal",
+    "release_reproducibility",
+    "release_signing",
+    "finalized_genesis",
+    "validator_onboarding",
+    "governance_bootstrap",
+    "incident_response_drill"
+  ],
+  "satisfied_gates": [
+    "production_acceptance",
+    "release_reproducibility"
+  ],
+  "signed_artifacts": [],
+  "evidence": [
+    "scripts/detta-release-gate.sh",
+    "ops/detta-public-testnet-readiness.json",
+    "security/detta-audit-findings.json",
+    "detta-operator-runbook.md"
+  ],
+  "blockers": [
+    "Public testnet readiness is not achieved.",
+    "External audit is not complete.",
+    "Finalized genesis, validator onboarding, governance bootstrap, incident response drill, and release signing artifacts are not complete."
+  ]
+}

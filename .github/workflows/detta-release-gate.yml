@@ -27,7 +27,7 @@ jobs:
       - name: Audit dependencies
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
-          command: check advisories
+          command: check advisories bans sources
 
       - name: Run release gate
         run: scripts/detta-release-gate.sh

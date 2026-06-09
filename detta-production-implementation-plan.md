@@ -372,6 +372,16 @@ Completed production-plan slices:
 - [x] CI workflow runs the local release gate on pull requests and master
   pushes.
 - [x] CI dependency audit checks RustSec advisories through cargo-deny.
+- [x] Local release gate invokes the checked-in cargo-deny advisory policy,
+  warning when cargo-deny is not installed unless `DETTA_REQUIRE_DEP_AUDIT=1`
+  is set.
+- [x] Release-candidate audit findings are tracked in a checked JSON manifest
+  and verified to contain no unresolved findings by `detta-verify`.
+- [x] Public-testnet readiness is tracked in a checked manifest that validates
+  required workflow evidence while keeping external blockers explicit.
+- [x] Mainnet-candidate readiness is tracked in a checked manifest that
+  validates required launch gates, signed release artifact metadata, and
+  dependency on public-testnet readiness.
 - [x] Local release gate performs a locked release build reproducibility smoke
   check.
 - [x] Local release gate runs the deterministic generated-corpus fuzz smoke
