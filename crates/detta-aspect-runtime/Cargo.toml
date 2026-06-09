@@ -1,14 +1,11 @@
 [package]
-name = "detta-evaluator"
+name = "detta-aspect-runtime"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
 
 [dependencies]
-detta-aspect-runtime = { path = "../detta-aspect-runtime" }
 detta-aspects = { path = "../detta-aspects" }
-detta-core = { path = "../detta-core" }
-detta-verify = { path = "../detta-verify" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"

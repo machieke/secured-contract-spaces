@@ -6,6 +6,7 @@ members = [
     "crates/detta-consensus",
     "crates/detta-storage",
     "crates/detta-aspects",
+    "crates/detta-aspect-runtime",
     "crates/detta-evaluator",
     "crates/detta-node",
     "crates/detta-network",

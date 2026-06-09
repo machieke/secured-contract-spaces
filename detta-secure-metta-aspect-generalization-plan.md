@@ -1251,7 +1251,9 @@ Progress note: the first executable evaluator slice runs verified aspect action
 expressions into deterministic host-call traces with lexical argument binding,
 checked arithmetic, boolean conditions, `require`, step metering, stack-depth
 limits, and trace roots. The host calls are not yet wired into the SCS guarded
-storage kernel or block executor.
+storage kernel or block executor. The aspect action evaluator has been split
+into a core-independent `detta-aspect-runtime` crate so the block executor can
+integrate it without depending on the higher-level proof/evaluator crate.
 
 Acceptance criteria:
 

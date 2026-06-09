@@ -125,6 +125,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "detta-aspect-runtime"
+version = "0.1.0"
+dependencies = [
+ "detta-aspects",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "detta-aspects"
 version = "0.1.0"
 dependencies = [
@@ -169,6 +179,7 @@ dependencies = [
 name = "detta-evaluator"
 version = "0.1.0"
 dependencies = [
+ "detta-aspect-runtime",
  "detta-aspects",
  "detta-core",
  "detta-verify",
