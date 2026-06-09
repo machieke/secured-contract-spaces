@@ -49,6 +49,8 @@ The shared `RpcService` supports:
 - `get_receipt_proof`: fetch a Merkle proof for a receipt by block height and
   receipt index.
 - `get_block`: fetch a committed block by height.
+- `get_blocks_page`: fetch a bounded page of committed blocks from a start
+  height for catch-up clients.
 - `get_node_health`: fetch chain, height, mempool, and root diagnostics.
 - `get_mempool_status`: fetch pending transaction count, per-sender pending
   counts, admission limits, and the current block resource limit.

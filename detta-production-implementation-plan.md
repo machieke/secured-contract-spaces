@@ -422,6 +422,8 @@ Completed production-plan slices:
   updates through typed RPC with stable JSON fixtures.
 - [x] Persistent validator nodes serve governance timelock queue RPC methods
   over the shared TCP JSON operator path.
+- [x] RPC exposes bounded committed-block pages for catch-up clients, including
+  durable after-restart persistent-node TCP coverage.
 
 Next implementation slices:
 

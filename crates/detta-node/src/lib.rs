@@ -16,10 +16,10 @@ use detta_protocol::{
     SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT,
 };
 use detta_rpc::{
-    json_rpc_response_for_request, JsonRpcHandler, NodeHealthReport, PersistentNodeSnapshotRoots,
-    RequiredSnapshotMetadataRootsReport, RpcError, RpcErrorBody, RpcRequest, RpcResponse,
-    RpcResult, RpcService, RpcTransportError, SnapshotMetadataRootStatus,
-    SnapshotSyncClientMetricsReport, ValidatorSetMetadataUpdateStatus,
+    json_rpc_response_for_request, BlockPage, JsonRpcHandler, NodeHealthReport,
+    PersistentNodeSnapshotRoots, RequiredSnapshotMetadataRootsReport, RpcError, RpcErrorBody,
+    RpcRequest, RpcResponse, RpcResult, RpcService, RpcTransportError, SnapshotMetadataRootStatus,
+    SnapshotSyncClientMetricsReport, ValidatorSetMetadataUpdateStatus, DEFAULT_MAX_BLOCK_PAGE_SIZE,
 };
 use detta_storage::{
     FileStorage, SnapshotImportAuditConfig, SnapshotImportAuditRecord, StorageError,
@@ -738,6 +738,31 @@ impl PersistentValidatorNode {
             RpcRequest::GetBlock { height } => match self.storage.maybe_load_block(height) {
                 Ok(Some(block)) => RpcResponse::Ok(RpcResult::Block(Box::new(block))),
                 Ok(None) => Err(RpcError::BlockNotFound).into(),
+                Err(error) => node_rpc_error_response(NodeError::Storage(error)),
+            },
+            RpcRequest::GetBlocksPage {
+                start_height,
+                limit,
+            } => match self.storage.load_blocks() {
+                Ok(blocks) => {
+                    let effective_limit = limit.min(DEFAULT_MAX_BLOCK_PAGE_SIZE);
+                    let highest_height = blocks
+                        .iter()
+                        .map(|block| block.header.height)
+                        .max()
+                        .unwrap_or(0);
+                    let page_blocks = blocks
+                        .into_iter()
+                        .filter(|block| block.header.height >= start_height)
+                        .take(effective_limit)
+                        .collect();
+                    RpcResponse::Ok(RpcResult::BlocksPage(BlockPage {
+                        blocks: page_blocks,
+                        start_height,
+                        limit: effective_limit,
+                        highest_height,
+                    }))
+                }
                 Err(error) => node_rpc_error_response(NodeError::Storage(error)),
             },
             RpcRequest::GetTransaction { tx_hash } => match self.storage.find_transaction(&tx_hash)
@@ -4111,7 +4136,23 @@ mod tests {
         write_rpc_request(&mut stream, &RpcRequest::GetBlock { height: 1 });
         assert_eq!(
             read_rpc_response(&mut reader),
-            RpcResponse::Ok(RpcResult::Block(Box::new(block)))
+            RpcResponse::Ok(RpcResult::Block(Box::new(block.clone())))
+        );
+        write_rpc_request(
+            &mut stream,
+            &RpcRequest::GetBlocksPage {
+                start_height: 1,
+                limit: 10,
+            },
+        );
+        assert_eq!(
+            read_rpc_response(&mut reader),
+            RpcResponse::Ok(RpcResult::BlocksPage(BlockPage {
+                blocks: vec![block],
+                start_height: 1,
+                limit: 10,
+                highest_height: 1,
+            }))
         );
         write_rpc_request(
             &mut stream,

@@ -1716,6 +1716,18 @@ impl ValidatorNode {
         self.blocks.get(&height)
     }
 
+    pub fn blocks_from(&self, start_height: u64, limit: usize) -> Vec<Block> {
+        self.blocks
+            .range(start_height..)
+            .take(limit)
+            .map(|(_, block)| block.clone())
+            .collect()
+    }
+
+    pub fn highest_block_height(&self) -> u64 {
+        self.blocks.keys().next_back().copied().unwrap_or(0)
+    }
+
     pub fn get_transaction(&self, tx_hash: &str) -> Option<&Transaction> {
         self.transactions.get(tx_hash)
     }

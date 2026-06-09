@@ -17,6 +17,7 @@ use std::net::{SocketAddr, TcpListener, ToSocketAddrs};
 
 pub const DEFAULT_MAX_RPC_REQUEST_BYTES: usize = 1024 * 1024;
 pub const DEFAULT_MAX_EVENT_PAGE_SIZE: usize = 1_000;
+pub const DEFAULT_MAX_BLOCK_PAGE_SIZE: usize = 100;
 pub const DEFAULT_MAX_SUBSCRIPTION_EVENT_PAGE_SIZE: usize = 1_000;
 pub const DEFAULT_MAX_SUBSCRIPTION_EVENTS: usize = 10_000;
 
@@ -61,6 +62,10 @@ pub enum RpcRequest {
     },
     GetBlock {
         height: u64,
+    },
+    GetBlocksPage {
+        start_height: u64,
+        limit: usize,
     },
     GetFinalityCertificate {
         height: u64,
@@ -254,6 +259,14 @@ pub struct EventPage {
     pub total_events: usize,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct BlockPage {
+    pub blocks: Vec<Block>,
+    pub start_height: u64,
+    pub limit: usize,
+    pub highest_height: u64,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SubscriptionTopic {
@@ -303,6 +316,7 @@ pub enum RpcResult {
     Submitted,
     Imported,
     Block(Box<Block>),
+    BlocksPage(BlockPage),
     FinalityCertificate(Box<FinalityCertificate>),
     SlashingRecord(Box<SlashingRecord>),
     Transaction(Box<Transaction>),
@@ -681,6 +695,16 @@ impl RpcService {
             .ok_or(RpcError::BlockNotFound)
     }
 
+    pub fn get_blocks_page(&self, start_height: u64, limit: usize) -> BlockPage {
+        let effective_limit = limit.min(DEFAULT_MAX_BLOCK_PAGE_SIZE);
+        BlockPage {
+            blocks: self.node.blocks_from(start_height, effective_limit),
+            start_height,
+            limit: effective_limit,
+            highest_height: self.node.highest_block_height(),
+        }
+    }
+
     pub fn get_state_root(&self) -> String {
         self.node.state().global_state_root()
     }
@@ -874,6 +898,12 @@ impl RpcService {
                 .get_block(height)
                 .map(|block| RpcResult::Block(Box::new(block)))
                 .into(),
+            RpcRequest::GetBlocksPage {
+                start_height,
+                limit,
+            } => RpcResponse::Ok(RpcResult::BlocksPage(
+                self.get_blocks_page(start_height, limit),
+            )),
             RpcRequest::GetNodeHealth => {
                 RpcResponse::Ok(RpcResult::NodeHealth(Box::new(self.node_health())))
             }
@@ -1660,6 +1690,26 @@ mod tests {
     }
 
     #[test]
+    fn block_page_json_fixture_is_stable() {
+        let response = RpcResponse::Ok(RpcResult::BlocksPage(BlockPage {
+            blocks: vec![],
+            start_height: 42,
+            limit: DEFAULT_MAX_BLOCK_PAGE_SIZE,
+            highest_height: 41,
+        }));
+        let fixture = concat!(
+            r#"{"status":"ok","body":{"result":"blocks_page","data":{"#,
+            r#""blocks":[],"start_height":42,"limit":100,"highest_height":41}}}"#,
+        );
+
+        assert_eq!(serde_json::to_string(&response).unwrap(), fixture);
+        assert_eq!(
+            serde_json::from_str::<RpcResponse>(fixture).unwrap(),
+            response
+        );
+    }
+
+    #[test]
     fn proof_response_json_fixtures_are_stable() {
         let receipt_response = RpcResponse::Ok(RpcResult::ReceiptProof(Box::new(ReceiptProof {
             receipt: Receipt {
@@ -1873,9 +1923,16 @@ mod tests {
         let block = rpc.produce_block(1, 1_000).unwrap();
         let receipt = rpc.get_receipt("tx1").unwrap();
         let committed_status = rpc.mempool_status();
+        let block_page = rpc.get_blocks_page(1, 10);
+        let capped_block_page = rpc.get_blocks_page(1, DEFAULT_MAX_BLOCK_PAGE_SIZE + 1);
 
         assert_eq!(block.transactions.len(), 1);
         assert_eq!(receipt.status, TxStatus::Committed);
+        assert_eq!(block_page.blocks, vec![block.clone()]);
+        assert_eq!(block_page.start_height, 1);
+        assert_eq!(block_page.limit, 10);
+        assert_eq!(block_page.highest_height, 1);
+        assert_eq!(capped_block_page.limit, DEFAULT_MAX_BLOCK_PAGE_SIZE);
         assert_eq!(committed_status.pending_transactions, 0);
         assert!(committed_status.pending_by_sender.is_empty());
         assert_eq!(rpc.call_balance_view("TokenA", "Alice", "USDC"), 90);
@@ -2345,6 +2402,24 @@ mod tests {
                 assert_eq!(block.transactions.len(), 1);
             }
             response => panic!("expected produced block, got {response:?}"),
+        }
+
+        write_request(
+            &mut stream,
+            &RpcRequest::GetBlocksPage {
+                start_height: 1,
+                limit: 10,
+            },
+        );
+        match read_response(&mut reader) {
+            RpcResponse::Ok(RpcResult::BlocksPage(page)) => {
+                assert_eq!(page.blocks.len(), 1);
+                assert_eq!(page.blocks[0].header.height, 1);
+                assert_eq!(page.start_height, 1);
+                assert_eq!(page.limit, 10);
+                assert_eq!(page.highest_height, 1);
+            }
+            response => panic!("expected block page, got {response:?}"),
         }
 
         write_request(
