@@ -797,6 +797,9 @@ fn rpc_error_code(error: &RpcError) -> &'static str {
         RpcError::Block(BlockError::NonceRootMismatch) => "block.nonce_root_mismatch",
         RpcError::Block(BlockError::OutboxRootMismatch) => "block.outbox_root_mismatch",
         RpcError::Block(BlockError::GlobalStateRootMismatch) => "block.global_state_root_mismatch",
+        RpcError::Block(BlockError::ResourceLimitExceeded { .. }) => {
+            "block.resource_limit_exceeded"
+        }
         RpcError::BlockNotFound => "rpc.block_not_found",
         RpcError::ReceiptNotFound => "rpc.receipt_not_found",
         RpcError::TransactionNotFound => "rpc.transaction_not_found",
@@ -851,6 +854,9 @@ fn rpc_error_message(error: &RpcError) -> &'static str {
         RpcError::Block(BlockError::OutboxRootMismatch) => "block outbox root is invalid",
         RpcError::Block(BlockError::GlobalStateRootMismatch) => {
             "block global state root is invalid"
+        }
+        RpcError::Block(BlockError::ResourceLimitExceeded { .. }) => {
+            "block resource limit exceeded"
         }
         RpcError::BlockNotFound => "block was not found",
         RpcError::ReceiptNotFound => "receipt was not found",
@@ -1325,6 +1331,16 @@ mod tests {
                 code: "rpc.receipt_not_found".into(),
                 message: "receipt was not found".into(),
             })
+        );
+        assert_eq!(
+            RpcErrorBody::from(RpcError::Block(BlockError::ResourceLimitExceeded {
+                max_units: 10,
+                actual_units: 12,
+            })),
+            RpcErrorBody {
+                code: "block.resource_limit_exceeded".into(),
+                message: "block resource limit exceeded".into(),
+            }
         );
 
         let malformed = rpc

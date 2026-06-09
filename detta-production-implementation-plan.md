@@ -401,6 +401,9 @@ Completed production-plan slices:
   request compatibility.
 - [x] JSON RPC request, response, proof, persistent-node, and operator-guard
   semantics are documented for client and operator implementers.
+- [x] Validator block proposal and import enforce deterministic block-level
+  resource limits, leaving overflow mempool transactions pending and returning
+  stable RPC errors for oversized blocks.
 
 Next implementation slices:
 

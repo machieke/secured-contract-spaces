@@ -836,11 +836,20 @@ fn method_policy<const E: usize, const I: usize>(
     }
 }
 
+pub const DEFAULT_BLOCK_RESOURCE_LIMIT: u64 = 10_000_000;
+
 fn transaction_resource_units(tx: &Transaction) -> u64 {
     let arg_units = (tx.args.len() as u64).saturating_mul(2);
     10u64
         .saturating_add(arg_units)
         .saturating_add(method_resource_units(&tx.method))
+}
+
+fn block_resource_units(transactions: &[Transaction]) -> u64 {
+    transactions
+        .iter()
+        .map(transaction_resource_units)
+        .fold(0_u64, u64::saturating_add)
 }
 
 fn method_resource_units(method: &Method) -> u64 {
@@ -1097,6 +1106,7 @@ pub enum BlockError {
     NonceRootMismatch,
     OutboxRootMismatch,
     GlobalStateRootMismatch,
+    ResourceLimitExceeded { max_units: u64, actual_units: u64 },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1244,6 +1254,31 @@ impl Mempool {
             ))
         });
         transactions
+    }
+
+    pub fn drain_ordered_with_resource_limit(
+        &mut self,
+        max_resource_units: u64,
+    ) -> Vec<Transaction> {
+        let transactions = self.drain_ordered();
+        let mut selected = Vec::new();
+        let mut deferred = Vec::new();
+        let mut used_units = 0_u64;
+
+        for tx in transactions {
+            let tx_units = transaction_resource_units(&tx);
+            let next_units = used_units.saturating_add(tx_units);
+            if next_units <= max_resource_units {
+                used_units = next_units;
+                selected.push(tx);
+            } else {
+                deferred.push(tx);
+            }
+        }
+
+        self.tx_hashes = deferred.iter().map(|tx| tx.tx_hash.clone()).collect();
+        self.pending = deferred;
+        selected
     }
 }
 
@@ -1617,6 +1652,7 @@ pub struct ValidatorNode {
     validator_id: String,
     state: DeTTaState,
     mempool: Mempool,
+    block_resource_limit: u64,
     blocks: BTreeMap<u64, Block>,
     transactions: BTreeMap<TxHash, Transaction>,
     receipts: BTreeMap<TxHash, Receipt>,
@@ -1628,6 +1664,7 @@ impl ValidatorNode {
             validator_id: validator_id.into(),
             state,
             mempool: Mempool::new(),
+            block_resource_limit: DEFAULT_BLOCK_RESOURCE_LIMIT,
             blocks: BTreeMap::new(),
             transactions: BTreeMap::new(),
             receipts: BTreeMap::new(),
@@ -1643,6 +1680,7 @@ impl ValidatorNode {
             validator_id: validator_id.into(),
             state,
             mempool: Mempool::with_policy(policy),
+            block_resource_limit: DEFAULT_BLOCK_RESOURCE_LIMIT,
             blocks: BTreeMap::new(),
             transactions: BTreeMap::new(),
             receipts: BTreeMap::new(),
@@ -1659,6 +1697,7 @@ impl ValidatorNode {
             validator_id: validator_id.into(),
             state,
             mempool,
+            block_resource_limit: DEFAULT_BLOCK_RESOURCE_LIMIT,
             blocks: BTreeMap::new(),
             transactions: BTreeMap::new(),
             receipts: BTreeMap::new(),
@@ -1689,6 +1728,14 @@ impl ValidatorNode {
         self.mempool.pending_transactions()
     }
 
+    pub fn block_resource_limit(&self) -> u64 {
+        self.block_resource_limit
+    }
+
+    pub fn set_block_resource_limit(&mut self, block_resource_limit: u64) {
+        self.block_resource_limit = block_resource_limit;
+    }
+
     pub fn submit_transaction(&mut self, tx: Transaction) -> Result<(), MempoolError> {
         self.mempool.submit(&self.state, tx)
     }
@@ -1712,11 +1759,20 @@ impl ValidatorNode {
     }
 
     pub fn propose_pending_block(&mut self, height: u64, timestamp: u64) -> Block {
-        let transactions = self.mempool.drain_ordered();
+        let transactions = self
+            .mempool
+            .drain_ordered_with_resource_limit(self.block_resource_limit);
         self.propose_block(height, transactions, timestamp)
     }
 
     pub fn validate_and_apply(&mut self, block: &Block) -> Result<(), BlockError> {
+        let actual_units = block_resource_units(&block.transactions);
+        if actual_units > self.block_resource_limit {
+            return Err(BlockError::ResourceLimitExceeded {
+                max_units: self.block_resource_limit,
+                actual_units,
+            });
+        }
         self.state.apply_block(block)?;
         for tx in &block.transactions {
             self.transactions.insert(tx.tx_hash.clone(), tx.clone());
@@ -2417,6 +2473,13 @@ impl DeTTaState {
     pub fn apply_block(&mut self, block: &Block) -> Result<(), BlockError> {
         if block.header.chain_id != self.chain_id {
             return Err(BlockError::ChainMismatch);
+        }
+        let actual_units = block_resource_units(&block.transactions);
+        if actual_units > DEFAULT_BLOCK_RESOURCE_LIMIT {
+            return Err(BlockError::ResourceLimitExceeded {
+                max_units: DEFAULT_BLOCK_RESOURCE_LIMIT,
+                actual_units,
+            });
         }
         if block.header.previous_block_hash != self.finalized_block_hash {
             return Err(BlockError::PreviousBlockMismatch);
@@ -6412,6 +6475,70 @@ mod tests {
         assert_eq!(block.transactions[0].sender, "Alice");
         assert_eq!(block.transactions[1].sender, "Bob");
         assert_eq!(block.receipts.len(), 2);
+    }
+
+    #[test]
+    fn validator_mempool_respects_block_resource_limit() {
+        let mut proposer = ValidatorNode::new("validator-1", seeded_state());
+        let tx_a = tx(
+            "tx-a",
+            "Alice",
+            1,
+            Method::Transfer,
+            vec![principal("Bob"), asset("USDC"), amount(10)],
+        );
+        let tx_b = tx(
+            "tx-b",
+            "Bob",
+            1,
+            Method::Transfer,
+            vec![principal("Alice"), asset("USDC"), amount(5)],
+        );
+        proposer.set_block_resource_limit(transaction_resource_units(&tx_a));
+
+        proposer.submit_transaction(tx_b).unwrap();
+        proposer.submit_transaction(tx_a.clone()).unwrap();
+        let block = proposer.propose_pending_block(1, 1_000);
+
+        assert_eq!(block.transactions, vec![tx_a]);
+        assert_eq!(proposer.pending_len(), 1);
+        assert_eq!(
+            block_resource_units(&block.transactions),
+            proposer.block_resource_limit()
+        );
+    }
+
+    #[test]
+    fn validator_rejects_block_over_resource_limit() {
+        let txs = vec![
+            tx(
+                "tx-a",
+                "Alice",
+                1,
+                Method::Transfer,
+                vec![principal("Bob"), asset("USDC"), amount(10)],
+            ),
+            tx(
+                "tx-b",
+                "Bob",
+                1,
+                Method::Transfer,
+                vec![principal("Alice"), asset("USDC"), amount(5)],
+            ),
+        ];
+        let proposer = ValidatorNode::new("validator-1", seeded_state());
+        let block = proposer.propose_block(1, txs.clone(), 1_000);
+        let mut validator = ValidatorNode::new("validator-2", seeded_state());
+        validator.set_block_resource_limit(transaction_resource_units(&txs[0]));
+
+        assert_eq!(
+            validator.validate_and_apply(&block),
+            Err(BlockError::ResourceLimitExceeded {
+                max_units: transaction_resource_units(&txs[0]),
+                actual_units: block_resource_units(&txs),
+            })
+        );
+        assert_eq!(validator.state().height(), 0);
     }
 
     #[test]
