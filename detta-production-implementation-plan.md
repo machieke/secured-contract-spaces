@@ -436,6 +436,8 @@ Completed production-plan slices:
   method enum is covered by crate tests.
 - [x] Deterministic generated DeFi corpus fuzz-smoke covers AMM, lending,
   staking, committed/reverted receipts, and post-replay declared invariants.
+- [x] Operator runbook documents deployment, monitoring, recovery, governed
+  upgrades, validator-key rotation, and incident response using current RPCs.
 
 Next implementation slices:
 
