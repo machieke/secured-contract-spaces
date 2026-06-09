@@ -254,6 +254,12 @@ pub struct RpcErrorBody {
     pub message: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AuthenticatedRpcRequest {
+    pub bearer_token: String,
+    pub request: RpcRequest,
+}
+
 #[derive(Debug)]
 pub enum RpcTransportError {
     Io(io::Error),
@@ -305,6 +311,78 @@ impl JsonRpcServer {
 
 pub trait JsonRpcHandler {
     fn handle_json_request(&mut self, request: &[u8]) -> Result<Vec<u8>, RpcTransportError>;
+}
+
+pub struct AuthenticatedJsonRpcHandler<'a, H> {
+    inner: &'a mut H,
+    bearer_token: String,
+}
+
+impl<'a, H: JsonRpcHandler> AuthenticatedJsonRpcHandler<'a, H> {
+    pub fn new(inner: &'a mut H, bearer_token: impl Into<String>) -> Self {
+        Self {
+            inner,
+            bearer_token: bearer_token.into(),
+        }
+    }
+}
+
+impl<H: JsonRpcHandler> JsonRpcHandler for AuthenticatedJsonRpcHandler<'_, H> {
+    fn handle_json_request(&mut self, request: &[u8]) -> Result<Vec<u8>, RpcTransportError> {
+        let envelope = match serde_json::from_slice::<AuthenticatedRpcRequest>(request) {
+            Ok(envelope) => envelope,
+            Err(error) => {
+                return if serde_json::from_slice::<serde_json::Value>(request).is_err() {
+                    rpc_error_response_bytes("rpc.decode_error", error.to_string())
+                } else {
+                    rpc_error_response_bytes(
+                        "rpc.authentication_required",
+                        "operator endpoint requires a valid bearer token",
+                    )
+                };
+            }
+        };
+
+        if envelope.bearer_token != self.bearer_token {
+            return rpc_error_response_bytes(
+                "rpc.authentication_required",
+                "operator endpoint requires a valid bearer token",
+            );
+        }
+
+        let inner_request =
+            serde_json::to_vec(&envelope.request).map_err(RpcTransportError::Encode)?;
+        self.inner.handle_json_request(&inner_request)
+    }
+}
+
+pub struct RateLimitedJsonRpcHandler<'a, H> {
+    inner: &'a mut H,
+    max_requests: usize,
+    served_requests: usize,
+}
+
+impl<'a, H: JsonRpcHandler> RateLimitedJsonRpcHandler<'a, H> {
+    pub fn new(inner: &'a mut H, max_requests: usize) -> Self {
+        Self {
+            inner,
+            max_requests,
+            served_requests: 0,
+        }
+    }
+}
+
+impl<H: JsonRpcHandler> JsonRpcHandler for RateLimitedJsonRpcHandler<'_, H> {
+    fn handle_json_request(&mut self, request: &[u8]) -> Result<Vec<u8>, RpcTransportError> {
+        if self.served_requests >= self.max_requests {
+            return rpc_error_response_bytes(
+                "rpc.rate_limited",
+                "operator endpoint request limit exceeded",
+            );
+        }
+        self.served_requests += 1;
+        self.inner.handle_json_request(request)
+    }
 }
 
 pub struct RpcService {
@@ -653,6 +731,17 @@ pub fn json_rpc_response_for_request(
     serde_json::to_vec(&response).map_err(RpcTransportError::Encode)
 }
 
+fn rpc_error_response_bytes(
+    code: impl Into<String>,
+    message: impl Into<String>,
+) -> Result<Vec<u8>, RpcTransportError> {
+    serde_json::to_vec(&RpcResponse::Error(RpcErrorBody {
+        code: code.into(),
+        message: message.into(),
+    }))
+    .map_err(RpcTransportError::Encode)
+}
+
 fn read_bounded_json_line<R: Read>(
     reader: &mut R,
     max_request_bytes: usize,
@@ -829,6 +918,87 @@ mod tests {
         reader.read_line(&mut line).unwrap();
         assert!(!line.is_empty());
         serde_json::from_str(&line).unwrap()
+    }
+
+    fn authenticated_request(token: &str, request: RpcRequest) -> Vec<u8> {
+        serde_json::to_vec(&AuthenticatedRpcRequest {
+            bearer_token: token.into(),
+            request,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn authenticated_json_rpc_handler_requires_bearer_token() {
+        let mut rpc = seeded_rpc();
+        let mut handler = AuthenticatedJsonRpcHandler::new(&mut rpc, "operator-secret");
+        let missing_token =
+            serde_json::to_vec(&RpcRequest::GetStateRoot).expect("request serializes");
+
+        let missing_response: RpcResponse =
+            serde_json::from_slice(&handler.handle_json_request(&missing_token).unwrap()).unwrap();
+        assert_eq!(
+            missing_response,
+            RpcResponse::Error(RpcErrorBody {
+                code: "rpc.authentication_required".into(),
+                message: "operator endpoint requires a valid bearer token".into(),
+            })
+        );
+
+        let bad_response: RpcResponse = serde_json::from_slice(
+            &handler
+                .handle_json_request(&authenticated_request(
+                    "wrong-secret",
+                    RpcRequest::GetStateRoot,
+                ))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            bad_response,
+            RpcResponse::Error(RpcErrorBody {
+                code: "rpc.authentication_required".into(),
+                message: "operator endpoint requires a valid bearer token".into(),
+            })
+        );
+
+        let ok_response: RpcResponse = serde_json::from_slice(
+            &handler
+                .handle_json_request(&authenticated_request(
+                    "operator-secret",
+                    RpcRequest::GetStateRoot,
+                ))
+                .unwrap(),
+        )
+        .unwrap();
+        match ok_response {
+            RpcResponse::Ok(RpcResult::StateRoot(root)) => assert_eq!(root.len(), 64),
+            response => panic!("expected authenticated state root, got {response:?}"),
+        }
+    }
+
+    #[test]
+    fn rate_limited_json_rpc_handler_rejects_excess_requests() {
+        let mut rpc = seeded_rpc();
+        let mut handler = RateLimitedJsonRpcHandler::new(&mut rpc, 1);
+        let request = serde_json::to_vec(&RpcRequest::GetStateRoot).unwrap();
+
+        let first: RpcResponse =
+            serde_json::from_slice(&handler.handle_json_request(&request).unwrap()).unwrap();
+        match first {
+            RpcResponse::Ok(RpcResult::StateRoot(root)) => assert_eq!(root.len(), 64),
+            response => panic!("expected first state root, got {response:?}"),
+        }
+
+        let second: RpcResponse =
+            serde_json::from_slice(&handler.handle_json_request(&request).unwrap()).unwrap();
+        assert_eq!(
+            second,
+            RpcResponse::Error(RpcErrorBody {
+                code: "rpc.rate_limited".into(),
+                message: "operator endpoint request limit exceeded".into(),
+            })
+        );
     }
 
     #[test]

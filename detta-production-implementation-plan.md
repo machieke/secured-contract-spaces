@@ -396,6 +396,9 @@ Completed production-plan slices:
   after restart.
 - [x] Stable JSON client fixtures cover receipt-proof and event-proof RPC
   response shapes.
+- [x] JSON RPC exposes opt-in operator endpoint wrappers for bearer-token
+  authentication and per-connection request limiting without breaking public
+  request compatibility.
 
 Next implementation slices:
 
