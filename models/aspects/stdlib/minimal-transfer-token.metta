@@ -53,3 +53,12 @@
 (projection MinimalTransferToken ERC20-transfer
   (= (ERC20.transfer $to $amount)
      (transferFromSelf tx.sender $to $amount)))
+
+(method-abi MinimalTransferToken ERC20-transfer
+  (args (to Address) (amount Amount))
+  Bool)
+
+(method-policy MinimalTransferToken ERC20-transfer
+  TxSender
+  (effects ReadState WriteState EmitEvent)
+  (invariants TBA-3))

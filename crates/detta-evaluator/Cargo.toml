@@ -5,6 +5,7 @@ edition = "2021"
 license = "MIT"
 
 [dependencies]
+detta-aspects = { path = "../detta-aspects" }
 detta-core = { path = "../detta-core" }
 detta-verify = { path = "../detta-verify" }
 serde = { version = "1.0", features = ["derive"] }

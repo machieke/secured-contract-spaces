@@ -392,6 +392,7 @@ Accepted top-level declarations:
 (extends AspectId ParentAspectId)
 (conflicts AspectId OtherAspectId)
 (owns AspectId StateId TypeId)
+(registry-owns AspectId RegistryId TypeId)
 (provides AspectId FacetId)
 (requires AspectId FacetId)
 (action AspectId ActionId)
@@ -401,6 +402,8 @@ Accepted top-level declarations:
 (bundle-extends BundleId ParentBundleId)
 (bundle-constraint BundleId ConstraintId Expr)
 (projection BundleId ProjectionId Expr)
+(method-abi BundleId ProjectionId ArgsExpr ReturnTypeExpr)
+(method-policy BundleId ProjectionId AuthorityExpr EffectsExpr InvariantsExpr)
 (cross-constraint ConstraintId Expr)
 ```
 
@@ -590,6 +593,7 @@ A deployable module artifact should be fully deterministic:
   "abi_root": "...",
   "policy_root": "...",
   "storage_schema_root": "...",
+  "registry_schema_root": "...",
   "event_schema_root": "...",
   "invariant_root": "...",
   "proof_obligation_root": "...",
@@ -1191,15 +1195,15 @@ Acceptance criteria:
 
 ### Phase 2: Typed IR and Static Verification
 
-- [ ] Define `AspectModuleIr`.
-- [ ] Lower AST to IR.
-- [ ] Implement type resolution.
-- [ ] Implement aspect dependency closure.
-- [ ] Implement conflict checking.
-- [ ] Implement storage ownership checking.
-- [ ] Implement projection target checking.
-- [ ] Implement method policy completeness checking.
-- [ ] Emit module artifacts.
+- [x] Define `AspectModuleIr`.
+- [x] Lower AST to IR.
+- [x] Implement type resolution.
+- [x] Implement aspect dependency closure.
+- [x] Implement conflict checking.
+- [x] Implement storage ownership checking.
+- [x] Implement projection target checking.
+- [x] Implement method policy completeness checking.
+- [x] Emit module artifacts.
 
 Acceptance criteria:
 
@@ -1211,12 +1215,18 @@ Acceptance criteria:
 
 ### Phase 3: Effect and Authority Checker
 
-- [ ] Add effect inference.
-- [ ] Add declared-vs-inferred effect comparison.
-- [ ] Add write-scope checker.
-- [ ] Add registry-scope checker.
-- [ ] Add authority expression support.
-- [ ] Add call graph and reentrancy checker.
+- [x] Add effect inference.
+- [x] Add declared-vs-inferred effect comparison.
+- [x] Add write-scope checker.
+- [x] Add registry-scope checker.
+- [x] Add authority expression support.
+- [x] Add call graph and reentrancy checker.
+
+Progress note: the first checker slice parses typed authority/effect policy
+metadata, rejects undeclared inferred state and registry effects, verifies
+state writes against bundle-owned state, verifies registry reads, writes, and
+consumes against bundle-owned registry schema, and rejects cyclic action
+graphs.
 
 Acceptance criteria:
 
@@ -1228,14 +1238,20 @@ Acceptance criteria:
 
 ### Phase 4: Executable Restricted Aspect Evaluator
 
-- [ ] Extend evaluator expression AST.
-- [ ] Add lexical bindings and typed arguments.
-- [ ] Add deterministic conditionals.
-- [ ] Add `require`.
-- [ ] Add checked arithmetic.
-- [ ] Add guarded state/registry/event host calls.
-- [ ] Add deterministic trace roots.
-- [ ] Add meter charging.
+- [x] Extend evaluator expression AST.
+- [x] Add lexical bindings and typed arguments.
+- [x] Add deterministic conditionals.
+- [x] Add `require`.
+- [x] Add checked arithmetic.
+- [x] Add guarded state/registry/event host calls.
+- [x] Add deterministic trace roots.
+- [x] Add meter charging.
+
+Progress note: the first executable evaluator slice runs verified aspect action
+expressions into deterministic host-call traces with lexical argument binding,
+checked arithmetic, boolean conditions, `require`, step metering, stack-depth
+limits, and trace roots. The host calls are not yet wired into the SCS guarded
+storage kernel or block executor.
 
 Acceptance criteria:
 
@@ -1247,13 +1263,20 @@ Acceptance criteria:
 
 ### Phase 5: Programmable Contract Runtime
 
-- [ ] Add module registry state.
-- [ ] Add programmable contract descriptor.
+- [x] Add module registry state.
+- [x] Add programmable contract descriptor.
 - [ ] Add module submission path.
-- [ ] Add aspect contract deployment path.
+- [x] Add aspect contract deployment path.
 - [ ] Dispatch programmable methods through evaluator.
 - [ ] Integrate invariant checks.
 - [ ] Add receipt/proof support for programmable modules.
+
+Progress note: the first runtime slice stores authenticated aspect module
+records by deterministic module hash, includes them in the global state root,
+and deploys fail-closed programmable contract descriptors that reference a
+registered module hash and bundle id. Transaction/RPC module submission,
+method dispatch, invariant execution, and receipt/proof integration remain
+pending.
 
 Acceptance criteria:
 

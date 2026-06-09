@@ -297,6 +297,68 @@ pub struct ContractRecord {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AspectModuleRecord {
+    pub module_id: String,
+    pub module_hash: String,
+    pub taxonomy_version: String,
+    pub source_root: String,
+    pub ir_root: String,
+    pub abi_root: String,
+    pub policy_root: String,
+    pub storage_schema_root: String,
+    pub registry_schema_root: String,
+    pub invariant_root: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AspectModuleRoots {
+    pub source_root: String,
+    pub ir_root: String,
+    pub abi_root: String,
+    pub policy_root: String,
+    pub storage_schema_root: String,
+    pub registry_schema_root: String,
+    pub invariant_root: String,
+}
+
+impl AspectModuleRecord {
+    pub fn new(
+        module_id: impl Into<String>,
+        taxonomy_version: impl Into<String>,
+        roots: AspectModuleRoots,
+    ) -> Self {
+        let mut record = Self {
+            module_id: module_id.into(),
+            module_hash: String::new(),
+            taxonomy_version: taxonomy_version.into(),
+            source_root: roots.source_root,
+            ir_root: roots.ir_root,
+            abi_root: roots.abi_root,
+            policy_root: roots.policy_root,
+            storage_schema_root: roots.storage_schema_root,
+            registry_schema_root: roots.registry_schema_root,
+            invariant_root: roots.invariant_root,
+        };
+        record.module_hash = record.computed_hash();
+        record
+    }
+
+    pub fn computed_hash(&self) -> String {
+        root_of(&(
+            &self.module_id,
+            &self.taxonomy_version,
+            &self.source_root,
+            &self.ir_root,
+            &self.abi_root,
+            &self.policy_root,
+            &self.storage_schema_root,
+            &self.registry_schema_root,
+            &self.invariant_root,
+        ))
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ScheduledUpgrade {
     pub upgrade_id: String,
     pub governance_contract: ContractId,
@@ -391,6 +453,13 @@ pub enum ContractKind {
     },
     Factory,
     AccountRegistry,
+    AspectModule {
+        module_hash: String,
+        bundle_id: String,
+        abi_root: String,
+        policy_root: String,
+        invariant_root: String,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -909,6 +978,26 @@ impl ContractRecord {
                 ),
             ]),
             BTreeSet::from([invariant]),
+        )
+    }
+
+    fn aspect_module_contract(
+        contract_id: ContractId,
+        module: &AspectModuleRecord,
+        bundle_id: String,
+    ) -> Self {
+        Self::with_policy_manifest(
+            contract_id,
+            module.module_hash.clone(),
+            ContractKind::AspectModule {
+                module_hash: module.module_hash.clone(),
+                bundle_id,
+                abi_root: module.abi_root.clone(),
+                policy_root: module.policy_root.clone(),
+                invariant_root: module.invariant_root.clone(),
+            },
+            BTreeMap::new(),
+            BTreeSet::new(),
         )
     }
 }
@@ -2134,6 +2223,7 @@ pub struct DeTTaState {
     height: u64,
     finalized_block_hash: String,
     contracts: BTreeMap<ContractId, ContractRecord>,
+    aspect_modules: BTreeMap<String, AspectModuleRecord>,
     #[serde(with = "storage_map_entries")]
     storage: BTreeMap<StateKey, StateValue>,
     #[serde(with = "registry_map_entries")]
@@ -2203,6 +2293,7 @@ impl DeTTaState {
             height: 0,
             finalized_block_hash: "genesis".into(),
             contracts: BTreeMap::new(),
+            aspect_modules: BTreeMap::new(),
             storage: BTreeMap::new(),
             registry: BTreeMap::new(),
             used_nonces: BTreeSet::new(),
@@ -2734,6 +2825,42 @@ impl DeTTaState {
         Ok(())
     }
 
+    pub fn register_aspect_module(
+        &mut self,
+        module: AspectModuleRecord,
+    ) -> Result<String, ExecutionError> {
+        let computed_hash = module.computed_hash();
+        if module.module_hash != computed_hash {
+            return Err(ExecutionError::InvalidArguments);
+        }
+        if self.aspect_modules.contains_key(&module.module_hash) {
+            return Err(ExecutionError::InvalidArguments);
+        }
+        let module_hash = module.module_hash.clone();
+        self.aspect_modules.insert(module_hash.clone(), module);
+        Ok(module_hash)
+    }
+
+    pub fn deploy_aspect_contract(
+        &mut self,
+        contract: impl Into<ContractId>,
+        module_hash: impl Into<String>,
+        bundle_id: impl Into<String>,
+    ) -> Result<(), ExecutionError> {
+        let contract = contract.into();
+        let module_hash = module_hash.into();
+        let bundle_id = bundle_id.into();
+        let module = self
+            .aspect_modules
+            .get(&module_hash)
+            .ok_or(ExecutionError::InvalidArguments)?;
+        self.contracts.insert(
+            contract.clone(),
+            ContractRecord::aspect_module_contract(contract, module, bundle_id),
+        );
+        Ok(())
+    }
+
     pub fn apply_transaction(&mut self, tx: Transaction) -> Receipt {
         if tx.chain_id != self.chain_id {
             return self.rejected_receipt(tx.tx_hash, ExecutionError::ChainMismatch);
@@ -3033,6 +3160,10 @@ impl DeTTaState {
         self.contracts.get(&contract)
     }
 
+    pub fn aspect_module(&self, module_hash: &str) -> Option<&AspectModuleRecord> {
+        self.aspect_modules.get(module_hash)
+    }
+
     pub fn scheduled_upgrade(&self, upgrade_id: &str) -> Option<&ScheduledUpgrade> {
         self.scheduled_upgrades.get(upgrade_id)
     }
@@ -3093,6 +3224,10 @@ impl DeTTaState {
 
     pub fn contract_records(&self) -> impl Iterator<Item = &ContractRecord> {
         self.contracts.values()
+    }
+
+    pub fn aspect_module_records(&self) -> impl Iterator<Item = &AspectModuleRecord> {
+        self.aspect_modules.values()
     }
 
     pub fn trusted_bridge_validator_set(
@@ -3426,6 +3561,7 @@ impl DeTTaState {
             &self.chain_id,
             self.height,
             &self.contracts,
+            self.aspect_module_root(),
             self.storage_root(),
             self.registry_root(),
             self.policy_root(),
@@ -3445,6 +3581,17 @@ impl DeTTaState {
         self.storage
             .iter()
             .map(|(key, value)| (key.clone(), value.clone()))
+            .collect()
+    }
+
+    pub fn aspect_module_root(&self) -> String {
+        merkle_root(&self.aspect_module_entries())
+    }
+
+    fn aspect_module_entries(&self) -> Vec<(String, AspectModuleRecord)> {
+        self.aspect_modules
+            .iter()
+            .map(|(module_hash, record)| (module_hash.clone(), record.clone()))
             .collect()
     }
 
@@ -3639,6 +3786,7 @@ impl DeTTaState {
                     }
                     _ => Err(ExecutionError::PolicyMissing),
                 },
+                ContractKind::AspectModule { .. } => Err(ExecutionError::PolicyMissing),
             }
         })();
         call_context.exit();
@@ -6228,6 +6376,99 @@ mod tests {
             )
             .unwrap();
         state
+    }
+
+    fn aspect_module_record() -> AspectModuleRecord {
+        AspectModuleRecord::new(
+            "MinimalTransferToken",
+            "NormalizedBalanceFirst.v1",
+            AspectModuleRoots {
+                source_root: "source-root".into(),
+                ir_root: "ir-root".into(),
+                abi_root: "abi-root".into(),
+                policy_root: "policy-root".into(),
+                storage_schema_root: "storage-schema-root".into(),
+                registry_schema_root: "registry-schema-root".into(),
+                invariant_root: "invariant-root".into(),
+            },
+        )
+    }
+
+    #[test]
+    fn aspect_module_registration_authenticates_record_hash() {
+        let mut state = DeTTaState::new("detta-local");
+        let mut module = aspect_module_record();
+        module.module_hash = "tampered".into();
+
+        assert_eq!(
+            state.register_aspect_module(module),
+            Err(ExecutionError::InvalidArguments)
+        );
+        assert_eq!(state.aspect_module_records().count(), 0);
+    }
+
+    #[test]
+    fn aspect_module_registration_changes_global_state_root_and_is_queryable() {
+        let mut state = DeTTaState::new("detta-local");
+        let root_before = state.global_state_root();
+        let module = aspect_module_record();
+        let module_hash = module.module_hash.clone();
+
+        assert_eq!(
+            state.register_aspect_module(module.clone()),
+            Ok(module_hash.clone())
+        );
+        assert_eq!(state.aspect_module(&module_hash), Some(&module));
+        assert_eq!(state.aspect_module_records().count(), 1);
+        assert_ne!(
+            state.aspect_module_root(),
+            merkle_root::<(String, String)>(&[])
+        );
+        assert_ne!(state.global_state_root(), root_before);
+        assert_eq!(
+            state.register_aspect_module(module),
+            Err(ExecutionError::InvalidArguments)
+        );
+    }
+
+    #[test]
+    fn aspect_contract_deployment_references_registered_module() {
+        let mut state = DeTTaState::new("detta-local");
+        let module = aspect_module_record();
+        let module_hash = state.register_aspect_module(module.clone()).unwrap();
+
+        state
+            .deploy_aspect_contract("AspectToken", module_hash.clone(), "MinimalTransferToken")
+            .unwrap();
+        let record = state.contract("AspectToken").unwrap();
+
+        assert_eq!(record.code_hash, module_hash);
+        assert_eq!(record.exported_methods().len(), 0);
+        assert!(matches!(
+            &record.kind,
+            ContractKind::AspectModule {
+                module_hash,
+                bundle_id,
+                abi_root,
+                policy_root,
+                invariant_root,
+            } if module_hash == &module.module_hash
+                && bundle_id == "MinimalTransferToken"
+                && abi_root == &module.abi_root
+                && policy_root == &module.policy_root
+                && invariant_root == &module.invariant_root
+        ));
+    }
+
+    #[test]
+    fn aspect_contract_deployment_rejects_unknown_module() {
+        let mut state = DeTTaState::new("detta-local");
+
+        assert_eq!(
+            state.deploy_aspect_contract("AspectToken", "missing-module", "Bundle"),
+            Err(ExecutionError::InvalidArguments)
+        );
+        assert!(state.contract("AspectToken").is_none());
     }
 
     fn tx(
