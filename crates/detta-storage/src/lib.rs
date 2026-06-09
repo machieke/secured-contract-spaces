@@ -64,6 +64,15 @@ pub struct ConsensusSigningRecord {
     pub block_hash: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct StorageBackupManifest {
+    pub file_count: usize,
+    pub total_bytes: u64,
+    pub snapshot_root: Option<String>,
+    pub highest_block_height: Option<u64>,
+    pub highest_finality_certificate_height: Option<u64>,
+}
+
 impl FileStorage {
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, StorageError> {
         let root = root.into();
@@ -80,6 +89,48 @@ impl FileStorage {
 
     pub fn storage_bytes(&self) -> Result<u64, StorageError> {
         directory_size_bytes(&self.root)
+    }
+
+    pub fn backup_to(
+        &self,
+        destination: impl AsRef<Path>,
+    ) -> Result<StorageBackupManifest, StorageError> {
+        let destination = destination.as_ref();
+        fs::create_dir_all(destination).map_err(io_error)?;
+        let mut manifest = StorageBackupManifest {
+            file_count: 0,
+            total_bytes: 0,
+            snapshot_root: if self.snapshot_path().exists() {
+                Some(self.load_snapshot()?.global_state_root)
+            } else {
+                None
+            },
+            highest_block_height: self
+                .load_blocks()?
+                .into_iter()
+                .map(|block| block.header.height)
+                .max(),
+            highest_finality_certificate_height: self.highest_finality_certificate_height()?,
+        };
+        copy_directory_contents(&self.root, destination, &mut manifest)?;
+        Ok(manifest)
+    }
+
+    pub fn restore_from_backup(
+        backup_root: impl AsRef<Path>,
+        restore_root: impl Into<PathBuf>,
+    ) -> Result<Self, StorageError> {
+        let restore_root = restore_root.into();
+        fs::create_dir_all(&restore_root).map_err(io_error)?;
+        let mut manifest = StorageBackupManifest {
+            file_count: 0,
+            total_bytes: 0,
+            snapshot_root: None,
+            highest_block_height: None,
+            highest_finality_certificate_height: None,
+        };
+        copy_directory_contents(backup_root.as_ref(), &restore_root, &mut manifest)?;
+        Self::open(restore_root)
     }
 
     pub fn commit_snapshot(&self, snapshot: &StateSnapshot) -> Result<(), StorageError> {
@@ -204,6 +255,25 @@ impl FileStorage {
             .into_iter()
             .map(|height| self.load_block(height))
             .collect()
+    }
+
+    fn highest_finality_certificate_height(&self) -> Result<Option<u64>, StorageError> {
+        let mut highest = None;
+        for entry in fs::read_dir(self.root.join("certificates")).map_err(io_error)? {
+            let path = entry.map_err(io_error)?.path();
+            if path.extension().and_then(|extension| extension.to_str()) != Some("bin") {
+                continue;
+            }
+            let Some(height) = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .and_then(|stem| stem.parse::<u64>().ok())
+            else {
+                continue;
+            };
+            highest = Some(highest.map_or(height, |current: u64| current.max(height)));
+        }
+        Ok(highest)
     }
 
     pub fn find_transaction(&self, tx_hash: &str) -> Result<Option<Transaction>, StorageError> {
@@ -693,6 +763,34 @@ fn directory_size_bytes(path: &Path) -> Result<u64, StorageError> {
         total = total.saturating_add(directory_size_bytes(&entry.map_err(io_error)?.path())?);
     }
     Ok(total)
+}
+
+fn copy_directory_contents(
+    source: &Path,
+    destination: &Path,
+    manifest: &mut StorageBackupManifest,
+) -> Result<(), StorageError> {
+    fs::create_dir_all(destination).map_err(io_error)?;
+    for entry in fs::read_dir(source).map_err(io_error)? {
+        let source_path = entry.map_err(io_error)?.path();
+        let destination_path = destination.join(
+            source_path
+                .file_name()
+                .ok_or_else(|| StorageError::Io("backup path has no filename".into()))?,
+        );
+        let metadata = fs::metadata(&source_path).map_err(io_error)?;
+        if metadata.is_dir() {
+            copy_directory_contents(&source_path, &destination_path, manifest)?;
+        } else if metadata.is_file() {
+            if let Some(parent) = destination_path.parent() {
+                fs::create_dir_all(parent).map_err(io_error)?;
+            }
+            let bytes = fs::copy(&source_path, &destination_path).map_err(io_error)?;
+            manifest.file_count += 1;
+            manifest.total_bytes = manifest.total_bytes.saturating_add(bytes);
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1274,6 +1372,44 @@ mod tests {
 
         assert!(after > before);
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn backup_and_restore_copy_durable_storage_files() {
+        let dir = temp_dir("backup-source");
+        let backup_dir = temp_dir("backup-copy");
+        let restore_dir = temp_dir("backup-restore");
+        let storage = FileStorage::open(&dir).unwrap();
+        let proposer = ValidatorNode::new("validator-1", seeded_state());
+        let block = proposer.propose_block(1, vec![transfer_tx()], 1_000);
+        let snapshot = proposer.state().snapshot();
+        let certificate = FinalityCertificate {
+            height: 1,
+            block_hash: block.block_hash(),
+            signers: vec!["validator-1".into()],
+        };
+        storage.commit_snapshot(&snapshot).unwrap();
+        storage.commit_block(&block).unwrap();
+        storage.commit_finality_certificate(&certificate).unwrap();
+
+        let manifest = storage.backup_to(&backup_dir).unwrap();
+        let restored = FileStorage::restore_from_backup(&backup_dir, &restore_dir).unwrap();
+
+        assert!(manifest.file_count >= 3);
+        assert!(manifest.total_bytes > 0);
+        assert_eq!(
+            manifest.snapshot_root,
+            Some(snapshot.global_state_root.clone())
+        );
+        assert_eq!(manifest.highest_block_height, Some(1));
+        assert_eq!(manifest.highest_finality_certificate_height, Some(1));
+        assert_eq!(restored.load_block(1).unwrap(), block);
+        assert_eq!(restored.load_finality_certificate(1).unwrap(), certificate);
+        assert_eq!(restored.load_snapshot().unwrap(), snapshot);
+
+        fs::remove_dir_all(dir).unwrap();
+        fs::remove_dir_all(backup_dir).unwrap();
+        fs::remove_dir_all(restore_dir).unwrap();
     }
 
     #[test]

@@ -2434,6 +2434,48 @@ mod tests {
     }
 
     #[test]
+    fn persistent_node_restores_from_backup_and_verifies_finalized_roots() {
+        let dir = temp_dir("backup-node-source");
+        let backup_dir = temp_dir("backup-node-copy");
+        let restore_dir = temp_dir("backup-node-restore");
+        let mut node =
+            PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &dir).unwrap();
+        node.submit_transaction(transfer_tx()).unwrap();
+        let block = node.produce_block(1, 1_000).unwrap();
+        let certificate = FinalityCertificate {
+            height: 1,
+            block_hash: block.block_hash(),
+            signers: vec!["validator-1".into()],
+        };
+        node.persist_finality_certificate(&certificate).unwrap();
+        let expected_root = block.header.global_state_root.clone();
+
+        let manifest = node.storage.backup_to(&backup_dir).unwrap();
+        FileStorage::restore_from_backup(&backup_dir, &restore_dir).unwrap();
+        let mut restored = PersistentValidatorNode::restart("validator-1", &restore_dir).unwrap();
+
+        assert_eq!(manifest.highest_block_height, Some(1));
+        assert_eq!(manifest.highest_finality_certificate_height, Some(1));
+        assert_eq!(
+            restored.load_block(1).unwrap().header.global_state_root,
+            expected_root
+        );
+        assert_eq!(restored.load_finality_certificate(1).unwrap(), certificate);
+        assert_eq!(
+            restored.handle_rpc_request(RpcRequest::GetBlock { height: 1 }),
+            RpcResponse::Ok(RpcResult::Block(Box::new(block.clone())))
+        );
+        assert_eq!(
+            restored.handle_rpc_request(RpcRequest::GetFinalityCertificate { height: 1 }),
+            RpcResponse::Ok(RpcResult::FinalityCertificate(Box::new(certificate)))
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+        fs::remove_dir_all(backup_dir).unwrap();
+        fs::remove_dir_all(restore_dir).unwrap();
+    }
+
+    #[test]
     fn persistent_node_reports_operational_health() {
         let dir = temp_dir("node-health");
         let mut node =

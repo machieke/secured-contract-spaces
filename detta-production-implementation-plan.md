@@ -447,6 +447,9 @@ Completed production-plan slices:
 - [x] Persistent operator alerts evaluate stalled consensus, root mismatch,
   excessive reverts, peer isolation, slashing evidence, disk pressure, RPC
   overload, and mempool saturation with typed RPC and stable fixtures.
+- [x] File-storage backup and restore copies durable node state with a manifest
+  covering bytes, file count, snapshot root, highest block height, and highest
+  finality-certificate height, with persistent-node restore verification.
 
 Next implementation slices:
 

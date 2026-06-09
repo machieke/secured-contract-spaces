@@ -79,6 +79,12 @@ For process restart, restart from the same data directory and verify:
 - finality certificates and slashing records are still available;
 - validator-set metadata and pending authorizations reload.
 
+For backup restore, copy the validator data directory through the storage
+backup path and retain the backup manifest. Restore into a fresh data directory,
+restart the node, and verify the manifest's snapshot root, highest block height,
+highest finality-certificate height, and restored block roots before admitting
+the node back into validator service.
+
 For a corrupted or stale node, bootstrap from a trusted snapshot:
 
 - fetch snapshot chunks and manifest from a healthy peer;
