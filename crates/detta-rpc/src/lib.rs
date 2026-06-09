@@ -781,7 +781,9 @@ fn rpc_error_message(error: &RpcError) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use detta_core::{Argument, ContractInvariant, DeTTaState, Method, TxStatus};
+    use detta_core::{
+        Argument, ContractInvariant, DeTTaState, EventPayload, MerkleProof, Method, TxStatus,
+    };
     use detta_protocol::{ProtocolMessage, ValidatorSetMetadataUpdate, ValidatorSignatureDomain};
     use std::io::{BufRead, BufReader, Write};
     use std::net::{Shutdown, TcpStream};
@@ -932,6 +934,90 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<RpcResponse>(fixture).unwrap(),
             response
+        );
+    }
+
+    #[test]
+    fn proof_response_json_fixtures_are_stable() {
+        let receipt_response = RpcResponse::Ok(RpcResult::ReceiptProof(Box::new(ReceiptProof {
+            receipt: Receipt {
+                tx_hash: "tx1".into(),
+                status: TxStatus::Committed,
+                error: None,
+                return_value: None,
+                resource_units_used: 7,
+                storage_root_after: "storage-root".into(),
+                registry_root_after: "registry-root".into(),
+                policy_root_after: "policy-root".into(),
+                event_root_after: "event-root".into(),
+                nonce_root_after: "nonce-root".into(),
+                global_state_root_after: "global-root".into(),
+            },
+            proof: MerkleProof {
+                root: "receipt-root".into(),
+                leaf_hash: "receipt-leaf".into(),
+                index: 0,
+                leaf_count: 1,
+                path: vec![],
+            },
+        })));
+        let receipt_fixture = concat!(
+            r#"{"status":"ok","body":{"result":"receipt_proof","data":{"#,
+            r#""receipt":{"tx_hash":"tx1","status":"Committed","error":null,"#,
+            r#""return_value":null,"resource_units_used":7,"#,
+            r#""storage_root_after":"storage-root","#,
+            r#""registry_root_after":"registry-root","#,
+            r#""policy_root_after":"policy-root","#,
+            r#""event_root_after":"event-root","#,
+            r#""nonce_root_after":"nonce-root","#,
+            r#""global_state_root_after":"global-root"},"#,
+            r#""proof":{"root":"receipt-root","leaf_hash":"receipt-leaf","#,
+            r#""index":0,"leaf_count":1,"path":[]}}}}"#,
+        );
+        assert_eq!(
+            serde_json::to_string(&receipt_response).unwrap(),
+            receipt_fixture
+        );
+        assert_eq!(
+            serde_json::from_str::<RpcResponse>(receipt_fixture).unwrap(),
+            receipt_response
+        );
+
+        let event_response = RpcResponse::Ok(RpcResult::EventProof(Box::new(EventProof {
+            event: Event {
+                contract: "TokenA".into(),
+                tx_hash: "tx1".into(),
+                index: 0,
+                payload: EventPayload::Transfer {
+                    from: "Alice".into(),
+                    to: "Bob".into(),
+                    asset: "USDC".into(),
+                    amount: 10,
+                },
+            },
+            proof: MerkleProof {
+                root: "event-root".into(),
+                leaf_hash: "event-leaf".into(),
+                index: 0,
+                leaf_count: 1,
+                path: vec![],
+            },
+        })));
+        let event_fixture = concat!(
+            r#"{"status":"ok","body":{"result":"event_proof","data":{"#,
+            r#""event":{"contract":"TokenA","tx_hash":"tx1","index":0,"#,
+            r#""payload":{"Transfer":{"from":"Alice","to":"Bob","#,
+            r#""asset":"USDC","amount":10}}},"#,
+            r#""proof":{"root":"event-root","leaf_hash":"event-leaf","#,
+            r#""index":0,"leaf_count":1,"path":[]}}}}"#,
+        );
+        assert_eq!(
+            serde_json::to_string(&event_response).unwrap(),
+            event_fixture
+        );
+        assert_eq!(
+            serde_json::from_str::<RpcResponse>(event_fixture).unwrap(),
+            event_response
         );
     }
 

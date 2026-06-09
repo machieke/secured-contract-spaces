@@ -394,6 +394,8 @@ Completed production-plan slices:
 - [x] RPC exposes independently verifiable receipt and event Merkle proofs, with
   persistent nodes serving finalized receipt proofs from durable block storage
   after restart.
+- [x] Stable JSON client fixtures cover receipt-proof and event-proof RPC
+  response shapes.
 
 Next implementation slices:
 
