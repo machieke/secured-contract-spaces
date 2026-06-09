@@ -1,6 +1,6 @@
 use detta_core::{
-    Argument, Block, ChainId, ContractId, ContractKind, DeTTaState, ExecutionError,
-    InvariantFailure, Method, StateKey, Transaction,
+    AmmParameters, Argument, Block, ChainId, ContractId, ContractKind, DeTTaState, ExecutionError,
+    InvariantFailure, LendingRiskParameters, Method, StakingParameters, StateKey, Transaction,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -670,6 +670,192 @@ pub fn deterministic_transfer_corpus(
     transactions
 }
 
+pub fn deterministic_defi_corpus(chain_id: ChainId, seed: u64) -> (DeTTaState, Vec<Transaction>) {
+    let mut state = DeTTaState::new(chain_id.clone());
+    state
+        .deploy_token(
+            "TokenA",
+            "USDC",
+            vec![
+                ("Alice".into(), 10_000),
+                ("Bob".into(), 10_000),
+                ("Carol".into(), 10_000),
+            ],
+        )
+        .unwrap();
+    state
+        .deploy_amm_pool_with_parameters("PoolA", "USDC", "ATOM", AmmParameters::new(30))
+        .unwrap();
+    state
+        .deploy_oracle("OracleA", "ATOM", "Reporter", 100)
+        .unwrap();
+    state
+        .deploy_lending_vault_with_risk(
+            "VaultA",
+            "ATOM",
+            "USDC",
+            "OracleA",
+            LendingRiskParameters::new(5_000, 100, 100, 7_500),
+        )
+        .unwrap();
+    state
+        .deploy_staking_with_parameters("StakeA", "ATOM", StakingParameters::new(2, 1, 500))
+        .unwrap();
+
+    let mut rng = seed;
+    rng = lcg_next(rng);
+    let liquidity_usdc = 400 + (rng as u128 % 5) * 25;
+    rng = lcg_next(rng);
+    let liquidity_atom = 200 + (rng as u128 % 5) * 10;
+    rng = lcg_next(rng);
+    let swap_in = 10 + (rng as u128 % 10);
+    rng = lcg_next(rng);
+    let collateral = 100 + (rng as u128 % 20);
+    rng = lcg_next(rng);
+    let borrow = 50 + (rng as u128 % 20);
+    rng = lcg_next(rng);
+    let stake = 80 + (rng as u128 % 20);
+    let request_unstake = stake / 3;
+
+    let transactions = vec![
+        generated_tx(
+            &chain_id,
+            "OracleA",
+            &format!("defi-fuzz-{seed}-price"),
+            "Reporter",
+            1,
+            Method::SubmitPrice,
+            vec![
+                Argument::Asset("ATOM".into()),
+                Argument::Amount(2),
+                Argument::Amount(5),
+            ],
+        ),
+        generated_tx(
+            &chain_id,
+            "PoolA",
+            &format!("defi-fuzz-{seed}-liquidity"),
+            "Alice",
+            1,
+            Method::AddLiquidity,
+            vec![
+                Argument::Amount(liquidity_usdc),
+                Argument::Amount(liquidity_atom),
+            ],
+        ),
+        generated_tx(
+            &chain_id,
+            "PoolA",
+            &format!("defi-fuzz-{seed}-swap"),
+            "Bob",
+            1,
+            Method::Swap,
+            vec![
+                Argument::Asset("USDC".into()),
+                Argument::Amount(swap_in),
+                Argument::Amount(1),
+            ],
+        ),
+        generated_tx(
+            &chain_id,
+            "VaultA",
+            &format!("defi-fuzz-{seed}-deposit"),
+            "Alice",
+            2,
+            Method::DepositCollateral,
+            vec![Argument::Asset("ATOM".into()), Argument::Amount(collateral)],
+        ),
+        generated_tx(
+            &chain_id,
+            "VaultA",
+            &format!("defi-fuzz-{seed}-borrow"),
+            "Alice",
+            3,
+            Method::Borrow,
+            vec![Argument::Asset("USDC".into()), Argument::Amount(borrow)],
+        ),
+        generated_tx(
+            &chain_id,
+            "VaultA",
+            &format!("defi-fuzz-{seed}-overborrow"),
+            "Alice",
+            4,
+            Method::Borrow,
+            vec![Argument::Asset("USDC".into()), Argument::Amount(200)],
+        ),
+        generated_tx(
+            &chain_id,
+            "StakeA",
+            &format!("defi-fuzz-{seed}-stake"),
+            "Bob",
+            2,
+            Method::Stake,
+            vec![Argument::Asset("ATOM".into()), Argument::Amount(stake)],
+        ),
+        generated_tx(
+            &chain_id,
+            "StakeA",
+            &format!("defi-fuzz-{seed}-request-unstake"),
+            "Bob",
+            3,
+            Method::RequestUnstake,
+            vec![
+                Argument::Asset("ATOM".into()),
+                Argument::Amount(request_unstake),
+            ],
+        ),
+        generated_tx(
+            &chain_id,
+            "StakeA",
+            &format!("defi-fuzz-{seed}-early-complete"),
+            "Bob",
+            4,
+            Method::CompleteUnstake,
+            vec![
+                Argument::Asset("ATOM".into()),
+                Argument::Amount(request_unstake),
+            ],
+        ),
+        generated_tx(
+            &chain_id,
+            "PoolA",
+            &format!("defi-fuzz-{seed}-bad-swap"),
+            "Mallory",
+            1,
+            Method::Swap,
+            vec![
+                Argument::Asset("BTC".into()),
+                Argument::Amount(1),
+                Argument::Amount(1),
+            ],
+        ),
+    ];
+
+    (state, transactions)
+}
+
+fn generated_tx(
+    chain_id: &ChainId,
+    target: &str,
+    tx_hash: &str,
+    sender: &str,
+    nonce: u64,
+    method: Method,
+    args: Vec<Argument>,
+) -> Transaction {
+    Transaction {
+        chain_id: chain_id.clone(),
+        tx_hash: tx_hash.into(),
+        sender: sender.into(),
+        nonce,
+        target: target.into(),
+        method,
+        args,
+        signature_ok: true,
+        budget: 1_000_000,
+    }
+}
+
 fn lcg_next(value: u64) -> u64 {
     value
         .wrapping_mul(6_364_136_223_846_793_005)
@@ -709,7 +895,7 @@ fn owner_of_key(key: &StateKey) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use detta_core::{Argument, DeTTaState, Method, Transaction};
+    use detta_core::{Argument, DeTTaState, Method, Transaction, TxStatus};
     use std::collections::BTreeMap;
 
     fn seeded_state() -> DeTTaState {
@@ -2981,6 +3167,31 @@ mod tests {
 
         assert_eq!(block.transactions.len(), 32);
         assert_eq!(block.header.height, 1);
+    }
+
+    #[test]
+    fn differential_replay_accepts_generated_defi_corpus() {
+        let (state, transactions) = deterministic_defi_corpus("detta-local".into(), 11);
+
+        assert_eq!(lint_state(&state), vec![]);
+        let block = verify_differential_replay(&state, transactions, 5, 4).unwrap();
+        assert_eq!(block.transactions.len(), 10);
+        assert_eq!(block.header.height, 5);
+        assert!(block
+            .receipts
+            .iter()
+            .any(|receipt| receipt.status == TxStatus::Committed));
+        assert!(block
+            .receipts
+            .iter()
+            .any(|receipt| receipt.status == TxStatus::Reverted));
+
+        let mut replayed = state;
+        replayed.apply_block(&block).unwrap();
+        assert_eq!(check_declared_invariants(&replayed), vec![]);
+        assert!(replayed.debt("VaultA", "Alice", "USDC") > 0);
+        assert!(replayed.stake_balance("StakeA", "Bob", "ATOM") > 0);
+        assert!(replayed.total_pending_unbond("StakeA", "ATOM") > 0);
     }
 
     #[test]

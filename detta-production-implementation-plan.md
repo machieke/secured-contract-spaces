@@ -434,6 +434,8 @@ Completed production-plan slices:
   stable transport error bodies and compatibility tests.
 - [x] The external JSON RPC HTTP endpoint has a versioned OpenAPI schema whose
   method enum is covered by crate tests.
+- [x] Deterministic generated DeFi corpus fuzz-smoke covers AMM, lending,
+  staking, committed/reverted receipts, and post-replay declared invariants.
 
 Next implementation slices:
 

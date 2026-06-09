@@ -9,6 +9,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 cargo test -p detta-verify
 cargo test -p detta-verify tests::differential_replay_accepts_generated_transfer_corpus -- --exact
+cargo test -p detta-verify tests::differential_replay_accepts_generated_defi_corpus -- --exact
 cargo build --locked --release
 scripts/detta-model-check.sh
 
