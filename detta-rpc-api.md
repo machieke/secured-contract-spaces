@@ -65,8 +65,9 @@ The shared `RpcService` supports:
 - `get_events`: fetch the current event log.
 - `get_events_page`: fetch a bounded event-log page with `offset`, effective
   `limit`, and `total_events` for indexer catch-up.
-- `subscribe`: create a polling subscription for `blocks`, `receipts`, and/or
-  `events`; an empty topic list subscribes to all three topics.
+- `subscribe`: create a polling subscription for `blocks`, `receipts`,
+  `events`, and/or `finality`; an empty topic list subscribes to all four
+  topics.
 - `get_subscription_events`: fetch a bounded page of subscription
   notifications from a subscription sequence cursor.
 - `get_contract`: fetch a deployed contract descriptor.

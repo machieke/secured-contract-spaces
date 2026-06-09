@@ -257,6 +257,7 @@ pub enum SubscriptionTopic {
     Blocks,
     Receipts,
     Events,
+    Finality,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -265,6 +266,7 @@ pub enum SubscriptionNotification {
     Block(Box<Block>),
     Receipt(Box<Receipt>),
     Event(Box<Event>),
+    FinalityCertificate(Box<FinalityCertificate>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -505,6 +507,7 @@ impl RpcService {
                 SubscriptionTopic::Blocks,
                 SubscriptionTopic::Receipts,
                 SubscriptionTopic::Events,
+                SubscriptionTopic::Finality,
             ];
         }
         topics.sort();
@@ -610,6 +613,13 @@ impl RpcService {
                 SubscriptionNotification::Event(Box::new(event)),
             );
         }
+    }
+
+    pub fn publish_finality_certificate(&mut self, certificate: FinalityCertificate) {
+        self.publish_subscription_event(
+            SubscriptionTopic::Finality,
+            SubscriptionNotification::FinalityCertificate(Box::new(certificate)),
+        );
     }
 
     pub fn submit_transaction(&mut self, tx: Transaction) -> Result<(), RpcError> {
@@ -1515,6 +1525,46 @@ mod tests {
             page_response
         );
 
+        let finality_page_response =
+            RpcResponse::Ok(RpcResult::SubscriptionEvents(SubscriptionEventPage {
+                subscription_id: "sub-2".into(),
+                events: vec![SubscriptionEvent {
+                    sequence: 3,
+                    topic: SubscriptionTopic::Finality,
+                    notification: SubscriptionNotification::FinalityCertificate(Box::new(
+                        FinalityCertificate {
+                            height: 7,
+                            block_hash: "block-hash-7".into(),
+                            signers: vec![
+                                "validator-1".into(),
+                                "validator-2".into(),
+                                "validator-3".into(),
+                            ],
+                        },
+                    )),
+                }],
+                from_sequence: 3,
+                next_sequence: 4,
+                earliest_retained_sequence: 1,
+                limit: 10,
+            }));
+        let finality_page_fixture = concat!(
+            r#"{"status":"ok","body":{"result":"subscription_events","data":{"#,
+            r#""subscription_id":"sub-2","events":[{"sequence":3,"topic":"finality","#,
+            r#""notification":{"kind":"finality_certificate","data":{"height":7,"#,
+            r#""block_hash":"block-hash-7","signers":["validator-1","validator-2","#,
+            r#""validator-3"]}}}],"from_sequence":3,"next_sequence":4,"#,
+            r#""earliest_retained_sequence":1,"limit":10}}}"#,
+        );
+        assert_eq!(
+            serde_json::to_string(&finality_page_response).unwrap(),
+            finality_page_fixture
+        );
+        assert_eq!(
+            serde_json::from_str::<RpcResponse>(finality_page_fixture).unwrap(),
+            finality_page_response
+        );
+
         let missing_response = RpcResponse::Error(RpcErrorBody {
             code: "rpc.subscription_not_found".into(),
             message: "subscription was not found".into(),
@@ -1771,6 +1821,7 @@ mod tests {
                 SubscriptionTopic::Blocks,
                 SubscriptionTopic::Receipts,
                 SubscriptionTopic::Events,
+                SubscriptionTopic::Finality,
             ]
         );
         assert_eq!(all_subscription.next_sequence, 1);
@@ -1828,6 +1879,38 @@ mod tests {
                 .unwrap_err(),
             RpcError::SubscriptionNotFound
         );
+    }
+
+    #[test]
+    fn rpc_subscription_polling_returns_finality_notifications() {
+        let mut rpc = seeded_rpc();
+        let subscription = rpc.subscribe(vec![SubscriptionTopic::Finality]);
+        let certificate = FinalityCertificate {
+            height: 7,
+            block_hash: "block-hash-7".into(),
+            signers: vec![
+                "validator-1".into(),
+                "validator-2".into(),
+                "validator-3".into(),
+            ],
+        };
+
+        rpc.publish_finality_certificate(certificate.clone());
+        let page = rpc
+            .get_subscription_events(
+                &subscription.subscription_id,
+                subscription.next_sequence,
+                10,
+            )
+            .unwrap();
+
+        assert_eq!(page.events.len(), 1);
+        assert_eq!(page.events[0].topic, SubscriptionTopic::Finality);
+        assert_eq!(page.next_sequence, 2);
+        assert!(matches!(
+            &page.events[0].notification,
+            SubscriptionNotification::FinalityCertificate(observed) if **observed == certificate
+        ));
     }
 
     #[test]

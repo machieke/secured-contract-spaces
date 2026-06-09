@@ -1346,12 +1346,14 @@ impl PersistentValidatorNode {
     }
 
     pub fn persist_finality_certificate(
-        &self,
+        &mut self,
         certificate: &FinalityCertificate,
     ) -> Result<(), NodeError> {
         self.storage
             .commit_finality_certificate(certificate)
-            .map_err(NodeError::Storage)
+            .map_err(NodeError::Storage)?;
+        self.rpc.publish_finality_certificate(certificate.clone());
+        Ok(())
     }
 
     pub fn load_finality_certificate(&self, height: u64) -> Result<FinalityCertificate, NodeError> {
@@ -1361,7 +1363,7 @@ impl PersistentValidatorNode {
     }
 
     pub fn persist_and_gossip_signed_finality_certificate(
-        &self,
+        &mut self,
         certificate: FinalityCertificate,
         signing_key: &ValidatorSigningKey,
         transport: &mut InMemoryTransport,
@@ -1875,7 +1877,7 @@ mod tests {
         ProtocolMessage, SignatureError, SnapshotChunkRequest, SnapshotChunkSet,
         ValidatorSetMetadataUpdate, ValidatorSigningKey,
     };
-    use detta_rpc::JsonRpcServer;
+    use detta_rpc::{JsonRpcServer, SubscriptionNotification, SubscriptionTopic};
     use std::fs;
     use std::io::{BufRead, BufReader, Write};
     use std::net::{Shutdown, TcpListener, TcpStream};
@@ -2623,6 +2625,12 @@ mod tests {
                 "validator-3".into(),
             ],
         };
+        let subscription = match proposer.handle_rpc_request(RpcRequest::Subscribe {
+            topics: vec![SubscriptionTopic::Finality],
+        }) {
+            RpcResponse::Ok(RpcResult::SubscriptionStatus(subscription)) => subscription,
+            response => panic!("expected finality subscription, got {response:?}"),
+        };
 
         assert_eq!(
             proposer
@@ -2634,6 +2642,20 @@ mod tests {
                 .unwrap(),
             1
         );
+        let page = match proposer.handle_rpc_request(RpcRequest::GetSubscriptionEvents {
+            subscription_id: subscription.subscription_id.clone(),
+            from_sequence: subscription.next_sequence,
+            limit: 10,
+        }) {
+            RpcResponse::Ok(RpcResult::SubscriptionEvents(page)) => page,
+            response => panic!("expected finality subscription page, got {response:?}"),
+        };
+        assert_eq!(page.events.len(), 1);
+        assert_eq!(page.events[0].topic, SubscriptionTopic::Finality);
+        assert!(matches!(
+            &page.events[0].notification,
+            SubscriptionNotification::FinalityCertificate(observed) if **observed == certificate
+        ));
 
         assert_eq!(
             proposer.load_finality_certificate(3).unwrap(),

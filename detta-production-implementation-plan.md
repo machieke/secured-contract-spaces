@@ -416,6 +416,8 @@ Completed production-plan slices:
   limits, and block resource limits over in-memory, TCP, and restart paths.
 - [x] RPC supports bounded polling subscriptions for new block, receipt, and
   event notifications with stable JSON fixtures and TCP coverage.
+- [x] Finality-certificate persistence publishes bounded RPC subscription
+  notifications with stable JSON fixtures and node-aware coverage.
 
 Next implementation slices:
 
