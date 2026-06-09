@@ -164,6 +164,15 @@ Completed production-plan slices:
   responses.
 - [x] Expanded snapshot metadata root status RPC semantics are documented for
   client implementers.
+- [x] Client signed transaction submission verifies Ed25519 payloads, requires
+  registry-authenticated account signer grants, and exposes distinct stable
+  errors for bad signatures and unregistered signer keys.
+- [x] Account signer keys can be registered and revoked through a normal
+  policy-governed account-registry contract, with authenticated registry proofs
+  and signed-client E2E coverage.
+- [x] Transactions carry an optional validity height, signed payloads bind that
+  field, and expired transactions are rejected at admission with a stable RPC
+  error.
 - [x] Formal theorem coverage is exported as a stable checked-in proof-artifact
   manifest.
 - [x] Proof-artifact manifests have stable SHA-256 roots for release

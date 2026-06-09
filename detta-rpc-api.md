@@ -48,7 +48,18 @@ codes.
 
 The shared `RpcService` supports:
 
-- `submit_transaction`: admit a signed transaction into the local mempool.
+- `submit_transaction`: admit a legacy transaction into the local mempool after
+  checking its chain, nonce, size, budget, and admission signature status.
+- `submit_signed_transaction`: verify a client Ed25519 signed transaction
+  envelope, require the public key to be registered for the sender account in
+  the authenticated registry, mark the verified inner transaction as
+  signature-valid, and admit it into the local mempool. Invalid signatures
+  return `mempool.invalid_signature`; valid signatures from unregistered sender
+  keys return `mempool.unauthorized_signer`; expired transactions return
+  `mempool.transaction_expired`.
+  Account signer grants are managed by normal transactions against the deployed
+  account-registry contract using `registerAccountKey` and `revokeAccountKey`;
+  their state is visible through registry proof RPCs.
 - `produce_block`: produce and apply a local block from pending transactions.
 - `import_block`: validate and apply a supplied block.
 - `get_transaction`: fetch a committed transaction by hash.

@@ -1,5 +1,5 @@
 [package]
-name = "detta-rpc"
+name = "detta-e2e"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
@@ -7,9 +7,10 @@ license = "MIT"
 [dependencies]
 detta-consensus = { path = "../detta-consensus" }
 detta-core = { path = "../detta-core" }
-detta-evaluator = { path = "../detta-evaluator" }
+detta-network = { path = "../detta-network" }
+detta-node = { path = "../detta-node" }
 detta-protocol = { path = "../detta-protocol" }
+detta-rpc = { path = "../detta-rpc" }
 detta-storage = { path = "../detta-storage" }
-ed25519-dalek = "2"
-serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+sha2 = "0.10"

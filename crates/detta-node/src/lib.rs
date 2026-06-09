@@ -766,6 +766,28 @@ impl PersistentValidatorNode {
         let records_proof_latency = records_proof_latency(&request);
         let started = Instant::now();
         let response = match request {
+            RpcRequest::SubmitTransaction { transaction } => self
+                .submit_transaction(transaction)
+                .map(|()| RpcResult::Submitted)
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(node_rpc_error_response),
+            RpcRequest::SubmitSignedTransaction { signed } => signed
+                .into_authorized_transaction(self.rpc.node().state())
+                .map_err(NodeError::Mempool)
+                .and_then(|transaction| self.submit_transaction(transaction))
+                .map(|()| RpcResult::Submitted)
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(node_rpc_error_response),
+            RpcRequest::ProduceBlock { height, timestamp } => self
+                .produce_block(height, timestamp)
+                .map(|block| RpcResult::Block(Box::new(block)))
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(node_rpc_error_response),
+            RpcRequest::ImportBlock { block } => self
+                .import_block(&block)
+                .map(|()| RpcResult::Imported)
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(node_rpc_error_response),
             RpcRequest::GetBlock { height } => match self.storage.maybe_load_block(height) {
                 Ok(Some(block)) => RpcResponse::Ok(RpcResult::Block(Box::new(block))),
                 Ok(None) => Err(RpcError::BlockNotFound).into(),
@@ -2239,6 +2261,24 @@ fn node_rpc_error_code(error: &NodeError) -> &'static str {
         NodeError::Consensus(ConsensusError::QuorumNotReached { .. }) => {
             "node.validator_quorum_not_reached"
         }
+        NodeError::Mempool(MempoolError::ChainMismatch) => "mempool.chain_mismatch",
+        NodeError::Mempool(MempoolError::InvalidSignature) => "mempool.invalid_signature",
+        NodeError::Mempool(MempoolError::UnauthorizedSigner { .. }) => {
+            "mempool.unauthorized_signer"
+        }
+        NodeError::Mempool(MempoolError::TransactionExpired { .. }) => {
+            "mempool.transaction_expired"
+        }
+        NodeError::Mempool(MempoolError::DuplicateTransaction) => "mempool.duplicate_transaction",
+        NodeError::Mempool(MempoolError::NonceAlreadyUsed) => "mempool.nonce_already_used",
+        NodeError::Mempool(MempoolError::InsufficientBudget) => "mempool.insufficient_budget",
+        NodeError::Mempool(MempoolError::TransactionTooLarge { .. }) => {
+            "mempool.transaction_too_large"
+        }
+        NodeError::Mempool(MempoolError::PoolFull { .. }) => "mempool.pool_full",
+        NodeError::Mempool(MempoolError::SenderPendingLimitExceeded { .. }) => {
+            "mempool.sender_pending_limit_exceeded"
+        }
         _ => "node.error",
     }
 }
@@ -2372,6 +2412,7 @@ mod tests {
             tx_hash: tx_hash.into(),
             sender: sender.into(),
             nonce,
+            valid_until_height: None,
             target: target.into(),
             method,
             args,
@@ -4675,6 +4716,7 @@ mod tests {
             tx_hash: "tx-schedule-upgrade".into(),
             sender: "Admin".into(),
             nonce: 1,
+            valid_until_height: None,
             target: "GovA".into(),
             method: Method::ScheduleUpgrade,
             args: vec![
@@ -4690,6 +4732,7 @@ mod tests {
             tx_hash: "tx-schedule-policy".into(),
             sender: "Admin".into(),
             nonce: 2,
+            valid_until_height: None,
             target: "GovA".into(),
             method: Method::SchedulePolicyUpdate,
             args: vec![

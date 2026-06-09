@@ -521,6 +521,7 @@ mod tests {
             tx_hash: "tx1".into(),
             sender: "Alice".into(),
             nonce: 1,
+            valid_until_height: None,
             target: "TokenA".into(),
             method: Method::Transfer,
             args: vec![

@@ -92,6 +92,7 @@
         "type": "string",
         "enum": [
           "submit_transaction",
+          "submit_signed_transaction",
           "produce_block",
           "import_block",
           "get_transaction",
@@ -127,6 +128,8 @@
           "get_scheduled_upgrades",
           "get_scheduled_policy_updates",
           "get_upgrade_rehearsal_report",
+          "evaluate_restricted_script",
+          "get_restricted_evaluator_fixture_inventory",
           "propose_validator_set_metadata_update",
           "get_validator_set_metadata_update_status",
           "get_validator_set_metadata_audit_records",

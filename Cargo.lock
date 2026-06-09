@@ -142,6 +142,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "detta-e2e"
+version = "0.1.0"
+dependencies = [
+ "detta-consensus",
+ "detta-core",
+ "detta-network",
+ "detta-node",
+ "detta-protocol",
+ "detta-rpc",
+ "detta-storage",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "detta-evaluator"
 version = "0.1.0"
 dependencies = [
@@ -194,8 +209,10 @@ version = "0.1.0"
 dependencies = [
  "detta-consensus",
  "detta-core",
+ "detta-evaluator",
  "detta-protocol",
  "detta-storage",
+ "ed25519-dalek",
  "serde",
  "serde_json",
 ]

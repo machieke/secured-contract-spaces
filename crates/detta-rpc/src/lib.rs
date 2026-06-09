@@ -1,15 +1,21 @@
 use detta_consensus::{FinalityCertificate, SlashingRecord};
 use detta_core::{
-    Amount, AssetId, Block, BlockError, ContractId, ContractRecord, Event, EventProof,
+    Amount, AssetId, Block, BlockError, ContractId, ContractRecord, DeTTaState, Event, EventProof,
     ExecutionError, GrantKey, MempoolError, OutboxMessageProof, Principal, Receipt, ReceiptProof,
     RegistryNonInclusionProof, RegistryProof, ScheduledPolicyUpdate, ScheduledUpgrade, StateKey,
     StateSnapshot, StorageNonInclusionProof, StorageProof, Transaction, UpgradeRehearsalReport,
     ValidatorNode,
 };
+use detta_evaluator::{
+    canonical_script_source, parse_restricted_script, restricted_evaluator_fixture_inventory,
+    trace_root, EvaluatorError, EvaluatorFixtureInventory, ExecutionReport,
+    RestrictedScriptEvaluator,
+};
 use detta_protocol::SignedValidatorMessage;
 use detta_storage::{
     SnapshotImportAuditConfig, SnapshotImportAuditRecord, ValidatorSetMetadataAuditRecord,
 };
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::{self, BufReader, Read, Write};
@@ -21,6 +27,7 @@ pub const DEFAULT_MAX_EVENT_PAGE_SIZE: usize = 1_000;
 pub const DEFAULT_MAX_BLOCK_PAGE_SIZE: usize = 100;
 pub const DEFAULT_MAX_SUBSCRIPTION_EVENT_PAGE_SIZE: usize = 1_000;
 pub const DEFAULT_MAX_SUBSCRIPTION_EVENTS: usize = 10_000;
+pub const DEFAULT_MAX_RESTRICTED_EVALUATOR_STEPS: u64 = 10_000;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RpcError {
@@ -35,7 +42,137 @@ pub enum RpcError {
     ProofNotFound,
     SubscriptionNotFound,
     Execution(ExecutionError),
+    EvaluatorParse(String),
+    EvaluatorExecution(EvaluatorError),
+    EvaluatorStepBudgetTooLarge,
     UnsupportedNodeMethod,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SignedClientTransaction {
+    pub transaction: Transaction,
+    pub public_key_hex: String,
+    pub signature_hex: String,
+}
+
+#[derive(Serialize)]
+struct TransactionSigningPayload<'a> {
+    chain_id: &'a str,
+    tx_hash: &'a str,
+    sender: &'a str,
+    nonce: u64,
+    valid_until_height: Option<u64>,
+    target: &'a str,
+    method: &'a detta_core::Method,
+    args: &'a [detta_core::Argument],
+    budget: u64,
+}
+
+impl SignedClientTransaction {
+    pub fn sign_with_seed(mut transaction: Transaction, seed: [u8; 32]) -> Self {
+        transaction.signature_ok = false;
+        let signing_key = SigningKey::from_bytes(&seed);
+        let payload = Self::signing_payload(&transaction);
+        let signature = signing_key.sign(&payload);
+        Self {
+            transaction,
+            public_key_hex: hex_lower(&signing_key.verifying_key().to_bytes()),
+            signature_hex: hex_lower(&signature.to_bytes()),
+        }
+    }
+
+    pub fn verify(&self) -> bool {
+        if self.public_key_hex != self.public_key_hex.to_ascii_lowercase()
+            || self.signature_hex != self.signature_hex.to_ascii_lowercase()
+        {
+            return false;
+        }
+        let Some(public_key_bytes) = hex_to_array::<32>(&self.public_key_hex) else {
+            return false;
+        };
+        let Some(signature_bytes) = hex_to_array::<64>(&self.signature_hex) else {
+            return false;
+        };
+        let Ok(verifying_key) = VerifyingKey::from_bytes(&public_key_bytes) else {
+            return false;
+        };
+        let signature = Signature::from_bytes(&signature_bytes);
+        verifying_key
+            .verify(&Self::signing_payload(&self.transaction), &signature)
+            .is_ok()
+    }
+
+    pub fn into_verified_transaction(mut self) -> Result<Transaction, MempoolError> {
+        if !self.verify() {
+            return Err(MempoolError::InvalidSignature);
+        }
+        self.transaction.signature_ok = true;
+        Ok(self.transaction)
+    }
+
+    pub fn into_authorized_transaction(
+        mut self,
+        state: &DeTTaState,
+    ) -> Result<Transaction, MempoolError> {
+        if !self.verify() {
+            return Err(MempoolError::InvalidSignature);
+        }
+        if !state.has_active_account_key(&self.transaction.sender, &self.public_key_hex) {
+            return Err(MempoolError::UnauthorizedSigner {
+                sender: self.transaction.sender,
+                public_key_hex: self.public_key_hex,
+            });
+        }
+        self.transaction.signature_ok = true;
+        Ok(self.transaction)
+    }
+
+    fn signing_payload(transaction: &Transaction) -> Vec<u8> {
+        serde_json::to_vec(&TransactionSigningPayload {
+            chain_id: &transaction.chain_id,
+            tx_hash: &transaction.tx_hash,
+            sender: &transaction.sender,
+            nonce: transaction.nonce,
+            valid_until_height: transaction.valid_until_height,
+            target: &transaction.target,
+            method: &transaction.method,
+            args: &transaction.args,
+            budget: transaction.budget,
+        })
+        .expect("transaction signing payload should serialize")
+    }
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
+fn hex_to_array<const N: usize>(value: &str) -> Option<[u8; N]> {
+    if value.len() != N * 2 {
+        return None;
+    }
+    let mut out = [0u8; N];
+    for (index, chunk) in value.as_bytes().chunks_exact(2).enumerate() {
+        let high = hex_nibble(chunk[0])?;
+        let low = hex_nibble(chunk[1])?;
+        out[index] = (high << 4) | low;
+    }
+    Some(out)
+}
+
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -43,6 +180,9 @@ pub enum RpcError {
 pub enum RpcRequest {
     SubmitTransaction {
         transaction: Transaction,
+    },
+    SubmitSignedTransaction {
+        signed: SignedClientTransaction,
     },
     ProduceBlock {
         height: u64,
@@ -132,6 +272,11 @@ pub enum RpcRequest {
     GetUpgradeRehearsalReport {
         upgrade_id: String,
     },
+    EvaluateRestrictedScript {
+        source: String,
+        max_steps: u64,
+    },
+    GetRestrictedEvaluatorFixtureInventory,
     ProposeValidatorSetMetadataUpdate {
         authorization: SignedValidatorMessage,
     },
@@ -377,6 +522,16 @@ pub struct SubscriptionEventPage {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RestrictedEvaluationReport {
+    pub evaluator: String,
+    pub source: String,
+    pub canonical_source: String,
+    pub max_steps: u64,
+    pub report: ExecutionReport,
+    pub trace_root: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "result", content = "data", rename_all = "snake_case")]
 pub enum RpcResult {
     Submitted,
@@ -413,6 +568,8 @@ pub enum RpcResult {
     ScheduledUpgrades(Vec<ScheduledUpgrade>),
     ScheduledPolicyUpdates(Vec<ScheduledPolicyUpdate>),
     UpgradeRehearsalReport(Box<UpgradeRehearsalReport>),
+    RestrictedEvaluation(Box<RestrictedEvaluationReport>),
+    RestrictedEvaluatorFixtureInventory(Box<EvaluatorFixtureInventory>),
     ValidatorSetMetadataUpdateStatus(ValidatorSetMetadataUpdateStatus),
     ValidatorSetMetadataAuditRecords(Vec<ValidatorSetMetadataAuditRecord>),
     SnapshotImportAuditRecords(Vec<SnapshotImportAuditRecord>),
@@ -972,10 +1129,42 @@ impl RpcService {
             .map_err(RpcError::Execution)
     }
 
+    pub fn evaluate_restricted_script(
+        &self,
+        source: String,
+        max_steps: u64,
+    ) -> Result<RestrictedEvaluationReport, RpcError> {
+        if max_steps > DEFAULT_MAX_RESTRICTED_EVALUATOR_STEPS {
+            return Err(RpcError::EvaluatorStepBudgetTooLarge);
+        }
+        let instructions = parse_restricted_script(&source)
+            .map_err(|error| RpcError::EvaluatorParse(format!("{error:?}")))?;
+        let canonical_source = canonical_script_source(&instructions);
+        let evaluator = RestrictedScriptEvaluator::new(max_steps);
+        let report = evaluator
+            .execute(&instructions)
+            .map_err(RpcError::EvaluatorExecution)?;
+        let trace_root = trace_root(&report.trace);
+        Ok(RestrictedEvaluationReport {
+            evaluator: "detta.restricted-script-evaluator".into(),
+            source,
+            canonical_source,
+            max_steps,
+            report,
+            trace_root,
+        })
+    }
+
     pub fn handle_request(&mut self, request: RpcRequest) -> RpcResponse {
         match request {
             RpcRequest::SubmitTransaction { transaction } => self
                 .submit_transaction(transaction)
+                .map(|()| RpcResult::Submitted)
+                .into(),
+            RpcRequest::SubmitSignedTransaction { signed } => signed
+                .into_authorized_transaction(self.node.state())
+                .map_err(RpcError::Mempool)
+                .and_then(|transaction| self.submit_transaction(transaction))
                 .map(|()| RpcResult::Submitted)
                 .into(),
             RpcRequest::ProduceBlock { height, timestamp } => self
@@ -1085,6 +1274,15 @@ impl RpcService {
                 .get_upgrade_rehearsal_report(&upgrade_id)
                 .map(|report| RpcResult::UpgradeRehearsalReport(Box::new(report)))
                 .into(),
+            RpcRequest::EvaluateRestrictedScript { source, max_steps } => self
+                .evaluate_restricted_script(source, max_steps)
+                .map(|report| RpcResult::RestrictedEvaluation(Box::new(report)))
+                .into(),
+            RpcRequest::GetRestrictedEvaluatorFixtureInventory => {
+                RpcResponse::Ok(RpcResult::RestrictedEvaluatorFixtureInventory(Box::new(
+                    restricted_evaluator_fixture_inventory(),
+                )))
+            }
             RpcRequest::ProposeValidatorSetMetadataUpdate { .. }
             | RpcRequest::GetFinalityCertificate { .. }
             | RpcRequest::GetSlashingRecord { .. }
@@ -1388,6 +1586,8 @@ fn rpc_error_code(error: &RpcError) -> &'static str {
     match error {
         RpcError::Mempool(MempoolError::ChainMismatch) => "mempool.chain_mismatch",
         RpcError::Mempool(MempoolError::InvalidSignature) => "mempool.invalid_signature",
+        RpcError::Mempool(MempoolError::UnauthorizedSigner { .. }) => "mempool.unauthorized_signer",
+        RpcError::Mempool(MempoolError::TransactionExpired { .. }) => "mempool.transaction_expired",
         RpcError::Mempool(MempoolError::DuplicateTransaction) => "mempool.duplicate_transaction",
         RpcError::Mempool(MempoolError::NonceAlreadyUsed) => "mempool.nonce_already_used",
         RpcError::Mempool(MempoolError::InsufficientBudget) => "mempool.insufficient_budget",
@@ -1427,6 +1627,18 @@ fn rpc_error_code(error: &RpcError) -> &'static str {
         }
         RpcError::Execution(ExecutionError::ContractNotFound) => "execution.contract_not_found",
         RpcError::Execution(_) => "execution.failed",
+        RpcError::EvaluatorParse(_) => "evaluator.parse_error",
+        RpcError::EvaluatorExecution(EvaluatorError::ForbiddenPrimitive) => {
+            "evaluator.forbidden_primitive"
+        }
+        RpcError::EvaluatorExecution(EvaluatorError::StepBudgetExceeded) => {
+            "evaluator.step_budget_exceeded"
+        }
+        RpcError::EvaluatorExecution(EvaluatorError::ArithmeticOverflow) => {
+            "evaluator.arithmetic_overflow"
+        }
+        RpcError::EvaluatorExecution(EvaluatorError::Aborted) => "evaluator.aborted",
+        RpcError::EvaluatorStepBudgetTooLarge => "evaluator.step_budget_too_large",
         RpcError::UnsupportedNodeMethod => "rpc.unsupported_node_method",
     }
 }
@@ -1438,6 +1650,12 @@ fn rpc_error_message(error: &RpcError) -> &'static str {
         }
         RpcError::Mempool(MempoolError::InvalidSignature) => {
             "transaction signature failed admission"
+        }
+        RpcError::Mempool(MempoolError::UnauthorizedSigner { .. }) => {
+            "transaction signer is not registered for the sender account"
+        }
+        RpcError::Mempool(MempoolError::TransactionExpired { .. }) => {
+            "transaction validity window has expired"
         }
         RpcError::Mempool(MempoolError::DuplicateTransaction) => "transaction is already pending",
         RpcError::Mempool(MempoolError::NonceAlreadyUsed) => {
@@ -1488,6 +1706,18 @@ fn rpc_error_message(error: &RpcError) -> &'static str {
         }
         RpcError::Execution(ExecutionError::ContractNotFound) => "contract was not found",
         RpcError::Execution(_) => "execution failed",
+        RpcError::EvaluatorParse(_) => "restricted evaluator source failed to parse",
+        RpcError::EvaluatorExecution(EvaluatorError::ForbiddenPrimitive) => {
+            "restricted evaluator primitive is forbidden"
+        }
+        RpcError::EvaluatorExecution(EvaluatorError::StepBudgetExceeded) => {
+            "restricted evaluator step budget was exceeded"
+        }
+        RpcError::EvaluatorExecution(EvaluatorError::ArithmeticOverflow) => {
+            "restricted evaluator arithmetic overflowed"
+        }
+        RpcError::EvaluatorExecution(EvaluatorError::Aborted) => "restricted evaluator aborted",
+        RpcError::EvaluatorStepBudgetTooLarge => "restricted evaluator step budget is too large",
         RpcError::UnsupportedNodeMethod => "method must be handled by a persistent validator node",
     }
 }
@@ -1523,6 +1753,7 @@ mod tests {
             tx_hash: "tx1".into(),
             sender: "Alice".into(),
             nonce: 1,
+            valid_until_height: None,
             target: "TokenA".into(),
             method: Method::Transfer,
             args: vec![
@@ -1614,6 +1845,7 @@ mod tests {
     fn rpc_request_method_tags() -> Vec<&'static str> {
         vec![
             "submit_transaction",
+            "submit_signed_transaction",
             "produce_block",
             "import_block",
             "get_transaction",
@@ -1649,6 +1881,8 @@ mod tests {
             "get_scheduled_upgrades",
             "get_scheduled_policy_updates",
             "get_upgrade_rehearsal_report",
+            "evaluate_restricted_script",
+            "get_restricted_evaluator_fixture_inventory",
             "propose_validator_set_metadata_update",
             "get_validator_set_metadata_update_status",
             "get_validator_set_metadata_audit_records",
@@ -2601,6 +2835,7 @@ mod tests {
             tx_hash: "tx-schedule-upgrade".into(),
             sender: "Admin".into(),
             nonce: 1,
+            valid_until_height: None,
             target: "GovA".into(),
             method: Method::ScheduleUpgrade,
             args: vec![
@@ -2616,6 +2851,7 @@ mod tests {
             tx_hash: "tx-schedule-policy".into(),
             sender: "Admin".into(),
             nonce: 2,
+            valid_until_height: None,
             target: "GovA".into(),
             method: Method::SchedulePolicyUpdate,
             args: vec![

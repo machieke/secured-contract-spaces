@@ -655,6 +655,7 @@ pub fn deterministic_transfer_corpus(
             tx_hash: format!("fuzz-tx-{seed}-{index}"),
             sender: principals[sender_index].to_string(),
             nonce: nonces[sender_index],
+            valid_until_height: None,
             target: target.clone(),
             method: Method::Transfer,
             args: vec![
@@ -848,6 +849,7 @@ fn generated_tx(
         tx_hash: tx_hash.into(),
         sender: sender.into(),
         nonce,
+        valid_until_height: None,
         target: target.into(),
         method,
         args,
@@ -3135,6 +3137,7 @@ mod tests {
             tx_hash: "tx1".into(),
             sender: "Alice".into(),
             nonce: 1,
+            valid_until_height: None,
             target: "TokenA".into(),
             method: Method::Transfer,
             args: vec![

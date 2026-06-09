@@ -4,9 +4,28 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
+run_e2e_gate() {
+  case "${DETTA_E2E_FULL:-0}" in
+    1 | true | TRUE | yes | YES)
+      cargo test -p detta-e2e -- --test-threads=1
+      ;;
+    *)
+      cargo test -p detta-e2e --test full_client_flows -- --test-threads=1
+      cargo test -p detta-e2e --test defi_method_edge_flows -- --test-threads=1
+      cargo test -p detta-e2e --test factory_client_flows -- --test-threads=1
+      cargo test -p detta-e2e --test mempool_network_flows -- --test-threads=1
+      cargo test -p detta-e2e --test operator_observability_client_flows -- --test-threads=1
+      cargo test -p detta-e2e --test rpc_method_coverage_flows -- --test-threads=1
+      cargo test -p detta-e2e --test signed_transaction_client_flows -- --test-threads=1
+      cargo test -p detta-e2e --test tcp_protocol_hardening_flows -- --test-threads=1
+      ;;
+  esac
+}
+
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
-cargo test
+cargo test --workspace --exclude detta-e2e
+run_e2e_gate
 cargo test -p detta-verify
 cargo test -p detta-verify tests::differential_replay_accepts_generated_transfer_corpus -- --exact
 cargo test -p detta-verify tests::differential_replay_accepts_generated_defi_corpus -- --exact

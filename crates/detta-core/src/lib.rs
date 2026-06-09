@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -36,6 +36,10 @@ pub enum Method {
     CompleteUnstake,
     ClaimStakingRewards,
     RouteTransferFrom,
+    DeployToken,
+    DeployAmmPool,
+    RegisterAccountKey,
+    RevokeAccountKey,
     Other(String),
 }
 
@@ -190,10 +194,15 @@ pub enum GrantRight {
     SpendAllowance,
     UpdateOracle,
     GovernanceAdmin,
+    SubmitTransaction,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub enum GrantKey {
+    AccountSigner {
+        account: Principal,
+        public_key_hex: String,
+    },
     Allowance {
         contract: ContractId,
         owner: Principal,
@@ -251,6 +260,18 @@ impl Grant {
             issuer: subject.clone(),
             subject,
             rights: BTreeSet::from([GrantRight::GovernanceAdmin]),
+            limit: None,
+            spent: 0,
+            active: true,
+            revoked: false,
+        }
+    }
+
+    fn account_signer(account: Principal) -> Self {
+        Self {
+            issuer: account.clone(),
+            subject: account,
+            rights: BTreeSet::from([GrantRight::SubmitTransaction]),
             limit: None,
             spent: 0,
             active: true,
@@ -368,6 +389,8 @@ pub enum ContractKind {
     Router {
         token_contract: ContractId,
     },
+    Factory,
+    AccountRegistry,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -385,6 +408,8 @@ pub enum ContractInvariant {
     StakingTotalMatchesBalances,
     StakingPendingUnbondingMatchesTotal,
     RouterDoesNotInheritCallerWriteScope,
+    FactoryDeploymentsDeclarePolicies,
+    AccountSignerKeysCanonical,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -421,6 +446,7 @@ pub enum PolicyEffect {
     MethodPolicyUpdate,
     CrossContractCall,
     CrossShardOutboxAppend,
+    ContractDeploy,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -821,6 +847,70 @@ impl ContractRecord {
             BTreeSet::from([ContractInvariant::RouterDoesNotInheritCallerWriteScope]),
         )
     }
+
+    fn factory(contract_id: ContractId, code_hash: String) -> Self {
+        let invariant = ContractInvariant::FactoryDeploymentsDeclarePolicies;
+        Self::with_policy_manifest(
+            contract_id,
+            code_hash,
+            ContractKind::Factory,
+            BTreeMap::from([
+                (
+                    Method::DeployToken,
+                    method_policy(
+                        PolicyAuthority::TxSender,
+                        [
+                            PolicyEffect::ContractDeploy,
+                            PolicyEffect::StorageWrite,
+                            PolicyEffect::EventEmit,
+                        ],
+                        [invariant.clone()],
+                    ),
+                ),
+                (
+                    Method::DeployAmmPool,
+                    method_policy(
+                        PolicyAuthority::TxSender,
+                        [
+                            PolicyEffect::ContractDeploy,
+                            PolicyEffect::StorageWrite,
+                            PolicyEffect::EventEmit,
+                        ],
+                        [invariant.clone()],
+                    ),
+                ),
+            ]),
+            BTreeSet::from([invariant]),
+        )
+    }
+
+    fn account_registry(contract_id: ContractId, code_hash: String) -> Self {
+        let invariant = ContractInvariant::AccountSignerKeysCanonical;
+        Self::with_policy_manifest(
+            contract_id,
+            code_hash,
+            ContractKind::AccountRegistry,
+            BTreeMap::from([
+                (
+                    Method::RegisterAccountKey,
+                    method_policy(
+                        PolicyAuthority::TxSender,
+                        [PolicyEffect::RegistryWrite, PolicyEffect::EventEmit],
+                        [invariant.clone()],
+                    ),
+                ),
+                (
+                    Method::RevokeAccountKey,
+                    method_policy(
+                        PolicyAuthority::TxSender,
+                        [PolicyEffect::RegistryWrite, PolicyEffect::EventEmit],
+                        [invariant.clone()],
+                    ),
+                ),
+            ]),
+            BTreeSet::from([invariant]),
+        )
+    }
 }
 
 fn method_policy<const E: usize, const I: usize>(
@@ -871,6 +961,8 @@ fn method_resource_units(method: &Method) -> u64 {
         Method::Borrow => 38,
         Method::Liquidate => 46,
         Method::RouteTransferFrom => 55,
+        Method::DeployToken | Method::DeployAmmPool => 60,
+        Method::RegisterAccountKey | Method::RevokeAccountKey => 24,
         Method::Other(_) => 10,
     }
 }
@@ -881,6 +973,7 @@ pub struct Transaction {
     pub tx_hash: TxHash,
     pub sender: Principal,
     pub nonce: Nonce,
+    pub valid_until_height: Option<u64>,
     pub target: ContractId,
     pub method: Method,
     pub args: Vec<Argument>,
@@ -1022,6 +1115,19 @@ pub enum EventPayload {
         asset: AssetId,
         amount: Amount,
     },
+    ContractDeployed {
+        contract: ContractId,
+        kind: String,
+        code_hash: String,
+    },
+    AccountKeyRegistered {
+        account: Principal,
+        public_key_hex: String,
+    },
+    AccountKeyRevoked {
+        account: Principal,
+        public_key_hex: String,
+    },
     StakingPenaltyApplied {
         staker: Principal,
         asset: AssetId,
@@ -1051,6 +1157,7 @@ pub enum ExecutionError {
     ChainMismatch,
     InvalidSignature,
     NonceReplay,
+    TransactionExpired,
     ContractNotFound,
     MethodNotExported,
     InvalidArguments,
@@ -1113,6 +1220,14 @@ pub enum BlockError {
 pub enum MempoolError {
     ChainMismatch,
     InvalidSignature,
+    UnauthorizedSigner {
+        sender: Principal,
+        public_key_hex: String,
+    },
+    TransactionExpired {
+        current_height: u64,
+        valid_until_height: u64,
+    },
     DuplicateTransaction,
     NonceAlreadyUsed,
     InsufficientBudget,
@@ -1188,6 +1303,14 @@ impl Mempool {
         if !tx.signature_ok {
             return Err(MempoolError::InvalidSignature);
         }
+        if let Some(valid_until_height) = tx.valid_until_height {
+            if valid_until_height <= state.height {
+                return Err(MempoolError::TransactionExpired {
+                    current_height: state.height,
+                    valid_until_height,
+                });
+            }
+        }
         if self.tx_hashes.contains(&tx.tx_hash) {
             return Err(MempoolError::DuplicateTransaction);
         }
@@ -1243,6 +1366,9 @@ impl Mempool {
             tx.chain_id == state.chain_id
                 && tx.signature_ok
                 && !state.used_nonces.contains(&(tx.sender.clone(), tx.nonce))
+                && tx
+                    .valid_until_height
+                    .is_none_or(|valid_until_height| valid_until_height > state.height)
         });
         self.tx_hashes = self.pending.iter().map(|tx| tx.tx_hash.clone()).collect();
     }
@@ -2008,7 +2134,9 @@ pub struct DeTTaState {
     height: u64,
     finalized_block_hash: String,
     contracts: BTreeMap<ContractId, ContractRecord>,
+    #[serde(with = "storage_map_entries")]
     storage: BTreeMap<StateKey, StateValue>,
+    #[serde(with = "registry_map_entries")]
     registry: BTreeMap<GrantKey, Grant>,
     used_nonces: BTreeSet<(Principal, Nonce)>,
     used_certificate_nonces: BTreeSet<String>,
@@ -2019,6 +2147,53 @@ pub struct DeTTaState {
     outbound_message_ids: BTreeSet<String>,
     cross_shard_outbox: Vec<CrossShardMessage>,
     events: Vec<Event>,
+}
+
+mod storage_map_entries {
+    use super::*;
+
+    pub fn serialize<S>(
+        map: &BTreeMap<StateKey, StateValue>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        map.iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect::<Vec<_>>()
+            .serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<BTreeMap<StateKey, StateValue>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Vec::<(StateKey, StateValue)>::deserialize(deserializer)
+            .map(|entries| entries.into_iter().collect())
+    }
+}
+
+mod registry_map_entries {
+    use super::*;
+
+    pub fn serialize<S>(map: &BTreeMap<GrantKey, Grant>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        map.iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect::<Vec<_>>()
+            .serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<BTreeMap<GrantKey, Grant>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Vec::<(GrantKey, Grant)>::deserialize(deserializer)
+            .map(|entries| entries.into_iter().collect())
+    }
 }
 
 impl DeTTaState {
@@ -2086,6 +2261,43 @@ impl DeTTaState {
             outbox_root: self.outbox_root(),
             global_state_root: self.global_state_root(),
         }
+    }
+
+    pub fn register_account_key(
+        &mut self,
+        account: impl Into<Principal>,
+        public_key_hex: impl Into<String>,
+    ) -> Result<(), ExecutionError> {
+        let account = account.into();
+        let public_key_hex = public_key_hex.into();
+        if account.is_empty() || !is_canonical_public_key_hex(&public_key_hex) {
+            return Err(ExecutionError::InvalidArguments);
+        }
+
+        self.registry.insert(
+            GrantKey::AccountSigner {
+                account: account.clone(),
+                public_key_hex,
+            },
+            Grant::account_signer(account),
+        );
+        Ok(())
+    }
+
+    pub fn has_active_account_key(&self, account: &str, public_key_hex: &str) -> bool {
+        if !is_canonical_public_key_hex(public_key_hex) {
+            return false;
+        }
+        let key = GrantKey::AccountSigner {
+            account: account.into(),
+            public_key_hex: public_key_hex.into(),
+        };
+        self.registry.get(&key).is_some_and(|grant| {
+            grant.subject == account
+                && grant.active
+                && !grant.revoked
+                && grant.rights.contains(&GrantRight::SubmitTransaction)
+        })
     }
 
     pub fn deploy_token(
@@ -2496,6 +2708,32 @@ impl DeTTaState {
         Ok(())
     }
 
+    pub fn deploy_factory(
+        &mut self,
+        contract: impl Into<ContractId>,
+    ) -> Result<(), ExecutionError> {
+        let contract = contract.into();
+        let code_hash = root_of(&("detta-factory-v1", &contract));
+        self.contracts.insert(
+            contract.clone(),
+            ContractRecord::factory(contract, code_hash),
+        );
+        Ok(())
+    }
+
+    pub fn deploy_account_registry(
+        &mut self,
+        contract: impl Into<ContractId>,
+    ) -> Result<(), ExecutionError> {
+        let contract = contract.into();
+        let code_hash = root_of(&("detta-account-registry-v1", &contract));
+        self.contracts.insert(
+            contract.clone(),
+            ContractRecord::account_registry(contract, code_hash),
+        );
+        Ok(())
+    }
+
     pub fn apply_transaction(&mut self, tx: Transaction) -> Receipt {
         if tx.chain_id != self.chain_id {
             return self.rejected_receipt(tx.tx_hash, ExecutionError::ChainMismatch);
@@ -2503,6 +2741,13 @@ impl DeTTaState {
 
         if !tx.signature_ok {
             return self.rejected_receipt(tx.tx_hash, ExecutionError::InvalidSignature);
+        }
+
+        if tx
+            .valid_until_height
+            .is_some_and(|valid_until_height| valid_until_height < self.height)
+        {
+            return self.rejected_receipt(tx.tx_hash, ExecutionError::TransactionExpired);
         }
 
         let nonce_key = (tx.sender.clone(), tx.nonce);
@@ -3377,6 +3622,20 @@ impl DeTTaState {
                 ContractKind::Router { token_contract } => match tx.method {
                     Method::RouteTransferFrom => {
                         self.route_transfer_from(tx, msg_sender, token_contract, call_context)
+                    }
+                    _ => Err(ExecutionError::PolicyMissing),
+                },
+                ContractKind::Factory => match tx.method {
+                    Method::DeployToken => self.deploy_token_from_factory(tx),
+                    Method::DeployAmmPool => self.deploy_amm_pool_from_factory(tx),
+                    _ => Err(ExecutionError::PolicyMissing),
+                },
+                ContractKind::AccountRegistry => match tx.method {
+                    Method::RegisterAccountKey => {
+                        self.register_account_key_from_contract(tx, msg_sender)
+                    }
+                    Method::RevokeAccountKey => {
+                        self.revoke_account_key_from_contract(tx, msg_sender)
                     }
                     _ => Err(ExecutionError::PolicyMissing),
                 },
@@ -4846,6 +5105,7 @@ impl DeTTaState {
             tx_hash: tx.tx_hash.clone(),
             sender: tx.sender.clone(),
             nonce: tx.nonce,
+            valid_until_height: tx.valid_until_height,
             target: token_contract,
             method: Method::TransferFrom,
             args: vec![owner.clone(), to.clone(), asset.clone(), amount.clone()],
@@ -4854,6 +5114,137 @@ impl DeTTaState {
         };
 
         self.execute_call(&child_tx, tx.target.clone(), call_context)
+    }
+
+    fn deploy_token_from_factory(
+        &mut self,
+        tx: &Transaction,
+    ) -> Result<ReturnValue, ExecutionError> {
+        let [contract, asset, owner, supply] = expect_args(&tx.args)?;
+        let contract = expect_text(contract)?;
+        let asset = expect_asset(asset)?;
+        let owner = expect_principal(owner)?;
+        let supply = expect_amount(supply)?;
+        if contract.is_empty() || asset.is_empty() || owner.is_empty() {
+            return Err(ExecutionError::InvalidArguments);
+        }
+        if self.contracts.contains_key(&contract) {
+            return Err(ExecutionError::InvalidArguments);
+        }
+
+        self.deploy_token(contract.clone(), asset, vec![(owner, supply)])?;
+        let code_hash = self
+            .contracts
+            .get(&contract)
+            .ok_or(ExecutionError::ContractNotFound)?
+            .code_hash
+            .clone();
+        self.emit(
+            &tx.target,
+            &tx.tx_hash,
+            EventPayload::ContractDeployed {
+                contract,
+                kind: "token".into(),
+                code_hash,
+            },
+        );
+        Ok(ReturnValue::Unit)
+    }
+
+    fn deploy_amm_pool_from_factory(
+        &mut self,
+        tx: &Transaction,
+    ) -> Result<ReturnValue, ExecutionError> {
+        let [contract, asset_a, asset_b] = expect_args(&tx.args)?;
+        let contract = expect_text(contract)?;
+        let asset_a = expect_asset(asset_a)?;
+        let asset_b = expect_asset(asset_b)?;
+        if contract.is_empty() || asset_a.is_empty() || asset_b.is_empty() {
+            return Err(ExecutionError::InvalidArguments);
+        }
+        if self.contracts.contains_key(&contract) {
+            return Err(ExecutionError::InvalidArguments);
+        }
+
+        self.deploy_amm_pool(contract.clone(), asset_a, asset_b)?;
+        let code_hash = self
+            .contracts
+            .get(&contract)
+            .ok_or(ExecutionError::ContractNotFound)?
+            .code_hash
+            .clone();
+        self.emit(
+            &tx.target,
+            &tx.tx_hash,
+            EventPayload::ContractDeployed {
+                contract,
+                kind: "amm_pool".into(),
+                code_hash,
+            },
+        );
+        Ok(ReturnValue::Unit)
+    }
+
+    fn register_account_key_from_contract(
+        &mut self,
+        tx: &Transaction,
+        msg_sender: Principal,
+    ) -> Result<ReturnValue, ExecutionError> {
+        let [public_key_hex] = expect_args(&tx.args)?;
+        let public_key_hex = expect_text(public_key_hex)?;
+        self.register_account_key(msg_sender.clone(), public_key_hex.clone())?;
+        if !self.account_signer_keys_canonical() {
+            return Err(ExecutionError::InvariantViolation);
+        }
+
+        self.emit(
+            &tx.target,
+            &tx.tx_hash,
+            EventPayload::AccountKeyRegistered {
+                account: msg_sender,
+                public_key_hex,
+            },
+        );
+        Ok(ReturnValue::Unit)
+    }
+
+    fn revoke_account_key_from_contract(
+        &mut self,
+        tx: &Transaction,
+        msg_sender: Principal,
+    ) -> Result<ReturnValue, ExecutionError> {
+        let [public_key_hex] = expect_args(&tx.args)?;
+        let public_key_hex = expect_text(public_key_hex)?;
+        if !is_canonical_public_key_hex(&public_key_hex) {
+            return Err(ExecutionError::InvalidArguments);
+        }
+
+        let key = GrantKey::AccountSigner {
+            account: msg_sender.clone(),
+            public_key_hex: public_key_hex.clone(),
+        };
+        let grant = self
+            .registry
+            .get_mut(&key)
+            .ok_or(ExecutionError::RegistryGrantMissing)?;
+        if grant.subject != msg_sender || !grant.rights.contains(&GrantRight::SubmitTransaction) {
+            return Err(ExecutionError::RegistryGrantMissing);
+        }
+        grant.active = false;
+        grant.revoked = true;
+        if !self.account_signer_keys_canonical() {
+            return Err(ExecutionError::InvariantViolation);
+        }
+
+        self.emit(
+            &tx.target,
+            &tx.tx_hash,
+            EventPayload::AccountKeyRevoked {
+                account: msg_sender,
+                public_key_hex,
+            },
+        );
+        Ok(ReturnValue::Unit)
     }
 
     fn consume_allowance(
@@ -5020,6 +5411,17 @@ impl DeTTaState {
                 _ => false,
             },
             ContractInvariant::RouterDoesNotInheritCallerWriteScope => true,
+            ContractInvariant::FactoryDeploymentsDeclarePolicies => {
+                self.contracts.values().all(|record| {
+                    !record.exported_methods.is_empty()
+                        && !record.declared_invariants.is_empty()
+                        && record
+                            .exported_methods
+                            .iter()
+                            .all(|method| record.method_policies.contains_key(method))
+                })
+            }
+            ContractInvariant::AccountSignerKeysCanonical => self.account_signer_keys_canonical(),
         }
     }
 
@@ -5140,6 +5542,25 @@ impl DeTTaState {
             ) && grant.active
                 && !grant.revoked
                 && grant.rights.contains(&GrantRight::GovernanceAdmin)
+        })
+    }
+
+    fn account_signer_keys_canonical(&self) -> bool {
+        self.registry.iter().all(|(key, grant)| match key {
+            GrantKey::AccountSigner {
+                account,
+                public_key_hex,
+            } => {
+                !account.is_empty()
+                    && is_canonical_public_key_hex(public_key_hex)
+                    && grant.issuer == *account
+                    && grant.subject == *account
+                    && grant.limit.is_none()
+                    && grant.spent == 0
+                    && grant.rights.contains(&GrantRight::SubmitTransaction)
+                    && !(grant.active && grant.revoked)
+            }
+            _ => true,
         })
     }
 
@@ -5324,6 +5745,10 @@ fn parse_policy_method(value: &str) -> Result<Method, ExecutionError> {
         "completeUnstake" => Ok(Method::CompleteUnstake),
         "claimStakingRewards" => Ok(Method::ClaimStakingRewards),
         "routeTransferFrom" => Ok(Method::RouteTransferFrom),
+        "deployToken" => Ok(Method::DeployToken),
+        "deployAmmPool" => Ok(Method::DeployAmmPool),
+        "registerAccountKey" => Ok(Method::RegisterAccountKey),
+        "revokeAccountKey" => Ok(Method::RevokeAccountKey),
         _ => Err(ExecutionError::InvalidArguments),
     }
 }
@@ -5340,6 +5765,7 @@ fn parse_policy_effect(value: &str) -> Result<PolicyEffect, ExecutionError> {
         "methodPolicyUpdate" => Ok(PolicyEffect::MethodPolicyUpdate),
         "crossContractCall" => Ok(PolicyEffect::CrossContractCall),
         "crossShardOutboxAppend" => Ok(PolicyEffect::CrossShardOutboxAppend),
+        "contractDeploy" => Ok(PolicyEffect::ContractDeploy),
         _ => Err(ExecutionError::InvalidArguments),
     }
 }
@@ -5349,6 +5775,14 @@ fn expect_certificate(arg: &Argument) -> Result<String, ExecutionError> {
         Argument::Certificate(value) => Ok(value.clone()),
         _ => Err(ExecutionError::InvalidArguments),
     }
+}
+
+fn is_canonical_public_key_hex(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .as_bytes()
+            .iter()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 fn balance_key(contract: &ContractId, owner: &Principal, asset: &AssetId) -> StateKey {
@@ -5819,6 +6253,7 @@ mod tests {
             tx_hash: tx_hash.into(),
             sender: sender.into(),
             nonce,
+            valid_until_height: None,
             target: target.into(),
             method,
             args,
@@ -5853,6 +6288,7 @@ mod tests {
                 tx_hash: "source-tx1".into(),
                 sender: "Alice".into(),
                 nonce: 1,
+                valid_until_height: None,
                 target: "BridgeSource".into(),
                 method: Method::QueueBridgeMessage,
                 args: vec![
@@ -6720,6 +7156,22 @@ mod tests {
             Err(MempoolError::InsufficientBudget)
         );
 
+        let mut expired = tx(
+            "tx-expired",
+            "Alice",
+            1,
+            Method::Transfer,
+            vec![principal("Bob"), asset("USDC"), amount(10)],
+        );
+        expired.valid_until_height = Some(0);
+        assert_eq!(
+            Mempool::new().submit(&state, expired),
+            Err(MempoolError::TransactionExpired {
+                current_height: 0,
+                valid_until_height: 0,
+            })
+        );
+
         let mut size_limited = Mempool::with_policy(MempoolAdmissionPolicy {
             max_transaction_bytes: 32,
             ..MempoolAdmissionPolicy::default()
@@ -6805,6 +7257,30 @@ mod tests {
                 max_pending_per_sender: 1,
             })
         );
+    }
+
+    #[test]
+    fn expired_transaction_rejects_without_state_changes() {
+        let state = seeded_state();
+        let root_before = state.global_state_root();
+        let mut expired = tx(
+            "tx-expired-execution",
+            "Alice",
+            1,
+            Method::Transfer,
+            vec![principal("Bob"), asset("USDC"), amount(10)],
+        );
+        expired.valid_until_height = Some(0);
+
+        let receipt = state
+            .build_block(1, vec![expired], 1_000, "validator-1", "cert-1")
+            .0
+            .receipts[0]
+            .clone();
+
+        assert_eq!(receipt.status, TxStatus::Rejected);
+        assert_eq!(receipt.error, Some(ExecutionError::TransactionExpired));
+        assert_eq!(state.global_state_root(), root_before);
     }
 
     #[test]
@@ -6931,6 +7407,85 @@ mod tests {
         assert!(registry_absence.verify());
         assert_eq!(registry_absence.root, state.registry_root());
         assert!(state.registry_proof(&missing_grant).is_none());
+    }
+
+    #[test]
+    fn account_signer_registry_grants_are_authenticated() {
+        let mut state = seeded_state();
+        let root_before = state.registry_root();
+        let public_key_hex = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+        state
+            .register_account_key("Alice", public_key_hex)
+            .expect("canonical account key should register");
+
+        let key = GrantKey::AccountSigner {
+            account: "Alice".into(),
+            public_key_hex: public_key_hex.into(),
+        };
+        let proof = state
+            .registry_proof(&key)
+            .expect("account signer grant should have a proof");
+        assert!(proof.verify());
+        assert_eq!(proof.proof.root, state.registry_root());
+        assert_ne!(state.registry_root(), root_before);
+        assert!(state.has_active_account_key("Alice", public_key_hex));
+        assert!(!state.has_active_account_key("Bob", public_key_hex));
+        assert!(!state.has_active_account_key(
+            "Alice",
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        ));
+    }
+
+    #[test]
+    fn account_registry_contract_registers_and_revokes_signer_keys() {
+        let mut state = seeded_state();
+        state.deploy_account_registry("AccountsA").unwrap();
+        state
+            .register_account_key(
+                "Alice",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            )
+            .unwrap();
+        let second_key = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+        let register = state.apply_transaction(tx_to(
+            "AccountsA",
+            "tx-register-key",
+            "Alice",
+            1,
+            Method::RegisterAccountKey,
+            vec![text(second_key)],
+        ));
+        assert_eq!(register.status, TxStatus::Committed);
+        assert!(state.has_active_account_key("Alice", second_key));
+        assert_eq!(
+            state.events().last().unwrap().payload,
+            EventPayload::AccountKeyRegistered {
+                account: "Alice".into(),
+                public_key_hex: second_key.into(),
+            }
+        );
+
+        let revoke = state.apply_transaction(tx_to(
+            "AccountsA",
+            "tx-revoke-key",
+            "Alice",
+            2,
+            Method::RevokeAccountKey,
+            vec![text(second_key)],
+        ));
+        assert_eq!(revoke.status, TxStatus::Committed);
+        assert!(!state.has_active_account_key("Alice", second_key));
+        let proof = state
+            .registry_proof(&GrantKey::AccountSigner {
+                account: "Alice".into(),
+                public_key_hex: second_key.into(),
+            })
+            .unwrap();
+        assert!(proof.verify());
+        assert!(!proof.grant.active);
+        assert!(proof.grant.revoked);
     }
 
     #[test]
@@ -7449,6 +8004,7 @@ mod tests {
             tx_hash: "tx1".into(),
             sender: "Alice".into(),
             nonce: 1,
+            valid_until_height: None,
             target: "BridgeA".into(),
             method: Method::QueueBridgeMessage,
             args: vec![
@@ -7487,6 +8043,7 @@ mod tests {
             tx_hash: "tx1".into(),
             sender: "Alice".into(),
             nonce: 1,
+            valid_until_height: None,
             target: "BridgeA".into(),
             method: Method::QueueBridgeMessage,
             args: vec![
@@ -7507,6 +8064,7 @@ mod tests {
             tx_hash: "tx2".into(),
             sender: "Alice".into(),
             nonce: 2,
+            valid_until_height: None,
             target: "BridgeA".into(),
             method: Method::QueueBridgeMessage,
             args: vec![

@@ -815,7 +815,7 @@ mod tests {
     use super::*;
     use detta_core::{Argument, DeTTaState, Method};
 
-    const TX_ENVELOPE_HEX: &str = "44545441000100000032000b64657474612d6c6f63616c0374783105416c6963650106546f6b656e4100030003426f62010455534443020a01c0843d";
+    const TX_ENVELOPE_HEX: &str = "44545441000100000033000b64657474612d6c6f63616c0374783105416c696365010006546f6b656e4100030003426f62010455534443020a01c0843d";
     const VOTE_ENVELOPE_HEX: &str =
         "4454544100010000001b020b76616c696461746f722d31070c626c6f636b2d686173682d31";
 
@@ -825,6 +825,7 @@ mod tests {
             tx_hash: "tx1".into(),
             sender: "Alice".into(),
             nonce: 1,
+            valid_until_height: None,
             target: "TokenA".into(),
             method: Method::Transfer,
             args: vec![
