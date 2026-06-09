@@ -2329,6 +2329,93 @@ mod tests {
     }
 
     #[test]
+    fn json_rpc_decode_fuzz_smoke_rejects_malformed_corpus() {
+        let valid_request = serde_json::to_vec(&RpcRequest::GetBalance {
+            contract: "TokenA".into(),
+            owner: "Alice".into(),
+            asset: "USDC".into(),
+        })
+        .unwrap();
+        let mut corpus = vec![
+            Vec::new(),
+            vec![0xff, b'{', b'}'],
+            b"{".to_vec(),
+            b"[]".to_vec(),
+            b"null".to_vec(),
+            b"true".to_vec(),
+            b"42".to_vec(),
+            br#""get_state_root""#.to_vec(),
+            br#"{"method":"does_not_exist"}"#.to_vec(),
+            br#"{"method":"get_balance"}"#.to_vec(),
+            br#"{"method":"get_balance","params":{"contract":123,"owner":"Alice","asset":"USDC"}}"#
+                .to_vec(),
+            br#"{"method":"submit_transaction","params":null}"#.to_vec(),
+            br#"{"method":"get_blocks_page","params":{"start_height":"one","limit":10}}"#
+                .to_vec(),
+            br#"{"method":"get_subscription_events","params":{"subscription_id":false,"from_sequence":0,"limit":10}}"#
+                .to_vec(),
+        ];
+        for split in 0..valid_request.len() {
+            corpus.push(valid_request[..split].to_vec());
+        }
+
+        for payload in corpus {
+            let response = json_rpc_response_for_request(&payload, |_| {
+                panic!("malformed RPC decode corpus unexpectedly reached handler")
+            })
+            .unwrap();
+            let response: RpcResponse = serde_json::from_slice(&response).unwrap();
+
+            match response {
+                RpcResponse::Error(error) => assert_eq!(error.code, "rpc.decode_error"),
+                response => panic!("expected decode error for {payload:?}, got {response:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn json_rpc_decode_fuzz_smoke_accepts_valid_boundary_requests() {
+        let mut rpc = seeded_rpc();
+        let corpus = vec![
+            RpcRequest::GetBalance {
+                contract: "TokenA".into(),
+                owner: "Alice".into(),
+                asset: "USDC".into(),
+            },
+            RpcRequest::GetEventsPage {
+                offset: usize::MAX,
+                limit: usize::MAX,
+            },
+            RpcRequest::GetBlocksPage {
+                start_height: u64::MAX,
+                limit: usize::MAX,
+            },
+            RpcRequest::Subscribe {
+                topics: vec![
+                    SubscriptionTopic::Events,
+                    SubscriptionTopic::Blocks,
+                    SubscriptionTopic::Events,
+                ],
+            },
+            RpcRequest::GetSubscriptionEvents {
+                subscription_id: "missing-subscription".into(),
+                from_sequence: u64::MAX,
+                limit: usize::MAX,
+            },
+        ];
+
+        for request in corpus {
+            let payload = serde_json::to_vec(&request).unwrap();
+            let response = rpc.handle_json_request(&payload).unwrap();
+            let response: RpcResponse = serde_json::from_slice(&response).unwrap();
+
+            if let RpcResponse::Error(error) = response {
+                assert_ne!(error.code, "rpc.decode_error");
+            }
+        }
+    }
+
+    #[test]
     fn json_rpc_tcp_server_serves_stateful_requests_over_socket() {
         let server = JsonRpcServer::bind("127.0.0.1:0").unwrap();
         let addr = server.local_addr().unwrap();

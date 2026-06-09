@@ -426,6 +426,8 @@ Completed production-plan slices:
   durable after-restart persistent-node TCP coverage.
 - [x] Light-client finality certificate verification checks height, block hash,
   active validator membership, and quorum without full node state.
+- [x] RPC decoding has deterministic malformed and valid boundary corpus
+  fuzz-smoke coverage through the JSON request handler.
 
 Next implementation slices:
 
