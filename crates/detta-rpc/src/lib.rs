@@ -1,7 +1,8 @@
 use detta_core::{
-    Amount, AssetId, Block, BlockError, ContractId, ContractRecord, Event, GrantKey, MempoolError,
-    OutboxMessageProof, Principal, Receipt, RegistryNonInclusionProof, RegistryProof, StateKey,
-    StateSnapshot, StorageNonInclusionProof, StorageProof, Transaction, ValidatorNode,
+    Amount, AssetId, Block, BlockError, ContractId, ContractRecord, Event, ExecutionError,
+    GrantKey, MempoolError, OutboxMessageProof, Principal, Receipt, RegistryNonInclusionProof,
+    RegistryProof, StateKey, StateSnapshot, StorageNonInclusionProof, StorageProof, Transaction,
+    UpgradeRehearsalReport, ValidatorNode,
 };
 use detta_protocol::SignedValidatorMessage;
 use detta_storage::{
@@ -23,6 +24,7 @@ pub enum RpcError {
     TransactionNotFound,
     ContractNotFound,
     ProofNotFound,
+    Execution(ExecutionError),
     UnsupportedNodeMethod,
 }
 
@@ -82,6 +84,9 @@ pub enum RpcRequest {
     GetEvents,
     GetContract {
         contract: ContractId,
+    },
+    GetUpgradeRehearsalReport {
+        upgrade_id: String,
     },
     ProposeValidatorSetMetadataUpdate {
         authorization: SignedValidatorMessage,
@@ -218,6 +223,7 @@ pub enum RpcResult {
     OutboxMessageProof(Box<OutboxMessageProof>),
     Events(Vec<Event>),
     Contract(Box<ContractRecord>),
+    UpgradeRehearsalReport(Box<UpgradeRehearsalReport>),
     ValidatorSetMetadataUpdateStatus(ValidatorSetMetadataUpdateStatus),
     ValidatorSetMetadataAuditRecords(Vec<ValidatorSetMetadataAuditRecord>),
     SnapshotImportAuditRecords(Vec<SnapshotImportAuditRecord>),
@@ -443,6 +449,16 @@ impl RpcService {
             .ok_or(RpcError::ContractNotFound)
     }
 
+    pub fn get_upgrade_rehearsal_report(
+        &self,
+        upgrade_id: &str,
+    ) -> Result<UpgradeRehearsalReport, RpcError> {
+        self.node
+            .state()
+            .rehearse_scheduled_upgrade(upgrade_id)
+            .map_err(RpcError::Execution)
+    }
+
     pub fn handle_request(&mut self, request: RpcRequest) -> RpcResponse {
         match request {
             RpcRequest::SubmitTransaction { transaction } => self
@@ -512,6 +528,10 @@ impl RpcService {
             RpcRequest::GetContract { contract } => self
                 .get_contract(contract)
                 .map(|contract| RpcResult::Contract(Box::new(contract)))
+                .into(),
+            RpcRequest::GetUpgradeRehearsalReport { upgrade_id } => self
+                .get_upgrade_rehearsal_report(&upgrade_id)
+                .map(|report| RpcResult::UpgradeRehearsalReport(Box::new(report)))
                 .into(),
             RpcRequest::ProposeValidatorSetMetadataUpdate { .. }
             | RpcRequest::GetValidatorSetMetadataUpdateStatus { .. }
@@ -661,6 +681,12 @@ fn rpc_error_code(error: &RpcError) -> &'static str {
         RpcError::TransactionNotFound => "rpc.transaction_not_found",
         RpcError::ContractNotFound => "rpc.contract_not_found",
         RpcError::ProofNotFound => "rpc.proof_not_found",
+        RpcError::Execution(ExecutionError::UpgradeNotFound) => "execution.upgrade_not_found",
+        RpcError::Execution(ExecutionError::UpgradeAlreadyExecuted) => {
+            "execution.upgrade_already_executed"
+        }
+        RpcError::Execution(ExecutionError::ContractNotFound) => "execution.contract_not_found",
+        RpcError::Execution(_) => "execution.failed",
         RpcError::UnsupportedNodeMethod => "rpc.unsupported_node_method",
     }
 }
@@ -710,6 +736,12 @@ fn rpc_error_message(error: &RpcError) -> &'static str {
         RpcError::TransactionNotFound => "transaction was not found",
         RpcError::ContractNotFound => "contract was not found",
         RpcError::ProofNotFound => "proof was not found",
+        RpcError::Execution(ExecutionError::UpgradeNotFound) => "upgrade was not found",
+        RpcError::Execution(ExecutionError::UpgradeAlreadyExecuted) => {
+            "upgrade has already been executed"
+        }
+        RpcError::Execution(ExecutionError::ContractNotFound) => "contract was not found",
+        RpcError::Execution(_) => "execution failed",
         RpcError::UnsupportedNodeMethod => "method must be handled by a persistent validator node",
     }
 }
@@ -909,6 +941,74 @@ mod tests {
             .declared_invariants()
             .contains(&ContractInvariant::TokenSupplyMatchesBalances));
         assert_eq!(rpc.get_state_root(), block.header.global_state_root);
+    }
+
+    #[test]
+    fn rpc_returns_upgrade_rehearsal_report() {
+        let mut state = DeTTaState::new("detta-local");
+        state
+            .deploy_token("TokenA", "USDC", vec![("Alice".into(), 100)])
+            .unwrap();
+        state
+            .deploy_governance_with_timelock("GovA", "TokenA", "Admin", 2)
+            .unwrap();
+        let old_code_hash = state.code_hash("TokenA").unwrap().to_string();
+        let storage_root = state.storage_root();
+        let registry_root = state.registry_root();
+        let schedule = state.apply_transaction(Transaction {
+            chain_id: "detta-local".into(),
+            tx_hash: "tx-schedule-upgrade".into(),
+            sender: "Admin".into(),
+            nonce: 1,
+            target: "GovA".into(),
+            method: Method::ScheduleUpgrade,
+            args: vec![
+                Argument::Text("upgrade-1".into()),
+                Argument::Text("token-code-v2".into()),
+            ],
+            signature_ok: true,
+            budget: 1_000_000,
+        });
+        assert_eq!(schedule.status, TxStatus::Committed);
+
+        let mut rpc = RpcService::new(ValidatorNode::new("validator-1", state));
+        let response = rpc.handle_request(RpcRequest::GetUpgradeRehearsalReport {
+            upgrade_id: "upgrade-1".into(),
+        });
+        let RpcResponse::Ok(RpcResult::UpgradeRehearsalReport(report)) = response else {
+            panic!("expected upgrade rehearsal report");
+        };
+
+        assert_eq!(report.upgrade_id, "upgrade-1");
+        assert_eq!(report.governance_contract, "GovA");
+        assert_eq!(report.target_contract, "TokenA");
+        assert_eq!(report.old_code_hash, old_code_hash);
+        assert_eq!(report.new_code_hash, "token-code-v2");
+        assert_eq!(report.execute_after_height, 2);
+        assert!(!report.ready_at_height);
+        assert_eq!(report.invariant_failures, vec![]);
+        assert_eq!(report.storage_root, storage_root);
+        assert_eq!(report.registry_root, registry_root);
+        assert_eq!(
+            rpc.node().state().code_hash("TokenA"),
+            Some(old_code_hash.as_str())
+        );
+        let report_root = report.report_root();
+        assert_eq!(report_root.len(), 64);
+        assert!(report_root
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()));
+
+        let missing = rpc.handle_request(RpcRequest::GetUpgradeRehearsalReport {
+            upgrade_id: "missing-upgrade".into(),
+        });
+        assert_eq!(
+            missing,
+            RpcResponse::Error(RpcErrorBody {
+                code: "execution.upgrade_not_found".into(),
+                message: "upgrade was not found".into(),
+            })
+        );
     }
 
     #[test]

@@ -384,6 +384,8 @@ Completed production-plan slices:
   collateral seizure, and explicit bad-debt accounting tests.
 - [x] Governance upgrades expose forked-state rehearsal reports with invariant
   failures and authenticated roots before execution.
+- [x] Upgrade rehearsal reports are exposed over shared RPC for operator
+  pre-execution checks.
 
 Next implementation slices:
 
