@@ -16,6 +16,8 @@ use std::net::{SocketAddr, TcpListener, ToSocketAddrs};
 
 pub const DEFAULT_MAX_RPC_REQUEST_BYTES: usize = 1024 * 1024;
 pub const DEFAULT_MAX_EVENT_PAGE_SIZE: usize = 1_000;
+pub const DEFAULT_MAX_SUBSCRIPTION_EVENT_PAGE_SIZE: usize = 1_000;
+pub const DEFAULT_MAX_SUBSCRIPTION_EVENTS: usize = 10_000;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RpcError {
@@ -28,6 +30,7 @@ pub enum RpcError {
     TransactionNotFound,
     ContractNotFound,
     ProofNotFound,
+    SubscriptionNotFound,
     Execution(ExecutionError),
     UnsupportedNodeMethod,
 }
@@ -102,6 +105,14 @@ pub enum RpcRequest {
     GetEvents,
     GetEventsPage {
         offset: usize,
+        limit: usize,
+    },
+    Subscribe {
+        topics: Vec<SubscriptionTopic>,
+    },
+    GetSubscriptionEvents {
+        subscription_id: String,
+        from_sequence: u64,
         limit: usize,
     },
     GetContract {
@@ -240,6 +251,47 @@ pub struct EventPage {
     pub total_events: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubscriptionTopic {
+    Blocks,
+    Receipts,
+    Events,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "data", rename_all = "snake_case")]
+pub enum SubscriptionNotification {
+    Block(Box<Block>),
+    Receipt(Box<Receipt>),
+    Event(Box<Event>),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SubscriptionEvent {
+    pub sequence: u64,
+    pub topic: SubscriptionTopic,
+    pub notification: SubscriptionNotification,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SubscriptionStatus {
+    pub subscription_id: String,
+    pub topics: Vec<SubscriptionTopic>,
+    pub next_sequence: u64,
+    pub earliest_retained_sequence: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SubscriptionEventPage {
+    pub subscription_id: String,
+    pub events: Vec<SubscriptionEvent>,
+    pub from_sequence: u64,
+    pub next_sequence: u64,
+    pub earliest_retained_sequence: u64,
+    pub limit: usize,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "result", content = "data", rename_all = "snake_case")]
 pub enum RpcResult {
@@ -268,6 +320,8 @@ pub enum RpcResult {
     EventProof(Box<EventProof>),
     Events(Vec<Event>),
     EventsPage(EventPage),
+    SubscriptionStatus(SubscriptionStatus),
+    SubscriptionEvents(SubscriptionEventPage),
     Contract(Box<ContractRecord>),
     UpgradeRehearsalReport(Box<UpgradeRehearsalReport>),
     ValidatorSetMetadataUpdateStatus(ValidatorSetMetadataUpdateStatus),
@@ -424,15 +478,138 @@ impl<H: JsonRpcHandler> JsonRpcHandler for RateLimitedJsonRpcHandler<'_, H> {
 
 pub struct RpcService {
     node: ValidatorNode,
+    subscriptions: BTreeMap<String, Vec<SubscriptionTopic>>,
+    subscription_events: Vec<SubscriptionEvent>,
+    next_subscription_id: u64,
+    next_subscription_sequence: u64,
 }
 
 impl RpcService {
     pub fn new(node: ValidatorNode) -> Self {
-        Self { node }
+        Self {
+            node,
+            subscriptions: BTreeMap::new(),
+            subscription_events: Vec::new(),
+            next_subscription_id: 1,
+            next_subscription_sequence: 1,
+        }
     }
 
     pub fn node(&self) -> &ValidatorNode {
         &self.node
+    }
+
+    fn normalize_subscription_topics(mut topics: Vec<SubscriptionTopic>) -> Vec<SubscriptionTopic> {
+        if topics.is_empty() {
+            topics = vec![
+                SubscriptionTopic::Blocks,
+                SubscriptionTopic::Receipts,
+                SubscriptionTopic::Events,
+            ];
+        }
+        topics.sort();
+        topics.dedup();
+        topics
+    }
+
+    fn earliest_retained_subscription_sequence(&self) -> u64 {
+        self.subscription_events
+            .first()
+            .map(|event| event.sequence)
+            .unwrap_or(self.next_subscription_sequence)
+    }
+
+    pub fn subscribe(&mut self, topics: Vec<SubscriptionTopic>) -> SubscriptionStatus {
+        let topics = Self::normalize_subscription_topics(topics);
+        let subscription_id = format!("sub-{}", self.next_subscription_id);
+        self.next_subscription_id += 1;
+        self.subscriptions
+            .insert(subscription_id.clone(), topics.clone());
+        SubscriptionStatus {
+            subscription_id,
+            topics,
+            next_sequence: self.next_subscription_sequence,
+            earliest_retained_sequence: self.earliest_retained_subscription_sequence(),
+        }
+    }
+
+    pub fn get_subscription_events(
+        &self,
+        subscription_id: &str,
+        from_sequence: u64,
+        limit: usize,
+    ) -> Result<SubscriptionEventPage, RpcError> {
+        let topics = self
+            .subscriptions
+            .get(subscription_id)
+            .ok_or(RpcError::SubscriptionNotFound)?;
+        let effective_limit = limit.min(DEFAULT_MAX_SUBSCRIPTION_EVENT_PAGE_SIZE);
+        let earliest_retained_sequence = self.earliest_retained_subscription_sequence();
+        let effective_from_sequence = from_sequence.max(earliest_retained_sequence);
+        let mut events = Vec::new();
+        if effective_limit > 0 {
+            for event in self
+                .subscription_events
+                .iter()
+                .filter(|event| event.sequence >= effective_from_sequence)
+            {
+                if topics.contains(&event.topic) {
+                    events.push(event.clone());
+                    if events.len() == effective_limit {
+                        break;
+                    }
+                }
+            }
+        }
+        let next_sequence = events
+            .last()
+            .map(|event| event.sequence + 1)
+            .unwrap_or(self.next_subscription_sequence);
+
+        Ok(SubscriptionEventPage {
+            subscription_id: subscription_id.into(),
+            events,
+            from_sequence: effective_from_sequence,
+            next_sequence,
+            earliest_retained_sequence,
+            limit: effective_limit,
+        })
+    }
+
+    fn publish_subscription_event(
+        &mut self,
+        topic: SubscriptionTopic,
+        notification: SubscriptionNotification,
+    ) {
+        self.subscription_events.push(SubscriptionEvent {
+            sequence: self.next_subscription_sequence,
+            topic,
+            notification,
+        });
+        self.next_subscription_sequence += 1;
+        if self.subscription_events.len() > DEFAULT_MAX_SUBSCRIPTION_EVENTS {
+            let excess = self.subscription_events.len() - DEFAULT_MAX_SUBSCRIPTION_EVENTS;
+            self.subscription_events.drain(0..excess);
+        }
+    }
+
+    fn publish_block_notifications(&mut self, block: &Block, events: Vec<Event>) {
+        self.publish_subscription_event(
+            SubscriptionTopic::Blocks,
+            SubscriptionNotification::Block(Box::new(block.clone())),
+        );
+        for receipt in &block.receipts {
+            self.publish_subscription_event(
+                SubscriptionTopic::Receipts,
+                SubscriptionNotification::Receipt(Box::new(receipt.clone())),
+            );
+        }
+        for event in events {
+            self.publish_subscription_event(
+                SubscriptionTopic::Events,
+                SubscriptionNotification::Event(Box::new(event)),
+            );
+        }
     }
 
     pub fn submit_transaction(&mut self, tx: Transaction) -> Result<(), RpcError> {
@@ -440,15 +617,24 @@ impl RpcService {
     }
 
     pub fn produce_block(&mut self, height: u64, timestamp: u64) -> Result<Block, RpcError> {
+        let event_start = self.node.state().events().len();
         let block = self.node.propose_pending_block(height, timestamp);
         self.node
             .validate_and_apply(&block)
             .map_err(RpcError::Block)?;
+        let events = self.node.state().events()[event_start..].to_vec();
+        self.publish_block_notifications(&block, events);
         Ok(block)
     }
 
     pub fn import_block(&mut self, block: &Block) -> Result<(), RpcError> {
-        self.node.validate_and_apply(block).map_err(RpcError::Block)
+        let event_start = self.node.state().events().len();
+        self.node
+            .validate_and_apply(block)
+            .map_err(RpcError::Block)?;
+        let events = self.node.state().events()[event_start..].to_vec();
+        self.publish_block_notifications(block, events);
+        Ok(())
     }
 
     pub fn get_transaction(&self, tx_hash: &str) -> Result<Transaction, RpcError> {
@@ -711,6 +897,17 @@ impl RpcService {
             RpcRequest::GetEventsPage { offset, limit } => {
                 RpcResponse::Ok(RpcResult::EventsPage(self.get_events_page(offset, limit)))
             }
+            RpcRequest::Subscribe { topics } => {
+                RpcResponse::Ok(RpcResult::SubscriptionStatus(self.subscribe(topics)))
+            }
+            RpcRequest::GetSubscriptionEvents {
+                subscription_id,
+                from_sequence,
+                limit,
+            } => self
+                .get_subscription_events(&subscription_id, from_sequence, limit)
+                .map(RpcResult::SubscriptionEvents)
+                .into(),
             RpcRequest::GetContract { contract } => self
                 .get_contract(contract)
                 .map(|contract| RpcResult::Contract(Box::new(contract)))
@@ -885,6 +1082,7 @@ fn rpc_error_code(error: &RpcError) -> &'static str {
         RpcError::TransactionNotFound => "rpc.transaction_not_found",
         RpcError::ContractNotFound => "rpc.contract_not_found",
         RpcError::ProofNotFound => "rpc.proof_not_found",
+        RpcError::SubscriptionNotFound => "rpc.subscription_not_found",
         RpcError::Execution(ExecutionError::UpgradeNotFound) => "execution.upgrade_not_found",
         RpcError::Execution(ExecutionError::UpgradeAlreadyExecuted) => {
             "execution.upgrade_already_executed"
@@ -945,6 +1143,7 @@ fn rpc_error_message(error: &RpcError) -> &'static str {
         RpcError::TransactionNotFound => "transaction was not found",
         RpcError::ContractNotFound => "contract was not found",
         RpcError::ProofNotFound => "proof was not found",
+        RpcError::SubscriptionNotFound => "subscription was not found",
         RpcError::Execution(ExecutionError::UpgradeNotFound) => "upgrade was not found",
         RpcError::Execution(ExecutionError::UpgradeAlreadyExecuted) => {
             "upgrade has already been executed"
@@ -1227,6 +1426,114 @@ mod tests {
     }
 
     #[test]
+    fn subscription_json_fixtures_are_stable() {
+        let subscribe_request = RpcRequest::Subscribe {
+            topics: vec![SubscriptionTopic::Events],
+        };
+        let subscribe_request_fixture = r#"{"method":"subscribe","params":{"topics":["events"]}}"#;
+        assert_eq!(
+            serde_json::to_string(&subscribe_request).unwrap(),
+            subscribe_request_fixture
+        );
+        assert_eq!(
+            serde_json::from_str::<RpcRequest>(subscribe_request_fixture).unwrap(),
+            subscribe_request
+        );
+
+        let events_request = RpcRequest::GetSubscriptionEvents {
+            subscription_id: "sub-1".into(),
+            from_sequence: 1,
+            limit: 10,
+        };
+        let events_request_fixture = concat!(
+            r#"{"method":"get_subscription_events","params":{"#,
+            r#""subscription_id":"sub-1","from_sequence":1,"limit":10}}"#,
+        );
+        assert_eq!(
+            serde_json::to_string(&events_request).unwrap(),
+            events_request_fixture
+        );
+        assert_eq!(
+            serde_json::from_str::<RpcRequest>(events_request_fixture).unwrap(),
+            events_request
+        );
+
+        let status_response = RpcResponse::Ok(RpcResult::SubscriptionStatus(SubscriptionStatus {
+            subscription_id: "sub-1".into(),
+            topics: vec![SubscriptionTopic::Events],
+            next_sequence: 1,
+            earliest_retained_sequence: 1,
+        }));
+        let status_fixture = concat!(
+            r#"{"status":"ok","body":{"result":"subscription_status","data":{"#,
+            r#""subscription_id":"sub-1","topics":["events"],"next_sequence":1,"#,
+            r#""earliest_retained_sequence":1}}}"#,
+        );
+        assert_eq!(
+            serde_json::to_string(&status_response).unwrap(),
+            status_fixture
+        );
+        assert_eq!(
+            serde_json::from_str::<RpcResponse>(status_fixture).unwrap(),
+            status_response
+        );
+
+        let page_response = RpcResponse::Ok(RpcResult::SubscriptionEvents(SubscriptionEventPage {
+            subscription_id: "sub-1".into(),
+            events: vec![SubscriptionEvent {
+                sequence: 1,
+                topic: SubscriptionTopic::Events,
+                notification: SubscriptionNotification::Event(Box::new(Event {
+                    contract: "TokenA".into(),
+                    tx_hash: "tx1".into(),
+                    index: 0,
+                    payload: EventPayload::Transfer {
+                        from: "Alice".into(),
+                        to: "Bob".into(),
+                        asset: "USDC".into(),
+                        amount: 10,
+                    },
+                })),
+            }],
+            from_sequence: 1,
+            next_sequence: 2,
+            earliest_retained_sequence: 1,
+            limit: 10,
+        }));
+        let page_fixture = concat!(
+            r#"{"status":"ok","body":{"result":"subscription_events","data":{"#,
+            r#""subscription_id":"sub-1","events":[{"sequence":1,"topic":"events","#,
+            r#""notification":{"kind":"event","data":{"contract":"TokenA","#,
+            r#""tx_hash":"tx1","index":0,"payload":{"Transfer":{"from":"Alice","#,
+            r#""to":"Bob","asset":"USDC","amount":10}}}}}],"#,
+            r#""from_sequence":1,"next_sequence":2,"earliest_retained_sequence":1,"#,
+            r#""limit":10}}}"#,
+        );
+        assert_eq!(serde_json::to_string(&page_response).unwrap(), page_fixture);
+        assert_eq!(
+            serde_json::from_str::<RpcResponse>(page_fixture).unwrap(),
+            page_response
+        );
+
+        let missing_response = RpcResponse::Error(RpcErrorBody {
+            code: "rpc.subscription_not_found".into(),
+            message: "subscription was not found".into(),
+        });
+        let missing_fixture = concat!(
+            r#"{"status":"error","body":{"code":"rpc.subscription_not_found","#,
+            r#""message":"subscription was not found"}}"#,
+        );
+        assert_eq!(
+            serde_json::to_string(&missing_response).unwrap(),
+            missing_fixture
+        );
+        assert_eq!(
+            serde_json::from_str::<RpcResponse>(missing_fixture).unwrap(),
+            missing_response
+        );
+    }
+
+    #[test]
     fn proof_response_json_fixtures_are_stable() {
         let receipt_response = RpcResponse::Ok(RpcResult::ReceiptProof(Box::new(ReceiptProof {
             receipt: Receipt {
@@ -1449,6 +1756,78 @@ mod tests {
         assert_eq!(rpc.call_balance_view("TokenA", "Bob", "USDC"), 60);
         assert_eq!(rpc.get_transaction("tx1").unwrap().tx_hash, "tx1");
         assert_eq!(rpc.get_block(1).unwrap().header.height, 1);
+    }
+
+    #[test]
+    fn rpc_subscription_polling_returns_block_receipt_and_event_notifications() {
+        let mut rpc = seeded_rpc();
+        let all_subscription = rpc.subscribe(vec![]);
+        let event_subscription = rpc.subscribe(vec![SubscriptionTopic::Events]);
+
+        assert_eq!(all_subscription.subscription_id, "sub-1");
+        assert_eq!(
+            all_subscription.topics,
+            vec![
+                SubscriptionTopic::Blocks,
+                SubscriptionTopic::Receipts,
+                SubscriptionTopic::Events,
+            ]
+        );
+        assert_eq!(all_subscription.next_sequence, 1);
+        assert_eq!(event_subscription.subscription_id, "sub-2");
+
+        rpc.submit_transaction(transfer_tx()).unwrap();
+        rpc.produce_block(1, 1_000).unwrap();
+
+        let all_events = rpc
+            .get_subscription_events(
+                &all_subscription.subscription_id,
+                all_subscription.next_sequence,
+                10,
+            )
+            .unwrap();
+        assert_eq!(all_events.events.len(), 3);
+        assert_eq!(all_events.next_sequence, 4);
+        assert_eq!(
+            all_events
+                .events
+                .iter()
+                .map(|event| event.topic)
+                .collect::<Vec<_>>(),
+            vec![
+                SubscriptionTopic::Blocks,
+                SubscriptionTopic::Receipts,
+                SubscriptionTopic::Events,
+            ]
+        );
+        assert!(matches!(
+            &all_events.events[0].notification,
+            SubscriptionNotification::Block(_)
+        ));
+        assert!(matches!(
+            &all_events.events[1].notification,
+            SubscriptionNotification::Receipt(_)
+        ));
+        assert!(matches!(
+            &all_events.events[2].notification,
+            SubscriptionNotification::Event(_)
+        ));
+
+        let event_only = rpc
+            .get_subscription_events(
+                &event_subscription.subscription_id,
+                event_subscription.next_sequence,
+                10,
+            )
+            .unwrap();
+        assert_eq!(event_only.events.len(), 1);
+        assert_eq!(event_only.events[0].topic, SubscriptionTopic::Events);
+        assert_eq!(event_only.next_sequence, 4);
+        assert_eq!(
+            rpc.get_subscription_events("missing-subscription", 1, 10)
+                .unwrap_err(),
+            RpcError::SubscriptionNotFound
+        );
     }
 
     #[test]
@@ -1706,6 +2085,25 @@ mod tests {
 
         write_request(
             &mut stream,
+            &RpcRequest::Subscribe {
+                topics: vec![
+                    SubscriptionTopic::Blocks,
+                    SubscriptionTopic::Receipts,
+                    SubscriptionTopic::Events,
+                ],
+            },
+        );
+        let subscription = match read_response(&mut reader) {
+            RpcResponse::Ok(RpcResult::SubscriptionStatus(subscription)) => {
+                assert_eq!(subscription.subscription_id, "sub-1");
+                assert_eq!(subscription.next_sequence, 1);
+                subscription
+            }
+            response => panic!("expected subscription status, got {response:?}"),
+        };
+
+        write_request(
+            &mut stream,
             &RpcRequest::SubmitTransaction {
                 transaction: transfer_tx(),
             },
@@ -1747,6 +2145,35 @@ mod tests {
                 assert_eq!(block.transactions.len(), 1);
             }
             response => panic!("expected produced block, got {response:?}"),
+        }
+
+        write_request(
+            &mut stream,
+            &RpcRequest::GetSubscriptionEvents {
+                subscription_id: subscription.subscription_id.clone(),
+                from_sequence: subscription.next_sequence,
+                limit: 10,
+            },
+        );
+        match read_response(&mut reader) {
+            RpcResponse::Ok(RpcResult::SubscriptionEvents(page)) => {
+                assert_eq!(page.subscription_id, subscription.subscription_id);
+                assert_eq!(page.events.len(), 3);
+                assert_eq!(page.next_sequence, 4);
+                assert_eq!(page.limit, 10);
+                assert_eq!(
+                    page.events
+                        .iter()
+                        .map(|event| event.topic)
+                        .collect::<Vec<_>>(),
+                    vec![
+                        SubscriptionTopic::Blocks,
+                        SubscriptionTopic::Receipts,
+                        SubscriptionTopic::Events,
+                    ]
+                );
+            }
+            response => panic!("expected subscription events, got {response:?}"),
         }
 
         write_request(

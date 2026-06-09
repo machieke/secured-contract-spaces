@@ -414,6 +414,8 @@ Completed production-plan slices:
   through typed RPC, stable JSON fixtures, and TCP JSON after-restart tests.
 - [x] Mempool status RPC reports pending count, per-sender pressure, admission
   limits, and block resource limits over in-memory, TCP, and restart paths.
+- [x] RPC supports bounded polling subscriptions for new block, receipt, and
+  event notifications with stable JSON fixtures and TCP coverage.
 
 Next implementation slices:
 
