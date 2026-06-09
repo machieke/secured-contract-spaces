@@ -96,8 +96,13 @@ The current implementation includes slices for:
 - snapshot manifests, chunked state sync, metadata roots, and sync diagnostics;
 - HTTP and TCP JSON-RPC surfaces;
 - restricted evaluator fixtures and proof artifact hashing;
+- secure restricted MeTTa aspect modules with parser, canonical roots,
+  verifier, executable aspect runtime, module artifacts, and proof obligations;
 - token, AMM, oracle, bridge-security, lending, staking, governance, timelock,
   upgrade, and account-registry contract flows;
+- taxonomy-aligned programmable token bundles for ERC20-like transfer/approval,
+  fees, pauses, restrictions, locks, mint/burn/caps, snapshots, vault shares,
+  wrapping, rewarded staking, and bridge mint/burn adapters;
 - E2E client tests covering deployment, liquidity, buys and sells, proofs,
   RPC coverage, adversarial cases, state sync, networking, and operator APIs.
 
@@ -166,8 +171,10 @@ Rust workspace crates:
   TCP protocol streams.
 - `crates/detta-storage`: durable blocks, mempool records, snapshots, metadata,
   audit records, and sync diagnostics.
-- `crates/detta-aspects`: parser, canonicalizer, and source-root tooling for
-  secure taxonomy-aligned MeTTa aspect modules.
+- `crates/detta-aspects`: parser, canonicalizer, verifier, IR lowering, and
+  artifact tooling for secure taxonomy-aligned MeTTa aspect modules.
+- `crates/detta-aspect-runtime`: deterministic executable runtime for verified
+  aspect IR and guarded kernel host-call traces.
 - `crates/detta-node`: persistent validator node orchestration.
 - `crates/detta-rpc`: HTTP/TCP JSON-RPC server and client-facing wire types.
 - `crates/detta-evaluator`: restricted MeTTa/PeTTa-style evaluator subset.

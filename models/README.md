@@ -46,7 +46,9 @@ This directory contains formal-model artifacts for the DeTTa runtime.
 - `detta-restricted-evaluator-fixture-inventory.sha256` records the release
   attestation root for the fixture inventory.
 - `aspects/stdlib/minimal-transfer-token.artifact.json` records the
-  root-authenticated standard-library aspect artifact used by release gates.
+  root-authenticated standard-library aspect artifact used by release gates,
+  including source, IR, ABI, policy, storage-schema, registry-schema, and
+  invariant roots for the checked-in 14-bundle token aspect module.
 - `aspects/stdlib/minimal-transfer-token.proof-obligations.json` records the
   programmable-module proof obligations for the standard-library token bundle.
 - `aspects/stdlib/*.sha256` files bind the checked-in aspect source, artifact,

@@ -13,6 +13,30 @@ They assume genesis contains:
 
 The example deploys the checked-in `ERC20ConformantToken` bundle from
 `models/aspects/stdlib/minimal-transfer-token.metta` as `ClientAspectToken`.
+That fixture currently contains 14 verified bundles, 20 aspects, 50 callable
+projections, 50 ABI entries, 50 method policies, 22 storage schema entries, and
+16 invariant definitions. The checked-in artifact and proof-obligation
+manifests live next to the source under `models/aspects/stdlib/`.
+
+Available checked-in bundle IDs are:
+
+- `MinimalTransferToken`: transfer, approval, delegated transfer.
+- `ERC20ConformantToken`: ERC20-like transfer, approve, transferFrom, permit,
+  and initializer projections.
+- `FeeToken`: configurable basis-point transfer fee.
+- `PausableToken`: admin-controlled pause gate for transfers.
+- `RestrictedToken`: blocked-account transfer restriction.
+- `LockedToken`: account unlock-height transfer restriction.
+- `MintBurnToken`: mint and burn projections.
+- `CappedMintToken`: mint cap plus mint projection.
+- `VotableToken`: voting-power view backed by balances.
+- `SnapshotToken`: balance and total-supply snapshots.
+- `VaultShareToken`: checked vault deposit, redeem, and shares view.
+- `WrappedToken`: wrap, unwrap, and transfer projections.
+- `RewardedStakeToken`: stake, unstake, reward configuration, reward claim,
+  and stake view.
+- `BridgeMintBurnToken`: bridge certificate-verified mint and burn plus
+  transfer.
 
 ## Request Format
 

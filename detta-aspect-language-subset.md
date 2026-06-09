@@ -48,6 +48,23 @@ bundle closure, required facets, conflict exclusion, unique storage ownership,
 projection ABI/policy coverage, declared effects, write scopes, and invariant
 references.
 
+## Checked Standard Library Coverage
+
+The checked-in standard-library fixture is
+`models/aspects/stdlib/minimal-transfer-token.metta`. It is broader than the
+historical filename: the module currently contains 14 deployable token bundles
+and covers ERC20-like transfer/approval, permit approval, configurable fees,
+pauses, blocked-account restrictions, account locks, minting, burning, mint
+caps, votes, snapshots, vault shares, wrapping, rewarded staking, and bridge
+mint/burn through `bridge-verify!`.
+
+`models/aspects/stdlib/minimal-transfer-token.artifact.json` records the
+source, IR, ABI, policy, storage-schema, registry-schema, and invariant roots.
+`models/aspects/stdlib/minimal-transfer-token.proof-obligations.json` records
+the programmable-module obligations that tie the parser, verifier, evaluator,
+host calls, and TLA+ model coverage together. The release gate validates the
+source, artifact, and proof-obligation SHA-256 attestations.
+
 ## Baseline Precompiles
 
 Native DeTTa DeFi contracts are baseline precompiles used for genesis,
