@@ -418,6 +418,8 @@ Completed production-plan slices:
   event notifications with stable JSON fixtures and TCP coverage.
 - [x] Finality-certificate persistence publishes bounded RPC subscription
   notifications with stable JSON fixtures and node-aware coverage.
+- [x] Governance timelock queues expose scheduled code upgrades and policy
+  updates through typed RPC with stable JSON fixtures.
 
 Next implementation slices:
 

@@ -71,6 +71,10 @@ The shared `RpcService` supports:
 - `get_subscription_events`: fetch a bounded page of subscription
   notifications from a subscription sequence cursor.
 - `get_contract`: fetch a deployed contract descriptor.
+- `get_scheduled_upgrades`: list scheduled governance code upgrades and their
+  execution flags.
+- `get_scheduled_policy_updates`: list scheduled governance policy updates and
+  their execution flags.
 - `get_upgrade_rehearsal_report`: rehearse a scheduled upgrade on forked state
   and return invariant failures plus authenticated roots.
 

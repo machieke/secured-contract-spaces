@@ -2,8 +2,9 @@ use detta_consensus::{FinalityCertificate, SlashingRecord};
 use detta_core::{
     Amount, AssetId, Block, BlockError, ContractId, ContractRecord, Event, EventProof,
     ExecutionError, GrantKey, MempoolError, OutboxMessageProof, Principal, Receipt, ReceiptProof,
-    RegistryNonInclusionProof, RegistryProof, StateKey, StateSnapshot, StorageNonInclusionProof,
-    StorageProof, Transaction, UpgradeRehearsalReport, ValidatorNode,
+    RegistryNonInclusionProof, RegistryProof, ScheduledPolicyUpdate, ScheduledUpgrade, StateKey,
+    StateSnapshot, StorageNonInclusionProof, StorageProof, Transaction, UpgradeRehearsalReport,
+    ValidatorNode,
 };
 use detta_protocol::SignedValidatorMessage;
 use detta_storage::{
@@ -118,6 +119,8 @@ pub enum RpcRequest {
     GetContract {
         contract: ContractId,
     },
+    GetScheduledUpgrades,
+    GetScheduledPolicyUpdates,
     GetUpgradeRehearsalReport {
         upgrade_id: String,
     },
@@ -325,6 +328,8 @@ pub enum RpcResult {
     SubscriptionStatus(SubscriptionStatus),
     SubscriptionEvents(SubscriptionEventPage),
     Contract(Box<ContractRecord>),
+    ScheduledUpgrades(Vec<ScheduledUpgrade>),
+    ScheduledPolicyUpdates(Vec<ScheduledPolicyUpdate>),
     UpgradeRehearsalReport(Box<UpgradeRehearsalReport>),
     ValidatorSetMetadataUpdateStatus(ValidatorSetMetadataUpdateStatus),
     ValidatorSetMetadataAuditRecords(Vec<ValidatorSetMetadataAuditRecord>),
@@ -817,6 +822,18 @@ impl RpcService {
             .ok_or(RpcError::ContractNotFound)
     }
 
+    pub fn get_scheduled_upgrades(&self) -> Vec<ScheduledUpgrade> {
+        self.node.state().scheduled_upgrades().cloned().collect()
+    }
+
+    pub fn get_scheduled_policy_updates(&self) -> Vec<ScheduledPolicyUpdate> {
+        self.node
+            .state()
+            .scheduled_policy_updates()
+            .cloned()
+            .collect()
+    }
+
     pub fn get_upgrade_rehearsal_report(
         &self,
         upgrade_id: &str,
@@ -922,6 +939,12 @@ impl RpcService {
                 .get_contract(contract)
                 .map(|contract| RpcResult::Contract(Box::new(contract)))
                 .into(),
+            RpcRequest::GetScheduledUpgrades => {
+                RpcResponse::Ok(RpcResult::ScheduledUpgrades(self.get_scheduled_upgrades()))
+            }
+            RpcRequest::GetScheduledPolicyUpdates => RpcResponse::Ok(
+                RpcResult::ScheduledPolicyUpdates(self.get_scheduled_policy_updates()),
+            ),
             RpcRequest::GetUpgradeRehearsalReport { upgrade_id } => self
                 .get_upgrade_rehearsal_report(&upgrade_id)
                 .map(|report| RpcResult::UpgradeRehearsalReport(Box::new(report)))
@@ -1169,8 +1192,8 @@ mod tests {
     use super::*;
     use detta_consensus::EquivocationEvidence;
     use detta_core::{
-        Argument, ContractInvariant, DeTTaState, EventPayload, MerkleProof, Method, TxStatus,
-        DEFAULT_BLOCK_RESOURCE_LIMIT, DEFAULT_MEMPOOL_MAX_PENDING,
+        Argument, ContractInvariant, DeTTaState, EventPayload, MerkleProof, Method, PolicyEffect,
+        TxStatus, DEFAULT_BLOCK_RESOURCE_LIMIT, DEFAULT_MEMPOOL_MAX_PENDING,
         DEFAULT_MEMPOOL_MAX_PENDING_PER_SENDER, DEFAULT_MEMPOOL_MAX_TRANSACTION_BYTES,
     };
     use detta_protocol::{ProtocolMessage, ValidatorSetMetadataUpdate, ValidatorSignatureDomain};
@@ -1584,6 +1607,59 @@ mod tests {
     }
 
     #[test]
+    fn governance_schedule_json_fixtures_are_stable() {
+        let upgrades_response =
+            RpcResponse::Ok(RpcResult::ScheduledUpgrades(vec![ScheduledUpgrade {
+                upgrade_id: "upgrade-1".into(),
+                governance_contract: "GovA".into(),
+                target_contract: "TokenA".into(),
+                new_code_hash: "token-code-v2".into(),
+                execute_after_height: 7,
+                executed: false,
+            }]));
+        let upgrades_fixture = concat!(
+            r#"{"status":"ok","body":{"result":"scheduled_upgrades","data":[{"#,
+            r#""upgrade_id":"upgrade-1","governance_contract":"GovA","#,
+            r#""target_contract":"TokenA","new_code_hash":"token-code-v2","#,
+            r#""execute_after_height":7,"executed":false}]}}"#,
+        );
+        assert_eq!(
+            serde_json::to_string(&upgrades_response).unwrap(),
+            upgrades_fixture
+        );
+        assert_eq!(
+            serde_json::from_str::<RpcResponse>(upgrades_fixture).unwrap(),
+            upgrades_response
+        );
+
+        let policy_updates_response = RpcResponse::Ok(RpcResult::ScheduledPolicyUpdates(vec![
+            ScheduledPolicyUpdate {
+                update_id: "policy-update-1".into(),
+                governance_contract: "GovA".into(),
+                target_contract: "TokenA".into(),
+                method: Method::Transfer,
+                effect: PolicyEffect::RegistryWrite,
+                execute_after_height: 7,
+                executed: false,
+            },
+        ]));
+        let policy_updates_fixture = concat!(
+            r#"{"status":"ok","body":{"result":"scheduled_policy_updates","data":[{"#,
+            r#""update_id":"policy-update-1","governance_contract":"GovA","#,
+            r#""target_contract":"TokenA","method":"Transfer","#,
+            r#""effect":"RegistryWrite","execute_after_height":7,"executed":false}]}}"#,
+        );
+        assert_eq!(
+            serde_json::to_string(&policy_updates_response).unwrap(),
+            policy_updates_fixture
+        );
+        assert_eq!(
+            serde_json::from_str::<RpcResponse>(policy_updates_fixture).unwrap(),
+            policy_updates_response
+        );
+    }
+
+    #[test]
     fn proof_response_json_fixtures_are_stable() {
         let receipt_response = RpcResponse::Ok(RpcResult::ReceiptProof(Box::new(ReceiptProof {
             receipt: Receipt {
@@ -1977,8 +2053,49 @@ mod tests {
             budget: 1_000_000,
         });
         assert_eq!(schedule.status, TxStatus::Committed);
+        let policy_schedule = state.apply_transaction(Transaction {
+            chain_id: "detta-local".into(),
+            tx_hash: "tx-schedule-policy".into(),
+            sender: "Admin".into(),
+            nonce: 2,
+            target: "GovA".into(),
+            method: Method::SchedulePolicyUpdate,
+            args: vec![
+                Argument::Text("policy-update-1".into()),
+                Argument::Text("transfer".into()),
+                Argument::Text("registryWrite".into()),
+            ],
+            signature_ok: true,
+            budget: 1_000_000,
+        });
+        assert_eq!(policy_schedule.status, TxStatus::Committed);
 
         let mut rpc = RpcService::new(ValidatorNode::new("validator-1", state));
+        assert_eq!(
+            rpc.handle_request(RpcRequest::GetScheduledUpgrades),
+            RpcResponse::Ok(RpcResult::ScheduledUpgrades(vec![ScheduledUpgrade {
+                upgrade_id: "upgrade-1".into(),
+                governance_contract: "GovA".into(),
+                target_contract: "TokenA".into(),
+                new_code_hash: "token-code-v2".into(),
+                execute_after_height: 2,
+                executed: false,
+            }]))
+        );
+        assert_eq!(
+            rpc.handle_request(RpcRequest::GetScheduledPolicyUpdates),
+            RpcResponse::Ok(RpcResult::ScheduledPolicyUpdates(vec![
+                ScheduledPolicyUpdate {
+                    update_id: "policy-update-1".into(),
+                    governance_contract: "GovA".into(),
+                    target_contract: "TokenA".into(),
+                    method: Method::Transfer,
+                    effect: PolicyEffect::RegistryWrite,
+                    execute_after_height: 2,
+                    executed: false,
+                },
+            ]))
+        );
         let response = rpc.handle_request(RpcRequest::GetUpgradeRehearsalReport {
             upgrade_id: "upgrade-1".into(),
         });
