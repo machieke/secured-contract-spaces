@@ -8732,6 +8732,119 @@ mod tests {
     }
 
     #[test]
+    fn wrapped_token_aspect_supports_wrap_transfer_and_unwrap() {
+        let mut state = DeTTaState::new("detta-local");
+        state.deploy_factory("Factory").unwrap();
+        let module = AspectModuleRecord::from_verified_source(
+            "WrappedToken",
+            MINIMAL_TRANSFER_TOKEN_FIXTURE,
+        )
+        .unwrap();
+        let module_hash = state.register_aspect_module(module).unwrap();
+
+        let deploy = state.apply_transaction(tx_to(
+            "Factory",
+            "tx-deploy-wrapped-token",
+            "Issuer",
+            1,
+            Method::DeployAspectContract,
+            vec![
+                text("WrappedAspectToken"),
+                text(&module_hash),
+                text("WrappedToken"),
+            ],
+        ));
+        assert_eq!(deploy.status, TxStatus::Committed);
+
+        let wrap = state.apply_transaction(tx_to(
+            "WrappedAspectToken",
+            "tx-wrap-alice",
+            "Alice",
+            1,
+            Method::Other("Wrapped-wrap".into()),
+            vec![amount(100)],
+        ));
+        assert_eq!(wrap.status, TxStatus::Committed);
+        assert_eq!(wrap.return_value, Some(ReturnValue::UInt(100)));
+
+        let transfer = state.apply_transaction(tx_to(
+            "WrappedAspectToken",
+            "tx-transfer-wrapped",
+            "Alice",
+            2,
+            Method::Other("ERC20-transfer".into()),
+            vec![principal("Bob"), amount(30)],
+        ));
+        assert_eq!(transfer.status, TxStatus::Committed);
+
+        let unwrap = state.apply_transaction(tx_to(
+            "WrappedAspectToken",
+            "tx-unwrap-bob",
+            "Bob",
+            1,
+            Method::Other("Wrapped-unwrap".into()),
+            vec![amount(10)],
+        ));
+        assert_eq!(unwrap.status, TxStatus::Committed);
+        assert_eq!(unwrap.return_value, Some(ReturnValue::UInt(10)));
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "WrappedAspectToken".into(),
+                aspect: "WrappedBalanceAspect".into(),
+                state: "wrappedUnderlyingReserve".into(),
+                key: Vec::new(),
+            }),
+            Some(&StateValue::UInt(90))
+        );
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "WrappedAspectToken".into(),
+                aspect: "StaticBalanceAspect".into(),
+                state: "totalSupply".into(),
+                key: Vec::new(),
+            }),
+            Some(&StateValue::UInt(90))
+        );
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "WrappedAspectToken".into(),
+                aspect: "StaticBalanceAspect".into(),
+                state: "balanceOf".into(),
+                key: vec!["Alice".into()],
+            }),
+            Some(&StateValue::UInt(70))
+        );
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "WrappedAspectToken".into(),
+                aspect: "StaticBalanceAspect".into(),
+                state: "balanceOf".into(),
+                key: vec!["Bob".into()],
+            }),
+            Some(&StateValue::UInt(20))
+        );
+
+        let aspect_events = state
+            .events()
+            .iter()
+            .filter_map(|event| match &event.payload {
+                EventPayload::AspectEvent { event, .. } => Some(event.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            aspect_events,
+            vec![
+                "(Transfer ZeroAddress Alice 100)",
+                "(Wrap Alice 100)",
+                "(Transfer Alice Bob 30)",
+                "(Transfer Bob ZeroAddress 10)",
+                "(Unwrap Bob 10)",
+            ]
+        );
+    }
+
+    #[test]
     fn factory_transaction_deploys_registered_aspect_contract() {
         let mut state = DeTTaState::new("detta-local");
         state.deploy_factory("Factory").unwrap();

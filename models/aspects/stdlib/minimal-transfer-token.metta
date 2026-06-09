@@ -30,6 +30,7 @@
 (: VotableBalanceAspect Aspect)
 (: SnapshotBalanceAspect Aspect)
 (: VaultShareBalanceAspect Aspect)
+(: WrappedBalanceAspect Aspect)
 (: MinimalTransferToken Bundle)
 (: ERC20ConformantToken Bundle)
 (: FeeToken Bundle)
@@ -41,6 +42,7 @@
 (: VotableToken Bundle)
 (: SnapshotToken Bundle)
 (: VaultShareToken Bundle)
+(: WrappedToken Bundle)
 
 (abstract-aspect BalanceAspect)
 (aspect StaticBalanceAspect)
@@ -58,6 +60,7 @@
 (aspect VotableBalanceAspect)
 (aspect SnapshotBalanceAspect)
 (aspect VaultShareBalanceAspect)
+(aspect WrappedBalanceAspect)
 
 (extends StaticBalanceAspect BalanceAspect)
 (extends TransferableBalanceAspect BalanceAspect)
@@ -73,6 +76,7 @@
 (extends VotableBalanceAspect BalanceAspect)
 (extends SnapshotBalanceAspect BalanceAspect)
 (extends VaultShareBalanceAspect BalanceAspect)
+(extends WrappedBalanceAspect BalanceAspect)
 
 (owns BalanceAspect tokenDecimals UInt8)
 (owns StaticBalanceAspect initialized Amount)
@@ -89,6 +93,7 @@
 (owns VaultShareBalanceAspect vaultAssetReserve Amount)
 (owns VaultShareBalanceAspect vaultShareSupply Amount)
 (owns VaultShareBalanceAspect vaultShareBalanceOf (-> Address Amount))
+(owns WrappedBalanceAspect wrappedUnderlyingReserve Amount)
 
 (provides TransferableBalanceAspect Balance-Transfer)
 (provides ApprovalAspect Balance-Allowance)
@@ -102,6 +107,7 @@
 (provides VotableBalanceAspect Balance-Votes)
 (provides SnapshotBalanceAspect Balance-Snapshot)
 (provides VaultShareBalanceAspect Vault-Share)
+(provides WrappedBalanceAspect Balance-Wrap)
 (requires SelfTransferAspect Balance-Transfer)
 (requires DelegatedTransferAspect Balance-Transfer)
 (requires DelegatedTransferAspect Balance-Allowance)
@@ -137,6 +143,8 @@
 (action VaultShareBalanceAspect depositVault)
 (action VaultShareBalanceAspect redeemVault)
 (action VaultShareBalanceAspect readVaultShares)
+(action WrappedBalanceAspect wrapBalance)
+(action WrappedBalanceAspect unwrapBalance)
 
 (derived StaticBalanceAspect initializeSupply
   (= (initializeSupply $owner $amount)
@@ -381,6 +389,37 @@
   (= (readVaultShares $account)
      (state-get vaultShareBalanceOf $account)))
 
+(derived WrappedBalanceAspect wrapBalance
+  (= (wrapBalance $account $amount)
+     (begin
+       (require (> $amount 0) ZERO_WRAP)
+       (state-set! wrappedUnderlyingReserve
+         (safe-add (state-get wrappedUnderlyingReserve) $amount))
+       (state-set! totalSupply
+         (safe-add (state-get totalSupply) $amount))
+       (state-set! balanceOf $account
+         (safe-add (state-get balanceOf $account) $amount))
+       (emit! (Transfer ZeroAddress $account $amount))
+       (emit! (Wrap $account $amount))
+       $amount)))
+
+(derived WrappedBalanceAspect unwrapBalance
+  (= (unwrapBalance $account $amount)
+     (begin
+       (require (> $amount 0) ZERO_UNWRAP)
+       (require (>= (state-get balanceOf $account) $amount) INSUFFICIENT_BALANCE)
+       (require (>= (state-get totalSupply) $amount) INSUFFICIENT_SUPPLY)
+       (require (>= (state-get wrappedUnderlyingReserve) $amount) INSUFFICIENT_RESERVE)
+       (state-set! balanceOf $account
+         (safe-sub (state-get balanceOf $account) $amount))
+       (state-set! totalSupply
+         (safe-sub (state-get totalSupply) $amount))
+       (state-set! wrappedUnderlyingReserve
+         (safe-sub (state-get wrappedUnderlyingReserve) $amount))
+       (emit! (Transfer $account ZeroAddress $amount))
+       (emit! (Unwrap $account $amount))
+       $amount)))
+
 (local-invariant TransferableBalanceAspect TBA-3
   True)
 
@@ -415,6 +454,9 @@
   True)
 
 (local-invariant VaultShareBalanceAspect VAULT-1
+  True)
+
+(local-invariant WrappedBalanceAspect WRAP-1
   True)
 
 (bundle MinimalTransferToken)
@@ -475,6 +517,11 @@
 
 (bundle VaultShareToken)
 (bundle-includes VaultShareToken VaultShareBalanceAspect)
+
+(bundle WrappedToken)
+(bundle-includes WrappedToken StaticBalanceAspect)
+(bundle-includes WrappedToken TransferableBalanceAspect)
+(bundle-includes WrappedToken WrappedBalanceAspect)
 
 (projection MinimalTransferToken ERC20-transfer
   (= (ERC20.transfer $to $amount)
@@ -632,6 +679,18 @@
   (= (Vault.sharesOf $account)
      (readVaultShares $account)))
 
+(projection WrappedToken Wrapped-wrap
+  (= (Wrapped.wrap $amount)
+     (wrapBalance tx.sender $amount)))
+
+(projection WrappedToken Wrapped-unwrap
+  (= (Wrapped.unwrap $amount)
+     (unwrapBalance tx.sender $amount)))
+
+(projection WrappedToken ERC20-transfer
+  (= (ERC20.transfer $to $amount)
+     (transferBalance tx.sender $to $amount)))
+
 (method-abi MinimalTransferToken ERC20-transfer
   (args (to Address) (amount Amount))
   Bool)
@@ -787,6 +846,18 @@
 (method-abi VaultShareToken Vault-sharesOf
   (args (account Address))
   Amount)
+
+(method-abi WrappedToken Wrapped-wrap
+  (args (amount Amount))
+  Amount)
+
+(method-abi WrappedToken Wrapped-unwrap
+  (args (amount Amount))
+  Amount)
+
+(method-abi WrappedToken ERC20-transfer
+  (args (to Address) (amount Amount))
+  Bool)
 
 (method-policy MinimalTransferToken ERC20-transfer
   TxSender
@@ -982,3 +1053,18 @@
   TxSender
   (effects ReadState)
   (invariants VAULT-1))
+
+(method-policy WrappedToken Wrapped-wrap
+  TxSender
+  (effects ReadState WriteState EmitEvent)
+  (invariants WRAP-1))
+
+(method-policy WrappedToken Wrapped-unwrap
+  TxSender
+  (effects ReadState WriteState EmitEvent)
+  (invariants WRAP-1))
+
+(method-policy WrappedToken ERC20-transfer
+  TxSender
+  (effects ReadState WriteState EmitEvent)
+  (invariants TBA-3 WRAP-1))

@@ -1374,7 +1374,7 @@ Acceptance criteria:
 
 - [x] Add votable balance aspect.
 - [x] Add snapshot balance aspect.
-- [ ] Add wrapped balance aspect.
+- [x] Add wrapped balance aspect.
 - [x] Add vault share balance aspect.
 - [ ] Add stake and rewarded stake balance aspects.
 - [ ] Define bridge mint/burn aspect with certificate adapter.
@@ -1386,9 +1386,11 @@ balance and supply snapshots and read them back after later transfers.
 `VaultShareBalanceAspect` and `VaultShareToken` support checked
 deposit/redeem share math, return minted/redeemed amounts, maintain reserve,
 share supply, and share balances, and emit concrete vault accounting events.
-Wrapped tokens, staking rewards, and bridge mint/burn remain open because
-production versions need either cross-contract asset movement or
-kernel-verified certificate adapters that are still fail-closed for general
+`WrappedBalanceAspect` and `WrappedToken` support 1:1 wrap, transfer, and
+unwrap accounting over aspect-owned balances, supply, and reserve state.
+Production custody movement for wrapped assets, staking rewards, and bridge
+mint/burn remain open because they need either cross-contract asset movement
+or kernel-verified certificate adapters that are still fail-closed for general
 aspect modules.
 
 Acceptance criteria:
