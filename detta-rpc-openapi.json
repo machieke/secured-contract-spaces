@@ -102,6 +102,7 @@
           "get_finality_certificate",
           "get_slashing_record",
           "get_node_health",
+          "get_operator_metrics",
           "get_mempool_status",
           "get_state_root",
           "get_snapshot",

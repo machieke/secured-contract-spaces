@@ -75,6 +75,7 @@ pub enum RpcRequest {
         validator_id: String,
     },
     GetNodeHealth,
+    GetOperatorMetrics,
     GetMempoolStatus,
     GetStateRoot,
     GetSnapshot,
@@ -243,6 +244,21 @@ pub struct NodeHealthReport {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct OperatorMetricsReport {
+    pub network_id: Option<String>,
+    pub validator_id: Option<String>,
+    pub peer_count: Option<usize>,
+    pub mempool_size: usize,
+    pub consensus_height: u64,
+    pub highest_finalized_height: Option<u64>,
+    pub finality_lag: Option<u64>,
+    pub last_block_execution_micros: Option<u64>,
+    pub last_proof_serving_micros: Option<u64>,
+    pub storage_bytes: Option<u64>,
+    pub rpc_error_count: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MempoolStatus {
     pub pending_transactions: usize,
     pub max_pending: usize,
@@ -323,6 +339,7 @@ pub enum RpcResult {
     Transaction(Box<Transaction>),
     Receipt(Box<Receipt>),
     NodeHealth(Box<NodeHealthReport>),
+    OperatorMetrics(Box<OperatorMetricsReport>),
     MempoolStatus(MempoolStatus),
     StateRoot(String),
     Snapshot(Box<StateSnapshot>),
@@ -944,6 +961,7 @@ impl RpcService {
             RpcRequest::GetNodeHealth => {
                 RpcResponse::Ok(RpcResult::NodeHealth(Box::new(self.node_health())))
             }
+            RpcRequest::GetOperatorMetrics => Err(RpcError::UnsupportedNodeMethod).into(),
             RpcRequest::GetMempoolStatus => {
                 RpcResponse::Ok(RpcResult::MempoolStatus(self.mempool_status()))
             }
@@ -1555,6 +1573,7 @@ mod tests {
             "get_finality_certificate",
             "get_slashing_record",
             "get_node_health",
+            "get_operator_metrics",
             "get_mempool_status",
             "get_state_root",
             "get_snapshot",
@@ -1780,6 +1799,39 @@ mod tests {
             r#""policy_root":"policy-root","event_root":"event-root","#,
             r#""nonce_root":"nonce-root","outbox_root":"outbox-root","#,
             r#""global_state_root":"global-root"}}}"#,
+        );
+
+        assert_eq!(serde_json::to_string(&response).unwrap(), fixture);
+        assert_eq!(
+            serde_json::from_str::<RpcResponse>(fixture).unwrap(),
+            response
+        );
+    }
+
+    #[test]
+    fn operator_metrics_json_fixture_is_stable() {
+        let response = RpcResponse::Ok(RpcResult::OperatorMetrics(Box::new(
+            OperatorMetricsReport {
+                network_id: Some("detta-localnet".into()),
+                validator_id: Some("validator-1".into()),
+                peer_count: Some(3),
+                mempool_size: 5,
+                consensus_height: 11,
+                highest_finalized_height: Some(10),
+                finality_lag: Some(1),
+                last_block_execution_micros: Some(120),
+                last_proof_serving_micros: Some(40),
+                storage_bytes: Some(4096),
+                rpc_error_count: 2,
+            },
+        )));
+        let fixture = concat!(
+            r#"{"status":"ok","body":{"result":"operator_metrics","data":{"#,
+            r#""network_id":"detta-localnet","validator_id":"validator-1","#,
+            r#""peer_count":3,"mempool_size":5,"consensus_height":11,"#,
+            r#""highest_finalized_height":10,"finality_lag":1,"#,
+            r#""last_block_execution_micros":120,"last_proof_serving_micros":40,"#,
+            r#""storage_bytes":4096,"rpc_error_count":2}}}"#,
         );
 
         assert_eq!(serde_json::to_string(&response).unwrap(), fixture);

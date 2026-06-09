@@ -78,6 +78,10 @@ impl FileStorage {
         &self.root
     }
 
+    pub fn storage_bytes(&self) -> Result<u64, StorageError> {
+        directory_size_bytes(&self.root)
+    }
+
     pub fn commit_snapshot(&self, snapshot: &StateSnapshot) -> Result<(), StorageError> {
         DeTTaState::from_snapshot(snapshot.clone()).map_err(StorageError::InvalidSnapshot)?;
         write_json_atomic(&self.snapshot_path(), snapshot)
@@ -663,6 +667,22 @@ fn validator_signature_domain_path(domain: ValidatorSignatureDomain) -> &'static
     }
 }
 
+fn directory_size_bytes(path: &Path) -> Result<u64, StorageError> {
+    let metadata = fs::metadata(path).map_err(io_error)?;
+    if metadata.is_file() {
+        return Ok(metadata.len());
+    }
+    if !metadata.is_dir() {
+        return Ok(0);
+    }
+
+    let mut total = 0_u64;
+    for entry in fs::read_dir(path).map_err(io_error)? {
+        total = total.saturating_add(directory_size_bytes(&entry.map_err(io_error)?.path())?);
+    }
+    Ok(total)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1227,6 +1247,19 @@ mod tests {
         let loaded = storage.load_mempool().unwrap();
 
         assert_eq!(loaded, vec![tx]);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn storage_byte_count_tracks_durable_files() {
+        let dir = temp_dir("storage-bytes");
+        let storage = FileStorage::open(&dir).unwrap();
+        let before = storage.storage_bytes().unwrap();
+
+        storage.commit_mempool(&[transfer_tx()]).unwrap();
+        let after = storage.storage_bytes().unwrap();
+
+        assert!(after > before);
         fs::remove_dir_all(dir).unwrap();
     }
 

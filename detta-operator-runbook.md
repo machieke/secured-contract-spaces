@@ -41,6 +41,9 @@ Poll these RPCs on each validator and RPC node:
 
 - `get_node_health`: chain identity, height, mempool size, trusted validator
   key count, pending validator-set updates, and state roots.
+- `get_operator_metrics`: observed peer count, mempool size, consensus height,
+  finalized height, finality lag, recent block/proof latency, storage bytes,
+  and RPC error count.
 - `get_mempool_status`: pending total, per-sender pressure, admission limits,
   and block resource limit.
 - `get_finality_certificate`: latest finalized height and signer set.

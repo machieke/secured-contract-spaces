@@ -17,9 +17,10 @@ use detta_protocol::{
 };
 use detta_rpc::{
     json_rpc_response_for_request, BlockPage, JsonRpcHandler, NodeHealthReport,
-    PersistentNodeSnapshotRoots, RequiredSnapshotMetadataRootsReport, RpcError, RpcErrorBody,
-    RpcRequest, RpcResponse, RpcResult, RpcService, RpcTransportError, SnapshotMetadataRootStatus,
-    SnapshotSyncClientMetricsReport, ValidatorSetMetadataUpdateStatus, DEFAULT_MAX_BLOCK_PAGE_SIZE,
+    OperatorMetricsReport, PersistentNodeSnapshotRoots, RequiredSnapshotMetadataRootsReport,
+    RpcError, RpcErrorBody, RpcRequest, RpcResponse, RpcResult, RpcService, RpcTransportError,
+    SnapshotMetadataRootStatus, SnapshotSyncClientMetricsReport, ValidatorSetMetadataUpdateStatus,
+    DEFAULT_MAX_BLOCK_PAGE_SIZE,
 };
 use detta_storage::{
     ConsensusSigningRecord, FileStorage, SnapshotImportAuditConfig, SnapshotImportAuditRecord,
@@ -28,6 +29,7 @@ use detta_storage::{
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::time::Instant;
 
 pub const DEFAULT_NODE_NETWORK_ID: &str = "detta-localnet";
 pub const DEFAULT_MAX_PENDING_VALIDATOR_SET_METADATA_UPDATES: usize = 128;
@@ -131,6 +133,10 @@ pub struct PersistentValidatorNode {
     max_validator_set_metadata_audit_page_size: usize,
     max_snapshot_import_audit_records: usize,
     max_snapshot_import_audit_page_size: usize,
+    observed_peer_ids: BTreeSet<String>,
+    last_block_execution_micros: Option<u64>,
+    last_proof_serving_micros: Option<u64>,
+    rpc_error_count: u64,
     rpc: RpcService,
     storage: FileStorage,
 }
@@ -377,6 +383,10 @@ impl PersistentValidatorNode {
                 DEFAULT_MAX_VALIDATOR_SET_METADATA_AUDIT_PAGE_SIZE,
             max_snapshot_import_audit_records: DEFAULT_MAX_SNAPSHOT_IMPORT_AUDIT_RECORDS,
             max_snapshot_import_audit_page_size: DEFAULT_MAX_SNAPSHOT_IMPORT_AUDIT_PAGE_SIZE,
+            observed_peer_ids: BTreeSet::new(),
+            last_block_execution_micros: None,
+            last_proof_serving_micros: None,
+            rpc_error_count: 0,
         })
     }
 
@@ -425,6 +435,10 @@ impl PersistentValidatorNode {
                 DEFAULT_MAX_VALIDATOR_SET_METADATA_AUDIT_PAGE_SIZE,
             max_snapshot_import_audit_records: DEFAULT_MAX_SNAPSHOT_IMPORT_AUDIT_RECORDS,
             max_snapshot_import_audit_page_size: DEFAULT_MAX_SNAPSHOT_IMPORT_AUDIT_PAGE_SIZE,
+            observed_peer_ids: BTreeSet::new(),
+            last_block_execution_micros: None,
+            last_proof_serving_micros: None,
+            rpc_error_count: 0,
         };
         if let Some(metadata) = node
             .storage
@@ -745,7 +759,9 @@ impl PersistentValidatorNode {
     }
 
     pub fn handle_rpc_request(&mut self, request: RpcRequest) -> RpcResponse {
-        match request {
+        let records_proof_latency = records_proof_latency(&request);
+        let started = Instant::now();
+        let response = match request {
             RpcRequest::GetBlock { height } => match self.storage.maybe_load_block(height) {
                 Ok(Some(block)) => RpcResponse::Ok(RpcResult::Block(Box::new(block))),
                 Ok(None) => Err(RpcError::BlockNotFound).into(),
@@ -820,6 +836,11 @@ impl PersistentValidatorNode {
             RpcRequest::GetNodeHealth => RpcResponse::Ok(RpcResult::NodeHealth(Box::new(
                 self.persistent_node_health(),
             ))),
+            RpcRequest::GetOperatorMetrics => self
+                .operator_metrics()
+                .map(|metrics| RpcResult::OperatorMetrics(Box::new(metrics)))
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(node_rpc_error_response),
             RpcRequest::ProposeValidatorSetMetadataUpdate { authorization } => self
                 .propose_validator_set_metadata_update_authorization(authorization)
                 .map(RpcResult::ValidatorSetMetadataUpdateStatus)
@@ -880,7 +901,14 @@ impl PersistentValidatorNode {
                 .map(RpcResponse::Ok)
                 .unwrap_or_else(node_rpc_error_response),
             request => self.rpc.handle_request(request),
+        };
+        if records_proof_latency {
+            self.last_proof_serving_micros = Some(elapsed_micros(started));
         }
+        if matches!(response, RpcResponse::Error(_)) {
+            self.rpc_error_count = self.rpc_error_count.saturating_add(1);
+        }
+        response
     }
 
     pub fn persistent_node_health(&self) -> NodeHealthReport {
@@ -891,6 +919,25 @@ impl PersistentValidatorNode {
         health.pending_validator_set_metadata_updates =
             Some(self.pending_validator_set_metadata_authorizations.len());
         health
+    }
+
+    pub fn operator_metrics(&self) -> Result<OperatorMetricsReport, NodeError> {
+        let height = self.current_height();
+        let highest_finalized_height = self.highest_finalized_height()?;
+        Ok(OperatorMetricsReport {
+            network_id: Some(self.network_id.clone()),
+            validator_id: Some(self.validator_id.clone()),
+            peer_count: Some(self.observed_peer_ids.len()),
+            mempool_size: self.pending_len(),
+            consensus_height: height,
+            highest_finalized_height,
+            finality_lag: highest_finalized_height
+                .map(|finalized_height| height.saturating_sub(finalized_height)),
+            last_block_execution_micros: self.last_block_execution_micros,
+            last_proof_serving_micros: self.last_proof_serving_micros,
+            storage_bytes: Some(self.storage.storage_bytes().map_err(NodeError::Storage)?),
+            rpc_error_count: self.rpc_error_count,
+        })
     }
 
     pub fn network_id(&self) -> &str {
@@ -940,6 +987,21 @@ impl PersistentValidatorNode {
 
     pub fn current_height(&self) -> u64 {
         self.rpc.node().state().height()
+    }
+
+    fn highest_finalized_height(&self) -> Result<Option<u64>, NodeError> {
+        let height = self.current_height();
+        for candidate in (1..=height).rev() {
+            if self
+                .storage
+                .maybe_load_finality_certificate(candidate)
+                .map_err(NodeError::Storage)?
+                .is_some()
+            {
+                return Ok(Some(candidate));
+            }
+        }
+        Ok(None)
     }
 
     pub fn set_validator_set_metadata_authorization_limits(
@@ -1580,16 +1642,20 @@ impl PersistentValidatorNode {
     }
 
     pub fn produce_block(&mut self, height: u64, timestamp: u64) -> Result<Block, NodeError> {
+        let started = Instant::now();
         let block = self
             .rpc
             .produce_block(height, timestamp)
             .map_err(NodeError::Rpc)?;
+        self.last_block_execution_micros = Some(elapsed_micros(started));
         self.persist_committed_block(&block)?;
         Ok(block)
     }
 
     pub fn import_block(&mut self, block: &Block) -> Result<(), NodeError> {
+        let started = Instant::now();
         self.rpc.import_block(block).map_err(NodeError::Rpc)?;
+        self.last_block_execution_micros = Some(elapsed_micros(started));
         self.persist_committed_block(block)
     }
 
@@ -1597,6 +1663,9 @@ impl PersistentValidatorNode {
         &mut self,
         envelope: &Envelope,
     ) -> Result<NetworkIngestOutcome, NodeError> {
+        if envelope.from != self.validator_id {
+            self.observed_peer_ids.insert(envelope.from.clone());
+        }
         match &envelope.message {
             NetworkMessage::Transaction(tx) => {
                 self.submit_transaction(tx.clone())?;
@@ -1938,6 +2007,25 @@ fn consensus_signing_commitment(
     }
 }
 
+fn records_proof_latency(request: &RpcRequest) -> bool {
+    matches!(
+        request,
+        RpcRequest::GetReceiptProof { .. }
+            | RpcRequest::GetStorageProof { .. }
+            | RpcRequest::GetStorageNonInclusionProof { .. }
+            | RpcRequest::GetRegistryProof { .. }
+            | RpcRequest::GetRegistryNonInclusionProof { .. }
+            | RpcRequest::GetOutboxMessageProof { .. }
+            | RpcRequest::GetEventProof { .. }
+    )
+}
+
+fn elapsed_micros(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_micros())
+        .unwrap_or(u64::MAX)
+        .max(1)
+}
+
 fn node_rpc_error_response(error: NodeError) -> RpcResponse {
     RpcResponse::Error(RpcErrorBody {
         code: node_rpc_error_code(&error).into(),
@@ -2199,6 +2287,61 @@ mod tests {
             health.storage_root,
             node.rpc().node().state().storage_root()
         );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn persistent_node_reports_operator_metrics() {
+        let dir = temp_dir("operator-metrics");
+        let mut node =
+            PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &dir).unwrap();
+        node.submit_transaction(transfer_tx()).unwrap();
+        let block = node.produce_block(1, 1_000).unwrap();
+        node.persist_finality_certificate(&FinalityCertificate {
+            height: 1,
+            block_hash: block.block_hash(),
+            signers: vec!["validator-1".into()],
+        })
+        .unwrap();
+        node.ingest_network_envelope(&Envelope {
+            from: "validator-2".into(),
+            to: "validator-1".into(),
+            message: NetworkMessage::FinalityCertificate(FinalityCertificate {
+                height: 1,
+                block_hash: block.block_hash(),
+                signers: vec!["validator-1".into(), "validator-2".into()],
+            }),
+        })
+        .unwrap();
+
+        assert!(matches!(
+            node.handle_rpc_request(RpcRequest::GetReceiptProof {
+                height: 1,
+                index: 0
+            }),
+            RpcResponse::Ok(RpcResult::ReceiptProof(_))
+        ));
+        assert!(matches!(
+            node.handle_rpc_request(RpcRequest::GetBlock { height: 99 }),
+            RpcResponse::Error(_)
+        ));
+
+        let response = node.handle_rpc_request(RpcRequest::GetOperatorMetrics);
+        let RpcResponse::Ok(RpcResult::OperatorMetrics(metrics)) = response else {
+            panic!("expected operator metrics response");
+        };
+        assert_eq!(metrics.network_id.as_deref(), Some(DEFAULT_NODE_NETWORK_ID));
+        assert_eq!(metrics.validator_id.as_deref(), Some("validator-1"));
+        assert_eq!(metrics.peer_count, Some(1));
+        assert_eq!(metrics.mempool_size, 0);
+        assert_eq!(metrics.consensus_height, 1);
+        assert_eq!(metrics.highest_finalized_height, Some(1));
+        assert_eq!(metrics.finality_lag, Some(0));
+        assert!(metrics.last_block_execution_micros.is_some());
+        assert!(metrics.last_proof_serving_micros.is_some());
+        assert!(metrics.storage_bytes.unwrap() > 0);
+        assert_eq!(metrics.rpc_error_count, 1);
 
         fs::remove_dir_all(dir).unwrap();
     }

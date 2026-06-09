@@ -441,6 +441,9 @@ Completed production-plan slices:
 - [x] Durable consensus-signing records prevent validators from signing
   conflicting block proposals, votes, or finality certificates across restart
   and network-partition simulations.
+- [x] Persistent operator metrics expose observed peer count, mempool size,
+  consensus/finality height and lag, recent block/proof latency, storage bytes,
+  and RPC error count through typed RPC and stable JSON/OpenAPI coverage.
 
 Next implementation slices:
 
