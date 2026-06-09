@@ -76,6 +76,7 @@ pub enum RpcRequest {
     },
     GetNodeHealth,
     GetOperatorMetrics,
+    GetOperatorAlerts,
     GetMempoolStatus,
     GetStateRoot,
     GetSnapshot,
@@ -259,6 +260,54 @@ pub struct OperatorMetricsReport {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct OperatorAlertPolicy {
+    pub min_peer_count: usize,
+    pub max_finality_lag: u64,
+    pub max_storage_bytes: u64,
+    pub max_rpc_error_count: u64,
+    pub max_mempool_size: usize,
+    pub max_latest_block_failure_ratio_per_mille: u16,
+}
+
+impl Default for OperatorAlertPolicy {
+    fn default() -> Self {
+        Self {
+            min_peer_count: 1,
+            max_finality_lag: 2,
+            max_storage_bytes: u64::MAX,
+            max_rpc_error_count: 100,
+            max_mempool_size: 10_000,
+            max_latest_block_failure_ratio_per_mille: 500,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperatorAlertSeverity {
+    Warning,
+    Critical,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct OperatorAlert {
+    pub code: String,
+    pub severity: OperatorAlertSeverity,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct OperatorAlertReport {
+    pub policy: OperatorAlertPolicy,
+    pub metrics: OperatorMetricsReport,
+    pub alerts: Vec<OperatorAlert>,
+    pub root_mismatch: bool,
+    pub slashing_record_count: usize,
+    pub latest_block_failure_count: usize,
+    pub latest_block_receipt_count: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MempoolStatus {
     pub pending_transactions: usize,
     pub max_pending: usize,
@@ -340,6 +389,7 @@ pub enum RpcResult {
     Receipt(Box<Receipt>),
     NodeHealth(Box<NodeHealthReport>),
     OperatorMetrics(Box<OperatorMetricsReport>),
+    OperatorAlerts(Box<OperatorAlertReport>),
     MempoolStatus(MempoolStatus),
     StateRoot(String),
     Snapshot(Box<StateSnapshot>),
@@ -962,6 +1012,7 @@ impl RpcService {
                 RpcResponse::Ok(RpcResult::NodeHealth(Box::new(self.node_health())))
             }
             RpcRequest::GetOperatorMetrics => Err(RpcError::UnsupportedNodeMethod).into(),
+            RpcRequest::GetOperatorAlerts => Err(RpcError::UnsupportedNodeMethod).into(),
             RpcRequest::GetMempoolStatus => {
                 RpcResponse::Ok(RpcResult::MempoolStatus(self.mempool_status()))
             }
@@ -1574,6 +1625,7 @@ mod tests {
             "get_slashing_record",
             "get_node_health",
             "get_operator_metrics",
+            "get_operator_alerts",
             "get_mempool_status",
             "get_state_root",
             "get_snapshot",
@@ -1832,6 +1884,74 @@ mod tests {
             r#""highest_finalized_height":10,"finality_lag":1,"#,
             r#""last_block_execution_micros":120,"last_proof_serving_micros":40,"#,
             r#""storage_bytes":4096,"rpc_error_count":2}}}"#,
+        );
+
+        assert_eq!(serde_json::to_string(&response).unwrap(), fixture);
+        assert_eq!(
+            serde_json::from_str::<RpcResponse>(fixture).unwrap(),
+            response
+        );
+    }
+
+    #[test]
+    fn operator_alerts_json_fixture_is_stable() {
+        let policy = OperatorAlertPolicy {
+            min_peer_count: 1,
+            max_finality_lag: 2,
+            max_storage_bytes: 4096,
+            max_rpc_error_count: 3,
+            max_mempool_size: 10,
+            max_latest_block_failure_ratio_per_mille: 500,
+        };
+        let metrics = OperatorMetricsReport {
+            network_id: Some("detta-localnet".into()),
+            validator_id: Some("validator-1".into()),
+            peer_count: Some(0),
+            mempool_size: 12,
+            consensus_height: 11,
+            highest_finalized_height: Some(8),
+            finality_lag: Some(3),
+            last_block_execution_micros: Some(120),
+            last_proof_serving_micros: Some(40),
+            storage_bytes: Some(8192),
+            rpc_error_count: 4,
+        };
+        let response = RpcResponse::Ok(RpcResult::OperatorAlerts(Box::new(OperatorAlertReport {
+            policy,
+            metrics,
+            alerts: vec![
+                OperatorAlert {
+                    code: "operator.peer_isolation".into(),
+                    severity: OperatorAlertSeverity::Critical,
+                    message: "observed peer count is below policy minimum".into(),
+                },
+                OperatorAlert {
+                    code: "operator.rpc_overload".into(),
+                    severity: OperatorAlertSeverity::Warning,
+                    message: "RPC error count exceeds policy threshold".into(),
+                },
+            ],
+            root_mismatch: false,
+            slashing_record_count: 0,
+            latest_block_failure_count: 1,
+            latest_block_receipt_count: 2,
+        })));
+        let fixture = concat!(
+            r#"{"status":"ok","body":{"result":"operator_alerts","data":{"#,
+            r#""policy":{"min_peer_count":1,"max_finality_lag":2,"#,
+            r#""max_storage_bytes":4096,"max_rpc_error_count":3,"#,
+            r#""max_mempool_size":10,"max_latest_block_failure_ratio_per_mille":500},"#,
+            r#""metrics":{"network_id":"detta-localnet","validator_id":"validator-1","#,
+            r#""peer_count":0,"mempool_size":12,"consensus_height":11,"#,
+            r#""highest_finalized_height":8,"finality_lag":3,"#,
+            r#""last_block_execution_micros":120,"last_proof_serving_micros":40,"#,
+            r#""storage_bytes":8192,"rpc_error_count":4},"#,
+            r#""alerts":[{"code":"operator.peer_isolation","severity":"critical","#,
+            r#""message":"observed peer count is below policy minimum"},"#,
+            r#"{"code":"operator.rpc_overload","severity":"warning","#,
+            r#""message":"RPC error count exceeds policy threshold"}],"#,
+            r#""root_mismatch":false,"slashing_record_count":0,"#,
+            r#""latest_block_failure_count":1,"latest_block_receipt_count":2}}}"#,
         );
 
         assert_eq!(serde_json::to_string(&response).unwrap(), fixture);

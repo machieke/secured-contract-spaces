@@ -276,6 +276,18 @@ impl FileStorage {
         read_json(&path).map(Some)
     }
 
+    pub fn load_slashing_records(&self) -> Result<Vec<SlashingRecord>, StorageError> {
+        let mut paths = Vec::new();
+        for entry in fs::read_dir(self.root.join("slashings")).map_err(io_error)? {
+            let path = entry.map_err(io_error)?.path();
+            if path.extension().and_then(|extension| extension.to_str()) == Some("bin") {
+                paths.push(path);
+            }
+        }
+        paths.sort();
+        paths.into_iter().map(|path| read_json(&path)).collect()
+    }
+
     pub fn commit_validator_set_metadata(
         &self,
         metadata: &ValidatorSetMetadata,
@@ -978,6 +990,7 @@ mod tests {
 
         assert_eq!(loaded, record);
         assert_eq!(maybe_loaded, Some(record));
+        assert_eq!(storage.load_slashing_records().unwrap().len(), 1);
         assert_eq!(
             storage.maybe_load_slashing_record("validator/2").unwrap(),
             None

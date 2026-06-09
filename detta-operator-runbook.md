@@ -44,6 +44,9 @@ Poll these RPCs on each validator and RPC node:
 - `get_operator_metrics`: observed peer count, mempool size, consensus height,
   finalized height, finality lag, recent block/proof latency, storage bytes,
   and RPC error count.
+- `get_operator_alerts`: evaluated stalled-consensus, root-mismatch,
+  excessive-revert, peer-isolation, slashing-evidence, disk-pressure,
+  RPC-overload, and mempool-saturation alerts.
 - `get_mempool_status`: pending total, per-sender pressure, admission limits,
   and block resource limit.
 - `get_finality_certificate`: latest finalized height and signer set.

@@ -3,7 +3,8 @@ use detta_consensus::{
     SlashingRecord, Vote,
 };
 use detta_core::{
-    Block, BlockError, ChainId, DeTTaState, MempoolError, StateSnapshot, Transaction, ValidatorNode,
+    Block, BlockError, ChainId, DeTTaState, MempoolError, StateSnapshot, Transaction, TxStatus,
+    ValidatorNode,
 };
 use detta_network::{Envelope, InMemoryTransport, NetworkError, NetworkMessage, TcpProtocolStream};
 use detta_protocol::{
@@ -16,11 +17,11 @@ use detta_protocol::{
     SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT,
 };
 use detta_rpc::{
-    json_rpc_response_for_request, BlockPage, JsonRpcHandler, NodeHealthReport,
-    OperatorMetricsReport, PersistentNodeSnapshotRoots, RequiredSnapshotMetadataRootsReport,
-    RpcError, RpcErrorBody, RpcRequest, RpcResponse, RpcResult, RpcService, RpcTransportError,
-    SnapshotMetadataRootStatus, SnapshotSyncClientMetricsReport, ValidatorSetMetadataUpdateStatus,
-    DEFAULT_MAX_BLOCK_PAGE_SIZE,
+    json_rpc_response_for_request, BlockPage, JsonRpcHandler, NodeHealthReport, OperatorAlert,
+    OperatorAlertPolicy, OperatorAlertReport, OperatorAlertSeverity, OperatorMetricsReport,
+    PersistentNodeSnapshotRoots, RequiredSnapshotMetadataRootsReport, RpcError, RpcErrorBody,
+    RpcRequest, RpcResponse, RpcResult, RpcService, RpcTransportError, SnapshotMetadataRootStatus,
+    SnapshotSyncClientMetricsReport, ValidatorSetMetadataUpdateStatus, DEFAULT_MAX_BLOCK_PAGE_SIZE,
 };
 use detta_storage::{
     ConsensusSigningRecord, FileStorage, SnapshotImportAuditConfig, SnapshotImportAuditRecord,
@@ -137,6 +138,7 @@ pub struct PersistentValidatorNode {
     last_block_execution_micros: Option<u64>,
     last_proof_serving_micros: Option<u64>,
     rpc_error_count: u64,
+    operator_alert_policy: OperatorAlertPolicy,
     rpc: RpcService,
     storage: FileStorage,
 }
@@ -387,6 +389,7 @@ impl PersistentValidatorNode {
             last_block_execution_micros: None,
             last_proof_serving_micros: None,
             rpc_error_count: 0,
+            operator_alert_policy: OperatorAlertPolicy::default(),
         })
     }
 
@@ -439,6 +442,7 @@ impl PersistentValidatorNode {
             last_block_execution_micros: None,
             last_proof_serving_micros: None,
             rpc_error_count: 0,
+            operator_alert_policy: OperatorAlertPolicy::default(),
         };
         if let Some(metadata) = node
             .storage
@@ -841,6 +845,11 @@ impl PersistentValidatorNode {
                 .map(|metrics| RpcResult::OperatorMetrics(Box::new(metrics)))
                 .map(RpcResponse::Ok)
                 .unwrap_or_else(node_rpc_error_response),
+            RpcRequest::GetOperatorAlerts => self
+                .operator_alerts()
+                .map(|alerts| RpcResult::OperatorAlerts(Box::new(alerts)))
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(node_rpc_error_response),
             RpcRequest::ProposeValidatorSetMetadataUpdate { authorization } => self
                 .propose_validator_set_metadata_update_authorization(authorization)
                 .map(RpcResult::ValidatorSetMetadataUpdateStatus)
@@ -940,6 +949,36 @@ impl PersistentValidatorNode {
         })
     }
 
+    pub fn operator_alerts(&self) -> Result<OperatorAlertReport, NodeError> {
+        let metrics = self.operator_metrics()?;
+        let root_mismatch = self.snapshot_root_mismatch()?;
+        let slashing_record_count = self
+            .storage
+            .load_slashing_records()
+            .map_err(NodeError::Storage)?
+            .len();
+        let (latest_block_failure_count, latest_block_receipt_count) =
+            self.latest_block_failure_counts()?;
+        let alerts = operator_alerts_for_state(
+            &self.operator_alert_policy,
+            &metrics,
+            root_mismatch,
+            slashing_record_count,
+            latest_block_failure_count,
+            latest_block_receipt_count,
+        );
+
+        Ok(OperatorAlertReport {
+            policy: self.operator_alert_policy.clone(),
+            metrics,
+            alerts,
+            root_mismatch,
+            slashing_record_count,
+            latest_block_failure_count,
+            latest_block_receipt_count,
+        })
+    }
+
     pub fn network_id(&self) -> &str {
         &self.network_id
     }
@@ -989,6 +1028,10 @@ impl PersistentValidatorNode {
         self.rpc.node().state().height()
     }
 
+    pub fn set_operator_alert_policy(&mut self, policy: OperatorAlertPolicy) {
+        self.operator_alert_policy = policy;
+    }
+
     fn highest_finalized_height(&self) -> Result<Option<u64>, NodeError> {
         let height = self.current_height();
         for candidate in (1..=height).rev() {
@@ -1002,6 +1045,44 @@ impl PersistentValidatorNode {
             }
         }
         Ok(None)
+    }
+
+    fn latest_block_failure_counts(&self) -> Result<(usize, usize), NodeError> {
+        let height = self.current_height();
+        if height == 0 {
+            return Ok((0, 0));
+        }
+        let Some(block) = self
+            .storage
+            .maybe_load_block(height)
+            .map_err(NodeError::Storage)?
+        else {
+            return Ok((0, 0));
+        };
+        let failure_count = block
+            .receipts
+            .iter()
+            .filter(|receipt| receipt.status != TxStatus::Committed)
+            .count();
+        Ok((failure_count, block.receipts.len()))
+    }
+
+    fn snapshot_root_mismatch(&self) -> Result<bool, NodeError> {
+        let status = self.snapshot_metadata_root_status()?;
+        Ok(
+            (status.persisted_validator_set_metadata_audit_root.is_some()
+                && !status.persisted_matches_local_validator_set_metadata_audit_root)
+                || (status.persisted_snapshot_import_audit_config_root.is_some()
+                    && !status.persisted_matches_local_snapshot_import_audit_config_root)
+                || (status.persisted_snapshot_import_audit_root.is_some()
+                    && !status.persisted_matches_local_snapshot_import_audit_root)
+                || (status
+                    .persisted_required_snapshot_metadata_roots_root
+                    .is_some()
+                    && !status.persisted_matches_local_required_snapshot_metadata_roots_root)
+                || (status.persisted_snapshot_sync_client_metrics_root.is_some()
+                    && !status.persisted_matches_local_snapshot_sync_client_metrics_root),
+        )
     }
 
     pub fn set_validator_set_metadata_authorization_limits(
@@ -2020,6 +2101,99 @@ fn records_proof_latency(request: &RpcRequest) -> bool {
     )
 }
 
+fn operator_alerts_for_state(
+    policy: &OperatorAlertPolicy,
+    metrics: &OperatorMetricsReport,
+    root_mismatch: bool,
+    slashing_record_count: usize,
+    latest_block_failure_count: usize,
+    latest_block_receipt_count: usize,
+) -> Vec<OperatorAlert> {
+    let mut alerts = Vec::new();
+    if metrics
+        .peer_count
+        .is_some_and(|peers| peers < policy.min_peer_count)
+    {
+        alerts.push(operator_alert(
+            "operator.peer_isolation",
+            OperatorAlertSeverity::Critical,
+            "observed peer count is below policy minimum",
+        ));
+    }
+    if metrics.consensus_height > 0
+        && metrics
+            .finality_lag
+            .is_none_or(|lag| lag > policy.max_finality_lag)
+    {
+        alerts.push(operator_alert(
+            "operator.stalled_consensus",
+            OperatorAlertSeverity::Critical,
+            "finality lag exceeds policy threshold",
+        ));
+    }
+    if root_mismatch {
+        alerts.push(operator_alert(
+            "operator.root_mismatch",
+            OperatorAlertSeverity::Critical,
+            "persisted metadata roots do not match local roots",
+        ));
+    }
+    if latest_block_receipt_count > 0 {
+        let failure_ratio = (latest_block_failure_count * 1_000) / latest_block_receipt_count;
+        if failure_ratio > usize::from(policy.max_latest_block_failure_ratio_per_mille) {
+            alerts.push(operator_alert(
+                "operator.excessive_reverts",
+                OperatorAlertSeverity::Warning,
+                "latest block failure ratio exceeds policy threshold",
+            ));
+        }
+    }
+    if slashing_record_count > 0 {
+        alerts.push(operator_alert(
+            "operator.slashing_evidence",
+            OperatorAlertSeverity::Critical,
+            "durable slashing evidence is present",
+        ));
+    }
+    if metrics
+        .storage_bytes
+        .is_some_and(|bytes| bytes > policy.max_storage_bytes)
+    {
+        alerts.push(operator_alert(
+            "operator.disk_pressure",
+            OperatorAlertSeverity::Warning,
+            "storage byte count exceeds policy threshold",
+        ));
+    }
+    if metrics.rpc_error_count > policy.max_rpc_error_count {
+        alerts.push(operator_alert(
+            "operator.rpc_overload",
+            OperatorAlertSeverity::Warning,
+            "RPC error count exceeds policy threshold",
+        ));
+    }
+    if metrics.mempool_size > policy.max_mempool_size {
+        alerts.push(operator_alert(
+            "operator.mempool_saturation",
+            OperatorAlertSeverity::Warning,
+            "mempool size exceeds policy threshold",
+        ));
+    }
+    alerts
+}
+
+fn operator_alert(
+    code: impl Into<String>,
+    severity: OperatorAlertSeverity,
+    message: impl Into<String>,
+) -> OperatorAlert {
+    OperatorAlert {
+        code: code.into(),
+        severity,
+        message: message.into(),
+    }
+}
+
 fn elapsed_micros(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_micros())
         .unwrap_or(u64::MAX)
@@ -2342,6 +2516,89 @@ mod tests {
         assert!(metrics.last_proof_serving_micros.is_some());
         assert!(metrics.storage_bytes.unwrap() > 0);
         assert_eq!(metrics.rpc_error_count, 1);
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn persistent_node_reports_operator_alerts() {
+        let dir = temp_dir("operator-alerts");
+        let mut node =
+            PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &dir).unwrap();
+        node.set_operator_alert_policy(OperatorAlertPolicy {
+            min_peer_count: 1,
+            max_finality_lag: 0,
+            max_storage_bytes: 1,
+            max_rpc_error_count: 0,
+            max_mempool_size: 0,
+            max_latest_block_failure_ratio_per_mille: 0,
+        });
+        let failing_tx = tx_to(
+            "TokenA",
+            "tx-fail",
+            "Alice",
+            1,
+            Method::Transfer,
+            vec![
+                Argument::Principal("Bob".into()),
+                Argument::Asset("USDC".into()),
+                Argument::Amount(1_000),
+            ],
+        );
+        node.submit_transaction(failing_tx).unwrap();
+        let block = node.produce_block(1, 1_000).unwrap();
+        assert_eq!(block.receipts[0].status, TxStatus::Reverted);
+        let mut persisted_metadata_roots = BTreeMap::new();
+        persisted_metadata_roots.insert(
+            SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT.into(),
+            "stale-validator-set-audit-root".into(),
+        );
+        node.storage
+            .commit_snapshot_metadata_roots(&persisted_metadata_roots)
+            .unwrap();
+        node.persist_equivocation_evidence(EquivocationEvidence {
+            validator_id: "validator-2".into(),
+            height: 1,
+            first_block_hash: "block-a".into(),
+            second_block_hash: "block-b".into(),
+        })
+        .unwrap();
+
+        assert!(matches!(
+            node.handle_rpc_request(RpcRequest::GetBlock { height: 99 }),
+            RpcResponse::Error(_)
+        ));
+
+        let response = node.handle_rpc_request(RpcRequest::GetOperatorAlerts);
+        let RpcResponse::Ok(RpcResult::OperatorAlerts(report)) = response else {
+            panic!("expected operator alert response");
+        };
+        let codes: Vec<_> = report
+            .alerts
+            .iter()
+            .map(|alert| alert.code.as_str())
+            .collect();
+        assert_eq!(
+            codes,
+            vec![
+                "operator.peer_isolation",
+                "operator.stalled_consensus",
+                "operator.root_mismatch",
+                "operator.excessive_reverts",
+                "operator.slashing_evidence",
+                "operator.disk_pressure",
+                "operator.rpc_overload",
+            ]
+        );
+        assert!(report.root_mismatch);
+        assert_eq!(report.slashing_record_count, 1);
+        assert_eq!(report.latest_block_failure_count, 1);
+        assert_eq!(report.latest_block_receipt_count, 1);
+        assert_eq!(report.metrics.consensus_height, 1);
+        assert_eq!(report.metrics.highest_finalized_height, None);
+        assert_eq!(report.metrics.finality_lag, None);
+        assert_eq!(report.metrics.peer_count, Some(0));
+        assert_eq!(report.metrics.rpc_error_count, 1);
 
         fs::remove_dir_all(dir).unwrap();
     }

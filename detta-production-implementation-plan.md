@@ -444,6 +444,9 @@ Completed production-plan slices:
 - [x] Persistent operator metrics expose observed peer count, mempool size,
   consensus/finality height and lag, recent block/proof latency, storage bytes,
   and RPC error count through typed RPC and stable JSON/OpenAPI coverage.
+- [x] Persistent operator alerts evaluate stalled consensus, root mismatch,
+  excessive reverts, peer isolation, slashing evidence, disk pressure, RPC
+  overload, and mempool saturation with typed RPC and stable fixtures.
 
 Next implementation slices:
 

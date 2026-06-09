@@ -62,6 +62,9 @@ The shared `RpcService` supports:
 - `get_operator_metrics`: fetch peer count, mempool size, consensus and
   finality height, recent execution/proof latency, storage bytes, and RPC error
   count for persistent operator nodes.
+- `get_operator_alerts`: fetch evaluated operator alerts for peer isolation,
+  stalled consensus, root mismatch, excessive reverts, slashing evidence, disk
+  pressure, RPC overload, and mempool saturation.
 - `get_mempool_status`: fetch pending transaction count, per-sender pending
   counts, admission limits, and the current block resource limit.
 - `get_state_root`: fetch the latest global state root.
