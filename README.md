@@ -130,6 +130,9 @@ SCS specification
 - `scs-formal.md`: formal verification companion for SCS.
 - `detta-production-implementation-plan.md`: production DeTTa implementation
   plan and progress tracker.
+- `detta-secure-metta-aspect-generalization-plan.md`: implementation plan for
+  replacing hard-coded DeFi behavior with secure, restricted MeTTa aspect
+  modules aligned with the token aspect taxonomy.
 - `detta-e2e-client-integration-test-plan.md`: E2E client integration plan.
 - `detta-client-token-liquidity-guide.md`: end-user client guide for deploying
   a token, creating a liquidity pool, adding liquidity, and selling tokens.
