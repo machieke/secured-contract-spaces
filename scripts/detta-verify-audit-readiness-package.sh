@@ -228,6 +228,17 @@ if ! jq -e '
   and .status == "passed"
   and (.version | type == "string" and length > 0)
   and (.git_commit | type == "string" and length > 0)
+  and (.source_state.schema == "detta.source-state.v1")
+  and (.source_state.schema_version == 1)
+  and (.source_state.git_commit == .git_commit)
+  and (.source_state.git_tree | type == "string" and test("^([0-9a-f]{40}|[0-9a-f]{64})$"))
+  and (.source_state.worktree_clean | type == "boolean")
+  and (.source_state.tracked_change_count | type == "number")
+  and (.source_state.untracked_file_count | type == "number")
+  and (.source_state.status_porcelain_sha256 | type == "string" and test("^[0-9a-f]{64}$"))
+  and (.source_state.tracked_diff_sha256 | type == "string" and test("^[0-9a-f]{64}$"))
+  and (.source_state.staged_diff_sha256 | type == "string" and test("^[0-9a-f]{64}$"))
+  and (.source_state.unstaged_diff_sha256 | type == "string" and test("^[0-9a-f]{64}$"))
   and (.target | type == "string" and length > 0)
   and (.chain_id | type == "string" and length > 0)
   and (.package.path | type == "string" and length > 0)
@@ -252,6 +263,14 @@ if [ "$reported_package" != "$package_name" ]; then
   fail "report package path $reported_package does not match $package_name"
 fi
 
+case "${DETTA_REQUIRE_CLEAN_AUDIT_PACKAGE:-0}" in
+  1 | true | TRUE | yes | YES)
+    if ! jq -e '.source_state.worktree_clean == true' "$report_path" >/dev/null; then
+      fail "audit package source state is dirty"
+    fi
+    ;;
+esac
+
 tracked_inventory="$extract_dir/audit/tracked-inventory.jsonl"
 generated_inventory="$extract_dir/audit/generated-release-inventory.jsonl"
 verify_inventory_hash_and_count \
@@ -275,6 +294,7 @@ for required in \
   models/detta-proof-artifact-manifest.json \
   security/detta-audit-findings.json \
   scripts/detta-release-gate.sh \
+  scripts/detta-source-state-report.sh \
   scripts/detta-audit-readiness-package.sh \
   scripts/detta-verify-audit-readiness-package.sh \
   crates/detta-core/src/lib.rs \
@@ -316,5 +336,10 @@ fi
 jq empty "$extract_dir/source/models/detta-proof-artifact-manifest.json"
 release_manifest_file="$extract_dir/$(jq -r '.release_manifest.path' "$report_path")"
 jq empty "$release_manifest_file"
+if ! jq -e --slurpfile report "$report_path" '
+  .source_state == $report[0].source_state
+' "$release_manifest_file" >/dev/null; then
+  fail "release manifest source state does not match audit report"
+fi
 
 printf 'audit readiness package verified: %s\n' "$package_path"

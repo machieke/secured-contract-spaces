@@ -11,6 +11,18 @@ target_triple="${DETTA_TARGET_TRIPLE:-$(rustc -vV | awk '/^host:/ {print $2}')}"
 source_date_epoch="${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct)}"
 chain_id="${DETTA_RELEASE_CHAIN_ID:-detta-local}"
 out_dir="${DETTA_RELEASE_OUT:-$repo_root/dist}"
+source_state_json="$(scripts/detta-source-state-report.sh)"
+source_worktree_clean="$(jq -r '.worktree_clean' <<<"$source_state_json")"
+
+case "${DETTA_REQUIRE_CLEAN_RELEASE_SOURCE:-0}" in
+  1 | true | TRUE | yes | YES)
+    if [ "$source_worktree_clean" != "true" ]; then
+      echo "release source tree is dirty; commit or stash changes before final packaging" >&2
+      echo "$source_state_json" >&2
+      exit 1
+    fi
+    ;;
+esac
 
 mkdir -p "$out_dir"
 
@@ -79,6 +91,7 @@ cat >"$manifest_path" <<JSON
   "version": "$safe_version",
   "source_version": "$version",
   "git_commit": "$git_commit",
+  "source_state": $source_state_json,
   "target": "$target_triple",
   "source_date_epoch": $source_date_epoch,
   "chain_id": "$chain_id",

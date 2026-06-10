@@ -11,6 +11,8 @@ source_date_epoch="${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct)}"
 out_dir="${DETTA_RELEASE_OUT:-$repo_root/dist}"
 chain_id="${DETTA_RELEASE_CHAIN_ID:-detta-local}"
 git_commit="$(git rev-parse HEAD)"
+source_state_json="$(scripts/detta-source-state-report.sh)"
+source_worktree_clean="$(jq -r '.worktree_clean' <<<"$source_state_json")"
 
 for tool in jq sha256sum tar git awk wc; do
   if ! command -v "$tool" >/dev/null 2>&1; then
@@ -18,6 +20,16 @@ for tool in jq sha256sum tar git awk wc; do
     exit 1
   fi
 done
+
+case "${DETTA_REQUIRE_CLEAN_AUDIT_PACKAGE:-0}" in
+  1 | true | TRUE | yes | YES)
+    if [ "$source_worktree_clean" != "true" ]; then
+      echo "audit package source tree is dirty; commit or stash changes before final audit packaging" >&2
+      echo "$source_state_json" >&2
+      exit 1
+    fi
+    ;;
+esac
 
 DETTA_RELEASE_VERSION="$version" \
   DETTA_RELEASE_OUT="$out_dir" \
@@ -132,6 +144,7 @@ jq -n -e \
   --arg target "$target_triple" \
   --arg chain_id "$chain_id" \
   --arg git_commit "$git_commit" \
+  --argjson source_state "$source_state_json" \
   --arg release_manifest "release/$release_manifest_name" \
   --arg release_manifest_sha "$release_manifest_sha" \
   --arg tracked_inventory_sha "$tracked_inventory_sha" \
@@ -154,6 +167,7 @@ jq -n -e \
     version: $version,
     source_version: $source_version,
     git_commit: $git_commit,
+    source_state: $source_state,
     target: $target,
     chain_id: $chain_id,
     source_date_epoch: $source_date_epoch,

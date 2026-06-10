@@ -162,6 +162,9 @@ SCS specification
 - `scripts/detta-package-release.sh`: release artifact packaging script for
   the validator and client binaries, demo genesis, faucet sample, hashes, and
   signing manifest.
+- `scripts/detta-source-state-report.sh`: release-source state reporter that
+  binds packaging evidence to the current commit, tree, and dirty-worktree
+  metadata.
 - `scripts/detta-release-signing-drill.sh`: hermetic release signing drill
   that signs packaged checksum attestations with an ephemeral key and verifies
   them with the production verifier.
@@ -302,6 +305,10 @@ DETTA_RELEASE_VERSION=rc-1 scripts/detta-package-release.sh
 The packaging script writes `dist/detta-release-<version>.json`, SHA-256
 attestations, a deterministic archive containing `detta-node` and
 `detta-client`, a demo genesis snapshot, and a sample faucet transaction.
+The release manifest includes source-state metadata for the current Git commit,
+tree, tracked changes, untracked files, and diff roots. For final publication,
+set `DETTA_REQUIRE_CLEAN_RELEASE_SOURCE=1` so packaging and release-signature
+verification fail if the source tree is dirty.
 Detached signatures are still an operator release step and should use the
 `*.sha256` files listed in the manifest:
 
@@ -319,8 +326,8 @@ DETTA_RELEASE_SIGNER_FINGERPRINT=<fingerprint> \
 ```
 
 The verifier checks the release manifest checksum and signature, every
-artifact checksum, and every declared detached signature before the signed
-artifact records are copied into readiness metadata.
+artifact checksum, declared source-state metadata, and every declared detached
+signature before the signed artifact records are copied into readiness metadata.
 
 Run a hermetic signing drill with a temporary GPG key before a real release
 signing ceremony:
@@ -385,8 +392,11 @@ The package script creates the release artifacts, inventories tracked source
 and generated release files with SHA-256 roots, validates the checked audit
 findings manifest, binds the proof-artifact manifest, and writes
 `dist/detta-audit-readiness-package-<version>.tar.gz` plus
-`dist/detta-audit-readiness-<version>.json`. It also runs the standalone
-package verifier. Reviewers can repeat that check after transfer:
+`dist/detta-audit-readiness-<version>.json`. The audit report includes the
+same source-state metadata as the release manifest and can be made fail-closed
+for final reviewer handoff with `DETTA_REQUIRE_CLEAN_AUDIT_PACKAGE=1`. It also
+runs the standalone package verifier. Reviewers can repeat that check after
+transfer:
 
 ```sh
 scripts/detta-verify-audit-readiness-package.sh \

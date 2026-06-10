@@ -502,6 +502,10 @@ Completed production-plan slices:
   checksums, embedded report schema, inventory hashes, mandatory evidence
   files, release manifest binding, proof-manifest binding, and closed audit
   findings.
+- [x] Release and audit manifests include source-state metadata for commit,
+  tree, dirty-worktree status, tracked/untracked counts, and diff/status roots,
+  with optional clean-source enforcement for final publication and audit
+  handoff.
 
 Next implementation slices:
 

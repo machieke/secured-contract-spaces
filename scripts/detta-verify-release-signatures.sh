@@ -104,10 +104,32 @@ jq -e '
   .schema == "detta.release-artifacts.v1"
   and .schema_version == 1
   and .project == "DeTTa"
+  and (.git_commit | type == "string" and length > 0)
+  and (.source_state.schema == "detta.source-state.v1")
+  and (.source_state.schema_version == 1)
+  and (.source_state.git_commit == .git_commit)
+  and (.source_state.git_tree | type == "string" and test("^([0-9a-f]{40}|[0-9a-f]{64})$"))
+  and (.source_state.worktree_clean | type == "boolean")
+  and (.source_state.tracked_change_count | type == "number")
+  and (.source_state.untracked_file_count | type == "number")
+  and (.source_state.status_porcelain_sha256 | type == "string" and test("^[0-9a-f]{64}$"))
+  and (.source_state.tracked_diff_sha256 | type == "string" and test("^[0-9a-f]{64}$"))
+  and (.source_state.staged_diff_sha256 | type == "string" and test("^[0-9a-f]{64}$"))
+  and (.source_state.unstaged_diff_sha256 | type == "string" and test("^[0-9a-f]{64}$"))
   and (.manifest_sha256_path | type == "string" and length > 0)
   and (.manifest_signature_path | type == "string" and length > 0)
   and (.artifacts | type == "array" and length > 0)
 ' "$manifest_path" >/dev/null
+
+case "${DETTA_REQUIRE_CLEAN_RELEASE_SOURCE:-0}" in
+  1 | true | TRUE | yes | YES)
+    if ! jq -e '.source_state.worktree_clean == true' "$manifest_path" >/dev/null; then
+      echo "release source state is dirty" >&2
+      jq '.source_state' "$manifest_path" >&2
+      exit 1
+    fi
+    ;;
+esac
 
 manifest_sha256_path="$(jq -r '.manifest_sha256_path' "$manifest_path")"
 manifest_signature_path="$(jq -r '.manifest_signature_path' "$manifest_path")"

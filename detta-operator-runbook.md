@@ -33,7 +33,8 @@ Before joining a validator:
   `detta-node write-genesis`;
 - start the persistent validator with `detta-node serve --storage ...`;
 - package release-candidate artifacts with `scripts/detta-package-release.sh`
-  and sign the generated `*.sha256` files with the release key;
+  and sign the generated `*.sha256` files with the release key; set
+  `DETTA_REQUIRE_CLEAN_RELEASE_SOURCE=1` for final publication packaging;
 - verify the signed release bundle with
   `scripts/detta-verify-release-signatures.sh`;
 - run `scripts/detta-release-signing-drill.sh` and retain the generated
@@ -55,6 +56,7 @@ Before joining a validator:
 - run `scripts/detta-audit-readiness-package.sh` and retain the generated
   audit-readiness package and report for external reviewers, then rerun
   `scripts/detta-verify-audit-readiness-package.sh` after artifact transfer;
+  set `DETTA_REQUIRE_CLEAN_AUDIT_PACKAGE=1` for final reviewer handoff;
 - check `ops/detta-public-testnet-readiness.json` and confirm it does not claim
   public-testnet readiness while blockers remain;
 - check `ops/detta-mainnet-candidate-readiness.json` and confirm it does not
@@ -230,8 +232,14 @@ Use `scripts/detta-package-release.sh` after the hard release gate passes. The
 script produces a deterministic archive containing `detta-node` and
 `detta-client`, a demo genesis snapshot, sample faucet transaction, SHA-256
 attestations, and
-`dist/detta-release-<version>.json`. Sign every generated `*.sha256` file with
-the release key, including the release manifest checksum:
+`dist/detta-release-<version>.json`. The manifest includes `source_state`
+metadata binding the release to the current Git commit, tree, tracked-change
+count, untracked-file count, and diff/status roots. For final publication,
+export `DETTA_REQUIRE_CLEAN_RELEASE_SOURCE=1` before packaging and before
+running `scripts/detta-verify-release-signatures.sh`; development rehearsals
+may leave it unset so dirty local gates are reported instead of rejected. Sign
+every generated `*.sha256` file with the release key, including the release
+manifest checksum:
 
 ```sh
 for checksum in dist/*.sha256; do
@@ -327,10 +335,13 @@ release artifacts, checksum attestations, proof manifests, readiness manifests,
 and `security/detta-audit-findings.json` into
 `dist/detta-audit-readiness-package-<version>.tar.gz`, then writes
 `dist/detta-audit-readiness-<version>.json` plus SHA-256 attestations and runs
-`scripts/detta-verify-audit-readiness-package.sh` against the package. Retain
-the package and report as reviewer input, and have reviewers rerun the verifier
-after transfer; audit completion still requires closed or governance-accepted
-findings in the checked security manifest.
+`scripts/detta-verify-audit-readiness-package.sh` against the package. The
+audit report must carry the same `source_state` metadata as the release
+manifest. For final reviewer handoff, export
+`DETTA_REQUIRE_CLEAN_AUDIT_PACKAGE=1` while creating and verifying the package.
+Retain the package and report as reviewer input, and have reviewers rerun the
+verifier after transfer; audit completion still requires closed or
+governance-accepted findings in the checked security manifest.
 
 When those conditions are met, update the manifest, keep the blocker list
 empty, include every signed release artifact, and run

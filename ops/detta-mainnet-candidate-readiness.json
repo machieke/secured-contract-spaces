@@ -26,6 +26,7 @@
   "evidence": [
     "scripts/detta-release-gate.sh",
     "scripts/detta-package-release.sh",
+    "scripts/detta-source-state-report.sh",
     "scripts/detta-verify-release-signatures.sh",
     "scripts/detta-release-signing-drill.sh",
     "scripts/detta-genesis-finalization-drill.sh",
