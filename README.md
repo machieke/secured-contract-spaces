@@ -332,6 +332,17 @@ execution fails, executes after the timelock, then repeats the same pattern for
 a method-policy update and writes
 `dist/detta-governance-bootstrap-drill-<version>.json`.
 
+Run a local validator onboarding drill against the packaged binary:
+
+```sh
+DETTA_RELEASE_VERSION=rc-1 scripts/detta-validator-onboarding-drill.sh
+```
+
+The drill boots four validator identities from the same generated genesis,
+verifies their health and persistent roots, restarts each validator without
+supplying genesis again, and writes
+`dist/detta-validator-onboarding-drill-<version>.json`.
+
 Mainnet-candidate readiness is represented by
 `ops/detta-mainnet-candidate-readiness.json`. The checked-in status
 intentionally does not claim readiness until public testnet, external audit,

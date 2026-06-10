@@ -22,6 +22,8 @@ Completed production-plan slices:
 - [x] Governance bootstrap drill exercises timelocked upgrade scheduling,
   rehearsal, early-execution rejection, execution, and policy-update execution
   against the packaged node.
+- [x] Validator onboarding drill boots and restarts multiple packaged
+  validator identities from the same genesis and verifies authenticated roots.
 - [x] Versioned DeTTa protocol envelope crate added.
 - [x] Protocol golden fixtures added for transaction and vote envelopes.
 - [x] Network transport routes messages through protocol envelope encoding and

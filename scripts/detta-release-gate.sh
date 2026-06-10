@@ -40,6 +40,9 @@ run_packaged_operator_gate() {
   DETTA_RELEASE_VERSION=release-gate-governance \
     DETTA_RELEASE_OUT="$tmp_operator_artifacts" \
     scripts/detta-governance-bootstrap-drill.sh
+  DETTA_RELEASE_VERSION=release-gate-validator-onboarding \
+    DETTA_RELEASE_OUT="$tmp_operator_artifacts" \
+    scripts/detta-validator-onboarding-drill.sh
 }
 
 cargo fmt --check
