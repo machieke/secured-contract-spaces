@@ -4455,8 +4455,13 @@ impl DeTTaState {
         if contract.is_empty() {
             return Err(ExecutionError::InvalidArguments);
         }
-        let method = parse_policy_method(&method)?;
-        let args = aspect_values_to_call_args(&method, args)?;
+        let target_record = self
+            .contracts
+            .get(&contract)
+            .cloned()
+            .ok_or(ExecutionError::ContractNotFound)?;
+        let method = host_call_method_for_target(&target_record, &method)?;
+        let args = self.aspect_values_to_host_call_args(&target_record, &method, args)?;
         let nested_tx = Transaction {
             chain_id: tx.chain_id.clone(),
             tx_hash: tx.tx_hash.clone(),
@@ -4471,6 +4476,41 @@ impl DeTTaState {
         };
         self.execute_call(&nested_tx, frame.contract.clone(), call_context)?;
         Ok(())
+    }
+
+    fn aspect_values_to_host_call_args(
+        &self,
+        target_record: &ContractRecord,
+        method: &Method,
+        args: Vec<AspectValue>,
+    ) -> Result<Vec<Argument>, ExecutionError> {
+        match &target_record.kind {
+            ContractKind::AspectModule {
+                module_hash,
+                bundle_id,
+                ..
+            } => {
+                let Method::Other(projection) = method else {
+                    return Err(ExecutionError::InvalidArguments);
+                };
+                let module = self
+                    .aspect_modules
+                    .get(module_hash)
+                    .ok_or(ExecutionError::InvalidArguments)?;
+                let ir = module.ir.as_ref().ok_or(ExecutionError::PolicyMissing)?;
+                let abi_key = qualified_aspect_symbol(bundle_id, projection);
+                let abi = ir
+                    .abi
+                    .get(&abi_key)
+                    .ok_or(ExecutionError::InvalidArguments)?;
+                aspect_values_to_abi_args(&abi.args, args)
+            }
+            _ => {
+                let arg_kinds =
+                    native_method_arg_kinds(method).ok_or(ExecutionError::InvalidArguments)?;
+                aspect_values_to_arg_kinds(arg_kinds, args)
+            }
+        }
     }
 
     fn enforce_method_authority(
@@ -7154,45 +7194,129 @@ fn aspect_value_to_return(value: AspectValue) -> Result<ReturnValue, ExecutionEr
     }
 }
 
-fn aspect_values_to_call_args(
-    method: &Method,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AbiArgKind {
+    Principal,
+    Asset,
+    Amount,
+    Text,
+    Certificate,
+}
+
+fn host_call_method_for_target(
+    target_record: &ContractRecord,
+    method: &str,
+) -> Result<Method, ExecutionError> {
+    match &target_record.kind {
+        ContractKind::AspectModule { .. } => Ok(Method::Other(method.into())),
+        _ => parse_policy_method(method),
+    }
+}
+
+fn native_method_arg_kinds(method: &Method) -> Option<&'static [AbiArgKind]> {
+    use AbiArgKind::{Amount, Asset, Certificate, Principal, Text};
+
+    match method {
+        Method::Transfer => Some(&[Principal, Asset, Amount]),
+        Method::Approve => Some(&[Principal, Asset, Amount]),
+        Method::TransferFrom => Some(&[Principal, Principal, Asset, Amount]),
+        Method::Permit => Some(&[Principal, Principal, Asset, Amount, Certificate]),
+        Method::AddLiquidity => Some(&[Amount, Amount]),
+        Method::Swap => Some(&[Asset, Amount, Amount]),
+        Method::SubmitPrice => Some(&[Asset, Amount, Amount]),
+        Method::QueueBridgeMessage => Some(&[Text, Text, Text, Principal, Asset, Amount]),
+        Method::RedeemBridgeMessage => Some(&[Text, Principal, Asset, Amount, Certificate]),
+        Method::PauseContract | Method::UnpauseContract => Some(&[]),
+        Method::ScheduleUpgrade => Some(&[Text, Text]),
+        Method::ExecuteUpgrade => Some(&[Text]),
+        Method::SchedulePolicyUpdate => Some(&[Text, Text, Text]),
+        Method::ExecutePolicyUpdate => Some(&[Text]),
+        Method::DepositCollateral => Some(&[Asset, Amount]),
+        Method::Borrow => Some(&[Asset, Amount]),
+        Method::Liquidate => Some(&[Principal, Asset, Amount]),
+        Method::Stake | Method::Unstake | Method::RequestUnstake | Method::CompleteUnstake => {
+            Some(&[Asset, Amount])
+        }
+        Method::ClaimStakingRewards => Some(&[Asset]),
+        Method::RouteTransferFrom => Some(&[Principal, Principal, Asset, Amount]),
+        Method::DeployToken => Some(&[Text, Asset, Principal, Amount]),
+        Method::DeployAmmPool => Some(&[Text, Asset, Asset]),
+        Method::RegisterAccountKey | Method::RevokeAccountKey => Some(&[Text]),
+        Method::SubmitAspectModule | Method::DeployAspectContract | Method::Other(_) => None,
+    }
+}
+
+fn aspect_values_to_abi_args(
+    abi_args: &detta_aspects::Expr,
     args: Vec<AspectValue>,
 ) -> Result<Vec<Argument>, ExecutionError> {
-    match method {
-        Method::Transfer => {
-            let [to, asset, amount] = aspect_call_args::<3>(&args)?;
-            Ok(vec![
-                Argument::Principal(expect_aspect_atom(to)?),
-                Argument::Asset(expect_aspect_atom(asset)?),
-                Argument::Amount(expect_aspect_amount(amount)?),
-            ])
-        }
-        Method::Approve => {
-            let [spender, asset, amount] = aspect_call_args::<3>(&args)?;
-            Ok(vec![
-                Argument::Principal(expect_aspect_atom(spender)?),
-                Argument::Asset(expect_aspect_atom(asset)?),
-                Argument::Amount(expect_aspect_amount(amount)?),
-            ])
-        }
-        Method::TransferFrom => {
-            let [owner, to, asset, amount] = aspect_call_args::<4>(&args)?;
-            Ok(vec![
-                Argument::Principal(expect_aspect_atom(owner)?),
-                Argument::Principal(expect_aspect_atom(to)?),
-                Argument::Asset(expect_aspect_atom(asset)?),
-                Argument::Amount(expect_aspect_amount(amount)?),
-            ])
-        }
+    let kinds = abi_arg_kinds(abi_args)?;
+    aspect_values_to_arg_kinds(&kinds, args)
+}
+
+fn abi_arg_kinds(abi_args: &detta_aspects::Expr) -> Result<Vec<AbiArgKind>, ExecutionError> {
+    let detta_aspects::Expr::List(items) = abi_args else {
+        return Err(ExecutionError::InvalidArguments);
+    };
+    match items.first() {
+        Some(detta_aspects::Expr::Atom(head)) if head == "args" => {}
+        _ => return Err(ExecutionError::InvalidArguments),
+    }
+
+    items
+        .iter()
+        .skip(1)
+        .map(|item| {
+            let detta_aspects::Expr::List(parts) = item else {
+                return Err(ExecutionError::InvalidArguments);
+            };
+            let [_, type_expr] = parts.as_slice() else {
+                return Err(ExecutionError::InvalidArguments);
+            };
+            abi_arg_kind(type_expr)
+        })
+        .collect()
+}
+
+fn abi_arg_kind(type_expr: &detta_aspects::Expr) -> Result<AbiArgKind, ExecutionError> {
+    let detta_aspects::Expr::Atom(type_name) = type_expr else {
+        return Err(ExecutionError::InvalidArguments);
+    };
+    match type_name.as_str() {
+        "Address" | "Principal" => Ok(AbiArgKind::Principal),
+        "Asset" => Ok(AbiArgKind::Asset),
+        "Amount" => Ok(AbiArgKind::Amount),
+        "Text" => Ok(AbiArgKind::Text),
+        "Bytes" | "Certificate" => Ok(AbiArgKind::Certificate),
         _ => Err(ExecutionError::InvalidArguments),
     }
 }
 
-fn aspect_call_args<const N: usize>(
-    args: &[AspectValue],
-) -> Result<&[AspectValue; N], ExecutionError> {
-    args.try_into()
-        .map_err(|_| ExecutionError::InvalidArguments)
+fn aspect_values_to_arg_kinds(
+    kinds: &[AbiArgKind],
+    args: Vec<AspectValue>,
+) -> Result<Vec<Argument>, ExecutionError> {
+    if kinds.len() != args.len() {
+        return Err(ExecutionError::InvalidArguments);
+    }
+    kinds
+        .iter()
+        .zip(args.iter())
+        .map(|(kind, value)| aspect_value_to_argument(*kind, value))
+        .collect()
+}
+
+fn aspect_value_to_argument(
+    kind: AbiArgKind,
+    value: &AspectValue,
+) -> Result<Argument, ExecutionError> {
+    match kind {
+        AbiArgKind::Principal => Ok(Argument::Principal(expect_aspect_atom(value)?)),
+        AbiArgKind::Asset => Ok(Argument::Asset(expect_aspect_atom(value)?)),
+        AbiArgKind::Amount => Ok(Argument::Amount(expect_aspect_amount(value)?)),
+        AbiArgKind::Text => Ok(Argument::Text(expect_aspect_atom(value)?)),
+        AbiArgKind::Certificate => Ok(Argument::Certificate(expect_aspect_atom(value)?)),
+    }
 }
 
 fn expect_aspect_atom(value: &AspectValue) -> Result<String, ExecutionError> {
@@ -7976,6 +8100,26 @@ mod tests {
         "
     }
 
+    fn executable_counter_caller_aspect_source() -> &'static str {
+        "
+        (: Address Type)
+        (: Amount Type)
+        (: Bool Type)
+        (aspect CounterCallerAspect)
+        (action CounterCallerAspect callCounter)
+        (derived CounterCallerAspect callCounter
+          (= (callCounter $target $amount)
+             (begin
+               (call-contract! $target Set $amount)
+               True)))
+        (bundle CounterCallerBundle)
+        (bundle-includes CounterCallerBundle CounterCallerAspect)
+        (projection CounterCallerBundle Call (= (API.call $target $amount) (callCounter $target $amount)))
+        (method-abi CounterCallerBundle Call (args (target Address) (amount Amount)) Bool)
+        (method-policy CounterCallerBundle Call TxSender (effects CallContract) (invariants))
+        "
+    }
+
     fn executable_counter_aspect_source_with_invariant(invariant_expr: &str) -> String {
         format!(
             "
@@ -8258,6 +8402,70 @@ mod tests {
         ));
         assert_eq!(bob_call.status, TxStatus::Reverted);
         assert_eq!(bob_call.error, Some(ExecutionError::InvariantViolation));
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "AspectCounter".into(),
+                aspect: "CounterAspect".into(),
+                state: "counter".into(),
+                key: Vec::new(),
+            }),
+            Some(&StateValue::UInt(42))
+        );
+    }
+
+    #[test]
+    fn aspect_host_call_uses_target_abi_for_nested_aspect_calls() {
+        let mut state = DeTTaState::new("detta-local");
+
+        let callee = AspectModuleRecord::from_verified_source(
+            "CounterBundle",
+            executable_counter_aspect_source(),
+        )
+        .unwrap();
+        let callee_hash = state.register_aspect_module(callee).unwrap();
+        state
+            .deploy_aspect_contract("AspectCounter", callee_hash, "CounterBundle")
+            .unwrap();
+
+        let caller = AspectModuleRecord::from_verified_source(
+            "CounterCallerBundle",
+            executable_counter_caller_aspect_source(),
+        )
+        .unwrap();
+        let caller_hash = state.register_aspect_module(caller).unwrap();
+        state
+            .deploy_aspect_contract("AspectCaller", caller_hash, "CounterCallerBundle")
+            .unwrap();
+
+        let call = state.apply_transaction(tx_to(
+            "AspectCaller",
+            "tx-call-counter-via-abi",
+            "Alice",
+            1,
+            Method::Other("Call".into()),
+            vec![principal("AspectCounter"), amount(42)],
+        ));
+        assert_eq!(call.status, TxStatus::Committed);
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "AspectCounter".into(),
+                aspect: "CounterAspect".into(),
+                state: "counter".into(),
+                key: Vec::new(),
+            }),
+            Some(&StateValue::UInt(42))
+        );
+
+        let bad_call = state.apply_transaction(tx_to(
+            "AspectCaller",
+            "tx-call-counter-bad-abi",
+            "Alice",
+            2,
+            Method::Other("Call".into()),
+            vec![principal("AspectCounter"), principal("NotAmount")],
+        ));
+        assert_eq!(bad_call.status, TxStatus::Reverted);
+        assert_eq!(bad_call.error, Some(ExecutionError::InvalidArguments));
         assert_eq!(
             state.storage.get(&StateKey::AspectState {
                 contract: "AspectCounter".into(),

@@ -1257,8 +1257,13 @@ Progress note: the first executable evaluator slice runs verified aspect action
 expressions into deterministic host-call traces with lexical argument binding,
 checked arithmetic, boolean conditions, `require`, step metering, stack-depth
 limits, and trace roots. Aspect state writes, events, permit verification,
-bridge verification, and restricted token-settlement `call-contract!` traces
-are now wired into the SCS guarded storage kernel and block executor. The
+bridge verification, token-settlement `call-contract!` traces, and ABI-typed
+nested `call-contract!` traces are now wired into the SCS guarded storage
+kernel and block executor. The
+`call-contract!` adapter now converts arguments through built-in native method
+schemas or the target aspect contract's published `method-abi` before nested
+execution, so verified aspects can call other ABI-declared aspect projections
+without relying on the earlier token settlement argument decoder. The
 aspect action evaluator has been split into a core-independent
 `detta-aspect-runtime` crate so the block executor can integrate it without
 depending on the higher-level proof/evaluator crate.
@@ -1297,9 +1302,11 @@ on missing, ambiguous, false, non-boolean, or mutating invariant checks.
 The proof slice adds authenticated aspect-module Merkle proofs, standard-library
 artifact and proof-obligation manifests, THM-016 formal coverage, and existing
 receipt, event, and storage proofs for programmable method calls and
-aspect-owned state. Registry-backed host calls, cross-contract calls, and richer
-state-backed invariant reads are future host-capability extensions outside the
-current token-aspect acceptance slice.
+aspect-owned state. Registry-backed host calls, restricted `call-contract!`
+nested execution, and ABI-aware native/aspect argument conversion are now part
+of the guarded host-capability surface. Richer state-backed invariant reads and
+fine-grained cross-contract allowlist policies remain future hardening outside
+the current token-aspect acceptance slice.
 
 Acceptance criteria:
 
@@ -1406,8 +1413,10 @@ moving supplied native token custody through restricted host calls.
 support stake, unstake, deterministic block-height reward accrual, and reward
 claim flows through MeTTa projections. Stake, unstake, reward funding, and
 reward claims settle supplied native token custody through the token
-`transferFrom`/`transfer` host-call adapter, and reward claims require a
-prefunded aspect reward reserve.
+`transferFrom`/`transfer` host-call adapter. That adapter now shares the
+runtime's ABI-aware host-call conversion path with native built-in schemas and
+target aspect `method-abi` lookup, and reward claims require a prefunded aspect
+reward reserve.
 `BridgeMintBurnAspect` and `BridgeMintBurnToken` use a `bridge-verify!` host
 adapter for kernel-verified inbound bridge certificates, store consumed bridge
 message ids in aspect-owned replay state, mint through MeTTa-defined balance

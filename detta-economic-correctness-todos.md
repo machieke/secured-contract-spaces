@@ -5,9 +5,10 @@ DeFi contracts and restricted MeTTa aspect flows.
 
 Status: complete for the current DeTTa runtime scope. Aspect modules that need
 external token-ledger movement now use the restricted token host-call capability
-for native `transfer`, `transferFrom`, and `approve` calls. Future work is
-limited to broader ABI-typed arbitrary host calls beyond that token-settlement
-surface.
+for native `transfer`, `transferFrom`, and `approve` calls. The guarded
+`call-contract!` path also performs ABI-aware argument conversion for native
+method schemas and target aspect bundles that publish checked-in `method-abi`
+entries.
 
 ## AMM Settlement
 
@@ -69,6 +70,8 @@ surface.
 - [x] Aspect vault/wrap/stake projections settle external token custody through
   verifier-visible `CallContract` host calls that consume normal allowances and
   transfer from aspect-contract custody on exits.
+- [x] Aspect-to-aspect `call-contract!` dispatch uses the target contract's
+  bundle ABI for typed argument conversion before nested execution.
 - [x] Rewarded staking aspects require explicit reward-reserve funding before
   claims transfer rewards from custody.
 - [x] Aspect method policies declare all economically relevant effects.

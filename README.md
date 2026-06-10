@@ -273,8 +273,11 @@ restricted `call-contract!` host calls to a supplied token contract and asset:
 deposits, wraps, stakes, and reward funding consume the normal native token
 allowance granted to the aspect contract, while redeems, unwraps, unstakes, and
 reward claims transfer from aspect-contract custody. These calls are verifier
-visible through the `CallContract` policy effect and still use the native token
-method policy, allowance, balance, and invariant checks.
+visible through the `CallContract` policy effect. Host-call argument conversion
+is ABI-aware: native targets use built-in method schemas, while aspect targets
+use the target bundle's checked-in `method-abi` before nested execution. Token
+settlement calls still use the native token method policy, allowance, balance,
+and invariant checks.
 Privileged aspect operations that change supply or bridge replay state reject
 zero amounts before emitting events, mutating supply, or consuming bridge
 message IDs. Privileged aspect configuration and minting methods use the
