@@ -495,6 +495,9 @@ Completed production-plan slices:
 - [x] Public-testnet stability drill runs a packaged local node through a
   sustained multi-block DeFi workload and records health, metrics, mempool,
   root, and alert observations.
+- [x] Audit-readiness package script bundles tracked source, generated release
+  artifacts, proof manifests, readiness manifests, and security findings into a
+  deterministic checksummed archive, and the hard release gate requires it.
 
 Next implementation slices:
 

@@ -52,6 +52,8 @@ Before joining a validator:
   artifacts and retain the generated packaged-client report;
 - run `scripts/detta-public-testnet-stability-drill.sh` against the packaged
   artifacts and retain the generated local stability report;
+- run `scripts/detta-audit-readiness-package.sh` and retain the generated
+  audit-readiness package and report for external reviewers;
 - check `ops/detta-public-testnet-readiness.json` and confirm it does not claim
   public-testnet readiness while blockers remain;
 - check `ops/detta-mainnet-candidate-readiness.json` and confirm it does not
@@ -219,9 +221,9 @@ Mainnet candidacy requires:
 
 The hard release gate runs packaged-node launch, genesis-finalization,
 incident-response, governance-bootstrap, validator-onboarding,
-packaged-client-flow, local-stability, and release-signing drills from a
-temporary release directory. Use the standalone scripts below when the operator
-needs retained release-candidate reports under `dist/`.
+packaged-client-flow, local-stability, audit-readiness, and release-signing
+drills from a temporary release directory. Use the standalone scripts below
+when the operator needs retained release-candidate reports under `dist/`.
 
 Use `scripts/detta-package-release.sh` after the hard release gate passes. The
 script produces a deterministic archive containing `detta-node` and
@@ -317,6 +319,15 @@ drain, root consistency, and alert status, and writes
 `dist/detta-public-testnet-stability-drill-<version>.json` plus a SHA-256
 attestation. Retain this report as local preflight evidence; it does not
 replace the required 168-hour public testnet stability window.
+
+Use `scripts/detta-audit-readiness-package.sh` before handing a release
+candidate to external reviewers. The script packages tracked source, generated
+release artifacts, checksum attestations, proof manifests, readiness manifests,
+and `security/detta-audit-findings.json` into
+`dist/detta-audit-readiness-package-<version>.tar.gz`, then writes
+`dist/detta-audit-readiness-<version>.json` plus SHA-256 attestations. Retain
+the package and report as reviewer input; audit completion still requires
+closed or governance-accepted findings in the checked security manifest.
 
 When those conditions are met, update the manifest, keep the blocker list
 empty, include every signed release artifact, and run

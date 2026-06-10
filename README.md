@@ -174,6 +174,9 @@ SCS specification
 - `scripts/detta-public-testnet-stability-drill.sh`: packaged local stability
   drill that runs a sustained multi-block DeFi workload and records
   health/metrics/alert evidence.
+- `scripts/detta-audit-readiness-package.sh`: release-audit evidence packager
+  that bundles tracked source, generated release artifacts, proof manifests,
+  readiness manifests, and security findings into a deterministic archive.
 - `docs/`: LaTeX rendering of the SCS specification.
 
 Rust workspace crates:
@@ -234,9 +237,10 @@ DETTA_E2E_FULL=1 DETTA_REQUIRE_DEP_AUDIT=1 scripts/detta-release-gate.sh
 The release gate checks formatting, clippy, workspace tests, selected or full
 E2E client flows, dependency advisory and supply-chain policy through
 `deny.toml`, verification crate tests, release builds, packaged-node launch,
-incident-response, and governance-bootstrap drills from a temporary release
-directory, TLA+ model checking through `scripts/detta-model-check.sh`, and
-proof artifact hash manifests.
+incident-response, governance-bootstrap, validator-onboarding,
+packaged-client-flow, local-stability, audit-readiness, and release-signing
+drills from a temporary release directory, TLA+ model checking through
+`scripts/detta-model-check.sh`, and proof artifact hash manifests.
 
 Local dependency audits are run by `scripts/detta-dependency-audit.sh`. If
 `cargo-deny` is unavailable locally, the script prints a warning and lets the
@@ -368,6 +372,19 @@ The drill unpacks the release, boots packaged `detta-node`, runs packaged
 blocks, health, metrics, mempool drain, root consistency, and alert status, and
 writes `dist/detta-public-testnet-stability-drill-<version>.json`. This does
 not replace the required 168-hour public testnet window.
+
+Build an audit-readiness package for external review:
+
+```sh
+DETTA_RELEASE_VERSION=rc-1 scripts/detta-audit-readiness-package.sh
+```
+
+The package script creates the release artifacts, inventories tracked source
+and generated release files with SHA-256 roots, validates the checked audit
+findings manifest, binds the proof-artifact manifest, and writes
+`dist/detta-audit-readiness-package-<version>.tar.gz` plus
+`dist/detta-audit-readiness-<version>.json`. This is reviewer evidence; it is
+not a substitute for an independent audit.
 
 Run a local operator launch rehearsal against the packaged binary:
 

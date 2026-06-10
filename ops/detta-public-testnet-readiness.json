@@ -39,6 +39,7 @@
     "scripts/detta-validator-onboarding-drill.sh",
     "scripts/detta-packaged-client-flow-drill.sh",
     "scripts/detta-public-testnet-stability-drill.sh",
+    "scripts/detta-audit-readiness-package.sh",
     "security/detta-audit-findings.json"
   ],
   "blockers": [

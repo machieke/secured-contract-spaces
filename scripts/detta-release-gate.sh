@@ -52,6 +52,9 @@ run_packaged_operator_gate() {
   DETTA_RELEASE_VERSION=release-gate-stability \
     DETTA_RELEASE_OUT="$tmp_operator_artifacts" \
     scripts/detta-public-testnet-stability-drill.sh
+  DETTA_RELEASE_VERSION=release-gate-audit-readiness \
+    DETTA_RELEASE_OUT="$tmp_operator_artifacts" \
+    scripts/detta-audit-readiness-package.sh
   DETTA_RELEASE_VERSION=release-gate-signing \
     DETTA_RELEASE_OUT="$tmp_operator_artifacts" \
     scripts/detta-release-signing-drill.sh
