@@ -56,9 +56,12 @@ faucet_path="$out_dir/$faucet_name"
   --chain-id "$chain_id" \
   >"$faucet_path"
 
-sha256sum "$archive_path" >"$archive_path.sha256"
-sha256sum "$genesis_path" >"$genesis_path.sha256"
-sha256sum "$faucet_path" >"$faucet_path.sha256"
+(
+  cd "$out_dir"
+  sha256sum "$archive_name" >"$archive_name.sha256"
+  sha256sum "$genesis_name" >"$genesis_name.sha256"
+  sha256sum "$faucet_name" >"$faucet_name.sha256"
+)
 
 archive_sha="$(awk '{print $1}' "$archive_path.sha256")"
 genesis_sha="$(awk '{print $1}' "$genesis_path.sha256")"
@@ -78,6 +81,8 @@ cat >"$manifest_path" <<JSON
   "source_date_epoch": $source_date_epoch,
   "chain_id": "$chain_id",
   "release_gate_command": "DETTA_E2E_FULL=1 DETTA_REQUIRE_DEP_AUDIT=1 scripts/detta-release-gate.sh",
+  "manifest_sha256_path": "$manifest_name.sha256",
+  "manifest_signature_path": "$manifest_name.sha256.sig",
   "artifacts": [
     {
       "kind": "validator_binary_archive",
@@ -101,10 +106,13 @@ cat >"$manifest_path" <<JSON
       "signature_path": "$faucet_name.sha256.sig"
     }
   ],
-  "detached_signature_command": "gpg --armor --detach-sign <artifact>.sha256"
+  "detached_signature_command": "gpg --armor --output <release>.sha256.sig --detach-sign <release>.sha256"
 }
 JSON
-sha256sum "$manifest_path" >"$manifest_path.sha256"
+(
+  cd "$out_dir"
+  sha256sum "$manifest_name" >"$manifest_name.sha256"
+)
 
 (
   cd "$out_dir"

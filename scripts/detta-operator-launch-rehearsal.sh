@@ -105,10 +105,10 @@ cat >"$report_path" <<JSON
   "status": "passed"
 }
 JSON
-sha256sum "$report_path" >"$report_path.sha256"
 
 (
   cd "$out_dir"
+  sha256sum "$report_name" >"$report_name.sha256"
   sha256sum -c "$report_name.sha256"
 )
 

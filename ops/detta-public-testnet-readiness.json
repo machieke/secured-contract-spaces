@@ -29,6 +29,7 @@
     "crates/detta-node/src/bin/detta-node.rs",
     "scripts/detta-release-gate.sh",
     "scripts/detta-package-release.sh",
+    "scripts/detta-verify-release-signatures.sh",
     "scripts/detta-operator-launch-rehearsal.sh",
     "security/detta-audit-findings.json"
   ],

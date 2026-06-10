@@ -34,6 +34,8 @@ Before joining a validator:
 - start the persistent validator with `detta-node serve --storage ...`;
 - package release-candidate artifacts with `scripts/detta-package-release.sh`
   and sign the generated `*.sha256` files with the release key;
+- verify the signed release bundle with
+  `scripts/detta-verify-release-signatures.sh`;
 - run `scripts/detta-operator-launch-rehearsal.sh` against the packaged
   artifacts and retain the generated rehearsal report;
 - check `ops/detta-public-testnet-readiness.json` and confirm it does not claim
@@ -204,9 +206,24 @@ Mainnet candidacy requires:
 Use `scripts/detta-package-release.sh` after the hard release gate passes. The
 script produces a deterministic validator archive, demo genesis snapshot,
 sample faucet transaction, SHA-256 attestations, and
-`dist/detta-release-<version>.json`. Sign the generated `*.sha256` files with
-the release key, publish the matching `*.sig` files, and copy the paths,
-hashes, signer identity, and signature paths into
+`dist/detta-release-<version>.json`. Sign every generated `*.sha256` file with
+the release key, including the release manifest checksum:
+
+```sh
+for checksum in dist/*.sha256; do
+  gpg --armor --output "$checksum.sig" --detach-sign "$checksum"
+done
+```
+
+Verify the bundle before publication:
+
+```sh
+DETTA_RELEASE_SIGNER_FINGERPRINT=<fingerprint> \
+  scripts/detta-verify-release-signatures.sh dist/detta-release-<version>.json
+```
+
+Publish the matching `*.sig` files, and copy the paths, hashes, signer
+identity, and signature paths into
 `ops/detta-mainnet-candidate-readiness.json`.
 
 Use `scripts/detta-operator-launch-rehearsal.sh` before publishing a release

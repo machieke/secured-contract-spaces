@@ -8,11 +8,13 @@
 
 # 0. Implementation Progress
 
-Updated: 2026-06-09
+Updated: 2026-06-10
 
 Completed production-plan slices:
 
 - [x] Production implementation plan created.
+- [x] Release artifact signing verification checks the release manifest
+  checksum/signature plus every packaged artifact checksum/signature.
 - [x] Versioned DeTTa protocol envelope crate added.
 - [x] Protocol golden fixtures added for transaction and vote envelopes.
 - [x] Network transport routes messages through protocol envelope encoding and

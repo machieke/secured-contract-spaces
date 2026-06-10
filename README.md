@@ -279,7 +279,24 @@ DETTA_RELEASE_VERSION=rc-1 scripts/detta-package-release.sh
 The packaging script writes `dist/detta-release-<version>.json`, SHA-256
 attestations, a deterministic `detta-node` archive, a demo genesis snapshot,
 and a sample faucet transaction. Detached signatures are still an operator
-release step and should use the `*.sha256` files listed in the manifest.
+release step and should use the `*.sha256` files listed in the manifest:
+
+```sh
+for checksum in dist/*.sha256; do
+  gpg --armor --output "$checksum.sig" --detach-sign "$checksum"
+done
+```
+
+Verify a signed release bundle before publishing it:
+
+```sh
+DETTA_RELEASE_SIGNER_FINGERPRINT=<fingerprint> \
+  scripts/detta-verify-release-signatures.sh dist/detta-release-rc-1.json
+```
+
+The verifier checks the release manifest checksum and signature, every
+artifact checksum, and every declared detached signature before the signed
+artifact records are copied into readiness metadata.
 
 Run a local operator launch rehearsal against the packaged binary:
 
