@@ -525,6 +525,9 @@ Completed production-plan slices:
   audit-readiness package.
 - [x] Retained release-candidate evidence bundles require the readiness status
   report and rerun its standalone verifier against the packaged copy.
+- [x] Retained release-candidate evidence bundle verification imports the
+  packaged signing public key and reruns release-signature verification against
+  the packaged release artifacts and detached signatures.
 - [x] Hard release gate runs the standalone readiness-manifest verifier so
   launch status metadata cannot drift from checked evidence paths.
 - [x] Hard release gate generates the deterministic readiness status report so

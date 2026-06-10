@@ -27,7 +27,7 @@ bundle_dir="$(cd "$(dirname "$input_bundle")" && pwd)"
 bundle_name="$(basename "$input_bundle")"
 bundle_path="$bundle_dir/$bundle_name"
 
-for tool in jq sha256sum tar awk wc cmp; do
+for tool in cp gpg jq sha256sum tar awk wc cmp; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     fail "required tool missing: $tool"
   fi
@@ -262,9 +262,38 @@ require_inventory_bundle_path "reports/detta-public-testnet-stability-drill-${ve
 require_inventory_bundle_path "reports/detta-release-signing-drill-${version}.json"
 require_inventory_bundle_path "audit/detta-audit-readiness-${version}.json"
 require_inventory_bundle_path "audit/detta-audit-readiness-package-${version}.tar.gz"
+require_inventory_bundle_path "signatures/detta-release-signing-drill-${version}.pub.asc"
+
+signing_report_path="$extract_dir/reports/detta-release-signing-drill-${version}.json"
+signing_public_key_path="$extract_dir/signatures/detta-release-signing-drill-${version}.pub.asc"
+signer_fingerprint="$(jq -r '.signing_key.fingerprint // empty' "$signing_report_path")"
+if [ -z "$signer_fingerprint" ]; then
+  fail "release signing report missing signer fingerprint"
+fi
+if [ "$(sha256_of_file "$signing_public_key_path")" != "$(jq -r '.signing_key.public_key_sha256' "$signing_report_path")" ]; then
+  fail "release signing public key hash does not match signing report"
+fi
+
+gpg_home="$tmpdir/gnupg-release-signature-verify"
+mkdir -m 0700 "$gpg_home"
+GNUPGHOME="$gpg_home" gpg --batch --import "$signing_public_key_path" >/dev/null
+signature_verify_dir="$tmpdir/release-signature-verify"
+mkdir -p "$signature_verify_dir"
+cp "$extract_dir/release/"* "$signature_verify_dir/"
+shopt -s nullglob
+signature_files=("$extract_dir"/signatures/*.sig)
+shopt -u nullglob
+if [ "${#signature_files[@]}" -eq 0 ]; then
+  fail "release signature files are missing from bundle"
+fi
+cp "${signature_files[@]}" "$signature_verify_dir/"
 
 scripts/detta-verify-audit-readiness-package.sh \
   "$extract_dir/audit/detta-audit-readiness-package-${version}.tar.gz" >/dev/null
 scripts/detta-verify-readiness-status-report.sh "$readiness_report_path" >/dev/null
+GNUPGHOME="$gpg_home" \
+  DETTA_RELEASE_SIGNER_FINGERPRINT="$signer_fingerprint" \
+  scripts/detta-verify-release-signatures.sh \
+  "$signature_verify_dir/detta-release-${version}.json" >/dev/null
 
 printf 'release candidate evidence bundle verified: %s\n' "$bundle_path"

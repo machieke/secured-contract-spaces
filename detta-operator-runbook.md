@@ -254,8 +254,10 @@ then writes
 attestations. It also runs
 `scripts/detta-verify-release-candidate-evidence-bundle.sh` against the
 bundle. Retain this bundle with the release-candidate publication record and
-have reviewers rerun the verifier after transfer; it does not replace the hard
-release gate or the real public-testnet stability window.
+have reviewers rerun the verifier after transfer. The verifier imports the
+packaged signing public key and rechecks release artifact signatures from the
+bundle; it does not replace the hard release gate or the real public-testnet
+stability window.
 
 Use `scripts/detta-package-release.sh` after the hard release gate passes. The
 script produces a deterministic archive containing `detta-node` and
