@@ -1578,19 +1578,24 @@ Mitigation:
 - shared ABI/policy/invariant roots;
 - precompile equivalence manifests.
 
-## 23. Open Design Decisions
+## 23. Resolved Current-Slice Decisions
 
-- Whether aspect modules should be submitted as source only, artifact only, or
-  source plus artifact.
-- Whether method IDs should become first-class strings in `Transaction` instead
-  of `Method::Other(String)`.
-- Whether standard-library taxonomy files live in this repo or remain imported
-  from the sibling taxonomy project with pinned hashes.
-- Whether invariant checking should initially be runtime-only, symbolic-only,
-  or hybrid.
-- How much of AMM behavior should be represented as taxonomy aspects versus a
-  separate DeFi primitive module family.
-- Which governance threshold is required to bless a module as standard library.
+- Aspect modules can be submitted as verified source through the factory; module
+  records also carry authenticated artifact roots for source, IR, ABI, policy,
+  storage schema, registry schema, and invariants.
+- Aspect projections are exposed as `Method::Other(String)` for compatibility
+  with the existing transaction enum while preserving checked `method-abi`
+  metadata for dispatch and nested host-call conversion.
+- The checked standard-library taxonomy fixture lives in this repository under
+  `models/aspects/stdlib` with SHA-256 attestations and proof obligations.
+- Invariant checking is hybrid: runtime enforcement for committed transitions,
+  guarded host-call trace checks, proof-obligation manifests, theorem evidence,
+  and TLA+ model coverage.
+- AMM behavior remains a native DeFi primitive family while aspect-token bundles
+  integrate through guarded ERC20-compatible transfer projections.
+- Standard-library blessing is currently repository/release-gate based; any
+  mainnet governance threshold for adding blessed modules remains a launch
+  governance policy, not an unresolved runtime implementation blocker.
 
 ## 24. Recommended First PR Sequence
 

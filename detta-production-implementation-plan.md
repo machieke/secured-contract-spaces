@@ -1128,23 +1128,37 @@ Every production release candidate must pass:
 - dependency audit;
 - reproducible build checks.
 
-# 9. Open Production Decisions
+# 9. Closed Implementation Choices And Remaining Launch Gates
 
-The following decisions must be closed before M1 or M2:
+The current implementation has closed the main M1/M2 architecture choices for
+the in-repo DeTTa runtime:
 
-- consensus protocol selection;
-- networking stack;
-- validator key type and signature scheme;
-- canonical binary encoding;
-- authenticated tree design;
-- storage engine;
-- RPC protocol;
-- gas/resource pricing;
-- evaluator implementation strategy;
-- invariant language;
-- bridge finality proof format;
-- governance authority model;
-- production deployment topology.
+- consensus uses signed validator proposals, votes, finality certificates,
+  equivocation evidence, and quorum-authorized validator-set metadata updates;
+- networking uses the version-negotiated TCP protocol and signed envelopes in
+  `detta-protocol`, `detta-network`, and `detta-node`;
+- validator and transaction signing use Ed25519-domain signed envelopes and
+  account signer registry grants;
+- deterministic serde-backed canonical roots bind storage, registry, policy,
+  event, nonce, outbox, receipt, block, and global state;
+- durable node state uses the `detta-storage` file-backed store with backup,
+  restore, snapshot, and state-sync coverage;
+- RPC uses typed JSON-RPC over HTTP/TCP with OpenAPI and stable JSON fixtures;
+- resource pricing is budget-based with transaction, block, and evaluator step
+  limits;
+- the evaluator strategy is the restricted evaluator plus verified MeTTa aspect
+  runtime, guarded host-call traces, and artifact roots;
+- invariant checking is hybrid: runtime enforcement, symbolic trace checks,
+  differential replay, theorem evidence, and TLA+ model simulation;
+- bridge finality uses validator-set certificates, replay tracking, outbox
+  proofs, and cross-shard message roots;
+- governance uses registry-backed admin grants, timelocks, rehearsals, policy
+  updates, upgrade execution, and audit records.
+
+Remaining launch gates are operational rather than unresolved implementation
+architecture: public testnet stability, external audit, final genesis and
+validator onboarding, mainnet deployment topology, incident-response rehearsal,
+release signing, and dependency audit in CI.
 
 # 10. Final Acceptance Checklist
 

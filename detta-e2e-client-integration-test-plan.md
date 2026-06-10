@@ -591,10 +591,11 @@ scripts/detta-release-gate.sh
 - The default suite is deterministic and bounded in runtime.
 - The full suite can be run with one documented command.
 
-## Risks And Open Design Questions
+## Resolved Design Points And Remaining Risks
 
-- Public deployment semantics for tokens and AMM pools must be resolved before claiming that clients can deploy new assets.
-- If current transaction signatures are still represented by test-only flags, production signing must be completed before E2E signing tests are meaningful.
+- Public deployment semantics are implemented through factory methods for native
+  tokens, AMM pools, aspect module submission, and aspect contract deployment.
+- E2E signing coverage uses Ed25519 signed transactions and rejects tampering.
 - Multi-process networking tests can become flaky unless timeouts, retries, and log capture are designed carefully.
 - The suite must distinguish AMM buy/sell terminology from exact-input swap direction to avoid ambiguous assertions.
 - Some operator alerts may require test-only fault injection hooks; those hooks must not weaken production behavior.

@@ -574,7 +574,7 @@ Deliver:
 - method policy registry;
 - capability registry;
 - guarded storage kernel;
-- restricted evaluator stub;
+- production restricted evaluator and aspect runtime;
 - token contract with `transfer`, `approve`, `transferFrom`, `permit`;
 - event log;
 - receipt model.
@@ -726,7 +726,7 @@ The minimal DeTTa MVP should include:
 - deterministic block executor;
 - authenticated storage roots;
 - SCS runtime;
-- restricted evaluator stub or minimal interpreter;
+- production restricted evaluator and aspect runtime;
 - token contract;
 - AMM pool;
 - oracle adapter with authorized updater;
