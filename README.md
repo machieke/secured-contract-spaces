@@ -283,6 +283,10 @@ methods with `CallContract` effects must also publish `(calls ...)` allowlists,
 and both module verification and runtime trace replay reject calls outside that
 authenticated policy. Token settlement calls still use the native token method
 policy, allowance, balance, and invariant checks.
+Aspect expressions can use local `state-get` reads and explicit
+`contract-state-get` reads for deterministic cross-contract aspect-state
+inspection. Those reads are included in the host trace, treated as non-mutating
+during invariant replay, and supplied from a contract-qualified state snapshot.
 Privileged aspect operations that change supply or bridge replay state reject
 zero amounts before emitting events, mutating supply, or consuming bridge
 message IDs. Privileged aspect configuration and minting methods use the

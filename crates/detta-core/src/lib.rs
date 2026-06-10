@@ -1,5 +1,6 @@
 use detta_aspect_runtime::{
     AspectActionEvaluator, AspectExecutionContext, AspectHostOp, AspectStateReads, AspectValue,
+    ContractAspectStateReads,
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha2::{Digest, Sha256};
@@ -4339,13 +4340,15 @@ impl DeTTaState {
             block_timestamp: 0,
         };
         let state_reads = aspect_state_reads(self, &tx.target, &bundle_id, &module)?;
+        let contract_state_reads = aspect_contract_state_reads(self);
         let report = AspectActionEvaluator::new(ir, tx.budget)
-            .execute_projection_with_state(
+            .execute_projection_with_contract_state(
                 &bundle_id,
                 projection,
                 tx.args.iter().map(aspect_value_from_argument).collect(),
                 context.clone(),
                 state_reads,
+                contract_state_reads,
             )
             .map_err(|_| ExecutionError::InvalidArguments)?;
         let frame = AuthorizedFrame {
@@ -4382,13 +4385,15 @@ impl DeTTaState {
             .ok_or(ExecutionError::PolicyMissing)?;
         let evaluator = AspectActionEvaluator::new(ir, budget);
         let state_reads = aspect_state_reads(self, &context.current_contract, bundle_id, module)?;
+        let contract_state_reads = aspect_contract_state_reads(self);
         for invariant_ref in &policy.invariants {
             let invariant = resolve_aspect_invariant(ir, bundle_id, invariant_ref)?;
             let report = evaluator
-                .evaluate_invariant_expr_with_state(
+                .evaluate_invariant_expr_with_contract_state(
                     &invariant.expr,
                     context.clone(),
                     state_reads.clone(),
+                    contract_state_reads.clone(),
                 )
                 .map_err(|_| ExecutionError::InvariantViolation)?;
             if report.return_value != AspectValue::Bool(true)
@@ -4408,7 +4413,7 @@ impl DeTTaState {
         op: AspectHostOp,
     ) -> Result<(), ExecutionError> {
         match op {
-            AspectHostOp::StateGet { .. } => Ok(()),
+            AspectHostOp::StateGet { .. } | AspectHostOp::ContractStateGet { .. } => Ok(()),
             AspectHostOp::StateSet { state, key, value } => {
                 let key = aspect_state_key(
                     &tx.target,
@@ -7551,6 +7556,25 @@ fn aspect_state_reads(
         .collect())
 }
 
+fn aspect_contract_state_reads(state: &DeTTaState) -> ContractAspectStateReads {
+    state
+        .storage
+        .iter()
+        .filter_map(|(key, value)| match key {
+            StateKey::AspectState {
+                contract,
+                state,
+                key,
+                ..
+            } => Some((
+                (contract.clone(), state.clone(), key.clone()),
+                aspect_value_from_state_value(value),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
 fn write_scope_contains(write_scope: &BTreeSet<StateKey>, key: &StateKey) -> bool {
     if write_scope.contains(key) {
         return true;
@@ -7574,7 +7598,9 @@ fn write_scope_contains(write_scope: &BTreeSet<StateKey>, key: &StateKey) -> boo
 fn aspect_invariant_op_is_mutating(op: &AspectHostOp) -> bool {
     !matches!(
         op,
-        AspectHostOp::StateGet { .. } | AspectHostOp::RegistryGet { .. }
+        AspectHostOp::StateGet { .. }
+            | AspectHostOp::ContractStateGet { .. }
+            | AspectHostOp::RegistryGet { .. }
     )
 }
 
@@ -8266,6 +8292,27 @@ mod tests {
         )
     }
 
+    fn executable_cross_contract_guard_aspect_source() -> &'static str {
+        "
+        (: Amount Type)
+        (: Bool Type)
+        (: Address Type)
+        (aspect GuardAspect)
+        (owns GuardAspect guard Amount)
+        (local-invariant GuardAspect PeerCounterPinned
+          (= (contract-state-get AspectCounter counter) 42))
+        (action GuardAspect setGuard)
+        (derived GuardAspect setGuard
+          (= (setGuard $amount)
+             (state-set! guard $amount)))
+        (bundle GuardBundle)
+        (bundle-includes GuardBundle GuardAspect)
+        (projection GuardBundle Set (= (API.set $amount) (setGuard $amount)))
+        (method-abi GuardBundle Set (args (amount Amount)) Bool)
+        (method-policy GuardBundle Set TxSender (effects WriteState) (invariants PeerCounterPinned))
+        "
+    }
+
     fn executable_counter_aspect_source_with_missing_invariant() -> &'static str {
         "
         (: Amount Type)
@@ -8609,6 +8656,93 @@ mod tests {
                 key: Vec::new(),
             }),
             Some(&StateValue::UInt(100))
+        );
+    }
+
+    #[test]
+    fn aspect_method_invariants_read_cross_contract_state() {
+        let mut state = DeTTaState::new("detta-local");
+
+        let counter = AspectModuleRecord::from_verified_source(
+            "CounterBundle",
+            executable_counter_aspect_source(),
+        )
+        .unwrap();
+        let counter_hash = state.register_aspect_module(counter).unwrap();
+        state
+            .deploy_aspect_contract("AspectCounter", counter_hash, "CounterBundle")
+            .unwrap();
+
+        let guard = AspectModuleRecord::from_verified_source(
+            "GuardBundle",
+            executable_cross_contract_guard_aspect_source(),
+        )
+        .unwrap();
+        let guard_hash = state.register_aspect_module(guard).unwrap();
+        state
+            .deploy_aspect_contract("AspectGuard", guard_hash, "GuardBundle")
+            .unwrap();
+
+        let pin_counter = state.apply_transaction(tx_to(
+            "AspectCounter",
+            "tx-pin-peer-counter",
+            "Alice",
+            1,
+            Method::Other("Set".into()),
+            vec![amount(42)],
+        ));
+        assert_eq!(pin_counter.status, TxStatus::Committed);
+
+        let guarded_write = state.apply_transaction(tx_to(
+            "AspectGuard",
+            "tx-guarded-write-with-pinned-peer",
+            "Alice",
+            2,
+            Method::Other("Set".into()),
+            vec![amount(1)],
+        ));
+        assert_eq!(guarded_write.status, TxStatus::Committed);
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "AspectGuard".into(),
+                aspect: "GuardAspect".into(),
+                state: "guard".into(),
+                key: Vec::new(),
+            }),
+            Some(&StateValue::UInt(1))
+        );
+
+        let unpin_counter = state.apply_transaction(tx_to(
+            "AspectCounter",
+            "tx-unpin-peer-counter",
+            "Alice",
+            3,
+            Method::Other("Set".into()),
+            vec![amount(7)],
+        ));
+        assert_eq!(unpin_counter.status, TxStatus::Committed);
+
+        let violating_write = state.apply_transaction(tx_to(
+            "AspectGuard",
+            "tx-guarded-write-with-unpinned-peer",
+            "Alice",
+            4,
+            Method::Other("Set".into()),
+            vec![amount(2)],
+        ));
+        assert_eq!(violating_write.status, TxStatus::Reverted);
+        assert_eq!(
+            violating_write.error,
+            Some(ExecutionError::InvariantViolation)
+        );
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "AspectGuard".into(),
+                aspect: "GuardAspect".into(),
+                state: "guard".into(),
+                key: Vec::new(),
+            }),
+            Some(&StateValue::UInt(1))
         );
     }
 

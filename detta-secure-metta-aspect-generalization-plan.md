@@ -1314,9 +1314,9 @@ nested execution, and ABI-aware native/aspect argument conversion are now part
 of the guarded host-capability surface. Fine-grained cross-contract allowlist
 policies are authenticated in `method-policy` roots and enforced by both static
 verification and runtime trace replay. Stateful aspect invariants can read
-aspect-owned storage after programmable writes and revert the full transition
-when the checked state violates the invariant. Broader cross-contract invariant
-reads remain outside the current token-aspect acceptance slice.
+aspect-owned storage after programmable writes and can use explicit
+`contract-state-get` reads for deterministic cross-contract aspect-state checks;
+violations revert the full transition.
 
 Acceptance criteria:
 

@@ -2103,13 +2103,13 @@ fn infer_expr_effects(
         return;
     };
 
-    if head == "=" && items.len() == 3 {
+    if head == "=" && items.len() == 3 && is_action_definition_expr(items, action_names) {
         infer_expr_effects(ir, action_names, &items[2], visited, inferred);
         return;
     }
 
     match head.as_str() {
-        "state-get" => {
+        "state-get" | "contract-state-get" => {
             inferred.effects.insert(EffectKind::ReadState);
         }
         "state-set!" => {
@@ -2178,6 +2178,19 @@ fn infer_expr_effects(
     for item in items.iter().skip(1) {
         infer_expr_effects(ir, action_names, item, visited, inferred);
     }
+}
+
+fn is_action_definition_expr(
+    items: &[Expr],
+    action_names: &BTreeMap<String, BTreeSet<String>>,
+) -> bool {
+    let Some(Expr::List(signature)) = items.get(1) else {
+        return false;
+    };
+    let Some(Expr::Atom(name)) = signature.first() else {
+        return false;
+    };
+    action_names.contains_key(name)
 }
 
 fn action_for_projection_target<'a>(
@@ -2641,6 +2654,35 @@ mod tests {
                 bundle: "BadBundle".into(),
                 projection: "Write".into(),
                 effect: EffectKind::WriteState,
+            }
+        );
+    }
+
+    #[test]
+    fn verifier_rejects_undeclared_contract_state_read() {
+        let source = "
+            (: Bool Type)
+            (: Amount Type)
+            (: Address Type)
+            (aspect ReaderAspect)
+            (action ReaderAspect readPeer)
+            (derived ReaderAspect readPeer
+              (= (readPeer)
+                 (= (contract-state-get PeerCounter counter) 42)))
+            (bundle BadBundle)
+            (bundle-includes BadBundle ReaderAspect)
+            (projection BadBundle Read (= (API.read) (readPeer)))
+            (method-abi BadBundle Read (args) Bool)
+            (method-policy BadBundle Read TxSender (effects) (invariants))
+        ";
+        let ast = parse_aspect_package(source).unwrap();
+        let ir = lower_to_ir(&ast).unwrap();
+        assert_eq!(
+            verify_module(&ir).unwrap_err(),
+            AspectVerifyError::UndeclaredEffect {
+                bundle: "BadBundle".into(),
+                projection: "Read".into(),
+                effect: EffectKind::ReadState,
             }
         );
     }

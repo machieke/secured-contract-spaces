@@ -12,10 +12,16 @@ pub enum AspectValue {
 }
 
 pub type AspectStateReads = BTreeMap<(String, Vec<String>), AspectValue>;
+pub type ContractAspectStateReads = BTreeMap<(String, String, Vec<String>), AspectValue>;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum AspectHostOp {
     StateGet {
+        state: String,
+        key: Vec<String>,
+    },
+    ContractStateGet {
+        contract: String,
         state: String,
         key: Vec<String>,
     },
@@ -128,6 +134,7 @@ impl<'a> AspectActionEvaluator<'a> {
             bindings: BTreeMap::new(),
             context: AspectExecutionContext::default(),
             state_reads: BTreeMap::new(),
+            contract_state_reads: BTreeMap::new(),
             stack_depth: 0,
         };
         let return_value = self.execute_named_action(aspect, action, args, &mut state)?;
@@ -158,6 +165,25 @@ impl<'a> AspectActionEvaluator<'a> {
         context: AspectExecutionContext,
         state_reads: AspectStateReads,
     ) -> Result<AspectExecutionReport, AspectEvalError> {
+        self.execute_projection_with_contract_state(
+            bundle,
+            projection,
+            args,
+            context,
+            state_reads,
+            BTreeMap::new(),
+        )
+    }
+
+    pub fn execute_projection_with_contract_state(
+        &self,
+        bundle: &str,
+        projection: &str,
+        args: Vec<AspectValue>,
+        context: AspectExecutionContext,
+        state_reads: AspectStateReads,
+        contract_state_reads: ContractAspectStateReads,
+    ) -> Result<AspectExecutionReport, AspectEvalError> {
         let key = qualified(bundle, projection);
         let projection_def = self.module.projections.get(&key).ok_or_else(|| {
             AspectEvalError::UnknownProjection {
@@ -180,6 +206,7 @@ impl<'a> AspectActionEvaluator<'a> {
             bindings: params.into_iter().zip(args).collect(),
             context,
             state_reads,
+            contract_state_reads,
             stack_depth: 0,
         };
         let return_value = self.eval_expr(rhs, &mut state)?;
@@ -206,12 +233,28 @@ impl<'a> AspectActionEvaluator<'a> {
         context: AspectExecutionContext,
         state_reads: AspectStateReads,
     ) -> Result<AspectExecutionReport, AspectEvalError> {
+        self.evaluate_invariant_expr_with_contract_state(
+            expr,
+            context,
+            state_reads,
+            BTreeMap::new(),
+        )
+    }
+
+    pub fn evaluate_invariant_expr_with_contract_state(
+        &self,
+        expr: &Expr,
+        context: AspectExecutionContext,
+        state_reads: AspectStateReads,
+        contract_state_reads: ContractAspectStateReads,
+    ) -> Result<AspectExecutionReport, AspectEvalError> {
         let mut state = AspectEvalState {
             steps_used: 0,
             trace: Vec::new(),
             bindings: BTreeMap::new(),
             context,
             state_reads,
+            contract_state_reads,
             stack_depth: 0,
         };
         let return_value = self.eval_expr(expr, &mut state)?;
@@ -310,6 +353,7 @@ impl<'a> AspectActionEvaluator<'a> {
                     ">" => self.eval_cmp(items, state, |left, right| left > right),
                     ">=" => self.eval_cmp(items, state, |left, right| left >= right),
                     "state-get" => self.eval_state_get(items, state),
+                    "contract-state-get" => self.eval_contract_state_get(items, state),
                     "state-set!" => self.eval_state_set(items, state),
                     "registry-get" => self.eval_registry_get(items, state),
                     "registry-set!" => self.eval_registry_set(items, state),
@@ -560,6 +604,32 @@ impl<'a> AspectActionEvaluator<'a> {
         Ok(state
             .state_reads
             .get(&(state_name.into(), key))
+            .cloned()
+            .unwrap_or(AspectValue::Amount(0)))
+    }
+
+    fn eval_contract_state_get(
+        &self,
+        items: &[Expr],
+        state: &mut AspectEvalState,
+    ) -> Result<AspectValue, AspectEvalError> {
+        if items.len() < 3 {
+            return Err(AspectEvalError::InvalidExpression(format!(
+                "expected contract-state-get with contract, state, and optional keys, got {}",
+                items.len() - 1
+            )));
+        }
+        let contract = aspect_atom_value(self.eval_expr(&items[1], state)?)?;
+        let state_name = atom_arg(items, 2, "contract-state-get")?;
+        let key = self.eval_key_parts(&items[3..], state)?;
+        state.trace.push(AspectHostOp::ContractStateGet {
+            contract: contract.clone(),
+            state: state_name.into(),
+            key: key.clone(),
+        });
+        Ok(state
+            .contract_state_reads
+            .get(&(contract, state_name.into(), key))
             .cloned()
             .unwrap_or(AspectValue::Amount(0)))
     }
@@ -833,6 +903,7 @@ struct AspectEvalState {
     bindings: BTreeMap<String, AspectValue>,
     context: AspectExecutionContext,
     state_reads: AspectStateReads,
+    contract_state_reads: ContractAspectStateReads,
     stack_depth: usize,
 }
 
@@ -1189,6 +1260,61 @@ mod tests {
                     event: "(Transfer Alice Bob 25)".into(),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn aspect_invariant_reads_contract_qualified_state() {
+        let module = aspect_module(
+            "
+            (: Bool Type)
+            (: Amount Type)
+            (: Address Type)
+            (aspect GuardAspect)
+            (local-invariant GuardAspect PeerCounterIsPinned
+              (= (contract-state-get PeerCounter counter) 42))
+            (action GuardAspect noop)
+            (derived GuardAspect noop (= (noop) True))
+            (bundle GuardBundle)
+            (bundle-includes GuardBundle GuardAspect)
+            (projection GuardBundle Noop (= (API.noop) (noop)))
+            (method-abi GuardBundle Noop (args) Bool)
+            (method-policy GuardBundle Noop TxSender (effects) (invariants PeerCounterIsPinned))
+        ",
+        );
+        let invariant = module
+            .invariants
+            .get("GuardAspect::PeerCounterIsPinned")
+            .unwrap();
+        let mut contract_reads = BTreeMap::new();
+        contract_reads.insert(
+            ("PeerCounter".into(), "counter".into(), Vec::new()),
+            AspectValue::Amount(42),
+        );
+
+        let report = AspectActionEvaluator::new(&module, 16)
+            .evaluate_invariant_expr_with_contract_state(
+                &invariant.expr,
+                AspectExecutionContext {
+                    tx_sender: "Alice".into(),
+                    msg_sender: "Alice".into(),
+                    current_contract: "AspectGuard".into(),
+                    block_height: 7,
+                    block_timestamp: 1_000,
+                },
+                BTreeMap::new(),
+                contract_reads,
+            )
+            .unwrap();
+
+        assert_eq!(report.return_value, AspectValue::Bool(true));
+        assert_eq!(
+            report.trace,
+            vec![AspectHostOp::ContractStateGet {
+                contract: "PeerCounter".into(),
+                state: "counter".into(),
+                key: Vec::new(),
+            }]
         );
     }
 

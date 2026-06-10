@@ -21,9 +21,10 @@ The current production subset accepts:
 - `method-policy` declarations with authority, effects, and invariants.
 
 The accepted executable subset is deterministic and bounded. It supports
-checked arithmetic, comparisons, conditionals, `require`, `seq`, `state-get`,
-`state-set!`, `emit!`, deterministic block-height reads, and approved kernel
-adapters such as `permit-verify!` and `bridge-verify!`.
+checked arithmetic, comparisons, conditionals, `require`, `seq`, local
+`state-get`, explicit cross-contract `contract-state-get`, `state-set!`,
+`emit!`, deterministic block-height reads, and approved kernel adapters such as
+`permit-verify!` and `bridge-verify!`.
 
 ## Forbidden Full-MeTTa Behavior
 
