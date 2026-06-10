@@ -498,6 +498,10 @@ Completed production-plan slices:
 - [x] Audit-readiness package script bundles tracked source, generated release
   artifacts, proof manifests, readiness manifests, and security findings into a
   deterministic checksummed archive, and the hard release gate requires it.
+- [x] Audit-readiness packages have a standalone verifier that checks transfer
+  checksums, embedded report schema, inventory hashes, mandatory evidence
+  files, release manifest binding, proof-manifest binding, and closed audit
+  findings.
 
 Next implementation slices:
 

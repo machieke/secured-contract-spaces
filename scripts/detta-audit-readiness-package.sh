@@ -221,5 +221,7 @@ tar \
   sha256sum -c "$report_name.sha256"
 )
 
+scripts/detta-verify-audit-readiness-package.sh "$package_path"
+
 printf 'audit readiness report: %s\n' "$report_path"
 printf 'audit readiness package: %s\n' "$package_path"

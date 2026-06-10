@@ -177,6 +177,8 @@ SCS specification
 - `scripts/detta-audit-readiness-package.sh`: release-audit evidence packager
   that bundles tracked source, generated release artifacts, proof manifests,
   readiness manifests, and security findings into a deterministic archive.
+- `scripts/detta-verify-audit-readiness-package.sh`: standalone verifier for
+  transferred audit-readiness packages and their embedded evidence inventories.
 - `docs/`: LaTeX rendering of the SCS specification.
 
 Rust workspace crates:
@@ -383,8 +385,15 @@ The package script creates the release artifacts, inventories tracked source
 and generated release files with SHA-256 roots, validates the checked audit
 findings manifest, binds the proof-artifact manifest, and writes
 `dist/detta-audit-readiness-package-<version>.tar.gz` plus
-`dist/detta-audit-readiness-<version>.json`. This is reviewer evidence; it is
-not a substitute for an independent audit.
+`dist/detta-audit-readiness-<version>.json`. It also runs the standalone
+package verifier. Reviewers can repeat that check after transfer:
+
+```sh
+scripts/detta-verify-audit-readiness-package.sh \
+  dist/detta-audit-readiness-package-rc-1.tar.gz
+```
+
+This is reviewer evidence; it is not a substitute for an independent audit.
 
 Run a local operator launch rehearsal against the packaged binary:
 

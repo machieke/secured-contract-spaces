@@ -37,6 +37,7 @@
     "scripts/detta-packaged-client-flow-drill.sh",
     "scripts/detta-public-testnet-stability-drill.sh",
     "scripts/detta-audit-readiness-package.sh",
+    "scripts/detta-verify-audit-readiness-package.sh",
     "ops/detta-public-testnet-readiness.json",
     "security/detta-audit-findings.json",
     "detta-operator-runbook.md"

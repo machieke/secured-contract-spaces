@@ -53,7 +53,8 @@ Before joining a validator:
 - run `scripts/detta-public-testnet-stability-drill.sh` against the packaged
   artifacts and retain the generated local stability report;
 - run `scripts/detta-audit-readiness-package.sh` and retain the generated
-  audit-readiness package and report for external reviewers;
+  audit-readiness package and report for external reviewers, then rerun
+  `scripts/detta-verify-audit-readiness-package.sh` after artifact transfer;
 - check `ops/detta-public-testnet-readiness.json` and confirm it does not claim
   public-testnet readiness while blockers remain;
 - check `ops/detta-mainnet-candidate-readiness.json` and confirm it does not
@@ -325,9 +326,11 @@ candidate to external reviewers. The script packages tracked source, generated
 release artifacts, checksum attestations, proof manifests, readiness manifests,
 and `security/detta-audit-findings.json` into
 `dist/detta-audit-readiness-package-<version>.tar.gz`, then writes
-`dist/detta-audit-readiness-<version>.json` plus SHA-256 attestations. Retain
-the package and report as reviewer input; audit completion still requires
-closed or governance-accepted findings in the checked security manifest.
+`dist/detta-audit-readiness-<version>.json` plus SHA-256 attestations and runs
+`scripts/detta-verify-audit-readiness-package.sh` against the package. Retain
+the package and report as reviewer input, and have reviewers rerun the verifier
+after transfer; audit completion still requires closed or governance-accepted
+findings in the checked security manifest.
 
 When those conditions are met, update the manifest, keep the blocker list
 empty, include every signed release artifact, and run
