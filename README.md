@@ -165,6 +165,9 @@ SCS specification
 - `scripts/detta-release-signing-drill.sh`: hermetic release signing drill
   that signs packaged checksum attestations with an ephemeral key and verifies
   them with the production verifier.
+- `scripts/detta-genesis-finalization-drill.sh`: release-genesis drill that
+  binds the generated genesis roots, release manifest, faucet sample,
+  validator identities, quorum, and checksums into a finalization report.
 - `scripts/detta-packaged-client-flow-drill.sh`: release-archive drill that
   boots packaged `detta-node` and drives packaged `detta-client` through token,
   liquidity, buy, and sell workflows.
@@ -333,6 +336,21 @@ The drill unpacks the release archive, boots packaged `detta-node`, runs
 packaged `detta-client` through token deployment, pool deployment, liquidity,
 buy, and sell commands, verifies committed receipts, and writes
 `dist/detta-packaged-client-flow-drill-<version>.json`.
+
+Run a local genesis-finalization drill before publishing launch artifacts:
+
+```sh
+DETTA_RELEASE_VERSION=rc-1 \
+  DETTA_FINAL_GENESIS_VALIDATORS=validator-1,validator-2,validator-3,validator-4 \
+  scripts/detta-genesis-finalization-drill.sh
+```
+
+The drill packages the release, verifies the release manifest binds the genesis
+and faucet artifacts, validates authenticated genesis roots, records validator
+identities and quorum, and writes
+`dist/detta-genesis-finalization-<version>.json`. Production launches must
+still sign and publish this report with the release key and validator-operator
+acknowledgements.
 
 Run a local operator launch rehearsal against the packaged binary:
 

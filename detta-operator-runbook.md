@@ -38,6 +38,8 @@ Before joining a validator:
   `scripts/detta-verify-release-signatures.sh`;
 - run `scripts/detta-release-signing-drill.sh` and retain the generated
   signing-drill report before the production release-key ceremony;
+- run `scripts/detta-genesis-finalization-drill.sh` and retain the generated
+  genesis-finalization report before publishing launch artifacts;
 - run `scripts/detta-operator-launch-rehearsal.sh` against the packaged
   artifacts and retain the generated rehearsal report;
 - run `scripts/detta-incident-response-drill.sh` against the packaged
@@ -213,11 +215,11 @@ Mainnet candidacy requires:
 - reproducible release artifacts with SHA-256 roots and detached signature
   metadata.
 
-The hard release gate runs packaged-node launch, incident-response,
-governance-bootstrap, validator-onboarding, packaged-client-flow, and
-release-signing drills from a temporary release directory. Use the standalone
-scripts below when the operator needs retained release-candidate reports under
-`dist/`.
+The hard release gate runs packaged-node launch, genesis-finalization,
+incident-response, governance-bootstrap, validator-onboarding,
+packaged-client-flow, and release-signing drills from a temporary release
+directory. Use the standalone scripts below when the operator needs retained
+release-candidate reports under `dist/`.
 
 Use `scripts/detta-package-release.sh` after the hard release gate passes. The
 script produces a deterministic archive containing `detta-node` and
@@ -255,6 +257,17 @@ with `scripts/detta-verify-release-signatures.sh`, and writes
 `dist/detta-release-signing-drill-<version>.json`. This proves the release
 signing pipeline is executable, but it does not replace signing the final
 publication bundle with the production release key.
+
+Use `scripts/detta-genesis-finalization-drill.sh` before publishing launch
+artifacts. The drill packages the release candidate, verifies release-manifest
+bindings for the genesis and faucet artifacts, validates authenticated genesis
+roots, records the launch validator identities and quorum, and writes
+`dist/detta-genesis-finalization-<version>.json` plus a SHA-256 attestation.
+Set `DETTA_FINAL_GENESIS_VALIDATORS` to the comma-separated validator ids and
+`DETTA_FINAL_GENESIS_QUORUM` when the default two-thirds-plus-one quorum is not
+the intended launch threshold. Retain this report as finalized-genesis
+evidence, then sign and publish it with the release key and validator-operator
+acknowledgements.
 
 Use `scripts/detta-operator-launch-rehearsal.sh` before publishing a release
 candidate. The rehearsal unpacks the packaged validator archive, starts it from

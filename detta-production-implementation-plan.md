@@ -489,6 +489,9 @@ Completed production-plan slices:
 - [x] Packaged-client release drill unpacks the release archive, boots
   packaged `detta-node`, runs packaged `detta-client` through token, pool,
   liquidity, buy, and sell commands, and records a checksummed report.
+- [x] Genesis-finalization drill binds the release manifest, generated genesis
+  authenticated roots, faucet sample, validator identities, quorum, and
+  checksums into a retained launch artifact report.
 
 Next implementation slices:
 
