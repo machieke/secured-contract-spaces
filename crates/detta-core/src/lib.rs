@@ -8538,6 +8538,81 @@ mod tests {
     }
 
     #[test]
+    fn aspect_method_invariants_read_state_after_programmable_writes() {
+        let mut state = DeTTaState::new("detta-local");
+        state.deploy_factory("Factory").unwrap();
+        let source =
+            executable_counter_aspect_source_with_invariant("(<= (state-get counter) 100)");
+
+        let submit = state.apply_transaction(tx_to(
+            "Factory",
+            "tx-submit-stateful-invariant-aspect",
+            "Alice",
+            1,
+            Method::SubmitAspectModule,
+            vec![text("CounterBundle"), text(&source)],
+        ));
+        assert_eq!(submit.status, TxStatus::Committed);
+        let module = state.aspect_module_records().next().unwrap().clone();
+
+        let deploy = state.apply_transaction(tx_to(
+            "Factory",
+            "tx-deploy-stateful-invariant-aspect",
+            "Alice",
+            2,
+            Method::DeployAspectContract,
+            vec![
+                text("AspectCounter"),
+                text(&module.module_hash),
+                text("CounterBundle"),
+            ],
+        ));
+        assert_eq!(deploy.status, TxStatus::Committed);
+
+        let bounded_call = state.apply_transaction(tx_to(
+            "AspectCounter",
+            "tx-counter-within-invariant-bound",
+            "Alice",
+            3,
+            Method::Other("Set".into()),
+            vec![amount(100)],
+        ));
+        assert_eq!(bounded_call.status, TxStatus::Committed);
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "AspectCounter".into(),
+                aspect: "CounterAspect".into(),
+                state: "counter".into(),
+                key: Vec::new(),
+            }),
+            Some(&StateValue::UInt(100))
+        );
+
+        let violating_call = state.apply_transaction(tx_to(
+            "AspectCounter",
+            "tx-counter-violates-invariant-bound",
+            "Alice",
+            4,
+            Method::Other("Set".into()),
+            vec![amount(101)],
+        ));
+        assert_eq!(violating_call.status, TxStatus::Reverted);
+        assert_eq!(
+            violating_call.error,
+            Some(ExecutionError::InvariantViolation)
+        );
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "AspectCounter".into(),
+                aspect: "CounterAspect".into(),
+                state: "counter".into(),
+                key: Vec::new(),
+            }),
+            Some(&StateValue::UInt(100))
+        );
+    }
+
+    #[test]
     fn aspect_host_call_uses_target_abi_for_nested_aspect_calls() {
         let mut state = DeTTaState::new("detta-local");
 
