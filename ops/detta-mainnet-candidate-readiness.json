@@ -35,6 +35,7 @@
     "scripts/detta-governance-bootstrap-drill.sh",
     "scripts/detta-validator-onboarding-drill.sh",
     "scripts/detta-packaged-client-flow-drill.sh",
+    "scripts/detta-public-testnet-stability-drill.sh",
     "ops/detta-public-testnet-readiness.json",
     "security/detta-audit-findings.json",
     "detta-operator-runbook.md"

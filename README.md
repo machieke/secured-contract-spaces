@@ -171,6 +171,9 @@ SCS specification
 - `scripts/detta-packaged-client-flow-drill.sh`: release-archive drill that
   boots packaged `detta-node` and drives packaged `detta-client` through token,
   liquidity, buy, and sell workflows.
+- `scripts/detta-public-testnet-stability-drill.sh`: packaged local stability
+  drill that runs a sustained multi-block DeFi workload and records
+  health/metrics/alert evidence.
 - `docs/`: LaTeX rendering of the SCS specification.
 
 Rust workspace crates:
@@ -351,6 +354,20 @@ identities and quorum, and writes
 `dist/detta-genesis-finalization-<version>.json`. Production launches must
 still sign and publish this report with the release key and validator-operator
 acknowledgements.
+
+Run a local packaged stability drill before starting the real public-testnet
+stability window:
+
+```sh
+DETTA_RELEASE_VERSION=rc-1 DETTA_STABILITY_DRILL_BLOCKS=16 \
+  scripts/detta-public-testnet-stability-drill.sh
+```
+
+The drill unpacks the release, boots packaged `detta-node`, runs packaged
+`detta-client` through setup plus a sustained swap workload, verifies committed
+blocks, health, metrics, mempool drain, root consistency, and alert status, and
+writes `dist/detta-public-testnet-stability-drill-<version>.json`. This does
+not replace the required 168-hour public testnet window.
 
 Run a local operator launch rehearsal against the packaged binary:
 

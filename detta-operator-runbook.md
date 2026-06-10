@@ -50,6 +50,8 @@ Before joining a validator:
   artifacts and retain the generated validator-onboarding report;
 - run `scripts/detta-packaged-client-flow-drill.sh` against the packaged
   artifacts and retain the generated packaged-client report;
+- run `scripts/detta-public-testnet-stability-drill.sh` against the packaged
+  artifacts and retain the generated local stability report;
 - check `ops/detta-public-testnet-readiness.json` and confirm it does not claim
   public-testnet readiness while blockers remain;
 - check `ops/detta-mainnet-candidate-readiness.json` and confirm it does not
@@ -217,9 +219,9 @@ Mainnet candidacy requires:
 
 The hard release gate runs packaged-node launch, genesis-finalization,
 incident-response, governance-bootstrap, validator-onboarding,
-packaged-client-flow, and release-signing drills from a temporary release
-directory. Use the standalone scripts below when the operator needs retained
-release-candidate reports under `dist/`.
+packaged-client-flow, local-stability, and release-signing drills from a
+temporary release directory. Use the standalone scripts below when the operator
+needs retained release-candidate reports under `dist/`.
 
 Use `scripts/detta-package-release.sh` after the hard release gate passes. The
 script produces a deterministic archive containing `detta-node` and
@@ -307,6 +309,14 @@ runs packaged `detta-client` through token deployment, pool deployment,
 liquidity, buy, and sell commands, verifies committed receipts, and writes
 `dist/detta-packaged-client-flow-drill-<version>.json` plus a SHA-256
 attestation. Retain this report as packaged-client evidence.
+
+Use `scripts/detta-public-testnet-stability-drill.sh` before opening the real
+public-testnet stability window. The drill runs a packaged local node through a
+bounded multi-block DeFi workload, verifies health, operator metrics, mempool
+drain, root consistency, and alert status, and writes
+`dist/detta-public-testnet-stability-drill-<version>.json` plus a SHA-256
+attestation. Retain this report as local preflight evidence; it does not
+replace the required 168-hour public testnet stability window.
 
 When those conditions are met, update the manifest, keep the blocker list
 empty, include every signed release artifact, and run

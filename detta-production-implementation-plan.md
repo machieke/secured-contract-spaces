@@ -492,6 +492,9 @@ Completed production-plan slices:
 - [x] Genesis-finalization drill binds the release manifest, generated genesis
   authenticated roots, faucet sample, validator identities, quorum, and
   checksums into a retained launch artifact report.
+- [x] Public-testnet stability drill runs a packaged local node through a
+  sustained multi-block DeFi workload and records health, metrics, mempool,
+  root, and alert observations.
 
 Next implementation slices:
 
