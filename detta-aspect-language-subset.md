@@ -18,7 +18,9 @@ The current production subset accepts:
 - `bundle`, `bundle-includes`, and `bundle-extends`;
 - `projection` declarations for callable methods;
 - `method-abi` declarations;
-- `method-policy` declarations with authority, effects, and invariants.
+- `method-policy` declarations with authority, effects, invariants, optional
+  `(calls ...)` contract-call allowlists, and optional `(reads ...)`
+  cross-contract state-read allowlists.
 
 The accepted executable subset is deterministic and bounded. It supports
 checked arithmetic, comparisons, conditionals, `require`, `seq`, local

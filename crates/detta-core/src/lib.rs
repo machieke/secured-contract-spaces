@@ -1589,6 +1589,7 @@ pub enum ExecutionError {
     CertificateReplay,
     ForbiddenPrimitive,
     UnauthorizedContractCall,
+    UnauthorizedContractStateRead,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -4397,7 +4398,10 @@ impl DeTTaState {
                 )
                 .map_err(|_| ExecutionError::InvariantViolation)?;
             if report.return_value != AspectValue::Bool(true)
-                || report.trace.iter().any(aspect_invariant_op_is_mutating)
+                || report
+                    .trace
+                    .iter()
+                    .any(|op| !aspect_invariant_op_is_allowed(policy, op))
             {
                 return Err(ExecutionError::InvariantViolation);
             }
@@ -4413,7 +4417,17 @@ impl DeTTaState {
         op: AspectHostOp,
     ) -> Result<(), ExecutionError> {
         match op {
-            AspectHostOp::StateGet { .. } | AspectHostOp::ContractStateGet { .. } => Ok(()),
+            AspectHostOp::StateGet { .. } => Ok(()),
+            AspectHostOp::ContractStateGet {
+                contract, state, ..
+            } => {
+                if aspect_policy_allows_contract_state_read(host_context.policy, &contract, &state)
+                {
+                    Ok(())
+                } else {
+                    Err(ExecutionError::UnauthorizedContractStateRead)
+                }
+            }
             AspectHostOp::StateSet { state, key, value } => {
                 let key = aspect_state_key(
                     &tx.target,
@@ -7323,6 +7337,20 @@ fn aspect_policy_allows_contract_call(
     })
 }
 
+fn aspect_policy_allows_contract_state_read(
+    policy: &detta_aspects::MethodPolicyIr,
+    contract: &str,
+    state: &str,
+) -> bool {
+    policy.read_allowlist.iter().any(|allowed| {
+        allowed.state == state
+            && match &allowed.target {
+                detta_aspects::ContractCallTarget::Any => true,
+                detta_aspects::ContractCallTarget::Exact(target) => target == contract,
+            }
+    })
+}
+
 fn host_call_method_for_target(
     target_record: &ContractRecord,
     method: &str,
@@ -7595,13 +7623,17 @@ fn write_scope_contains(write_scope: &BTreeSet<StateKey>, key: &StateKey) -> boo
     }
 }
 
-fn aspect_invariant_op_is_mutating(op: &AspectHostOp) -> bool {
-    !matches!(
-        op,
-        AspectHostOp::StateGet { .. }
-            | AspectHostOp::ContractStateGet { .. }
-            | AspectHostOp::RegistryGet { .. }
-    )
+fn aspect_invariant_op_is_allowed(
+    policy: &detta_aspects::MethodPolicyIr,
+    op: &AspectHostOp,
+) -> bool {
+    match op {
+        AspectHostOp::StateGet { .. } | AspectHostOp::RegistryGet { .. } => true,
+        AspectHostOp::ContractStateGet {
+            contract, state, ..
+        } => aspect_policy_allows_contract_state_read(policy, contract, state),
+        _ => false,
+    }
 }
 
 fn parse_policy_method(value: &str) -> Result<Method, ExecutionError> {
@@ -8309,7 +8341,7 @@ mod tests {
         (bundle-includes GuardBundle GuardAspect)
         (projection GuardBundle Set (= (API.set $amount) (setGuard $amount)))
         (method-abi GuardBundle Set (args (amount Amount)) Bool)
-        (method-policy GuardBundle Set TxSender (effects WriteState) (invariants PeerCounterPinned))
+        (method-policy GuardBundle Set TxSender (effects WriteState) (invariants PeerCounterPinned) (reads (read AspectCounter counter)))
         "
     }
 
@@ -8743,6 +8775,66 @@ mod tests {
                 key: Vec::new(),
             }),
             Some(&StateValue::UInt(1))
+        );
+    }
+
+    #[test]
+    fn aspect_cross_contract_invariant_reads_reject_policy_tampering() {
+        let mut state = DeTTaState::new("detta-local");
+
+        let counter = AspectModuleRecord::from_verified_source(
+            "CounterBundle",
+            executable_counter_aspect_source(),
+        )
+        .unwrap();
+        let counter_hash = state.register_aspect_module(counter).unwrap();
+        state
+            .deploy_aspect_contract("AspectCounter", counter_hash, "CounterBundle")
+            .unwrap();
+
+        let guard = AspectModuleRecord::from_verified_source(
+            "GuardBundle",
+            executable_cross_contract_guard_aspect_source(),
+        )
+        .unwrap();
+        let guard_hash = state.register_aspect_module(guard).unwrap();
+        state
+            .deploy_aspect_contract("AspectGuard", guard_hash.clone(), "GuardBundle")
+            .unwrap();
+
+        let pin_counter = state.apply_transaction(tx_to(
+            "AspectCounter",
+            "tx-pin-peer-counter-before-read-policy-tamper",
+            "Alice",
+            1,
+            Method::Other("Set".into()),
+            vec![amount(42)],
+        ));
+        assert_eq!(pin_counter.status, TxStatus::Committed);
+
+        let module = state.aspect_modules.get_mut(&guard_hash).unwrap();
+        let ir = module.ir.as_mut().unwrap();
+        let policy = ir.policies.get_mut("GuardBundle::Set").unwrap();
+        policy.read_allowlist.clear();
+
+        let denied_write = state.apply_transaction(tx_to(
+            "AspectGuard",
+            "tx-guarded-write-denied-by-read-policy",
+            "Alice",
+            2,
+            Method::Other("Set".into()),
+            vec![amount(1)],
+        ));
+        assert_eq!(denied_write.status, TxStatus::Reverted);
+        assert_eq!(denied_write.error, Some(ExecutionError::InvariantViolation));
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "AspectGuard".into(),
+                aspect: "GuardAspect".into(),
+                state: "guard".into(),
+                key: Vec::new(),
+            }),
+            None
         );
     }
 

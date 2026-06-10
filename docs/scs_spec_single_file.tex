@@ -1496,6 +1496,8 @@ block-timestamp
 \end{lstlisting}
 
 All mutation primitives in this list \MUST{} be runtime-guarded.
+Cross-contract state reads such as \code{contract-state-get} \MUST{} be
+authorized by the method policy's declared read allowlist.
 
 \subsection{PeTTa storage recommendation}
 

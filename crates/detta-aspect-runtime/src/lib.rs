@@ -1279,7 +1279,7 @@ mod tests {
             (bundle-includes GuardBundle GuardAspect)
             (projection GuardBundle Noop (= (API.noop) (noop)))
             (method-abi GuardBundle Noop (args) Bool)
-            (method-policy GuardBundle Noop TxSender (effects) (invariants PeerCounterIsPinned))
+            (method-policy GuardBundle Noop TxSender (effects) (invariants PeerCounterIsPinned) (reads (read PeerCounter counter)))
         ",
         );
         let invariant = module

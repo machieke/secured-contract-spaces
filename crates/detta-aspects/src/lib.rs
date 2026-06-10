@@ -123,6 +123,7 @@ pub enum AspectDeclaration {
         effects: Expr,
         invariants: Expr,
         calls: Option<Expr>,
+        reads: Option<Expr>,
     },
     CrossConstraint {
         constraint: String,
@@ -222,12 +223,20 @@ pub struct MethodPolicyIr {
     pub effects: BTreeSet<EffectKind>,
     pub invariants: BTreeSet<String>,
     pub call_allowlist: BTreeSet<ContractCallPattern>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub read_allowlist: BTreeSet<ContractStateReadPattern>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub struct ContractCallPattern {
     pub target: ContractCallTarget,
     pub method: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+pub struct ContractStateReadPattern {
+    pub target: ContractCallTarget,
+    pub state: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -321,6 +330,7 @@ pub enum AspectError {
         found: String,
     },
     ForbiddenForm(String),
+    MalformedPolicyExtension(String),
     StringLiteralUnsupported,
 }
 
@@ -394,7 +404,12 @@ pub enum AspectVerifyError {
     MalformedEffectList(String),
     MalformedInvariantList(String),
     MalformedCallAllowlist(String),
+    MalformedReadAllowlist(String),
     MissingCallAllowlist {
+        bundle: String,
+        projection: String,
+    },
+    MissingReadAllowlist {
         bundle: String,
         projection: String,
     },
@@ -403,6 +418,12 @@ pub enum AspectVerifyError {
         projection: String,
         target: String,
         method: String,
+    },
+    UnauthorizedContractStateRead {
+        bundle: String,
+        projection: String,
+        target: String,
+        state: String,
     },
     UndeclaredEffect {
         bundle: String,
@@ -695,6 +716,7 @@ pub fn lower_to_ir(ast: &AspectPackageAst) -> Result<AspectModuleIr, AspectVerif
                 effects,
                 invariants,
                 calls,
+                reads,
             } => {
                 let key = qualified(bundle, projection);
                 insert_unique(
@@ -707,6 +729,7 @@ pub fn lower_to_ir(ast: &AspectPackageAst) -> Result<AspectModuleIr, AspectVerif
                         effects: parse_effects(effects)?,
                         invariants: parse_invariants(invariants)?,
                         call_allowlist: parse_call_allowlist(calls.as_ref())?,
+                        read_allowlist: parse_read_allowlist(reads.as_ref())?,
                     },
                     AspectVerifyError::DuplicatePolicy(key),
                 )?;
@@ -1006,12 +1029,35 @@ fn declaration_from_expr(expr: Expr) -> Result<AspectDeclaration, AspectError> {
             })
         }
         "method-policy" => {
-            if items.len() != 6 && items.len() != 7 {
+            if !(6..=8).contains(&items.len()) {
                 return Err(AspectError::InvalidArity {
                     form: head,
                     expected: 5,
                     actual: items.len().saturating_sub(1),
                 });
+            }
+            let mut calls = None;
+            let mut reads = None;
+            for extension in items.iter().skip(6) {
+                let Expr::List(extension_items) = extension else {
+                    return Err(AspectError::MalformedPolicyExtension(canonical_expr(
+                        extension,
+                    )));
+                };
+                let Some(Expr::Atom(extension_head)) = extension_items.first() else {
+                    return Err(AspectError::MalformedPolicyExtension(canonical_expr(
+                        extension,
+                    )));
+                };
+                match extension_head.as_str() {
+                    "calls" if calls.is_none() => calls = Some(extension.clone()),
+                    "reads" if reads.is_none() => reads = Some(extension.clone()),
+                    _ => {
+                        return Err(AspectError::MalformedPolicyExtension(canonical_expr(
+                            extension,
+                        )))
+                    }
+                }
             }
             Ok(AspectDeclaration::MethodPolicy {
                 bundle: atom_at(&items, 1, "bundle id")?.to_owned(),
@@ -1019,7 +1065,8 @@ fn declaration_from_expr(expr: Expr) -> Result<AspectDeclaration, AspectError> {
                 authority: items[3].clone(),
                 effects: items[4].clone(),
                 invariants: items[5].clone(),
-                calls: items.get(6).cloned(),
+                calls,
+                reads,
             })
         }
         "cross-constraint" => {
@@ -1151,6 +1198,7 @@ fn canonical_declaration(declaration: &AspectDeclaration) -> String {
             effects,
             invariants,
             calls,
+            reads,
         } => {
             let base = format!(
                 "(method-policy {bundle} {projection} {} {} {}",
@@ -1158,9 +1206,17 @@ fn canonical_declaration(declaration: &AspectDeclaration) -> String {
                 canonical_expr(effects),
                 canonical_expr(invariants)
             );
-            match calls {
-                Some(calls) => format!("{base} {})", canonical_expr(calls)),
-                None => format!("{base})"),
+            match (calls, reads) {
+                (Some(calls), Some(reads)) => {
+                    format!(
+                        "{base} {} {})",
+                        canonical_expr(calls),
+                        canonical_expr(reads)
+                    )
+                }
+                (Some(calls), None) => format!("{base} {})", canonical_expr(calls)),
+                (None, Some(reads)) => format!("{base} {})", canonical_expr(reads)),
+                (None, None) => format!("{base})"),
             }
         }
         AspectDeclaration::CrossConstraint { constraint, expr } => {
@@ -1875,6 +1931,60 @@ fn parse_call_allowlist(
     Ok(calls)
 }
 
+fn parse_read_allowlist(
+    expr: Option<&Expr>,
+) -> Result<BTreeSet<ContractStateReadPattern>, AspectVerifyError> {
+    let Some(expr) = expr else {
+        return Ok(BTreeSet::new());
+    };
+    let Expr::List(items) = expr else {
+        return Err(AspectVerifyError::MalformedReadAllowlist(canonical_expr(
+            expr,
+        )));
+    };
+    match items.first() {
+        Some(Expr::Atom(head)) if head == "reads" => {}
+        _ => {
+            return Err(AspectVerifyError::MalformedReadAllowlist(canonical_expr(
+                expr,
+            )))
+        }
+    }
+
+    let mut reads = BTreeSet::new();
+    for item in items.iter().skip(1) {
+        let Expr::List(parts) = item else {
+            return Err(AspectVerifyError::MalformedReadAllowlist(canonical_expr(
+                expr,
+            )));
+        };
+        let [Expr::Atom(head), Expr::Atom(target), Expr::Atom(state)] = parts.as_slice() else {
+            return Err(AspectVerifyError::MalformedReadAllowlist(canonical_expr(
+                expr,
+            )));
+        };
+        if head != "read" || state.is_empty() {
+            return Err(AspectVerifyError::MalformedReadAllowlist(canonical_expr(
+                expr,
+            )));
+        }
+        let target = match target.as_str() {
+            "*" => ContractCallTarget::Any,
+            "" => {
+                return Err(AspectVerifyError::MalformedReadAllowlist(canonical_expr(
+                    expr,
+                )))
+            }
+            target => ContractCallTarget::Exact(target.into()),
+        };
+        reads.insert(ContractStateReadPattern {
+            target,
+            state: state.clone(),
+        });
+    }
+    Ok(reads)
+}
+
 fn verify_action_call_graph(ir: &AspectModuleIr) -> Result<(), AspectVerifyError> {
     let action_names = action_names(ir);
     let mut graph: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -1952,6 +2062,24 @@ fn verify_effects_and_write_scopes(
             &mut visited,
             &mut inferred,
         );
+        for invariant_ref in &policy.invariants {
+            if let Some(invariant) =
+                invariant_for_policy_ref(ir, closures, &projection.bundle, invariant_ref)
+            {
+                let mut invariant_inferred = InferredActionEffects::default();
+                let mut invariant_visited = BTreeSet::new();
+                infer_expr_effects(
+                    ir,
+                    &action_names,
+                    &invariant.expr,
+                    &mut invariant_visited,
+                    &mut invariant_inferred,
+                );
+                inferred
+                    .contract_state_reads
+                    .extend(invariant_inferred.contract_state_reads);
+            }
+        }
 
         for effect in &inferred.effects {
             if !policy.effects.contains(effect) {
@@ -1978,6 +2106,24 @@ fn verify_effects_and_write_scopes(
                     projection: projection.projection.clone(),
                     target: call.target.source(),
                     method: call.method,
+                });
+            }
+        }
+
+        if !inferred.contract_state_reads.is_empty() && policy.read_allowlist.is_empty() {
+            return Err(AspectVerifyError::MissingReadAllowlist {
+                bundle: projection.bundle.clone(),
+                projection: projection.projection.clone(),
+            });
+        }
+
+        for read in inferred.contract_state_reads {
+            if !contract_state_read_allowed(&read, &policy.read_allowlist) {
+                return Err(AspectVerifyError::UnauthorizedContractStateRead {
+                    bundle: projection.bundle.clone(),
+                    projection: projection.projection.clone(),
+                    target: read.target.source(),
+                    state: read.state,
                 });
             }
         }
@@ -2011,12 +2157,19 @@ struct InferredActionEffects {
     writes: BTreeSet<String>,
     registry_accesses: BTreeSet<String>,
     contract_calls: BTreeSet<ContractCallSite>,
+    contract_state_reads: BTreeSet<ContractStateReadSite>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 struct ContractCallSite {
     target: ContractCallSiteTarget,
     method: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct ContractStateReadSite {
+    target: ContractCallSiteTarget,
+    state: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -2049,23 +2202,83 @@ fn contract_call_allowed(
     })
 }
 
+fn contract_state_read_allowed(
+    read: &ContractStateReadSite,
+    allowlist: &BTreeSet<ContractStateReadPattern>,
+) -> bool {
+    allowlist.iter().any(|allowed| {
+        allowed.state == read.state
+            && match (&allowed.target, &read.target) {
+                (ContractCallTarget::Any, _) => true,
+                (ContractCallTarget::Exact(allowed), ContractCallSiteTarget::Exact(target)) => {
+                    allowed == target
+                }
+                (ContractCallTarget::Exact(_), ContractCallSiteTarget::Dynamic(_)) => false,
+            }
+    })
+}
+
+fn invariant_for_policy_ref<'a>(
+    ir: &'a AspectModuleIr,
+    closures: &BTreeMap<String, BTreeSet<String>>,
+    bundle: &str,
+    invariant_ref: &str,
+) -> Option<&'a InvariantDef> {
+    let closure = closures.get(bundle)?;
+    if let Some(invariant) = ir.invariants.get(invariant_ref) {
+        if closure.contains(&invariant.aspect) {
+            return Some(invariant);
+        }
+    }
+    if let Some((aspect, invariant)) = invariant_ref.split_once("::") {
+        let key = qualified(aspect, invariant);
+        if let Some(invariant) = ir.invariants.get(&key) {
+            if closure.contains(&invariant.aspect) {
+                return Some(invariant);
+            }
+        }
+    }
+    let mut matches = ir.invariants.values().filter(|invariant| {
+        invariant.invariant == invariant_ref && closure.contains(&invariant.aspect)
+    });
+    let invariant = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    Some(invariant)
+}
+
 fn inferred_contract_call_site(items: &[Expr]) -> Option<ContractCallSite> {
     let target = items.get(1)?;
     let Expr::Atom(method) = items.get(2)? else {
         return None;
     };
-    let target = match target {
+    Some(ContractCallSite {
+        target: inferred_contract_site_target(target),
+        method: method.clone(),
+    })
+}
+
+fn inferred_contract_state_read_site(items: &[Expr]) -> Option<ContractStateReadSite> {
+    let target = items.get(1)?;
+    let Expr::Atom(state) = items.get(2)? else {
+        return None;
+    };
+    Some(ContractStateReadSite {
+        target: inferred_contract_site_target(target),
+        state: state.clone(),
+    })
+}
+
+fn inferred_contract_site_target(target: &Expr) -> ContractCallSiteTarget {
+    match target {
         Expr::Atom(atom) if atom.starts_with('$') => ContractCallSiteTarget::Dynamic(atom.clone()),
         Expr::Atom(atom) if atom == "current-contract" => {
             ContractCallSiteTarget::Dynamic(atom.clone())
         }
         Expr::Atom(atom) => ContractCallSiteTarget::Exact(atom.clone()),
         Expr::List(_) => ContractCallSiteTarget::Dynamic(canonical_expr(target)),
-    };
-    Some(ContractCallSite {
-        target,
-        method: method.clone(),
-    })
+    }
 }
 
 fn infer_action_effects(
@@ -2109,8 +2322,14 @@ fn infer_expr_effects(
     }
 
     match head.as_str() {
-        "state-get" | "contract-state-get" => {
+        "state-get" => {
             inferred.effects.insert(EffectKind::ReadState);
+        }
+        "contract-state-get" => {
+            inferred.effects.insert(EffectKind::ReadState);
+            if let Some(read) = inferred_contract_state_read_site(items) {
+                inferred.contract_state_reads.insert(read);
+            }
         }
         "state-set!" => {
             inferred.effects.insert(EffectKind::WriteState);
@@ -2685,6 +2904,86 @@ mod tests {
                 effect: EffectKind::ReadState,
             }
         );
+    }
+
+    #[test]
+    fn verifier_rejects_contract_state_read_without_allowlist() {
+        let source = "
+            (: Bool Type)
+            (: Amount Type)
+            (: Address Type)
+            (aspect ReaderAspect)
+            (action ReaderAspect readPeer)
+            (derived ReaderAspect readPeer
+              (= (readPeer)
+                 (= (contract-state-get PeerCounter counter) 42)))
+            (bundle BadBundle)
+            (bundle-includes BadBundle ReaderAspect)
+            (projection BadBundle Read (= (API.read) (readPeer)))
+            (method-abi BadBundle Read (args) Bool)
+            (method-policy BadBundle Read TxSender (effects ReadState) (invariants))
+        ";
+        let ast = parse_aspect_package(source).unwrap();
+        let ir = lower_to_ir(&ast).unwrap();
+        assert_eq!(
+            verify_module(&ir).unwrap_err(),
+            AspectVerifyError::MissingReadAllowlist {
+                bundle: "BadBundle".into(),
+                projection: "Read".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn verifier_rejects_contract_state_read_outside_allowlist() {
+        let source = "
+            (: Bool Type)
+            (: Amount Type)
+            (: Address Type)
+            (aspect ReaderAspect)
+            (action ReaderAspect readPeer)
+            (derived ReaderAspect readPeer
+              (= (readPeer)
+                 (= (contract-state-get PeerCounter counter) 42)))
+            (bundle BadBundle)
+            (bundle-includes BadBundle ReaderAspect)
+            (projection BadBundle Read (= (API.read) (readPeer)))
+            (method-abi BadBundle Read (args) Bool)
+            (method-policy BadBundle Read TxSender (effects ReadState) (invariants) (reads (read OtherCounter counter)))
+        ";
+        let ast = parse_aspect_package(source).unwrap();
+        let ir = lower_to_ir(&ast).unwrap();
+        assert_eq!(
+            verify_module(&ir).unwrap_err(),
+            AspectVerifyError::UnauthorizedContractStateRead {
+                bundle: "BadBundle".into(),
+                projection: "Read".into(),
+                target: "PeerCounter".into(),
+                state: "counter".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn verifier_accepts_contract_state_read_allowlist() {
+        let source = "
+            (: Bool Type)
+            (: Amount Type)
+            (: Address Type)
+            (aspect ReaderAspect)
+            (action ReaderAspect readPeer)
+            (derived ReaderAspect readPeer
+              (= (readPeer)
+                 (= (contract-state-get PeerCounter counter) 42)))
+            (bundle GoodBundle)
+            (bundle-includes GoodBundle ReaderAspect)
+            (projection GoodBundle Read (= (API.read) (readPeer)))
+            (method-abi GoodBundle Read (args) Bool)
+            (method-policy GoodBundle Read TxSender (effects ReadState) (invariants) (reads (read PeerCounter counter)))
+        ";
+        let ast = parse_aspect_package(source).unwrap();
+        let ir = lower_to_ir(&ast).unwrap();
+        assert!(verify_module(&ir).is_ok());
     }
 
     #[test]

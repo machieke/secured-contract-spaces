@@ -1315,8 +1315,9 @@ of the guarded host-capability surface. Fine-grained cross-contract allowlist
 policies are authenticated in `method-policy` roots and enforced by both static
 verification and runtime trace replay. Stateful aspect invariants can read
 aspect-owned storage after programmable writes and can use explicit
-`contract-state-get` reads for deterministic cross-contract aspect-state checks;
-violations revert the full transition.
+`contract-state-get` reads for deterministic cross-contract aspect-state checks
+when the method policy authenticates the target/state pair through a `(reads
+...)` allowlist; violations revert the full transition.
 
 Acceptance criteria:
 

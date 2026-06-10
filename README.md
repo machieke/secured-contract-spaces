@@ -286,7 +286,9 @@ policy, allowance, balance, and invariant checks.
 Aspect expressions can use local `state-get` reads and explicit
 `contract-state-get` reads for deterministic cross-contract aspect-state
 inspection. Those reads are included in the host trace, treated as non-mutating
-during invariant replay, and supplied from a contract-qualified state snapshot.
+during invariant replay, supplied from a contract-qualified state snapshot, and
+accepted only when the method policy publishes a matching `(reads ...)`
+allowlist.
 Privileged aspect operations that change supply or bridge replay state reject
 zero amounts before emitting events, mutating supply, or consuming bridge
 message IDs. Privileged aspect configuration and minting methods use the
