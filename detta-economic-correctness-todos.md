@@ -56,6 +56,9 @@ entries.
   accounting bound to the aspect token.
 - [x] Aspect bridge mint/burn rejects zero-amount no-ops before replay state is
   consumed or supply accounting is touched.
+- [x] Aspect bridge burn/release appends outbound cross-shard messages through
+  the guarded outbox host capability and rejects duplicate outbound message IDs
+  with full state rollback.
 
 ## Restricted MeTTa Aspect Modules
 

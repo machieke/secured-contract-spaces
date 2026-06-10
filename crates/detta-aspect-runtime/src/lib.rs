@@ -58,6 +58,14 @@ pub enum AspectHostOp {
         amount: u128,
         certificate: String,
     },
+    CrossShardOutboxAppend {
+        destination_chain: String,
+        destination_contract: String,
+        message_id: String,
+        recipient: String,
+        asset: String,
+        amount: u128,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -310,6 +318,9 @@ impl<'a> AspectActionEvaluator<'a> {
                     "call-contract!" => self.eval_call_contract(items, state),
                     "permit-verify!" => self.eval_permit_verify(items, state),
                     "bridge-verify!" => self.eval_bridge_verify(items, state),
+                    "cross-shard-outbox-append!" => {
+                        self.eval_cross_shard_outbox_append(items, state)
+                    }
                     action_name => self.eval_action_call(action_name, items, state),
                 }
             }
@@ -754,6 +765,34 @@ impl<'a> AspectActionEvaluator<'a> {
             asset,
             amount,
             certificate,
+        });
+        Ok(AspectValue::Unit)
+    }
+
+    fn eval_cross_shard_outbox_append(
+        &self,
+        items: &[Expr],
+        state: &mut AspectEvalState,
+    ) -> Result<AspectValue, AspectEvalError> {
+        if items.len() != 7 {
+            return Err(AspectEvalError::InvalidExpression(format!(
+                "expected cross-shard-outbox-append! with destination-chain, destination-contract, message-id, recipient, asset, amount, got {}",
+                items.len() - 1
+            )));
+        }
+        let destination_chain = aspect_atom_value(self.eval_expr(&items[1], state)?)?;
+        let destination_contract = aspect_atom_value(self.eval_expr(&items[2], state)?)?;
+        let message_id = aspect_atom_value(self.eval_expr(&items[3], state)?)?;
+        let recipient = aspect_atom_value(self.eval_expr(&items[4], state)?)?;
+        let asset = aspect_atom_value(self.eval_expr(&items[5], state)?)?;
+        let amount = self.eval_expr(&items[6], state)?.into_amount()?;
+        state.trace.push(AspectHostOp::CrossShardOutboxAppend {
+            destination_chain,
+            destination_contract,
+            message_id,
+            recipient,
+            asset,
+            amount,
         });
         Ok(AspectValue::Unit)
     }

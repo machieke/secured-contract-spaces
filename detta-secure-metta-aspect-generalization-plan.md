@@ -1428,9 +1428,10 @@ reward reserve.
 `BridgeMintBurnAspect` and `BridgeMintBurnToken` use a `bridge-verify!` host
 adapter for kernel-verified inbound bridge certificates, store consumed bridge
 message ids in aspect-owned replay state, mint through MeTTa-defined balance
-logic, and burn bridged supply locally. Outbound cross-shard outbox emission for
-burn/release flows is a future kernel host-capability extension beyond the
-current inbound mint and local burn acceptance slice.
+logic, and burn bridged supply locally before appending authenticated outbound
+cross-shard messages through the guarded `cross-shard-outbox-append!` host
+capability. Aspect outbound messages share the native replay id set, outbox
+root, proof path, and `CrossShardMessageQueued` event surface.
 
 Acceptance criteria:
 

@@ -265,6 +265,9 @@ asset movement through a ledger adapter before committing protocol accounting:
 - Bridge outbound messages lock source balances before queueing the outbox
   message; inbound native redemptions mint destination balances after verified
   finality and replay checks.
+- Aspect bridge burn/release projections burn bridged supply and append
+  guarded outbound messages through the shared cross-shard outbox, replay-id,
+  event, and proof-root path.
 
 Aspect-token AMM integration is supported when the pool asset is the deployed
 aspect-token contract and the bundle exports the guarded `ERC20-transfer`

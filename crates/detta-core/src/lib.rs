@@ -4470,6 +4470,24 @@ impl DeTTaState {
                     certificate,
                 },
             ),
+            AspectHostOp::CrossShardOutboxAppend {
+                destination_chain,
+                destination_contract,
+                message_id,
+                recipient,
+                asset,
+                amount,
+            } => self.apply_aspect_cross_shard_outbox_append(
+                tx,
+                AspectCrossShardOutboxAppend {
+                    destination_chain,
+                    destination_contract,
+                    message_id,
+                    recipient,
+                    asset,
+                    amount,
+                },
+            ),
         }
     }
 
@@ -4512,6 +4530,52 @@ impl DeTTaState {
             host_context.frame.contract.clone(),
             call_context,
         )?;
+        Ok(())
+    }
+
+    fn apply_aspect_cross_shard_outbox_append(
+        &mut self,
+        tx: &Transaction,
+        append: AspectCrossShardOutboxAppend,
+    ) -> Result<(), ExecutionError> {
+        if append.destination_chain.is_empty()
+            || append.destination_contract.is_empty()
+            || append.message_id.is_empty()
+            || append.recipient.is_empty()
+            || append.asset.is_empty()
+            || append.amount == 0
+        {
+            return Err(ExecutionError::InvalidArguments);
+        }
+        if self.outbound_message_ids.contains(&append.message_id) {
+            return Err(ExecutionError::OutboundMessageReplay);
+        }
+
+        let message = CrossShardMessage {
+            source_chain: self.chain_id.clone(),
+            source_contract: tx.target.clone(),
+            source_height: self.height,
+            destination_chain: append.destination_chain.clone(),
+            destination_contract: append.destination_contract.clone(),
+            message_id: append.message_id.clone(),
+            recipient: append.recipient.clone(),
+            asset: append.asset.clone(),
+            amount: append.amount,
+        };
+        self.outbound_message_ids.insert(append.message_id.clone());
+        self.cross_shard_outbox.push(message);
+        self.emit(
+            &tx.target,
+            &tx.tx_hash,
+            EventPayload::CrossShardMessageQueued {
+                message_id: append.message_id,
+                destination_chain: append.destination_chain,
+                destination_contract: append.destination_contract,
+                recipient: append.recipient,
+                asset: append.asset,
+                amount: append.amount,
+            },
+        );
         Ok(())
     }
 
@@ -7405,6 +7469,15 @@ struct AspectBridgeVerification {
     asset: AssetId,
     amount: Amount,
     certificate: String,
+}
+
+struct AspectCrossShardOutboxAppend {
+    destination_chain: ChainId,
+    destination_contract: ContractId,
+    message_id: String,
+    recipient: Principal,
+    asset: AssetId,
+    amount: Amount,
 }
 
 fn aspect_write_scope(
@@ -10442,20 +10515,51 @@ mod tests {
             "Alice",
             1,
             Method::Other("Bridge-burn".into()),
-            vec![amount(0)],
+            vec![
+                text("DestinationChain"),
+                text("DestinationBridge"),
+                text("burn-msg-zero"),
+                principal("Alice"),
+                asset("USDC"),
+                amount(0),
+            ],
         ));
         assert_eq!(zero_burn.status, TxStatus::Reverted);
         assert_eq!(zero_burn.error, Some(ExecutionError::InvalidArguments));
 
+        let outbox_root_before_burn = state.outbox_root();
         let burn = state.apply_transaction(tx_to(
             "BridgeAspectToken",
             "tx-bridge-burn",
             "Alice",
             2,
             Method::Other("Bridge-burn".into()),
-            vec![amount(40)],
+            vec![
+                text("DestinationChain"),
+                text("DestinationBridge"),
+                text("burn-msg-1"),
+                principal("Alice"),
+                asset("USDC"),
+                amount(40),
+            ],
         ));
         assert_eq!(burn.status, TxStatus::Committed);
+        assert_ne!(state.outbox_root(), outbox_root_before_burn);
+        assert_eq!(state.cross_shard_outbox().len(), 1);
+        assert_eq!(
+            state.cross_shard_outbox()[0],
+            CrossShardMessage {
+                source_chain: "detta-local".into(),
+                source_contract: "BridgeAspectToken".into(),
+                source_height: state.height,
+                destination_chain: "DestinationChain".into(),
+                destination_contract: "DestinationBridge".into(),
+                message_id: "burn-msg-1".into(),
+                recipient: "Alice".into(),
+                asset: "USDC".into(),
+                amount: 40,
+            }
+        );
         assert_eq!(
             state.storage.get(&StateKey::AspectState {
                 contract: "BridgeAspectToken".into(),
@@ -10484,6 +10588,46 @@ mod tests {
             Some(&StateValue::UInt(1))
         );
 
+        let replay_burn = state.apply_transaction(tx_to(
+            "BridgeAspectToken",
+            "tx-bridge-burn-replay",
+            "Alice",
+            3,
+            Method::Other("Bridge-burn".into()),
+            vec![
+                text("DestinationChain"),
+                text("DestinationBridge"),
+                text("burn-msg-1"),
+                principal("Alice"),
+                asset("USDC"),
+                amount(10),
+            ],
+        ));
+        assert_eq!(replay_burn.status, TxStatus::Reverted);
+        assert_eq!(
+            replay_burn.error,
+            Some(ExecutionError::OutboundMessageReplay)
+        );
+        assert_eq!(state.cross_shard_outbox().len(), 1);
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "BridgeAspectToken".into(),
+                aspect: "StaticBalanceAspect".into(),
+                state: "balanceOf".into(),
+                key: vec!["Alice".into()],
+            }),
+            Some(&StateValue::UInt(60))
+        );
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "BridgeAspectToken".into(),
+                aspect: "StaticBalanceAspect".into(),
+                state: "totalSupply".into(),
+                key: Vec::new(),
+            }),
+            Some(&StateValue::UInt(60))
+        );
+
         let aspect_events = state
             .events()
             .iter()
@@ -10499,6 +10643,24 @@ mod tests {
                 "(Transfer Alice ZeroAddress 40)",
             ]
         );
+        assert!(state.events().iter().any(|event| {
+            matches!(
+                &event.payload,
+                EventPayload::CrossShardMessageQueued {
+                    message_id,
+                    destination_chain,
+                    destination_contract,
+                    recipient,
+                    asset,
+                    amount,
+                } if message_id == "burn-msg-1"
+                    && destination_chain == "DestinationChain"
+                    && destination_contract == "DestinationBridge"
+                    && recipient == "Alice"
+                    && asset == "USDC"
+                    && *amount == 40
+            )
+        }));
     }
 
     #[test]

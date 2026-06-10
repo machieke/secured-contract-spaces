@@ -602,10 +602,11 @@
        True)))
 
 (derived BridgeMintBurnAspect bridgeBurnBalance
-  (= (bridgeBurnBalance $account $amount)
+  (= (bridgeBurnBalance $account $destinationChain $destinationContract $messageId $recipient $asset $amount)
      (begin
        (require (> $amount 0) ZERO_BRIDGE_BURN)
        (burnBalance $account $amount)
+       (cross-shard-outbox-append! $destinationChain $destinationContract $messageId $recipient $asset $amount)
        True)))
 
 (local-invariant TransferableBalanceAspect TBA-3
@@ -928,8 +929,8 @@
      (bridgeMintBalance $sourceChain $messageId $recipient $asset $amount $certificate)))
 
 (projection BridgeMintBurnToken Bridge-burn
-  (= (Bridge.burn $amount)
-     (bridgeBurnBalance tx.sender $amount)))
+  (= (Bridge.burn $destinationChain $destinationContract $messageId $recipient $asset $amount)
+     (bridgeBurnBalance tx.sender $destinationChain $destinationContract $messageId $recipient $asset $amount)))
 
 (projection BridgeMintBurnToken ERC20-transfer
   (= (ERC20.transfer $to $amount)
@@ -1138,7 +1139,13 @@
   Bool)
 
 (method-abi BridgeMintBurnToken Bridge-burn
-  (args (amount Amount))
+  (args
+    (destinationChain Address)
+    (destinationContract Address)
+    (messageId Address)
+    (recipient Address)
+    (asset Asset)
+    (amount Amount))
   Bool)
 
 (method-abi BridgeMintBurnToken ERC20-transfer
@@ -1400,7 +1407,7 @@
 
 (method-policy BridgeMintBurnToken Bridge-burn
   TxSender
-  (effects ReadState WriteState EmitEvent)
+  (effects ReadState WriteState EmitEvent CrossShardOutboxAppend)
   (invariants BURN-1 BRIDGE-1))
 
 (method-policy BridgeMintBurnToken ERC20-transfer
