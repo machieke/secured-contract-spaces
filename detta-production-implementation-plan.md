@@ -509,6 +509,10 @@ Completed production-plan slices:
 - [x] Retained release-candidate evidence bundle script reruns packaged
   operator drills under one version and bundles release artifacts, reports,
   checksums, signatures, audit package, signing key, and source-state metadata.
+- [x] Retained release-candidate evidence bundles have a standalone verifier
+  that checks archive paths, report schema, inventory hashes, evidence file
+  hashes, required drill reports, source-state consistency, and the embedded
+  audit-readiness package.
 
 Next implementation slices:
 

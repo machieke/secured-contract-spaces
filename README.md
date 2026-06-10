@@ -171,6 +171,8 @@ SCS specification
 - `scripts/detta-release-candidate-evidence-bundle.sh`: retained release
   evidence runner that executes packaged operator drills and bundles their
   reports, release artifacts, audit package, signatures, and checksums.
+- `scripts/detta-verify-release-candidate-evidence-bundle.sh`: standalone
+  verifier for transferred retained release-candidate evidence bundles.
 - `scripts/detta-genesis-finalization-drill.sh`: release-genesis drill that
   binds the generated genesis roots, release manifest, faucet sample,
   validator identities, quorum, and checksums into a finalization report.
@@ -420,8 +422,16 @@ local-stability, audit-readiness, and release-signing drills under one release
 version. It writes `dist/detta-release-candidate-evidence-<version>.json`,
 `dist/detta-release-candidate-evidence-<version>.jsonl`, and
 `dist/detta-release-candidate-evidence-<version>.tar.gz` with SHA-256
-attestations. This creates retained operator evidence; it does not replace the
-hard release gate or the real public-testnet stability window.
+attestations, then runs the standalone evidence-bundle verifier. Reviewers can
+repeat that check after transfer:
+
+```sh
+scripts/detta-verify-release-candidate-evidence-bundle.sh \
+  dist/detta-release-candidate-evidence-rc-1.tar.gz
+```
+
+This creates retained operator evidence; it does not replace the hard release
+gate or the real public-testnet stability window.
 
 Run a local operator launch rehearsal against the packaged binary:
 

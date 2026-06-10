@@ -286,5 +286,7 @@ tar \
   sha256sum -c "$bundle_name.sha256"
 )
 
+scripts/detta-verify-release-candidate-evidence-bundle.sh "$bundle_path"
+
 printf 'release candidate evidence report: %s\n' "$report_path"
 printf 'release candidate evidence bundle: %s\n' "$bundle_path"

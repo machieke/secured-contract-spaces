@@ -38,7 +38,9 @@ Before joining a validator:
 - verify the signed release bundle with
   `scripts/detta-verify-release-signatures.sh`;
 - run `scripts/detta-release-candidate-evidence-bundle.sh` after the hard gate
-  when retained release-candidate evidence is needed under `dist/`;
+  when retained release-candidate evidence is needed under `dist/`, then rerun
+  `scripts/detta-verify-release-candidate-evidence-bundle.sh` after artifact
+  transfer;
 - run `scripts/detta-release-signing-drill.sh` and retain the generated
   signing-drill report before the production release-key ceremony;
 - run `scripts/detta-genesis-finalization-drill.sh` and retain the generated
@@ -238,9 +240,11 @@ public key, checksum files, and detached signatures, then writes
 `dist/detta-release-candidate-evidence-<version>.json`,
 `dist/detta-release-candidate-evidence-<version>.jsonl`, and
 `dist/detta-release-candidate-evidence-<version>.tar.gz` plus SHA-256
-attestations. Retain this bundle with the release-candidate publication
-record; it does not replace the hard release gate or the real public-testnet
-stability window.
+attestations. It also runs
+`scripts/detta-verify-release-candidate-evidence-bundle.sh` against the
+bundle. Retain this bundle with the release-candidate publication record and
+have reviewers rerun the verifier after transfer; it does not replace the hard
+release gate or the real public-testnet stability window.
 
 Use `scripts/detta-package-release.sh` after the hard release gate passes. The
 script produces a deterministic archive containing `detta-node` and

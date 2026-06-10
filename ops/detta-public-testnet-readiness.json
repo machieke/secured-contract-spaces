@@ -33,6 +33,7 @@
     "scripts/detta-source-state-report.sh",
     "scripts/detta-verify-release-signatures.sh",
     "scripts/detta-release-candidate-evidence-bundle.sh",
+    "scripts/detta-verify-release-candidate-evidence-bundle.sh",
     "scripts/detta-release-signing-drill.sh",
     "scripts/detta-genesis-finalization-drill.sh",
     "scripts/detta-operator-launch-rehearsal.sh",
