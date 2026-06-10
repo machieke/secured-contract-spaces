@@ -4,6 +4,12 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
+tmp_operator_artifacts="$(mktemp -d)"
+cleanup() {
+  rm -rf "$tmp_operator_artifacts"
+}
+trap cleanup EXIT
+
 run_e2e_gate() {
   case "${DETTA_E2E_FULL:-0}" in
     1 | true | TRUE | yes | YES)
@@ -24,6 +30,15 @@ run_e2e_gate() {
   esac
 }
 
+run_packaged_operator_gate() {
+  DETTA_RELEASE_VERSION=release-gate-launch \
+    DETTA_RELEASE_OUT="$tmp_operator_artifacts" \
+    scripts/detta-operator-launch-rehearsal.sh
+  DETTA_RELEASE_VERSION=release-gate-incident \
+    DETTA_RELEASE_OUT="$tmp_operator_artifacts" \
+    scripts/detta-incident-response-drill.sh
+}
+
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 scripts/detta-dependency-audit.sh
@@ -33,6 +48,7 @@ cargo test -p detta-verify
 cargo test -p detta-verify tests::differential_replay_accepts_generated_transfer_corpus -- --exact
 cargo test -p detta-verify tests::differential_replay_accepts_generated_defi_corpus -- --exact
 cargo build --locked --release
+run_packaged_operator_gate
 scripts/detta-model-check.sh
 
 (
