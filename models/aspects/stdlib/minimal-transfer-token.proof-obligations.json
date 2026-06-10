@@ -4,8 +4,8 @@
   "module_id": "ERC20ConformantToken",
   "source_path": "models/aspects/stdlib/minimal-transfer-token.metta",
   "artifact_path": "models/aspects/stdlib/minimal-transfer-token.artifact.json",
-  "source_root": "e11b7c1faf53fb446091b56b6c854fcc32c06ca53ca0975af4218002758efcf0",
-  "ir_root": "d02f260f16d063ed63c308eaa3a435bc863de8a93aba714597099707da2abf29",
+  "source_root": "a9c559e60a95dfbd1c8943f4b4666ab9c0fdf2617513e63adbc998d4cc84689f",
+  "ir_root": "982de8ca5963e7efeb499dc140895d9a024ca916f912f355db9f2d563380e817",
   "obligations": [
     {
       "id": "APO-001",

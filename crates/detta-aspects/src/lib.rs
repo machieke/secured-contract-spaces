@@ -122,6 +122,7 @@ pub enum AspectDeclaration {
         authority: Expr,
         effects: Expr,
         invariants: Expr,
+        calls: Option<Expr>,
     },
     CrossConstraint {
         constraint: String,
@@ -220,6 +221,19 @@ pub struct MethodPolicyIr {
     pub authority: AuthorityKind,
     pub effects: BTreeSet<EffectKind>,
     pub invariants: BTreeSet<String>,
+    pub call_allowlist: BTreeSet<ContractCallPattern>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+pub struct ContractCallPattern {
+    pub target: ContractCallTarget,
+    pub method: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+pub enum ContractCallTarget {
+    Any,
+    Exact(String),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -379,6 +393,17 @@ pub enum AspectVerifyError {
     UnsupportedEffect(String),
     MalformedEffectList(String),
     MalformedInvariantList(String),
+    MalformedCallAllowlist(String),
+    MissingCallAllowlist {
+        bundle: String,
+        projection: String,
+    },
+    UnauthorizedContractCall {
+        bundle: String,
+        projection: String,
+        target: String,
+        method: String,
+    },
     UndeclaredEffect {
         bundle: String,
         projection: String,
@@ -669,6 +694,7 @@ pub fn lower_to_ir(ast: &AspectPackageAst) -> Result<AspectModuleIr, AspectVerif
                 authority,
                 effects,
                 invariants,
+                calls,
             } => {
                 let key = qualified(bundle, projection);
                 insert_unique(
@@ -680,6 +706,7 @@ pub fn lower_to_ir(ast: &AspectPackageAst) -> Result<AspectModuleIr, AspectVerif
                         authority: parse_authority(authority)?,
                         effects: parse_effects(effects)?,
                         invariants: parse_invariants(invariants)?,
+                        call_allowlist: parse_call_allowlist(calls.as_ref())?,
                     },
                     AspectVerifyError::DuplicatePolicy(key),
                 )?;
@@ -979,13 +1006,20 @@ fn declaration_from_expr(expr: Expr) -> Result<AspectDeclaration, AspectError> {
             })
         }
         "method-policy" => {
-            expect_arity(&head, &items, 6)?;
+            if items.len() != 6 && items.len() != 7 {
+                return Err(AspectError::InvalidArity {
+                    form: head,
+                    expected: 5,
+                    actual: items.len().saturating_sub(1),
+                });
+            }
             Ok(AspectDeclaration::MethodPolicy {
                 bundle: atom_at(&items, 1, "bundle id")?.to_owned(),
                 projection: atom_at(&items, 2, "projection id")?.to_owned(),
                 authority: items[3].clone(),
                 effects: items[4].clone(),
                 invariants: items[5].clone(),
+                calls: items.get(6).cloned(),
             })
         }
         "cross-constraint" => {
@@ -1116,12 +1150,19 @@ fn canonical_declaration(declaration: &AspectDeclaration) -> String {
             authority,
             effects,
             invariants,
-        } => format!(
-            "(method-policy {bundle} {projection} {} {} {})",
-            canonical_expr(authority),
-            canonical_expr(effects),
-            canonical_expr(invariants)
-        ),
+            calls,
+        } => {
+            let base = format!(
+                "(method-policy {bundle} {projection} {} {} {}",
+                canonical_expr(authority),
+                canonical_expr(effects),
+                canonical_expr(invariants)
+            );
+            match calls {
+                Some(calls) => format!("{base} {})", canonical_expr(calls)),
+                None => format!("{base})"),
+            }
+        }
         AspectDeclaration::CrossConstraint { constraint, expr } => {
             format!("(cross-constraint {constraint} {})", canonical_expr(expr))
         }
@@ -1780,6 +1821,60 @@ fn parse_invariants(expr: &Expr) -> Result<BTreeSet<String>, AspectVerifyError> 
     Ok(invariants)
 }
 
+fn parse_call_allowlist(
+    expr: Option<&Expr>,
+) -> Result<BTreeSet<ContractCallPattern>, AspectVerifyError> {
+    let Some(expr) = expr else {
+        return Ok(BTreeSet::new());
+    };
+    let Expr::List(items) = expr else {
+        return Err(AspectVerifyError::MalformedCallAllowlist(canonical_expr(
+            expr,
+        )));
+    };
+    match items.first() {
+        Some(Expr::Atom(head)) if head == "calls" => {}
+        _ => {
+            return Err(AspectVerifyError::MalformedCallAllowlist(canonical_expr(
+                expr,
+            )))
+        }
+    }
+
+    let mut calls = BTreeSet::new();
+    for item in items.iter().skip(1) {
+        let Expr::List(parts) = item else {
+            return Err(AspectVerifyError::MalformedCallAllowlist(canonical_expr(
+                expr,
+            )));
+        };
+        let [Expr::Atom(head), Expr::Atom(target), Expr::Atom(method)] = parts.as_slice() else {
+            return Err(AspectVerifyError::MalformedCallAllowlist(canonical_expr(
+                expr,
+            )));
+        };
+        if head != "call" || method.is_empty() {
+            return Err(AspectVerifyError::MalformedCallAllowlist(canonical_expr(
+                expr,
+            )));
+        }
+        let target = match target.as_str() {
+            "*" => ContractCallTarget::Any,
+            "" => {
+                return Err(AspectVerifyError::MalformedCallAllowlist(canonical_expr(
+                    expr,
+                )))
+            }
+            target => ContractCallTarget::Exact(target.into()),
+        };
+        calls.insert(ContractCallPattern {
+            target,
+            method: method.clone(),
+        });
+    }
+    Ok(calls)
+}
+
 fn verify_action_call_graph(ir: &AspectModuleIr) -> Result<(), AspectVerifyError> {
     let action_names = action_names(ir);
     let mut graph: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -1848,9 +1943,7 @@ fn verify_effects_and_write_scopes(
                 bundle: projection.bundle.clone(),
                 projection: projection.projection.clone(),
             })?;
-        let mut inferred = BTreeSet::new();
-        let mut writes = BTreeSet::new();
-        let mut registry_accesses = BTreeSet::new();
+        let mut inferred = InferredActionEffects::default();
         let mut visited = BTreeSet::new();
         infer_action_effects(
             ir,
@@ -1858,21 +1951,38 @@ fn verify_effects_and_write_scopes(
             &qualified(&action.aspect, &action.action),
             &mut visited,
             &mut inferred,
-            &mut writes,
-            &mut registry_accesses,
         );
 
-        for effect in inferred {
-            if !policy.effects.contains(&effect) {
+        for effect in &inferred.effects {
+            if !policy.effects.contains(effect) {
                 return Err(AspectVerifyError::UndeclaredEffect {
                     bundle: projection.bundle.clone(),
                     projection: projection.projection.clone(),
-                    effect,
+                    effect: effect.clone(),
                 });
             }
         }
 
-        for state in writes {
+        if inferred.effects.contains(&EffectKind::CallContract) && policy.call_allowlist.is_empty()
+        {
+            return Err(AspectVerifyError::MissingCallAllowlist {
+                bundle: projection.bundle.clone(),
+                projection: projection.projection.clone(),
+            });
+        }
+
+        for call in inferred.contract_calls {
+            if !contract_call_allowed(&call, &policy.call_allowlist) {
+                return Err(AspectVerifyError::UnauthorizedContractCall {
+                    bundle: projection.bundle.clone(),
+                    projection: projection.projection.clone(),
+                    target: call.target.source(),
+                    method: call.method,
+                });
+            }
+        }
+
+        for state in inferred.writes {
             if !state_owned_by_bundle(ir, closures, &projection.bundle, &state) {
                 return Err(AspectVerifyError::StateWriteOutOfScope {
                     bundle: projection.bundle.clone(),
@@ -1882,7 +1992,7 @@ fn verify_effects_and_write_scopes(
             }
         }
 
-        for registry in registry_accesses {
+        for registry in inferred.registry_accesses {
             if !registry_owned_by_bundle(ir, closures, &projection.bundle, &registry) {
                 return Err(AspectVerifyError::RegistryAccessOutOfScope {
                     bundle: projection.bundle.clone(),
@@ -1895,14 +2005,75 @@ fn verify_effects_and_write_scopes(
     Ok(())
 }
 
+#[derive(Default)]
+struct InferredActionEffects {
+    effects: BTreeSet<EffectKind>,
+    writes: BTreeSet<String>,
+    registry_accesses: BTreeSet<String>,
+    contract_calls: BTreeSet<ContractCallSite>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct ContractCallSite {
+    target: ContractCallSiteTarget,
+    method: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+enum ContractCallSiteTarget {
+    Exact(String),
+    Dynamic(String),
+}
+
+impl ContractCallSiteTarget {
+    fn source(&self) -> String {
+        match self {
+            Self::Exact(target) | Self::Dynamic(target) => target.clone(),
+        }
+    }
+}
+
+fn contract_call_allowed(
+    call: &ContractCallSite,
+    allowlist: &BTreeSet<ContractCallPattern>,
+) -> bool {
+    allowlist.iter().any(|allowed| {
+        allowed.method == call.method
+            && match (&allowed.target, &call.target) {
+                (ContractCallTarget::Any, _) => true,
+                (ContractCallTarget::Exact(allowed), ContractCallSiteTarget::Exact(target)) => {
+                    allowed == target
+                }
+                (ContractCallTarget::Exact(_), ContractCallSiteTarget::Dynamic(_)) => false,
+            }
+    })
+}
+
+fn inferred_contract_call_site(items: &[Expr]) -> Option<ContractCallSite> {
+    let target = items.get(1)?;
+    let Expr::Atom(method) = items.get(2)? else {
+        return None;
+    };
+    let target = match target {
+        Expr::Atom(atom) if atom.starts_with('$') => ContractCallSiteTarget::Dynamic(atom.clone()),
+        Expr::Atom(atom) if atom == "current-contract" => {
+            ContractCallSiteTarget::Dynamic(atom.clone())
+        }
+        Expr::Atom(atom) => ContractCallSiteTarget::Exact(atom.clone()),
+        Expr::List(_) => ContractCallSiteTarget::Dynamic(canonical_expr(target)),
+    };
+    Some(ContractCallSite {
+        target,
+        method: method.clone(),
+    })
+}
+
 fn infer_action_effects(
     ir: &AspectModuleIr,
     action_names: &BTreeMap<String, BTreeSet<String>>,
     action_key: &str,
     visited: &mut BTreeSet<String>,
-    effects: &mut BTreeSet<EffectKind>,
-    writes: &mut BTreeSet<String>,
-    registry_accesses: &mut BTreeSet<String>,
+    inferred: &mut InferredActionEffects,
 ) {
     if !visited.insert(action_key.into()) {
         return;
@@ -1911,15 +2082,7 @@ fn infer_action_effects(
         return;
     };
     if let Some(body) = &action.body {
-        infer_expr_effects(
-            ir,
-            action_names,
-            body,
-            visited,
-            effects,
-            writes,
-            registry_accesses,
-        );
+        infer_expr_effects(ir, action_names, body, visited, inferred);
     }
 }
 
@@ -1928,123 +2091,92 @@ fn infer_expr_effects(
     action_names: &BTreeMap<String, BTreeSet<String>>,
     expr: &Expr,
     visited: &mut BTreeSet<String>,
-    effects: &mut BTreeSet<EffectKind>,
-    writes: &mut BTreeSet<String>,
-    registry_accesses: &mut BTreeSet<String>,
+    inferred: &mut InferredActionEffects,
 ) {
     let Expr::List(items) = expr else {
         return;
     };
     let Some(Expr::Atom(head)) = items.first() else {
         for item in items {
-            infer_expr_effects(
-                ir,
-                action_names,
-                item,
-                visited,
-                effects,
-                writes,
-                registry_accesses,
-            );
+            infer_expr_effects(ir, action_names, item, visited, inferred);
         }
         return;
     };
 
     if head == "=" && items.len() == 3 {
-        infer_expr_effects(
-            ir,
-            action_names,
-            &items[2],
-            visited,
-            effects,
-            writes,
-            registry_accesses,
-        );
+        infer_expr_effects(ir, action_names, &items[2], visited, inferred);
         return;
     }
 
     match head.as_str() {
         "state-get" => {
-            effects.insert(EffectKind::ReadState);
+            inferred.effects.insert(EffectKind::ReadState);
         }
         "state-set!" => {
-            effects.insert(EffectKind::WriteState);
+            inferred.effects.insert(EffectKind::WriteState);
             if let Some(Expr::Atom(state)) = items.get(1) {
-                writes.insert(state.clone());
+                inferred.writes.insert(state.clone());
             }
         }
         "registry-get" => {
-            effects.insert(EffectKind::ReadRegistry);
+            inferred.effects.insert(EffectKind::ReadRegistry);
             if let Some(Expr::Atom(registry)) = items.get(1) {
-                registry_accesses.insert(registry.clone());
+                inferred.registry_accesses.insert(registry.clone());
             }
         }
         "registry-set!" => {
-            effects.insert(EffectKind::WriteRegistry);
+            inferred.effects.insert(EffectKind::WriteRegistry);
             if let Some(Expr::Atom(registry)) = items.get(1) {
-                registry_accesses.insert(registry.clone());
+                inferred.registry_accesses.insert(registry.clone());
             }
         }
         "registry-consume!" => {
-            effects.insert(EffectKind::ConsumeRegistryGrant);
+            inferred.effects.insert(EffectKind::ConsumeRegistryGrant);
             if let Some(Expr::Atom(registry)) = items.get(1) {
-                registry_accesses.insert(registry.clone());
+                inferred.registry_accesses.insert(registry.clone());
             }
         }
         "emit!" => {
-            effects.insert(EffectKind::EmitEvent);
+            inferred.effects.insert(EffectKind::EmitEvent);
         }
         "call-contract!" => {
-            effects.insert(EffectKind::CallContract);
+            inferred.effects.insert(EffectKind::CallContract);
+            if let Some(call) = inferred_contract_call_site(items) {
+                inferred.contract_calls.insert(call);
+            }
         }
         "deploy-contract!" => {
-            effects.insert(EffectKind::DeployContract);
+            inferred.effects.insert(EffectKind::DeployContract);
         }
         "schedule-upgrade!" => {
-            effects.insert(EffectKind::ScheduleUpgrade);
+            inferred.effects.insert(EffectKind::ScheduleUpgrade);
         }
         "execute-upgrade!" => {
-            effects.insert(EffectKind::ExecuteUpgrade);
+            inferred.effects.insert(EffectKind::ExecuteUpgrade);
         }
         "cross-shard-outbox-append!" => {
-            effects.insert(EffectKind::CrossShardOutboxAppend);
+            inferred.effects.insert(EffectKind::CrossShardOutboxAppend);
         }
         "permit-verify!" => {
-            effects.insert(EffectKind::UsePermitCertificate);
+            inferred.effects.insert(EffectKind::UsePermitCertificate);
         }
         "bridge-verify!" => {
-            effects.insert(EffectKind::UseBridgeCertificate);
+            inferred.effects.insert(EffectKind::UseBridgeCertificate);
         }
         "abort" => {
-            effects.insert(EffectKind::Abort);
+            inferred.effects.insert(EffectKind::Abort);
         }
         action_name => {
             if let Some(keys) = action_names.get(action_name) {
                 for key in keys {
-                    infer_action_effects(
-                        ir,
-                        action_names,
-                        key,
-                        visited,
-                        effects,
-                        writes,
-                        registry_accesses,
-                    );
+                    infer_action_effects(ir, action_names, key, visited, inferred);
                 }
             }
         }
     }
 
     for item in items.iter().skip(1) {
-        infer_expr_effects(
-            ir,
-            action_names,
-            item,
-            visited,
-            effects,
-            writes,
-            registry_accesses,
-        );
+        infer_expr_effects(ir, action_names, item, visited, inferred);
     }
 }
 
@@ -2646,6 +2778,92 @@ mod tests {
             (projection GoodBundle Spend (= (API.spend) (spend)))
             (method-abi GoodBundle Spend (args) Bool)
             (method-policy GoodBundle Spend TxSender (effects ConsumeRegistryGrant) (invariants))
+        ";
+        let ast = parse_aspect_package(source).unwrap();
+        let ir = lower_to_ir(&ast).unwrap();
+        assert!(verify_module(&ir).is_ok());
+    }
+
+    #[test]
+    fn verifier_rejects_call_contract_without_allowlist() {
+        let source = "
+            (: Bool Type)
+            (: Amount Type)
+            (: Address Type)
+            (aspect CallerAspect)
+            (action CallerAspect call)
+            (derived CallerAspect call
+              (= (call $target $amount)
+                 (begin
+                   (call-contract! $target Set $amount)
+                   True)))
+            (bundle BadBundle)
+            (bundle-includes BadBundle CallerAspect)
+            (projection BadBundle Call (= (API.call $target $amount) (call $target $amount)))
+            (method-abi BadBundle Call (args (target Address) (amount Amount)) Bool)
+            (method-policy BadBundle Call TxSender (effects CallContract) (invariants))
+        ";
+        let ast = parse_aspect_package(source).unwrap();
+        let ir = lower_to_ir(&ast).unwrap();
+        assert_eq!(
+            verify_module(&ir).unwrap_err(),
+            AspectVerifyError::MissingCallAllowlist {
+                bundle: "BadBundle".into(),
+                projection: "Call".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn verifier_rejects_call_contract_outside_allowlist() {
+        let source = "
+            (: Bool Type)
+            (: Amount Type)
+            (: Address Type)
+            (aspect CallerAspect)
+            (action CallerAspect call)
+            (derived CallerAspect call
+              (= (call $target $amount)
+                 (begin
+                   (call-contract! $target Set $amount)
+                   True)))
+            (bundle BadBundle)
+            (bundle-includes BadBundle CallerAspect)
+            (projection BadBundle Call (= (API.call $target $amount) (call $target $amount)))
+            (method-abi BadBundle Call (args (target Address) (amount Amount)) Bool)
+            (method-policy BadBundle Call TxSender (effects CallContract) (invariants) (calls (call * Other)))
+        ";
+        let ast = parse_aspect_package(source).unwrap();
+        let ir = lower_to_ir(&ast).unwrap();
+        assert_eq!(
+            verify_module(&ir).unwrap_err(),
+            AspectVerifyError::UnauthorizedContractCall {
+                bundle: "BadBundle".into(),
+                projection: "Call".into(),
+                target: "$target".into(),
+                method: "Set".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn verifier_accepts_call_contract_with_wildcard_target_allowlist() {
+        let source = "
+            (: Bool Type)
+            (: Amount Type)
+            (: Address Type)
+            (aspect CallerAspect)
+            (action CallerAspect call)
+            (derived CallerAspect call
+              (= (call $target $amount)
+                 (begin
+                   (call-contract! $target Set $amount)
+                   True)))
+            (bundle GoodBundle)
+            (bundle-includes GoodBundle CallerAspect)
+            (projection GoodBundle Call (= (API.call $target $amount) (call $target $amount)))
+            (method-abi GoodBundle Call (args (target Address) (amount Amount)) Bool)
+            (method-policy GoodBundle Call TxSender (effects CallContract) (invariants) (calls (call * Set)))
         ";
         let ast = parse_aspect_package(source).unwrap();
         let ir = lower_to_ir(&ast).unwrap();

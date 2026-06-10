@@ -72,6 +72,8 @@ entries.
   transfer from aspect-contract custody on exits.
 - [x] Aspect-to-aspect `call-contract!` dispatch uses the target contract's
   bundle ABI for typed argument conversion before nested execution.
+- [x] `CallContract` aspect methods require authenticated `(calls ...)`
+  allowlists, and runtime trace replay rejects out-of-policy nested calls.
 - [x] Rewarded staking aspects require explicit reward-reserve funding before
   claims transfer rewards from custody.
 - [x] Aspect method policies declare all economically relevant effects.

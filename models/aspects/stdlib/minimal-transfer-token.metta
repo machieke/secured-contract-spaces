@@ -1328,12 +1328,14 @@
 (method-policy VaultShareToken Vault-deposit
   TxSender
   (effects ReadState WriteState EmitEvent CallContract)
-  (invariants VAULT-1))
+  (invariants VAULT-1)
+  (calls (call * transferFrom)))
 
 (method-policy VaultShareToken Vault-redeem
   TxSender
   (effects ReadState WriteState EmitEvent CallContract)
-  (invariants VAULT-1))
+  (invariants VAULT-1)
+  (calls (call * transfer)))
 
 (method-policy VaultShareToken Vault-sharesOf
   TxSender
@@ -1343,12 +1345,14 @@
 (method-policy WrappedToken Wrapped-wrap
   TxSender
   (effects ReadState WriteState EmitEvent CallContract)
-  (invariants WRAP-1))
+  (invariants WRAP-1)
+  (calls (call * transferFrom)))
 
 (method-policy WrappedToken Wrapped-unwrap
   TxSender
   (effects ReadState WriteState EmitEvent CallContract)
-  (invariants WRAP-1))
+  (invariants WRAP-1)
+  (calls (call * transfer)))
 
 (method-policy WrappedToken ERC20-transfer
   TxSender
@@ -1363,22 +1367,26 @@
 (method-policy RewardedStakeToken Staking-fundRewards
   TxSender
   (effects ReadState WriteState EmitEvent CallContract)
-  (invariants REWARD-1))
+  (invariants REWARD-1)
+  (calls (call * transferFrom)))
 
 (method-policy RewardedStakeToken Staking-stake
   TxSender
   (effects ReadState WriteState EmitEvent CallContract)
-  (invariants STAKE-1 REWARD-1))
+  (invariants STAKE-1 REWARD-1)
+  (calls (call * transferFrom)))
 
 (method-policy RewardedStakeToken Staking-unstake
   TxSender
   (effects ReadState WriteState EmitEvent CallContract)
-  (invariants STAKE-1 REWARD-1))
+  (invariants STAKE-1 REWARD-1)
+  (calls (call * transfer)))
 
 (method-policy RewardedStakeToken Staking-claimReward
   TxSender
   (effects ReadState WriteState EmitEvent CallContract)
-  (invariants REWARD-1))
+  (invariants REWARD-1)
+  (calls (call * transfer)))
 
 (method-policy RewardedStakeToken Staking-stakeOf
   TxSender

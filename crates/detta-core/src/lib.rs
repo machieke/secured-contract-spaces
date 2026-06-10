@@ -1587,6 +1587,7 @@ pub enum ExecutionError {
     InvalidCertificate,
     CertificateReplay,
     ForbiddenPrimitive,
+    UnauthorizedContractCall,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -2412,6 +2413,13 @@ struct AuthorizedFrame {
     contract: ContractId,
     msg_sender: Principal,
     write_scope: BTreeSet<StateKey>,
+}
+
+struct AspectHostContext<'a> {
+    module: &'a AspectModuleRecord,
+    bundle_id: &'a str,
+    policy: &'a detta_aspects::MethodPolicyIr,
+    frame: &'a AuthorizedFrame,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -4318,6 +4326,11 @@ impl DeTTaState {
             .cloned()
             .ok_or(ExecutionError::InvalidArguments)?;
         let ir = module.ir.as_ref().ok_or(ExecutionError::PolicyMissing)?;
+        let policy_key = qualified_aspect_symbol(&bundle_id, projection);
+        let aspect_policy = ir
+            .policies
+            .get(&policy_key)
+            .ok_or(ExecutionError::PolicyMissing)?;
         let context = AspectExecutionContext {
             tx_sender: tx.sender.clone(),
             msg_sender: msg_sender.clone(),
@@ -4340,8 +4353,14 @@ impl DeTTaState {
             msg_sender,
             write_scope: aspect_write_scope(&tx.target, &bundle_id, &module)?,
         };
+        let host_context = AspectHostContext {
+            module: &module,
+            bundle_id: &bundle_id,
+            policy: aspect_policy,
+            frame: &frame,
+        };
         for op in report.trace {
-            self.apply_aspect_host_op(tx, &module, &bundle_id, &frame, call_context, op)?;
+            self.apply_aspect_host_op(tx, &host_context, call_context, op)?;
         }
         self.check_aspect_method_invariants(&module, &bundle_id, projection, tx.budget, context)?;
         aspect_value_to_return(report.return_value)
@@ -4384,24 +4403,28 @@ impl DeTTaState {
     fn apply_aspect_host_op(
         &mut self,
         tx: &Transaction,
-        module: &AspectModuleRecord,
-        bundle_id: &str,
-        frame: &AuthorizedFrame,
+        host_context: &AspectHostContext<'_>,
         call_context: &mut CallContext,
         op: AspectHostOp,
     ) -> Result<(), ExecutionError> {
         match op {
             AspectHostOp::StateGet { .. } => Ok(()),
             AspectHostOp::StateSet { state, key, value } => {
-                let key = aspect_state_key(&tx.target, bundle_id, module, &state, key)?;
-                self.state_set(frame, key, state_value_from_aspect(value)?)
+                let key = aspect_state_key(
+                    &tx.target,
+                    host_context.bundle_id,
+                    host_context.module,
+                    &state,
+                    key,
+                )?;
+                self.state_set(host_context.frame, key, state_value_from_aspect(value)?)
             }
             AspectHostOp::Emit { event } => {
                 self.emit(
                     &tx.target,
                     &tx.tx_hash,
                     EventPayload::AspectEvent {
-                        module_hash: module.module_hash.clone(),
+                        module_hash: host_context.module.module_hash.clone(),
                         event,
                     },
                 );
@@ -4414,7 +4437,14 @@ impl DeTTaState {
                 contract,
                 method,
                 args,
-            } => self.apply_aspect_call_contract(tx, frame, call_context, contract, method, args),
+            } => self.apply_aspect_call_contract(
+                tx,
+                host_context,
+                call_context,
+                contract,
+                method,
+                args,
+            ),
             AspectHostOp::PermitVerify {
                 owner,
                 spender,
@@ -4446,7 +4476,7 @@ impl DeTTaState {
     fn apply_aspect_call_contract(
         &mut self,
         tx: &Transaction,
-        frame: &AuthorizedFrame,
+        host_context: &AspectHostContext<'_>,
         call_context: &mut CallContext,
         contract: ContractId,
         method: String,
@@ -4454,6 +4484,9 @@ impl DeTTaState {
     ) -> Result<(), ExecutionError> {
         if contract.is_empty() {
             return Err(ExecutionError::InvalidArguments);
+        }
+        if !aspect_policy_allows_contract_call(host_context.policy, &contract, &method) {
+            return Err(ExecutionError::UnauthorizedContractCall);
         }
         let target_record = self
             .contracts
@@ -4474,7 +4507,11 @@ impl DeTTaState {
             signature_ok: tx.signature_ok,
             budget: tx.budget,
         };
-        self.execute_call(&nested_tx, frame.contract.clone(), call_context)?;
+        self.execute_call(
+            &nested_tx,
+            host_context.frame.contract.clone(),
+            call_context,
+        )?;
         Ok(())
     }
 
@@ -7203,6 +7240,20 @@ enum AbiArgKind {
     Certificate,
 }
 
+fn aspect_policy_allows_contract_call(
+    policy: &detta_aspects::MethodPolicyIr,
+    contract: &str,
+    method: &str,
+) -> bool {
+    policy.call_allowlist.iter().any(|allowed| {
+        allowed.method == method
+            && match &allowed.target {
+                detta_aspects::ContractCallTarget::Any => true,
+                detta_aspects::ContractCallTarget::Exact(target) => target == contract,
+            }
+    })
+}
+
 fn host_call_method_for_target(
     target_record: &ContractRecord,
     method: &str,
@@ -8116,7 +8167,7 @@ mod tests {
         (bundle-includes CounterCallerBundle CounterCallerAspect)
         (projection CounterCallerBundle Call (= (API.call $target $amount) (callCounter $target $amount)))
         (method-abi CounterCallerBundle Call (args (target Address) (amount Amount)) Bool)
-        (method-policy CounterCallerBundle Call TxSender (effects CallContract) (invariants))
+        (method-policy CounterCallerBundle Call TxSender (effects CallContract) (invariants) (calls (call * Set)))
         "
     }
 
@@ -8474,6 +8525,56 @@ mod tests {
                 key: Vec::new(),
             }),
             Some(&StateValue::UInt(42))
+        );
+    }
+
+    #[test]
+    fn aspect_host_call_rejects_policy_call_allowlist_tampering() {
+        let mut state = DeTTaState::new("detta-local");
+
+        let callee = AspectModuleRecord::from_verified_source(
+            "CounterBundle",
+            executable_counter_aspect_source(),
+        )
+        .unwrap();
+        let callee_hash = state.register_aspect_module(callee).unwrap();
+        state
+            .deploy_aspect_contract("AspectCounter", callee_hash, "CounterBundle")
+            .unwrap();
+
+        let caller = AspectModuleRecord::from_verified_source(
+            "CounterCallerBundle",
+            executable_counter_caller_aspect_source(),
+        )
+        .unwrap();
+        let caller_hash = state.register_aspect_module(caller).unwrap();
+        state
+            .deploy_aspect_contract("AspectCaller", caller_hash.clone(), "CounterCallerBundle")
+            .unwrap();
+
+        let module = state.aspect_modules.get_mut(&caller_hash).unwrap();
+        let ir = module.ir.as_mut().unwrap();
+        let policy = ir.policies.get_mut("CounterCallerBundle::Call").unwrap();
+        policy.call_allowlist.clear();
+
+        let call = state.apply_transaction(tx_to(
+            "AspectCaller",
+            "tx-call-counter-denied-by-policy",
+            "Alice",
+            1,
+            Method::Other("Call".into()),
+            vec![principal("AspectCounter"), amount(42)],
+        ));
+        assert_eq!(call.status, TxStatus::Reverted);
+        assert_eq!(call.error, Some(ExecutionError::UnauthorizedContractCall));
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "AspectCounter".into(),
+                aspect: "CounterAspect".into(),
+                state: "counter".into(),
+                key: Vec::new(),
+            }),
+            None
         );
     }
 

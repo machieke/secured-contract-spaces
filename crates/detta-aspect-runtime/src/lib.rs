@@ -1293,7 +1293,7 @@ mod tests {
             (bundle-includes AllowanceBundle AllowanceAspect)
             (projection AllowanceBundle SpendAndCall (= (API.spend $target $amount) (spendAndCall $target $amount)))
             (method-abi AllowanceBundle SpendAndCall (args (target Address) (amount Amount)) Bool)
-            (method-policy AllowanceBundle SpendAndCall TxSender (effects ConsumeRegistryGrant CallContract) (invariants))
+            (method-policy AllowanceBundle SpendAndCall TxSender (effects ConsumeRegistryGrant CallContract) (invariants) (calls (call * transfer)))
         ",
         );
         let report = AspectActionEvaluator::new(&module, 16)

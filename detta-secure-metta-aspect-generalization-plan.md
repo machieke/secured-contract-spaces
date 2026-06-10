@@ -404,8 +404,15 @@ Accepted top-level declarations:
 (projection BundleId ProjectionId Expr)
 (method-abi BundleId ProjectionId ArgsExpr ReturnTypeExpr)
 (method-policy BundleId ProjectionId AuthorityExpr EffectsExpr InvariantsExpr)
+(method-policy BundleId ProjectionId AuthorityExpr EffectsExpr InvariantsExpr CallsExpr)
 (cross-constraint ConstraintId Expr)
 ```
+
+`CallsExpr` is optional and uses `(calls (call TargetPattern MethodId) ...)`.
+`TargetPattern` is either an exact contract id or `*` for a dynamic target. Any
+projection whose inferred effects include `CallContract` must declare a
+non-empty calls allowlist, and both the verifier and executor reject trace calls
+outside that authenticated policy.
 
 ### 7.2 Executable Expression Forms
 
@@ -1304,9 +1311,10 @@ artifact and proof-obligation manifests, THM-016 formal coverage, and existing
 receipt, event, and storage proofs for programmable method calls and
 aspect-owned state. Registry-backed host calls, restricted `call-contract!`
 nested execution, and ABI-aware native/aspect argument conversion are now part
-of the guarded host-capability surface. Richer state-backed invariant reads and
-fine-grained cross-contract allowlist policies remain future hardening outside
-the current token-aspect acceptance slice.
+of the guarded host-capability surface. Fine-grained cross-contract allowlist
+policies are authenticated in `method-policy` roots and enforced by both static
+verification and runtime trace replay. Richer state-backed invariant reads
+remain future hardening outside the current token-aspect acceptance slice.
 
 Acceptance criteria:
 
