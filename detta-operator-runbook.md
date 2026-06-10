@@ -34,6 +34,8 @@ Before joining a validator:
 - start the persistent validator with `detta-node serve --storage ...`;
 - package release-candidate artifacts with `scripts/detta-package-release.sh`
   and sign the generated `*.sha256` files with the release key;
+- run `scripts/detta-operator-launch-rehearsal.sh` against the packaged
+  artifacts and retain the generated rehearsal report;
 - check `ops/detta-public-testnet-readiness.json` and confirm it does not claim
   public-testnet readiness while blockers remain;
 - check `ops/detta-mainnet-candidate-readiness.json` and confirm it does not
@@ -206,6 +208,12 @@ sample faucet transaction, SHA-256 attestations, and
 the release key, publish the matching `*.sig` files, and copy the paths,
 hashes, signer identity, and signature paths into
 `ops/detta-mainnet-candidate-readiness.json`.
+
+Use `scripts/detta-operator-launch-rehearsal.sh` before publishing a release
+candidate. The rehearsal unpacks the packaged validator archive, starts it from
+the generated genesis, verifies TCP `get_state_root` against the genesis root,
+and writes `dist/detta-launch-rehearsal-<version>.json` plus a SHA-256
+attestation. Retain this report as operator-launch evidence.
 
 When those conditions are met, update the manifest, keep the blocker list
 empty, include every signed release artifact, and run

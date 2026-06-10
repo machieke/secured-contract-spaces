@@ -281,6 +281,16 @@ attestations, a deterministic `detta-node` archive, a demo genesis snapshot,
 and a sample faucet transaction. Detached signatures are still an operator
 release step and should use the `*.sha256` files listed in the manifest.
 
+Run a local operator launch rehearsal against the packaged binary:
+
+```sh
+DETTA_RELEASE_VERSION=rc-1 scripts/detta-operator-launch-rehearsal.sh
+```
+
+The rehearsal unpacks the release archive, boots the packaged `detta-node`
+from the generated genesis, queries `get_state_root` over TCP RPC, verifies it
+matches the genesis root, and writes `dist/detta-launch-rehearsal-<version>.json`.
+
 Mainnet-candidate readiness is represented by
 `ops/detta-mainnet-candidate-readiness.json`. The checked-in status
 intentionally does not claim readiness until public testnet, external audit,
