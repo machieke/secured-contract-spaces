@@ -399,6 +399,9 @@ Completed production-plan slices:
 - [x] Readiness manifests have a deterministic status report that binds
   blocker state, manifest hashes, evidence inventory hashes, and source-state
   metadata for launch review.
+- [x] Readiness status reports have a standalone verifier that checks transfer
+  checksums, schema, manifest hashes, evidence inventory hashes, evidence file
+  bytes, blocker/status consistency, and current manifest binding.
 - [x] Local release gate performs a locked release build reproducibility smoke
   check.
 - [x] Local release gate runs the deterministic generated-corpus fuzz smoke
@@ -523,6 +526,8 @@ Completed production-plan slices:
   launch status metadata cannot drift from checked evidence paths.
 - [x] Hard release gate generates the deterministic readiness status report so
   launch blocker reporting remains machine-checkable.
+- [x] Hard release gate verifies the generated readiness status report before
+  continuing to release artifact and proof checks.
 
 Next implementation slices:
 

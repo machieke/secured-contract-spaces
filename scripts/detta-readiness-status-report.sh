@@ -162,6 +162,7 @@ if [ -n "$out_path" ]; then
   mkdir -p "$(dirname "$out_path")"
   render_report >"$out_path"
   sha256sum "$out_path" >"$out_path.sha256"
+  scripts/detta-verify-readiness-status-report.sh "$out_path" >/dev/null
   printf 'readiness status report: %s\n' "$out_path"
 else
   render_report

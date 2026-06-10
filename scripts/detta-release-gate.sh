@@ -67,7 +67,9 @@ cargo test --workspace --exclude detta-e2e
 run_e2e_gate
 cargo test -p detta-verify
 scripts/detta-verify-readiness-manifests.sh
-DETTA_SKIP_READINESS_VERIFY=1 scripts/detta-readiness-status-report.sh >/dev/null
+DETTA_SKIP_READINESS_VERIFY=1 \
+  scripts/detta-readiness-status-report.sh \
+  "$tmp_operator_artifacts/detta-readiness-status-release-gate.json" >/dev/null
 cargo test -p detta-verify tests::differential_replay_accepts_generated_transfer_corpus -- --exact
 cargo test -p detta-verify tests::differential_replay_accepts_generated_defi_corpus -- --exact
 cargo build --locked --release

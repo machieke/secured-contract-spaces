@@ -165,6 +165,8 @@ SCS specification
 - `scripts/detta-readiness-status-report.sh`: deterministic readiness status
   reporter that hashes readiness manifests, evidence paths, blockers, and
   source-state metadata for launch review.
+- `scripts/detta-verify-readiness-status-report.sh`: standalone verifier for
+  transferred readiness status reports and their evidence inventory hashes.
 - `scripts/detta-package-release.sh`: release artifact packaging script for
   the validator and client binaries, demo genesis, faucet sample, hashes, and
   signing manifest.
@@ -284,6 +286,7 @@ Generate a deterministic readiness status report for release review:
 
 ```sh
 scripts/detta-readiness-status-report.sh dist/detta-readiness-status.json
+scripts/detta-verify-readiness-status-report.sh dist/detta-readiness-status.json
 ```
 
 ## Operator Binary Quick Start
