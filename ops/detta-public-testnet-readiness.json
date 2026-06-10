@@ -36,6 +36,7 @@
     "scripts/detta-incident-response-drill.sh",
     "scripts/detta-governance-bootstrap-drill.sh",
     "scripts/detta-validator-onboarding-drill.sh",
+    "scripts/detta-packaged-client-flow-drill.sh",
     "security/detta-audit-findings.json"
   ],
   "blockers": [

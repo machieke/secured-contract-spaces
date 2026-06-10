@@ -486,6 +486,9 @@ Completed production-plan slices:
 - [x] Packaged `detta-client` TCP RPC binary submits token deployment, pool
   deployment, liquidity, swap, receipt, block-production, and state-root
   commands for end-user DeFi workflows.
+- [x] Packaged-client release drill unpacks the release archive, boots
+  packaged `detta-node`, runs packaged `detta-client` through token, pool,
+  liquidity, buy, and sell commands, and records a checksummed report.
 
 Next implementation slices:
 

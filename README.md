@@ -165,6 +165,9 @@ SCS specification
 - `scripts/detta-release-signing-drill.sh`: hermetic release signing drill
   that signs packaged checksum attestations with an ephemeral key and verifies
   them with the production verifier.
+- `scripts/detta-packaged-client-flow-drill.sh`: release-archive drill that
+  boots packaged `detta-node` and drives packaged `detta-client` through token,
+  liquidity, buy, and sell workflows.
 - `docs/`: LaTeX rendering of the SCS specification.
 
 Rust workspace crates:
@@ -319,6 +322,17 @@ checksum files with an ephemeral key, verifies the bundle through
 `scripts/detta-verify-release-signatures.sh`, and writes
 `dist/detta-release-signing-drill-<version>.json`. Production releases must
 still be signed with the published release key.
+
+Run the packaged client flow drill before publishing the sample client:
+
+```sh
+DETTA_RELEASE_VERSION=rc-1 scripts/detta-packaged-client-flow-drill.sh
+```
+
+The drill unpacks the release archive, boots packaged `detta-node`, runs
+packaged `detta-client` through token deployment, pool deployment, liquidity,
+buy, and sell commands, verifies committed receipts, and writes
+`dist/detta-packaged-client-flow-drill-<version>.json`.
 
 Run a local operator launch rehearsal against the packaged binary:
 
