@@ -133,6 +133,8 @@ if ! jq -e '
   and (.source_state.unstaged_diff_sha256 | type == "string" and test("^[0-9a-f]{64}$"))
   and (.release_manifest.path | type == "string" and length > 0)
   and (.release_manifest.sha256 | type == "string" and test("^[0-9a-f]{64}$"))
+  and (.readiness_status_report.path | type == "string" and length > 0)
+  and (.readiness_status_report.sha256 | type == "string" and test("^[0-9a-f]{64}$"))
   and (.evidence_inventory.count | type == "number")
   and (.evidence_inventory.sha256 | type == "string" and test("^[0-9a-f]{64}$"))
   and (.evidence_inventory.files | type == "array")
@@ -237,7 +239,19 @@ if ! jq -e --slurpfile report "$report_path" '
 fi
 
 version="$(jq -r '.version' "$report_path")"
+readiness_report_name="$(jq -r '.readiness_status_report.path' "$report_path")"
+require_safe_relative_path "$readiness_report_name"
+readiness_report_path="$extract_dir/reports/$readiness_report_name"
+if [ ! -f "$readiness_report_path" ]; then
+  fail "readiness status report missing from bundle: $readiness_report_name"
+fi
+if [ "$(sha256_of_file "$readiness_report_path")" != "$(jq -r '.readiness_status_report.sha256' "$report_path")" ]; then
+  fail "readiness status report hash mismatch"
+fi
+
 require_inventory_bundle_path "release/detta-release-${version}.json"
+require_inventory_bundle_path "reports/detta-readiness-status-${version}.json"
+require_inventory_bundle_path "reports/detta-readiness-status-${version}.json.sha256"
 require_inventory_bundle_path "reports/detta-launch-rehearsal-${version}.json"
 require_inventory_bundle_path "reports/detta-genesis-finalization-${version}.json"
 require_inventory_bundle_path "reports/detta-incident-response-drill-${version}.json"
@@ -251,5 +265,6 @@ require_inventory_bundle_path "audit/detta-audit-readiness-package-${version}.ta
 
 scripts/detta-verify-audit-readiness-package.sh \
   "$extract_dir/audit/detta-audit-readiness-package-${version}.tar.gz" >/dev/null
+scripts/detta-verify-readiness-status-report.sh "$readiness_report_path" >/dev/null
 
 printf 'release candidate evidence bundle verified: %s\n' "$bundle_path"

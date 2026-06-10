@@ -245,8 +245,9 @@ when the operator needs retained release-candidate reports under `dist/`.
 Use `scripts/detta-release-candidate-evidence-bundle.sh` to produce retained
 release-candidate evidence after the hard gate passes. The script reruns the
 packaged operator drills under one release version, verifies report checksums,
-collects release artifacts, drill reports, audit-readiness package, signing
-public key, checksum files, and detached signatures, then writes
+collects release artifacts, drill reports, audit-readiness package, readiness
+status report, signing public key, checksum files, and detached signatures,
+then writes
 `dist/detta-release-candidate-evidence-<version>.json`,
 `dist/detta-release-candidate-evidence-<version>.jsonl`, and
 `dist/detta-release-candidate-evidence-<version>.tar.gz` plus SHA-256

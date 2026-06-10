@@ -205,6 +205,11 @@ if [ -f "$out_dir/$public_key" ]; then
   add_evidence_file release_signing_public_key "$out_dir/$public_key" signatures no
 fi
 
+readiness_report="detta-readiness-status-${safe_version}.json"
+scripts/detta-readiness-status-report.sh "$out_dir/$readiness_report"
+add_evidence_file readiness_status_report "$out_dir/$readiness_report" reports no
+add_evidence_file readiness_status_report_checksum "$out_dir/$readiness_report.sha256" reports no
+
 source_state_json="$(jq -c '.source_state' "$manifest_path")"
 evidence_count="$(wc -l <"$evidence_jsonl" | tr -d '[:space:]')"
 evidence_inventory_sha="$(sha256_of_file "$evidence_jsonl")"
@@ -218,6 +223,8 @@ jq -n -e \
   --arg chain_id "$chain_id" \
   --arg release_manifest "$manifest_name" \
   --arg release_manifest_sha "$(sha256_of_file "$manifest_path")" \
+  --arg readiness_report "$readiness_report" \
+  --arg readiness_report_sha "$(sha256_of_file "$out_dir/$readiness_report")" \
   --arg evidence_inventory_sha "$evidence_inventory_sha" \
   --arg bundle "$bundle_name" \
   --arg status "passed" \
@@ -238,6 +245,10 @@ jq -n -e \
     release_manifest: {
       path: $release_manifest,
       sha256: $release_manifest_sha
+    },
+    readiness_status_report: {
+      path: $readiness_report,
+      sha256: $readiness_report_sha
     },
     evidence_inventory: {
       count: $evidence_count,

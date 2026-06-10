@@ -517,11 +517,14 @@ Completed production-plan slices:
   handoff.
 - [x] Retained release-candidate evidence bundle script reruns packaged
   operator drills under one version and bundles release artifacts, reports,
-  checksums, signatures, audit package, signing key, and source-state metadata.
+  checksums, signatures, audit package, signing key, readiness status report,
+  and source-state metadata.
 - [x] Retained release-candidate evidence bundles have a standalone verifier
   that checks archive paths, report schema, inventory hashes, evidence file
   hashes, required drill reports, source-state consistency, and the embedded
   audit-readiness package.
+- [x] Retained release-candidate evidence bundles require the readiness status
+  report and rerun its standalone verifier against the packaged copy.
 - [x] Hard release gate runs the standalone readiness-manifest verifier so
   launch status metadata cannot drift from checked evidence paths.
 - [x] Hard release gate generates the deterministic readiness status report so
