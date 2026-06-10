@@ -159,6 +159,9 @@ SCS specification
 - `security/detta-audit-findings.json`: release-candidate audit finding
   tracker validated by `detta-verify`.
 - `scripts/detta-release-gate.sh`: release-gate verification script.
+- `scripts/detta-package-release.sh`: release artifact packaging script for
+  the validator binary, demo genesis, faucet sample, hashes, and signing
+  manifest.
 - `docs/`: LaTeX rendering of the SCS specification.
 
 Rust workspace crates:
@@ -266,6 +269,17 @@ Create a faucet transfer transaction that can be submitted through RPC:
 cargo run -p detta-node --bin detta-node -- \
   faucet-tx --to Alice --amount 100 --nonce 1 --tx-hash faucet-alice-1
 ```
+
+Package release-candidate artifacts after the hard release gate passes:
+
+```sh
+DETTA_RELEASE_VERSION=rc-1 scripts/detta-package-release.sh
+```
+
+The packaging script writes `dist/detta-release-<version>.json`, SHA-256
+attestations, a deterministic `detta-node` archive, a demo genesis snapshot,
+and a sample faucet transaction. Detached signatures are still an operator
+release step and should use the `*.sha256` files listed in the manifest.
 
 Mainnet-candidate readiness is represented by
 `ops/detta-mainnet-candidate-readiness.json`. The checked-in status

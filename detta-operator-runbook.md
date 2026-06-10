@@ -32,6 +32,8 @@ Before joining a validator:
 - generate or verify the launch genesis snapshot with
   `detta-node write-genesis`;
 - start the persistent validator with `detta-node serve --storage ...`;
+- package release-candidate artifacts with `scripts/detta-package-release.sh`
+  and sign the generated `*.sha256` files with the release key;
 - check `ops/detta-public-testnet-readiness.json` and confirm it does not claim
   public-testnet readiness while blockers remain;
 - check `ops/detta-mainnet-candidate-readiness.json` and confirm it does not
@@ -196,6 +198,14 @@ Mainnet candidacy requires:
 - completed launch rehearsal and incident-response drill;
 - reproducible release artifacts with SHA-256 roots and detached signature
   metadata.
+
+Use `scripts/detta-package-release.sh` after the hard release gate passes. The
+script produces a deterministic validator archive, demo genesis snapshot,
+sample faucet transaction, SHA-256 attestations, and
+`dist/detta-release-<version>.json`. Sign the generated `*.sha256` files with
+the release key, publish the matching `*.sig` files, and copy the paths,
+hashes, signer identity, and signature paths into
+`ops/detta-mainnet-candidate-readiness.json`.
 
 When those conditions are met, update the manifest, keep the blocker list
 empty, include every signed release artifact, and run

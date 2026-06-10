@@ -28,6 +28,7 @@
     "crates/detta-e2e/tests/four_validator_convergence_flows.rs",
     "crates/detta-node/src/bin/detta-node.rs",
     "scripts/detta-release-gate.sh",
+    "scripts/detta-package-release.sh",
     "security/detta-audit-findings.json"
   ],
   "blockers": [
