@@ -472,8 +472,8 @@ Completed production-plan slices:
 
 Next implementation slices:
 
-No pending implementation slices are listed. Add the next slice here when a
-new production acceptance gap is identified.
+No pending implementation slices are listed. Add the next slice here when new
+production acceptance work is scoped.
 
 # 1. Production Objective
 

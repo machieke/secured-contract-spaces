@@ -1,6 +1,6 @@
-# DeTTa Economic Correctness TODOs
+# DeTTa Economic Correctness Status
 
-This checklist tracks the completed economic-correctness pass across native
+This status record tracks the completed economic-correctness pass across native
 DeFi contracts and restricted MeTTa aspect flows.
 
 Status: complete for the current DeTTa runtime scope. Aspect modules that need
