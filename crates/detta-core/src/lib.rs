@@ -1124,6 +1124,8 @@ fn core_method_policy_from_aspect(
         detta_aspects::AuthorityKind::TxSender => PolicyAuthority::TxSender,
         detta_aspects::AuthorityKind::PermitCertificate => PolicyAuthority::PermitCertificate,
         detta_aspects::AuthorityKind::BridgeCertificate => PolicyAuthority::BridgeCertificate,
+        detta_aspects::AuthorityKind::OracleUpdaterGrant => PolicyAuthority::OracleUpdaterGrant,
+        detta_aspects::AuthorityKind::GovernanceAdminGrant => PolicyAuthority::GovernanceAdminGrant,
         _ => return Err(ExecutionError::InvalidArguments),
     };
     let mut effects = BTreeSet::new();
@@ -4106,6 +4108,7 @@ impl DeTTaState {
             match &policy.reentrancy {
                 ReentrancyMode::NonReentrant => {}
             }
+            self.enforce_method_authority(tx, &msg_sender, policy)?;
 
             if self.paused_contracts.contains(&tx.target) {
                 return Err(ExecutionError::ContractPaused);
@@ -4397,6 +4400,26 @@ impl DeTTaState {
                     certificate,
                 },
             ),
+        }
+    }
+
+    fn enforce_method_authority(
+        &self,
+        tx: &Transaction,
+        msg_sender: &Principal,
+        policy: &MethodPolicy,
+    ) -> Result<(), ExecutionError> {
+        match policy.authority {
+            PolicyAuthority::TxSender
+            | PolicyAuthority::LiveAllowanceGrant
+            | PolicyAuthority::PermitCertificate
+            | PolicyAuthority::BridgeCertificate => Ok(()),
+            PolicyAuthority::OracleUpdaterGrant => {
+                self.require_oracle_updater(&tx.target, msg_sender)
+            }
+            PolicyAuthority::GovernanceAdminGrant => {
+                self.require_governance_admin(&tx.target, msg_sender)
+            }
         }
     }
 
@@ -6380,6 +6403,13 @@ impl DeTTaState {
         let module_hash = expect_text(&tx.args[1])?;
         let bundle_id = expect_text(&tx.args[2])?;
         self.deploy_aspect_contract(contract.clone(), module_hash.clone(), bundle_id.clone())?;
+        self.registry.insert(
+            GrantKey::GovernanceAdmin {
+                contract: contract.clone(),
+                subject: tx.sender.clone(),
+            },
+            Grant::governance_admin(tx.sender.clone()),
+        );
         let code_hash = self
             .contracts
             .get(&contract)
@@ -8765,6 +8795,20 @@ mod tests {
         ));
         assert_eq!(deploy.status, TxStatus::Committed);
 
+        let unauthorized_mint = state.apply_transaction(tx_to(
+            "MintBurnAspectToken",
+            "tx-unauthorized-mint-bob",
+            "Mallory",
+            1,
+            Method::Other("Mint-mint".into()),
+            vec![principal("Bob"), amount(1)],
+        ));
+        assert_eq!(unauthorized_mint.status, TxStatus::Reverted);
+        assert_eq!(
+            unauthorized_mint.error,
+            Some(ExecutionError::UnauthorizedGovernance)
+        );
+
         let zero_mint = state.apply_transaction(tx_to(
             "MintBurnAspectToken",
             "tx-zero-mint-bob",
@@ -9460,11 +9504,25 @@ mod tests {
         ));
         assert_eq!(deploy.status, TxStatus::Committed);
 
+        let unauthorized_configure_reward = state.apply_transaction(tx_to(
+            "RewardedStakeAspectToken",
+            "tx-unauthorized-configure-stake-reward",
+            "Admin",
+            1,
+            Method::Other("Staking-configureReward".into()),
+            vec![amount(1)],
+        ));
+        assert_eq!(unauthorized_configure_reward.status, TxStatus::Reverted);
+        assert_eq!(
+            unauthorized_configure_reward.error,
+            Some(ExecutionError::UnauthorizedGovernance)
+        );
+
         let configure_reward = state.apply_transaction(tx_to(
             "RewardedStakeAspectToken",
             "tx-configure-stake-reward",
-            "Admin",
-            1,
+            "Issuer",
+            2,
             Method::Other("Staking-configureReward".into()),
             vec![amount(1)],
         ));

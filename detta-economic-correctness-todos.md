@@ -61,6 +61,9 @@ need to move external ledgers beyond their own aspect-owned accounting state.
   projections.
 - [x] Mint, burn, bridge mint, and bridge burn reject zero amounts so no-op
   privileged actions cannot emit misleading events or consume replay IDs.
+- [x] Privileged aspect initialization, minting, fee, pause, restriction, lock,
+  cap, and staking-reward configuration policies require the deployment
+  governance-admin grant instead of public `TxSender` authority.
 - [x] Aspect vault/wrap/stake projections are tested and documented as
   aspect-owned accounting modules unless a kernel adapter is explicitly used.
 - [x] Aspect method policies declare all economically relevant effects.
@@ -89,7 +92,7 @@ need to move external ledgers beyond their own aspect-owned accounting state.
 - `cargo test -p detta-e2e --test four_validator_convergence_flows --
   --test-threads=1` passed.
 - `cargo test -p detta-core mint_burn_token_aspect_updates_supply_and_balances`
-  passed.
+  passed, including zero-amount and unauthorized aspect mint rejection.
 - `cargo test -p detta-core bridge_mint_burn_aspect_requires_verified_bridge_certificate`
   passed.
 - `cargo test -p detta-core deployment_helpers_reject_invalid_inputs_without_partial_state`

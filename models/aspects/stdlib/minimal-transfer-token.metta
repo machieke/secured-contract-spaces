@@ -1119,17 +1119,17 @@
   (invariants AA-1))
 
 (method-policy ERC20ConformantToken ERC20-initialize
-  TxSender
+  GovernanceAdminGrant
   (effects ReadState WriteState EmitEvent)
   (invariants TBA-3))
 
 (method-policy FeeToken ERC20-initialize
-  TxSender
+  GovernanceAdminGrant
   (effects ReadState WriteState EmitEvent)
   (invariants TBA-3))
 
 (method-policy FeeToken Fee-setConfig
-  TxSender
+  GovernanceAdminGrant
   (effects WriteState)
   (invariants FEE-1))
 
@@ -1139,12 +1139,12 @@
   (invariants TBA-3 FEE-1))
 
 (method-policy PausableToken ERC20-initialize
-  TxSender
+  GovernanceAdminGrant
   (effects ReadState WriteState EmitEvent)
   (invariants TBA-3))
 
 (method-policy PausableToken Pause-setPaused
-  TxSender
+  GovernanceAdminGrant
   (effects WriteState)
   (invariants PAUSE-1))
 
@@ -1154,12 +1154,12 @@
   (invariants TBA-3 PAUSE-1))
 
 (method-policy RestrictedToken ERC20-initialize
-  TxSender
+  GovernanceAdminGrant
   (effects ReadState WriteState EmitEvent)
   (invariants TBA-3))
 
 (method-policy RestrictedToken Restriction-setBlocked
-  TxSender
+  GovernanceAdminGrant
   (effects WriteState)
   (invariants RESTRICT-1))
 
@@ -1169,12 +1169,12 @@
   (invariants TBA-3 RESTRICT-1))
 
 (method-policy LockedToken ERC20-initialize
-  TxSender
+  GovernanceAdminGrant
   (effects ReadState WriteState EmitEvent)
   (invariants TBA-3))
 
 (method-policy LockedToken Lock-setUntil
-  TxSender
+  GovernanceAdminGrant
   (effects WriteState)
   (invariants LOCK-1))
 
@@ -1184,7 +1184,7 @@
   (invariants TBA-3 LOCK-1))
 
 (method-policy MintBurnToken ERC20-initialize
-  TxSender
+  GovernanceAdminGrant
   (effects ReadState WriteState EmitEvent)
   (invariants TBA-3))
 
@@ -1194,7 +1194,7 @@
   (invariants TBA-3))
 
 (method-policy MintBurnToken Mint-mint
-  TxSender
+  GovernanceAdminGrant
   (effects ReadState WriteState EmitEvent)
   (invariants MINT-1))
 
@@ -1204,7 +1204,7 @@
   (invariants BURN-1))
 
 (method-policy CappedMintToken ERC20-initialize
-  TxSender
+  GovernanceAdminGrant
   (effects ReadState WriteState EmitEvent)
   (invariants TBA-3 CAP-1))
 
@@ -1214,17 +1214,17 @@
   (invariants TBA-3 CAP-1))
 
 (method-policy CappedMintToken Cap-setMintCap
-  TxSender
+  GovernanceAdminGrant
   (effects ReadState WriteState)
   (invariants CAP-1))
 
 (method-policy CappedMintToken Mint-mint
-  TxSender
+  GovernanceAdminGrant
   (effects ReadState WriteState EmitEvent)
   (invariants MINT-1 CAP-1))
 
 (method-policy VotableToken ERC20-initialize
-  TxSender
+  GovernanceAdminGrant
   (effects ReadState WriteState EmitEvent)
   (invariants TBA-3 VOTE-1))
 
@@ -1239,7 +1239,7 @@
   (invariants VOTE-1))
 
 (method-policy SnapshotToken ERC20-initialize
-  TxSender
+  GovernanceAdminGrant
   (effects ReadState WriteState EmitEvent)
   (invariants TBA-3 SNAP-1))
 
@@ -1294,7 +1294,7 @@
   (invariants TBA-3 WRAP-1))
 
 (method-policy RewardedStakeToken Staking-configureReward
-  TxSender
+  GovernanceAdminGrant
   (effects WriteState)
   (invariants REWARD-1))
 

@@ -273,7 +273,8 @@ staking are tested as aspect-owned accounting modules unless a kernel adapter is
 explicitly used; they do not silently move unrelated native token ledgers.
 Privileged aspect operations that change supply or bridge replay state reject
 zero amounts before emitting events, mutating supply, or consuming bridge
-message IDs.
+message IDs. Privileged aspect configuration and minting methods use the
+deployment admin grant rather than public sender-only authority.
 
 ## DeFi Client Coverage
 
