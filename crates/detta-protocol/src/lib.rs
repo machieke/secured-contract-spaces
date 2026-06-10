@@ -419,7 +419,7 @@ fn claimed_message_signer(message: &ProtocolMessage) -> Option<&str> {
 
 impl SnapshotChunkManifest {
     pub fn manifest_hash(&self) -> Result<String, SnapshotSyncError> {
-        hash_postcard(self).map_err(|_| SnapshotSyncError::EncodeFailed)
+        hash_protocol_json(self).map_err(|_| SnapshotSyncError::EncodeFailed)
     }
 }
 
@@ -529,7 +529,7 @@ impl SnapshotChunkSet {
         }
 
         let snapshot: StateSnapshot =
-            postcard::from_bytes(&snapshot_bytes).map_err(|_| SnapshotSyncError::DecodeFailed)?;
+            decode_protocol_json(&snapshot_bytes).map_err(|_| SnapshotSyncError::DecodeFailed)?;
         if snapshot.global_state_root != self.manifest.snapshot_root {
             return Err(SnapshotSyncError::SnapshotRootMismatch {
                 expected: self.manifest.snapshot_root.clone(),
@@ -604,13 +604,13 @@ pub enum ProtocolError {
 }
 
 pub fn encode_message(message: &ProtocolMessage) -> Result<Vec<u8>, ProtocolError> {
-    let payload = postcard::to_allocvec(message).map_err(|_| ProtocolError::EncodeFailed)?;
+    let payload = encode_protocol_json(message).map_err(|_| ProtocolError::EncodeFailed)?;
     encode_payload(CURRENT_PROTOCOL_VERSION, &payload)
 }
 
 pub fn decode_message(bytes: &[u8]) -> Result<ProtocolMessage, ProtocolError> {
     let payload = decode_payload(bytes)?;
-    postcard::from_bytes(payload).map_err(|_| ProtocolError::DecodeFailed)
+    decode_protocol_json(payload).map_err(|_| ProtocolError::DecodeFailed)
 }
 
 pub fn message_hash(message: &ProtocolMessage) -> Result<String, ProtocolError> {
@@ -636,7 +636,7 @@ pub fn build_snapshot_chunks_with_metadata_roots(
     let chunk_size =
         u32::try_from(max_chunk_bytes).map_err(|_| SnapshotSyncError::InvalidChunkSize)?;
     let snapshot_bytes =
-        postcard::to_allocvec(snapshot).map_err(|_| SnapshotSyncError::EncodeFailed)?;
+        encode_protocol_json(snapshot).map_err(|_| SnapshotSyncError::EncodeFailed)?;
     let snapshot_hash = hash_bytes(&snapshot_bytes);
 
     let mut raw_chunks: Vec<Vec<u8>> = snapshot_bytes
@@ -676,13 +676,21 @@ pub fn build_snapshot_chunks_with_metadata_roots(
     Ok(SnapshotChunkSet { manifest, chunks })
 }
 
-fn hash_postcard<T: Serialize>(value: &T) -> Result<String, postcard::Error> {
-    let bytes = postcard::to_allocvec(value)?;
+fn hash_protocol_json<T: Serialize>(value: &T) -> Result<String, serde_json::Error> {
+    let bytes = encode_protocol_json(value)?;
     Ok(hash_bytes(&bytes))
 }
 
 fn chunk_root(chunk_hashes: &[String]) -> Result<String, SnapshotSyncError> {
-    hash_postcard(&chunk_hashes).map_err(|_| SnapshotSyncError::EncodeFailed)
+    hash_protocol_json(&chunk_hashes).map_err(|_| SnapshotSyncError::EncodeFailed)
+}
+
+fn encode_protocol_json<T: Serialize>(value: &T) -> Result<Vec<u8>, serde_json::Error> {
+    serde_json::to_vec(value)
+}
+
+fn decode_protocol_json<'a, T: Deserialize<'a>>(bytes: &'a [u8]) -> Result<T, serde_json::Error> {
+    serde_json::from_slice(bytes)
 }
 
 fn hash_bytes(bytes: &[u8]) -> String {
@@ -695,7 +703,7 @@ fn validator_signing_payload(
     chain_id: &str,
     message: &ProtocolMessage,
 ) -> Result<Vec<u8>, SignatureError> {
-    let message_bytes = postcard::to_allocvec(message).map_err(|_| SignatureError::EncodeFailed)?;
+    let message_bytes = encode_protocol_json(message).map_err(|_| SignatureError::EncodeFailed)?;
     let mut payload = Vec::new();
     push_length_prefixed(&mut payload, VALIDATOR_SIGNATURE_PREFIX.as_bytes());
     payload.extend_from_slice(&CURRENT_PROTOCOL_VERSION.to_be_bytes());
@@ -815,9 +823,9 @@ mod tests {
     use super::*;
     use detta_core::{Argument, DeTTaState, Method};
 
-    const TX_ENVELOPE_HEX: &str = "44545441000100000033000b64657474612d6c6f63616c0374783105416c696365010006546f6b656e4100030003426f62010455534443020a01c0843d";
+    const TX_ENVELOPE_HEX: &str = "445454410001000000f67b225472616e73616374696f6e223a7b22636861696e5f6964223a2264657474612d6c6f63616c222c2274785f68617368223a22747831222c2273656e646572223a22416c696365222c226e6f6e6365223a312c2276616c69645f756e74696c5f686569676874223a6e756c6c2c22746172676574223a22546f6b656e41222c226d6574686f64223a225472616e73666572222c2261726773223a5b7b225072696e636970616c223a22426f62227d2c7b224173736574223a2255534443227d2c7b22416d6f756e74223a31307d5d2c227369676e61747572655f6f6b223a747275652c22627564676574223a313030303030307d7d";
     const VOTE_ENVELOPE_HEX: &str =
-        "4454544100010000001b020b76616c696461746f722d31070c626c6f636b2d686173682d31";
+        "4454544100010000004e7b22566f7465223a7b2276616c696461746f725f6964223a2276616c696461746f722d31222c22686569676874223a372c22626c6f636b5f68617368223a22626c6f636b2d686173682d31227d7d";
 
     fn transfer_tx() -> Transaction {
         Transaction {

@@ -1,4 +1,3 @@
-use bincode::Options;
 use detta_consensus::{FinalityCertificate, SlashingRecord};
 use detta_core::{Block, DeTTaState, Receipt, SnapshotError, StateSnapshot, Transaction};
 use detta_protocol::{SignedValidatorMessage, ValidatorSetMetadata, ValidatorSignatureDomain};
@@ -6,7 +5,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs::{self, File};
-use std::io::{BufReader, BufWriter};
+use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 const MAX_ENCODED_BYTES: u64 = 64 * 1024 * 1024;
@@ -184,7 +183,7 @@ impl FileStorage {
     pub fn required_snapshot_metadata_roots_root_for(
         roots: &BTreeMap<String, String>,
     ) -> Result<String, StorageError> {
-        hash_bincode(roots)
+        hash_canonical_json(roots)
     }
 
     pub fn commit_snapshot_sync_client_metrics<T: Serialize>(
@@ -215,7 +214,7 @@ impl FileStorage {
     pub fn snapshot_sync_client_metrics_root_for<T: Serialize>(
         metrics: &T,
     ) -> Result<String, StorageError> {
-        hash_bincode(metrics)
+        hash_canonical_json(metrics)
     }
 
     pub fn commit_block(&self, block: &Block) -> Result<(), StorageError> {
@@ -445,7 +444,7 @@ impl FileStorage {
 
     pub fn validator_set_metadata_audit_root(&self) -> Result<String, StorageError> {
         let records = self.load_validator_set_metadata_audit_records()?;
-        hash_bincode(&records)
+        hash_canonical_json(&records)
     }
 
     pub fn append_snapshot_import_audit_record(
@@ -500,7 +499,7 @@ impl FileStorage {
     pub fn snapshot_import_audit_root_for(
         records: &[SnapshotImportAuditRecord],
     ) -> Result<String, StorageError> {
-        hash_bincode(&records)
+        hash_canonical_json(&records)
     }
 
     pub fn commit_snapshot_import_audit_config(
@@ -529,7 +528,7 @@ impl FileStorage {
     pub fn snapshot_import_audit_config_root_for(
         config: &SnapshotImportAuditConfig,
     ) -> Result<String, StorageError> {
-        hash_bincode(config)
+        hash_canonical_json(config)
     }
 
     pub fn commit_mempool(&self, transactions: &[Transaction]) -> Result<(), StorageError> {
@@ -654,14 +653,14 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), Storage
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(io_error)?;
     }
+    let bytes = encode_json(value)?;
 
     let tmp_path = path.with_extension("tmp");
     {
         let file = File::create(&tmp_path).map_err(io_error)?;
-        let writer = BufWriter::new(file);
-        bincode_options()
-            .serialize_into(writer, value)
-            .map_err(data_error)?;
+        let mut writer = BufWriter::new(file);
+        writer.write_all(&bytes).map_err(io_error)?;
+        writer.flush().map_err(io_error)?;
     }
 
     let file = File::options()
@@ -675,25 +674,28 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), Storage
 
 fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, StorageError> {
     let file = File::open(path).map_err(io_error)?;
+    let encoded_len = file.metadata().map_err(io_error)?.len();
+    if encoded_len > MAX_ENCODED_BYTES {
+        return Err(StorageError::CorruptData(format!(
+            "encoded storage value exceeds {MAX_ENCODED_BYTES} bytes"
+        )));
+    }
     let reader = BufReader::new(file);
-    bincode_options()
-        .deserialize_from(reader)
-        .map_err(data_error)
+    serde_json::from_reader(reader).map_err(data_error)
 }
 
 fn write_json_create_new<T: Serialize>(path: &Path, value: &T) -> Result<(), StorageError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(io_error)?;
     }
+    let bytes = encode_json(value)?;
 
     let mut file = File::options()
         .write(true)
         .create_new(true)
         .open(path)
         .map_err(io_error)?;
-    bincode_options()
-        .serialize_into(&mut file, value)
-        .map_err(data_error)?;
+    file.write_all(&bytes).map_err(io_error)?;
     file.sync_all().map_err(io_error)
 }
 
@@ -701,16 +703,22 @@ fn io_error(error: std::io::Error) -> StorageError {
     StorageError::Io(error.to_string())
 }
 
-fn data_error(error: bincode::Error) -> StorageError {
+fn data_error(error: serde_json::Error) -> StorageError {
     StorageError::CorruptData(error.to_string())
 }
 
-fn bincode_options() -> impl Options {
-    bincode::DefaultOptions::new().with_limit(MAX_ENCODED_BYTES)
+fn encode_json<T: Serialize>(value: &T) -> Result<Vec<u8>, StorageError> {
+    let bytes = serde_json::to_vec(value).map_err(data_error)?;
+    if bytes.len() as u64 > MAX_ENCODED_BYTES {
+        return Err(StorageError::CorruptData(format!(
+            "encoded storage value exceeds {MAX_ENCODED_BYTES} bytes"
+        )));
+    }
+    Ok(bytes)
 }
 
-fn hash_bincode<T: Serialize>(value: &T) -> Result<String, StorageError> {
-    let bytes = bincode_options().serialize(value).map_err(data_error)?;
+fn hash_canonical_json<T: Serialize>(value: &T) -> Result<String, StorageError> {
+    let bytes = encode_json(value)?;
     let mut hasher = Sha256::new();
     hasher.update(b"detta-storage-root");
     hasher.update((bytes.len() as u64).to_be_bytes());
@@ -1478,7 +1486,7 @@ mod tests {
     fn reports_corrupt_block_json() {
         let dir = temp_dir("corrupt-block");
         let storage = FileStorage::open(&dir).unwrap();
-        fs::write(storage.root().join("blocks").join("1.bin"), b"not-bincode").unwrap();
+        fs::write(storage.root().join("blocks").join("1.bin"), b"not-json").unwrap();
 
         let error = storage.load_block(1).unwrap_err();
 
