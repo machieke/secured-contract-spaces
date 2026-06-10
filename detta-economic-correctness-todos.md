@@ -74,6 +74,9 @@ need to move external ledgers beyond their own aspect-owned accounting state.
   projections.
 - [x] Preserve proof/theorem artifacts and rerun the release gate, including
   TLA+ model checking and proof hash manifests.
+- [x] Direct deployment helpers validate duplicate contract IDs, empty
+  identifiers, duplicate token genesis owners, and same-asset lending vaults
+  before mutating setup state.
 
 ## Verification Evidence
 
@@ -88,4 +91,6 @@ need to move external ledgers beyond their own aspect-owned accounting state.
 - `cargo test -p detta-core mint_burn_token_aspect_updates_supply_and_balances`
   passed.
 - `cargo test -p detta-core bridge_mint_burn_aspect_requires_verified_bridge_certificate`
+  passed.
+- `cargo test -p detta-core deployment_helpers_reject_invalid_inputs_without_partial_state`
   passed.

@@ -2735,6 +2735,27 @@ impl DeTTaState {
         })
     }
 
+    fn validate_new_contract_id(&self, contract: &str) -> Result<(), ExecutionError> {
+        if contract.is_empty() || self.contracts.contains_key(contract) {
+            return Err(ExecutionError::InvalidArguments);
+        }
+        Ok(())
+    }
+
+    fn validate_nonempty_asset(asset: &str) -> Result<(), ExecutionError> {
+        if asset.is_empty() {
+            return Err(ExecutionError::InvalidArguments);
+        }
+        Ok(())
+    }
+
+    fn validate_nonempty_principal(principal: &str) -> Result<(), ExecutionError> {
+        if principal.is_empty() {
+            return Err(ExecutionError::InvalidArguments);
+        }
+        Ok(())
+    }
+
     pub fn deploy_token(
         &mut self,
         contract: impl Into<ContractId>,
@@ -2745,18 +2766,31 @@ impl DeTTaState {
         let asset = asset.into();
         let code_hash = root_of(&("detta-token-v1", &contract));
         let mut total = 0u128;
+        let mut seen_owners = BTreeSet::new();
+        let mut balance_entries = Vec::new();
 
-        if self.contracts.contains_key(&contract)
-            || self.storage.keys().any(|key| {
-                matches!(
-                    key,
-                    StateKey::TotalSupply {
-                        contract: existing_contract,
-                        asset: existing_asset,
-                    } if existing_contract != &contract && existing_asset == &asset
-                )
-            })
-        {
+        self.validate_new_contract_id(&contract)?;
+        Self::validate_nonempty_asset(&asset)?;
+        for (owner, amount) in balances {
+            Self::validate_nonempty_principal(&owner)?;
+            if !seen_owners.insert(owner.clone()) {
+                return Err(ExecutionError::InvalidArguments);
+            }
+            total = total
+                .checked_add(amount)
+                .ok_or(ExecutionError::ArithmeticOverflow)?;
+            balance_entries.push((owner, amount));
+        }
+
+        if self.storage.keys().any(|key| {
+            matches!(
+                key,
+                StateKey::TotalSupply {
+                    contract: existing_contract,
+                    asset: existing_asset,
+                } if existing_contract != &contract && existing_asset == &asset
+            )
+        }) {
             return Err(ExecutionError::InvalidArguments);
         }
 
@@ -2765,10 +2799,7 @@ impl DeTTaState {
             ContractRecord::token(contract.clone(), code_hash),
         );
 
-        for (owner, amount) in balances {
-            total = total
-                .checked_add(amount)
-                .ok_or(ExecutionError::ArithmeticOverflow)?;
+        for (owner, amount) in balance_entries {
             self.storage.insert(
                 StateKey::Balance {
                     contract: contract.clone(),
@@ -2813,6 +2844,9 @@ impl DeTTaState {
         let contract = contract.into();
         let asset_a = asset_a.into();
         let asset_b = asset_b.into();
+        self.validate_new_contract_id(&contract)?;
+        Self::validate_nonempty_asset(&asset_a)?;
+        Self::validate_nonempty_asset(&asset_b)?;
         if asset_a == asset_b {
             return Err(ExecutionError::InvalidPoolAsset);
         }
@@ -2891,6 +2925,9 @@ impl DeTTaState {
         let contract = contract.into();
         let asset = asset.into();
         let updater = updater.into();
+        self.validate_new_contract_id(&contract)?;
+        Self::validate_nonempty_asset(&asset)?;
+        Self::validate_nonempty_principal(&updater)?;
         let code_hash = root_of(&("detta-oracle-v1", &contract, &asset, max_age));
 
         self.contracts.insert(
@@ -2929,12 +2966,20 @@ impl DeTTaState {
     ) -> Result<(), ExecutionError> {
         let contract = contract.into();
         let source_chain = source_chain.into();
+        self.validate_new_contract_id(&contract)?;
+        if source_chain.is_empty() {
+            return Err(ExecutionError::InvalidArguments);
+        }
+        self.insert_bridge_contract(contract, source_chain);
+        Ok(())
+    }
+
+    fn insert_bridge_contract(&mut self, contract: ContractId, source_chain: ChainId) {
         let code_hash = root_of(&("detta-bridge-v1", &contract, &source_chain));
         self.contracts.insert(
             contract.clone(),
             ContractRecord::bridge(contract, code_hash, source_chain),
         );
-        Ok(())
     }
 
     pub fn deploy_bridge_with_validator_set(
@@ -2944,10 +2989,16 @@ impl DeTTaState {
         validators: Vec<Principal>,
         quorum: usize,
     ) -> Result<(), ExecutionError> {
+        let contract = contract.into();
         let source_chain = source_chain.into();
+        self.validate_new_contract_id(&contract)?;
+        if source_chain.is_empty() {
+            return Err(ExecutionError::InvalidArguments);
+        }
         let validator_set = BridgeValidatorSet::new(source_chain.clone(), validators, quorum)?;
         self.set_trusted_bridge_validator_set(validator_set)?;
-        self.deploy_bridge(contract, source_chain)
+        self.insert_bridge_contract(contract, source_chain);
+        Ok(())
     }
 
     pub fn set_trusted_bridge_validator_set(
@@ -2992,6 +3043,11 @@ impl DeTTaState {
         let contract = contract.into();
         let governed_contract = governed_contract.into();
         let admin = admin.into();
+        self.validate_new_contract_id(&contract)?;
+        if governed_contract.is_empty() {
+            return Err(ExecutionError::InvalidArguments);
+        }
+        Self::validate_nonempty_principal(&admin)?;
         let code_hash = root_of(&(
             "detta-governance-v1",
             &contract,
@@ -3047,6 +3103,12 @@ impl DeTTaState {
         let collateral_asset = collateral_asset.into();
         let debt_asset = debt_asset.into();
         let oracle_contract = oracle_contract.into();
+        self.validate_new_contract_id(&contract)?;
+        Self::validate_nonempty_asset(&collateral_asset)?;
+        Self::validate_nonempty_asset(&debt_asset)?;
+        if oracle_contract.is_empty() || collateral_asset == debt_asset {
+            return Err(ExecutionError::InvalidArguments);
+        }
         if risk.ltv_bps > 10_000
             || risk.liquidation_threshold_bps > 10_000
             || risk.liquidation_threshold_bps < risk.ltv_bps
@@ -3111,6 +3173,8 @@ impl DeTTaState {
         }
         let contract = contract.into();
         let asset = asset.into();
+        self.validate_new_contract_id(&contract)?;
+        Self::validate_nonempty_asset(&asset)?;
         let code_hash = root_of(&(
             "detta-staking-v2",
             &contract,
@@ -3151,6 +3215,10 @@ impl DeTTaState {
     ) -> Result<(), ExecutionError> {
         let contract = contract.into();
         let token_contract = token_contract.into();
+        self.validate_new_contract_id(&contract)?;
+        if token_contract.is_empty() {
+            return Err(ExecutionError::InvalidArguments);
+        }
         let code_hash = root_of(&("detta-router-v1", &contract, &token_contract));
         self.contracts.insert(
             contract.clone(),
@@ -3164,6 +3232,7 @@ impl DeTTaState {
         contract: impl Into<ContractId>,
     ) -> Result<(), ExecutionError> {
         let contract = contract.into();
+        self.validate_new_contract_id(&contract)?;
         let code_hash = root_of(&("detta-factory-v1", &contract));
         self.contracts.insert(
             contract.clone(),
@@ -3177,6 +3246,7 @@ impl DeTTaState {
         contract: impl Into<ContractId>,
     ) -> Result<(), ExecutionError> {
         let contract = contract.into();
+        self.validate_new_contract_id(&contract)?;
         let code_hash = root_of(&("detta-account-registry-v1", &contract));
         self.contracts.insert(
             contract.clone(),
@@ -3227,10 +3297,8 @@ impl DeTTaState {
         let contract = contract.into();
         let module_hash = module_hash.into();
         let bundle_id = bundle_id.into();
-        if contract.is_empty() || module_hash.is_empty() || bundle_id.is_empty() {
-            return Err(ExecutionError::InvalidArguments);
-        }
-        if self.contracts.contains_key(&contract) {
+        self.validate_new_contract_id(&contract)?;
+        if module_hash.is_empty() || bundle_id.is_empty() {
             return Err(ExecutionError::InvalidArguments);
         }
         let module = self
@@ -9973,6 +10041,125 @@ mod tests {
         assert!(declared.contains(&ContractInvariant::StakingPendingUnbondingMatchesTotal));
         assert!(declared.contains(&ContractInvariant::RouterDoesNotInheritCallerWriteScope));
         assert_eq!(state.check_declared_invariants(), vec![]);
+    }
+
+    #[test]
+    fn deployment_helpers_reject_invalid_inputs_without_partial_state() {
+        let mut state = DeTTaState::new("detta-local");
+        let genesis_root = state.global_state_root();
+        let genesis_bridge_sets = state.trusted_bridge_validator_sets().count();
+
+        assert_eq!(
+            state.deploy_token("", "USDC", Vec::new()),
+            Err(ExecutionError::InvalidArguments)
+        );
+        assert_eq!(state.global_state_root(), genesis_root);
+        assert_eq!(
+            state.trusted_bridge_validator_sets().count(),
+            genesis_bridge_sets
+        );
+
+        assert_eq!(
+            state.deploy_token(
+                "BadToken",
+                "BAD",
+                vec![("Alice".into(), 1), ("Alice".into(), 2)]
+            ),
+            Err(ExecutionError::InvalidArguments)
+        );
+        assert!(state.contract("BadToken").is_none());
+        assert_eq!(state.total_supply("BadToken", "BAD"), 0);
+        assert_eq!(state.global_state_root(), genesis_root);
+
+        state
+            .deploy_token("TokenUSDC", "USDC", vec![("Alice".into(), 100)])
+            .unwrap();
+        state
+            .deploy_token("TokenATOM", "ATOM", vec![("Alice".into(), 100)])
+            .unwrap();
+        let valid_root = state.global_state_root();
+        let valid_bridge_sets = state.trusted_bridge_validator_sets().count();
+
+        assert_eq!(
+            state.deploy_token("TokenDuplicateAsset", "USDC", Vec::new()),
+            Err(ExecutionError::InvalidArguments)
+        );
+        assert!(state.contract("TokenDuplicateAsset").is_none());
+        assert_eq!(state.global_state_root(), valid_root);
+
+        assert_eq!(
+            state.deploy_amm_pool("", "USDC", "ATOM"),
+            Err(ExecutionError::InvalidArguments)
+        );
+        assert_eq!(state.global_state_root(), valid_root);
+
+        assert_eq!(
+            state.deploy_amm_pool("PoolSameAsset", "USDC", "USDC"),
+            Err(ExecutionError::InvalidPoolAsset)
+        );
+        assert!(state.contract("PoolSameAsset").is_none());
+        assert_eq!(state.global_state_root(), valid_root);
+
+        assert_eq!(
+            state.deploy_oracle("", "USDC", "OracleAdmin", 10),
+            Err(ExecutionError::InvalidArguments)
+        );
+        assert_eq!(state.global_state_root(), valid_root);
+
+        assert_eq!(
+            state.deploy_bridge_with_validator_set(
+                "BridgeBad",
+                "SourceChain",
+                vec!["v1".into()],
+                2
+            ),
+            Err(ExecutionError::InvalidArguments)
+        );
+        assert!(state.contract("BridgeBad").is_none());
+        assert_eq!(
+            state.trusted_bridge_validator_sets().count(),
+            valid_bridge_sets
+        );
+        assert_eq!(state.global_state_root(), valid_root);
+
+        assert_eq!(
+            state.deploy_governance("", "TokenUSDC", "Admin"),
+            Err(ExecutionError::InvalidArguments)
+        );
+        assert_eq!(state.global_state_root(), valid_root);
+
+        assert_eq!(
+            state.deploy_lending_vault("VaultSameAsset", "USDC", "USDC", "OracleA", 5_000, 10),
+            Err(ExecutionError::InvalidArguments)
+        );
+        assert!(state.contract("VaultSameAsset").is_none());
+        assert_eq!(state.global_state_root(), valid_root);
+
+        assert_eq!(
+            state.deploy_staking("", "ATOM"),
+            Err(ExecutionError::InvalidArguments)
+        );
+        assert_eq!(state.global_state_root(), valid_root);
+
+        assert_eq!(
+            state.deploy_router("", "TokenUSDC"),
+            Err(ExecutionError::InvalidArguments)
+        );
+        assert_eq!(state.global_state_root(), valid_root);
+
+        state.deploy_factory("Factory").unwrap();
+        let factory_root = state.global_state_root();
+        assert_eq!(
+            state.deploy_factory("Factory"),
+            Err(ExecutionError::InvalidArguments)
+        );
+        assert_eq!(state.global_state_root(), factory_root);
+
+        assert_eq!(
+            state.deploy_account_registry("Factory"),
+            Err(ExecutionError::InvalidArguments)
+        );
+        assert_eq!(state.global_state_root(), factory_root);
     }
 
     #[test]
