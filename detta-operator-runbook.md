@@ -36,6 +36,8 @@ Before joining a validator:
   and sign the generated `*.sha256` files with the release key;
 - verify the signed release bundle with
   `scripts/detta-verify-release-signatures.sh`;
+- run `scripts/detta-release-signing-drill.sh` and retain the generated
+  signing-drill report before the production release-key ceremony;
 - run `scripts/detta-operator-launch-rehearsal.sh` against the packaged
   artifacts and retain the generated rehearsal report;
 - run `scripts/detta-incident-response-drill.sh` against the packaged
@@ -236,6 +238,19 @@ DETTA_RELEASE_SIGNER_FINGERPRINT=<fingerprint> \
 Publish the matching `*.sig` files, and copy the paths, hashes, signer
 identity, and signature paths into
 `ops/detta-mainnet-candidate-readiness.json`.
+
+Exercise the signing path in CI or staging with a temporary key:
+
+```sh
+DETTA_RELEASE_VERSION=<version> scripts/detta-release-signing-drill.sh
+```
+
+The drill packages the release candidate, generates an ephemeral signing key,
+signs the manifest and artifact checksum attestations, verifies the bundle
+with `scripts/detta-verify-release-signatures.sh`, and writes
+`dist/detta-release-signing-drill-<version>.json`. This proves the release
+signing pipeline is executable, but it does not replace signing the final
+publication bundle with the production release key.
 
 Use `scripts/detta-operator-launch-rehearsal.sh` before publishing a release
 candidate. The rehearsal unpacks the packaged validator archive, starts it from

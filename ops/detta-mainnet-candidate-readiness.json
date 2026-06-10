@@ -27,6 +27,7 @@
     "scripts/detta-release-gate.sh",
     "scripts/detta-package-release.sh",
     "scripts/detta-verify-release-signatures.sh",
+    "scripts/detta-release-signing-drill.sh",
     "scripts/detta-operator-launch-rehearsal.sh",
     "scripts/detta-incident-response-drill.sh",
     "scripts/detta-governance-bootstrap-drill.sh",

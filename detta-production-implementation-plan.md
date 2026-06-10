@@ -480,6 +480,9 @@ Completed production-plan slices:
 - [x] File-storage backup and restore copies durable node state with a manifest
   covering bytes, file count, snapshot root, highest block height, and highest
   finality-certificate height, with persistent-node restore verification.
+- [x] Release signing drill signs packaged release checksum attestations with
+  an ephemeral GPG key, verifies them with the production release-signature
+  verifier, and records a signing-drill report.
 
 Next implementation slices:
 

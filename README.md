@@ -162,6 +162,9 @@ SCS specification
 - `scripts/detta-package-release.sh`: release artifact packaging script for
   the validator binary, demo genesis, faucet sample, hashes, and signing
   manifest.
+- `scripts/detta-release-signing-drill.sh`: hermetic release signing drill
+  that signs packaged checksum attestations with an ephemeral key and verifies
+  them with the production verifier.
 - `docs/`: LaTeX rendering of the SCS specification.
 
 Rust workspace crates:
@@ -299,6 +302,19 @@ DETTA_RELEASE_SIGNER_FINGERPRINT=<fingerprint> \
 The verifier checks the release manifest checksum and signature, every
 artifact checksum, and every declared detached signature before the signed
 artifact records are copied into readiness metadata.
+
+Run a hermetic signing drill with a temporary GPG key before a real release
+signing ceremony:
+
+```sh
+DETTA_RELEASE_VERSION=rc-1 scripts/detta-release-signing-drill.sh
+```
+
+The drill packages the release candidate, signs the manifest and artifact
+checksum files with an ephemeral key, verifies the bundle through
+`scripts/detta-verify-release-signatures.sh`, and writes
+`dist/detta-release-signing-drill-<version>.json`. Production releases must
+still be signed with the published release key.
 
 Run a local operator launch rehearsal against the packaged binary:
 
