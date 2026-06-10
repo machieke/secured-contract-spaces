@@ -29,6 +29,7 @@
     "scripts/detta-verify-release-signatures.sh",
     "scripts/detta-operator-launch-rehearsal.sh",
     "scripts/detta-incident-response-drill.sh",
+    "scripts/detta-governance-bootstrap-drill.sh",
     "ops/detta-public-testnet-readiness.json",
     "security/detta-audit-findings.json",
     "detta-operator-runbook.md"

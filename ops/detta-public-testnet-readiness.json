@@ -32,6 +32,7 @@
     "scripts/detta-verify-release-signatures.sh",
     "scripts/detta-operator-launch-rehearsal.sh",
     "scripts/detta-incident-response-drill.sh",
+    "scripts/detta-governance-bootstrap-drill.sh",
     "security/detta-audit-findings.json"
   ],
   "blockers": [

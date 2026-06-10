@@ -40,6 +40,8 @@ Before joining a validator:
   artifacts and retain the generated rehearsal report;
 - run `scripts/detta-incident-response-drill.sh` against the packaged
   artifacts and retain the generated incident-drill report;
+- run `scripts/detta-governance-bootstrap-drill.sh` against the packaged
+  artifacts and retain the generated governance-bootstrap report;
 - check `ops/detta-public-testnet-readiness.json` and confirm it does not claim
   public-testnet readiness while blockers remain;
 - check `ops/detta-mainnet-candidate-readiness.json` and confirm it does not
@@ -205,9 +207,10 @@ Mainnet candidacy requires:
 - reproducible release artifacts with SHA-256 roots and detached signature
   metadata.
 
-The hard release gate runs packaged-node launch and incident-response drills
-from a temporary release directory. Use the standalone scripts below when the
-operator needs retained release-candidate reports under `dist/`.
+The hard release gate runs packaged-node launch, incident-response, and
+governance-bootstrap drills from a temporary release directory. Use the
+standalone scripts below when the operator needs retained release-candidate
+reports under `dist/`.
 
 Use `scripts/detta-package-release.sh` after the hard release gate passes. The
 script produces a deterministic validator archive, demo genesis snapshot,
@@ -245,6 +248,15 @@ pending transaction in the mempool, checks operator health, metrics, alert
 codes, snapshot metadata roots, and absence of slashing evidence, then writes
 `dist/detta-incident-response-drill-<version>.json` plus a SHA-256 attestation.
 Retain this report as incident-response evidence.
+
+Use `scripts/detta-governance-bootstrap-drill.sh` before publishing a release
+candidate and before declaring governance bootstrap complete. The drill starts
+the packaged validator, schedules a timelocked code upgrade through `GovA`,
+checks the queue and rehearsal report, verifies early execution is rejected,
+executes after the timelock, then repeats the timelock check for a method
+policy update. It writes
+`dist/detta-governance-bootstrap-drill-<version>.json` plus a SHA-256
+attestation. Retain this report as governance-bootstrap evidence.
 
 When those conditions are met, update the manifest, keep the blocker list
 empty, include every signed release artifact, and run

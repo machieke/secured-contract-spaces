@@ -19,6 +19,9 @@ Completed production-plan slices:
   metrics, alerts, mempool, metadata-root, and slashing-evidence surfaces.
 - [x] Hard release gate runs packaged-node launch and incident-response drills
   from a temporary release directory.
+- [x] Governance bootstrap drill exercises timelocked upgrade scheduling,
+  rehearsal, early-execution rejection, execution, and policy-update execution
+  against the packaged node.
 - [x] Versioned DeTTa protocol envelope crate added.
 - [x] Protocol golden fixtures added for transaction and vote envelopes.
 - [x] Network transport routes messages through protocol envelope encoding and

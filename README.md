@@ -218,10 +218,10 @@ DETTA_E2E_FULL=1 DETTA_REQUIRE_DEP_AUDIT=1 scripts/detta-release-gate.sh
 
 The release gate checks formatting, clippy, workspace tests, selected or full
 E2E client flows, dependency advisory and supply-chain policy through
-`deny.toml`, verification crate tests, release builds, packaged-node launch and
-incident-response drills from a temporary release directory, TLA+ model
-checking through `scripts/detta-model-check.sh`, and proof artifact hash
-manifests.
+`deny.toml`, verification crate tests, release builds, packaged-node launch,
+incident-response, and governance-bootstrap drills from a temporary release
+directory, TLA+ model checking through `scripts/detta-model-check.sh`, and
+proof artifact hash manifests.
 
 Local dependency audits are run by `scripts/detta-dependency-audit.sh`. If
 `cargo-deny` is unavailable locally, the script prints a warning and lets the
@@ -320,6 +320,17 @@ The drill boots the packaged node, creates a reverted transfer, records an
 expected RPC error, leaves one transaction pending, checks operator health,
 metrics, alerts, and snapshot metadata roots, then writes
 `dist/detta-incident-response-drill-<version>.json`.
+
+Run a local governance bootstrap drill against the packaged binary:
+
+```sh
+DETTA_RELEASE_VERSION=rc-1 scripts/detta-governance-bootstrap-drill.sh
+```
+
+The drill schedules and rehearses a timelocked upgrade, verifies early
+execution fails, executes after the timelock, then repeats the same pattern for
+a method-policy update and writes
+`dist/detta-governance-bootstrap-drill-<version>.json`.
 
 Mainnet-candidate readiness is represented by
 `ops/detta-mainnet-candidate-readiness.json`. The checked-in status
