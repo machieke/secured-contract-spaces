@@ -396,6 +396,9 @@ Completed production-plan slices:
 - [x] Public-testnet, mainnet-candidate, and audit readiness manifests have a
   standalone verifier that checks schemas, blocker semantics, evidence paths,
   signed-artifact hashes, and targeted `detta-verify` readiness tests.
+- [x] Readiness manifests have a deterministic status report that binds
+  blocker state, manifest hashes, evidence inventory hashes, and source-state
+  metadata for launch review.
 - [x] Local release gate performs a locked release build reproducibility smoke
   check.
 - [x] Local release gate runs the deterministic generated-corpus fuzz smoke
@@ -518,6 +521,8 @@ Completed production-plan slices:
   audit-readiness package.
 - [x] Hard release gate runs the standalone readiness-manifest verifier so
   launch status metadata cannot drift from checked evidence paths.
+- [x] Hard release gate generates the deterministic readiness status report so
+  launch blocker reporting remains machine-checkable.
 
 Next implementation slices:
 

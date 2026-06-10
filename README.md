@@ -162,6 +162,9 @@ SCS specification
 - `scripts/detta-verify-readiness-manifests.sh`: standalone verifier for
   public-testnet, mainnet-candidate, and audit readiness manifests plus their
   checked evidence paths.
+- `scripts/detta-readiness-status-report.sh`: deterministic readiness status
+  reporter that hashes readiness manifests, evidence paths, blockers, and
+  source-state metadata for launch review.
 - `scripts/detta-package-release.sh`: release artifact packaging script for
   the validator and client binaries, demo genesis, faucet sample, hashes, and
   signing manifest.
@@ -253,8 +256,8 @@ E2E client flows, dependency advisory and supply-chain policy through
 incident-response, governance-bootstrap, validator-onboarding,
 packaged-client-flow, local-stability, audit-readiness, and release-signing
 drills from a temporary release directory, the standalone readiness-manifest
-verifier, TLA+ model checking through `scripts/detta-model-check.sh`, and proof
-artifact hash manifests.
+verifier, readiness status report generation, TLA+ model checking through
+`scripts/detta-model-check.sh`, and proof artifact hash manifests.
 
 Local dependency audits are run by `scripts/detta-dependency-audit.sh`. If
 `cargo-deny` is unavailable locally, the script prints a warning and lets the
@@ -275,6 +278,12 @@ metadata with:
 
 ```sh
 scripts/detta-verify-readiness-manifests.sh
+```
+
+Generate a deterministic readiness status report for release review:
+
+```sh
+scripts/detta-readiness-status-report.sh dist/detta-readiness-status.json
 ```
 
 ## Operator Binary Quick Start

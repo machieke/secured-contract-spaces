@@ -296,6 +296,7 @@ for required in \
   scripts/detta-release-gate.sh \
   scripts/detta-source-state-report.sh \
   scripts/detta-verify-readiness-manifests.sh \
+  scripts/detta-readiness-status-report.sh \
   scripts/detta-release-candidate-evidence-bundle.sh \
   scripts/detta-verify-release-candidate-evidence-bundle.sh \
   scripts/detta-audit-readiness-package.sh \
