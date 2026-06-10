@@ -447,8 +447,9 @@ version, then generates and verifies a readiness status report. It writes
 `dist/detta-release-candidate-evidence-<version>.tar.gz` with SHA-256
 attestations, then runs the standalone evidence-bundle verifier. The verifier
 also imports the packaged signing public key and reruns release-signature
-verification against the packaged release artifacts. Reviewers can repeat that
-check after transfer:
+verification against the packaged release artifacts, while checking source-state
+consistency across the release manifest, audit-readiness report, and readiness
+status report. Reviewers can repeat that check after transfer:
 
 ```sh
 scripts/detta-verify-release-candidate-evidence-bundle.sh \

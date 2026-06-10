@@ -248,6 +248,13 @@ fi
 if [ "$(sha256_of_file "$readiness_report_path")" != "$(jq -r '.readiness_status_report.sha256' "$report_path")" ]; then
   fail "readiness status report hash mismatch"
 fi
+if ! jq -e --slurpfile report "$report_path" '
+  .source_state == $report[0].source_state
+  and .git_commit == $report[0].source_state.git_commit
+  and .source_date_epoch == $report[0].source_date_epoch
+' "$readiness_report_path" >/dev/null; then
+  fail "readiness status report source state does not match evidence report"
+fi
 
 require_inventory_bundle_path "release/detta-release-${version}.json"
 require_inventory_bundle_path "reports/detta-readiness-status-${version}.json"
@@ -291,6 +298,14 @@ cp "${signature_files[@]}" "$signature_verify_dir/"
 scripts/detta-verify-audit-readiness-package.sh \
   "$extract_dir/audit/detta-audit-readiness-package-${version}.tar.gz" >/dev/null
 scripts/detta-verify-readiness-status-report.sh "$readiness_report_path" >/dev/null
+audit_report_path="$extract_dir/audit/detta-audit-readiness-${version}.json"
+if ! jq -e --slurpfile report "$report_path" '
+  .source_state == $report[0].source_state
+  and .git_commit == $report[0].source_state.git_commit
+  and .source_date_epoch == $report[0].source_date_epoch
+' "$audit_report_path" >/dev/null; then
+  fail "audit readiness report source state does not match evidence report"
+fi
 GNUPGHOME="$gpg_home" \
   DETTA_RELEASE_SIGNER_FINGERPRINT="$signer_fingerprint" \
   scripts/detta-verify-release-signatures.sh \
