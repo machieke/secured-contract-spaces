@@ -66,6 +66,7 @@ scripts/detta-dependency-audit.sh
 cargo test --workspace --exclude detta-e2e
 run_e2e_gate
 cargo test -p detta-verify
+scripts/detta-verify-readiness-manifests.sh
 cargo test -p detta-verify tests::differential_replay_accepts_generated_transfer_corpus -- --exact
 cargo test -p detta-verify tests::differential_replay_accepts_generated_defi_corpus -- --exact
 cargo build --locked --release

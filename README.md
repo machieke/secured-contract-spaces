@@ -159,6 +159,9 @@ SCS specification
 - `security/detta-audit-findings.json`: release-candidate audit finding
   tracker validated by `detta-verify`.
 - `scripts/detta-release-gate.sh`: release-gate verification script.
+- `scripts/detta-verify-readiness-manifests.sh`: standalone verifier for
+  public-testnet, mainnet-candidate, and audit readiness manifests plus their
+  checked evidence paths.
 - `scripts/detta-package-release.sh`: release artifact packaging script for
   the validator and client binaries, demo genesis, faucet sample, hashes, and
   signing manifest.
@@ -249,8 +252,9 @@ E2E client flows, dependency advisory and supply-chain policy through
 `deny.toml`, verification crate tests, release builds, packaged-node launch,
 incident-response, governance-bootstrap, validator-onboarding,
 packaged-client-flow, local-stability, audit-readiness, and release-signing
-drills from a temporary release directory, TLA+ model checking through
-`scripts/detta-model-check.sh`, and proof artifact hash manifests.
+drills from a temporary release directory, the standalone readiness-manifest
+verifier, TLA+ model checking through `scripts/detta-model-check.sh`, and proof
+artifact hash manifests.
 
 Local dependency audits are run by `scripts/detta-dependency-audit.sh`. If
 `cargo-deny` is unavailable locally, the script prints a warning and lets the
@@ -266,7 +270,12 @@ Public testnet readiness is represented by
 `ops/detta-public-testnet-readiness.json`. The checked-in status intentionally
 does not claim readiness until the stability window, signed release
 distribution, faucet/sample-client publication, and external audit gate are
-completed.
+completed. Recheck public-testnet, mainnet-candidate, and audit readiness
+metadata with:
+
+```sh
+scripts/detta-verify-readiness-manifests.sh
+```
 
 ## Operator Binary Quick Start
 

@@ -66,6 +66,9 @@ Before joining a validator:
 - check `ops/detta-mainnet-candidate-readiness.json` and confirm it does not
   claim mainnet readiness while launch, audit, signing, or rehearsal blockers
   remain;
+- run `scripts/detta-verify-readiness-manifests.sh` to verify readiness
+  schemas, evidence paths, signed-artifact hashes, and `detta-verify`
+  readiness tests;
 - confirm `detta-rpc-openapi.json` matches the deployed binary version;
 - initialize the validator with the expected `network_id`, `chain_id`, and
   trusted validator-set metadata;
@@ -206,8 +209,8 @@ when local release gates pass. Public-testnet launch requires:
   published faucet/sample-client distribution.
 
 When those conditions are met, update the manifest, keep the blocker list
-empty, and run `cargo test -p detta-verify public_testnet_readiness` before
-publishing the launch candidate.
+empty, and run `scripts/detta-verify-readiness-manifests.sh` before publishing
+the launch candidate.
 
 ## Mainnet Candidate Readiness
 
@@ -363,5 +366,5 @@ governance-accepted findings in the checked security manifest.
 
 When those conditions are met, update the manifest, keep the blocker list
 empty, include every signed release artifact, and run
-`cargo test -p detta-verify mainnet_candidate_readiness` before proposing a
-mainnet release candidate.
+`scripts/detta-verify-readiness-manifests.sh` before proposing a mainnet
+release candidate.
