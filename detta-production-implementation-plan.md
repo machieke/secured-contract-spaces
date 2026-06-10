@@ -506,6 +506,9 @@ Completed production-plan slices:
   tree, dirty-worktree status, tracked/untracked counts, and diff/status roots,
   with optional clean-source enforcement for final publication and audit
   handoff.
+- [x] Retained release-candidate evidence bundle script reruns packaged
+  operator drills under one version and bundles release artifacts, reports,
+  checksums, signatures, audit package, signing key, and source-state metadata.
 
 Next implementation slices:
 

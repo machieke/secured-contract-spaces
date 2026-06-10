@@ -7,6 +7,7 @@ cd "$repo_root"
 version="${DETTA_RELEASE_VERSION:-signing-drill}"
 safe_version="$(printf '%s' "$version" | tr -c 'A-Za-z0-9._-' '-')"
 out_dir="${DETTA_RELEASE_OUT:-$repo_root/dist}"
+chain_id="${DETTA_RELEASE_CHAIN_ID:-detta-local}"
 signer_name="${DETTA_RELEASE_SIGNING_DRILL_NAME:-DeTTa Release Signing Drill}"
 signer_email="${DETTA_RELEASE_SIGNING_DRILL_EMAIL:-detta-release-signing-drill@example.invalid}"
 signer_uid="$signer_name <$signer_email>"
@@ -43,6 +44,7 @@ reject_unsafe_path() {
 release_log="$stage/package.log"
 DETTA_RELEASE_VERSION="$version" \
   DETTA_RELEASE_OUT="$out_dir" \
+  DETTA_RELEASE_CHAIN_ID="$chain_id" \
   scripts/detta-package-release.sh >"$release_log"
 
 manifest_path="$out_dir/detta-release-$safe_version.json"
@@ -137,6 +139,7 @@ jq -n -e \
   --arg version "$safe_version" \
   --arg source_version "$version" \
   --arg manifest "$(basename "$manifest_path")" \
+  --arg chain_id "$chain_id" \
   --arg signer_uid "$signer_uid" \
   --arg signer_fingerprint "$fingerprint" \
   --arg public_key_path "$public_key_name" \
@@ -150,6 +153,7 @@ jq -n -e \
     project: $project,
     version: $version,
     source_version: $source_version,
+    chain_id: $chain_id,
     release_manifest: $manifest,
     signing_key: {
       uid: $signer_uid,

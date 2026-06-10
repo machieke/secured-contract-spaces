@@ -37,6 +37,8 @@ Before joining a validator:
   `DETTA_REQUIRE_CLEAN_RELEASE_SOURCE=1` for final publication packaging;
 - verify the signed release bundle with
   `scripts/detta-verify-release-signatures.sh`;
+- run `scripts/detta-release-candidate-evidence-bundle.sh` after the hard gate
+  when retained release-candidate evidence is needed under `dist/`;
 - run `scripts/detta-release-signing-drill.sh` and retain the generated
   signing-drill report before the production release-key ceremony;
 - run `scripts/detta-genesis-finalization-drill.sh` and retain the generated
@@ -227,6 +229,18 @@ incident-response, governance-bootstrap, validator-onboarding,
 packaged-client-flow, local-stability, audit-readiness, and release-signing
 drills from a temporary release directory. Use the standalone scripts below
 when the operator needs retained release-candidate reports under `dist/`.
+
+Use `scripts/detta-release-candidate-evidence-bundle.sh` to produce retained
+release-candidate evidence after the hard gate passes. The script reruns the
+packaged operator drills under one release version, verifies report checksums,
+collects release artifacts, drill reports, audit-readiness package, signing
+public key, checksum files, and detached signatures, then writes
+`dist/detta-release-candidate-evidence-<version>.json`,
+`dist/detta-release-candidate-evidence-<version>.jsonl`, and
+`dist/detta-release-candidate-evidence-<version>.tar.gz` plus SHA-256
+attestations. Retain this bundle with the release-candidate publication
+record; it does not replace the hard release gate or the real public-testnet
+stability window.
 
 Use `scripts/detta-package-release.sh` after the hard release gate passes. The
 script produces a deterministic archive containing `detta-node` and
