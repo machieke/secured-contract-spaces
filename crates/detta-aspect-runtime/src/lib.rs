@@ -690,14 +690,14 @@ impl<'a> AspectActionEvaluator<'a> {
                 items.len() - 1
             )));
         }
-        let contract = atom_arg(items, 1, "call-contract!")?;
+        let contract = aspect_atom_value(self.eval_expr(&items[1], state)?)?;
         let method = atom_arg(items, 2, "call-contract!")?;
         let mut args = Vec::new();
         for item in items.iter().skip(3) {
             args.push(self.eval_expr(item, state)?);
         }
         state.trace.push(AspectHostOp::CallContract {
-            contract: contract.into(),
+            contract,
             method: method.into(),
             args,
         });
@@ -1280,16 +1280,19 @@ mod tests {
             "
             (: Bool Type)
             (: Amount Type)
+            (: Address Type)
             (aspect AllowanceAspect)
             (registry-owns AllowanceAspect allowance Amount)
             (action AllowanceAspect spendAndCall)
             (derived AllowanceAspect spendAndCall
-              (= (spendAndCall $amount)
-                 (call-contract! TokenA transfer (registry-consume! allowance $amount))))
+              (= (spendAndCall $target $amount)
+                 (begin
+                   (registry-consume! allowance $amount)
+                   (call-contract! $target transfer Alice USD $amount))))
             (bundle AllowanceBundle)
             (bundle-includes AllowanceBundle AllowanceAspect)
-            (projection AllowanceBundle SpendAndCall (= (API.spend $amount) (spendAndCall $amount)))
-            (method-abi AllowanceBundle SpendAndCall (args (amount Amount)) Bool)
+            (projection AllowanceBundle SpendAndCall (= (API.spend $target $amount) (spendAndCall $target $amount)))
+            (method-abi AllowanceBundle SpendAndCall (args (target Address) (amount Amount)) Bool)
             (method-policy AllowanceBundle SpendAndCall TxSender (effects ConsumeRegistryGrant CallContract) (invariants))
         ",
         );
@@ -1297,7 +1300,7 @@ mod tests {
             .execute_action(
                 "AllowanceAspect",
                 "spendAndCall",
-                vec![AspectValue::Amount(5)],
+                vec![AspectValue::Atom("TokenB".into()), AspectValue::Amount(5)],
             )
             .unwrap();
 
@@ -1309,9 +1312,13 @@ mod tests {
                     value: AspectValue::Amount(5),
                 },
                 AspectHostOp::CallContract {
-                    contract: "TokenA".into(),
+                    contract: "TokenB".into(),
                     method: "transfer".into(),
-                    args: vec![AspectValue::Unit],
+                    args: vec![
+                        AspectValue::Atom("Alice".into()),
+                        AspectValue::Atom("USD".into()),
+                        AspectValue::Amount(5),
+                    ],
                 },
             ]
         );

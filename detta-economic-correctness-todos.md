@@ -3,9 +3,11 @@
 This checklist tracks the completed economic-correctness pass across native
 DeFi contracts and restricted MeTTa aspect flows.
 
-Status: complete for the current DeTTa runtime scope. Remaining future work is
-the broader cross-contract host-capability extension for aspect modules that
-need to move external ledgers beyond their own aspect-owned accounting state.
+Status: complete for the current DeTTa runtime scope. Aspect modules that need
+external token-ledger movement now use the restricted token host-call capability
+for native `transfer`, `transferFrom`, and `approve` calls. Future work is
+limited to broader ABI-typed arbitrary host calls beyond that token-settlement
+surface.
 
 ## AMM Settlement
 
@@ -64,8 +66,11 @@ need to move external ledgers beyond their own aspect-owned accounting state.
 - [x] Privileged aspect initialization, minting, fee, pause, restriction, lock,
   cap, and staking-reward configuration policies require the deployment
   governance-admin grant instead of public `TxSender` authority.
-- [x] Aspect vault/wrap/stake projections are tested and documented as
-  aspect-owned accounting modules unless a kernel adapter is explicitly used.
+- [x] Aspect vault/wrap/stake projections settle external token custody through
+  verifier-visible `CallContract` host calls that consume normal allowances and
+  transfer from aspect-contract custody on exits.
+- [x] Rewarded staking aspects require explicit reward-reserve funding before
+  claims transfer rewards from custody.
 - [x] Aspect method policies declare all economically relevant effects.
 - [x] Native-vs-aspect and dedicated aspect tests compare balances, total
   supply, events, and revert roots for the supported executable bundles.
@@ -97,3 +102,9 @@ need to move external ledgers beyond their own aspect-owned accounting state.
   passed.
 - `cargo test -p detta-core deployment_helpers_reject_invalid_inputs_without_partial_state`
   passed.
+- `cargo test -p detta-core vault_share_aspect_supports_checked_deposit_and_redeem_math`
+  passed, including native token custody and allowance consumption.
+- `cargo test -p detta-core wrapped_token_aspect_supports_wrap_transfer_and_unwrap`
+  passed, including native token custody and unwrap settlement.
+- `cargo test -p detta-core rewarded_stake_aspect_accrues_rewards_by_block_height`
+  passed, including prefunded reward reserve settlement.

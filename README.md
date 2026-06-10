@@ -268,9 +268,13 @@ asset movement through a ledger adapter before committing protocol accounting:
 
 Aspect-token AMM integration is supported when the pool asset is the deployed
 aspect-token contract and the bundle exports the guarded `ERC20-transfer`
-method. Other aspect bundles such as vault shares, wrapping, and rewarded
-staking are tested as aspect-owned accounting modules unless a kernel adapter is
-explicitly used; they do not silently move unrelated native token ledgers.
+method. Aspect vault shares, wrapping, and rewarded staking now use explicit
+restricted `call-contract!` host calls to a supplied token contract and asset:
+deposits, wraps, stakes, and reward funding consume the normal native token
+allowance granted to the aspect contract, while redeems, unwraps, unstakes, and
+reward claims transfer from aspect-contract custody. These calls are verifier
+visible through the `CallContract` policy effect and still use the native token
+method policy, allowance, balance, and invariant checks.
 Privileged aspect operations that change supply or bridge replay state reject
 zero amounts before emitting events, mutating supply, or consuming bridge
 message IDs. Privileged aspect configuration and minting methods use the

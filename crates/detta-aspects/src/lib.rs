@@ -2131,7 +2131,7 @@ mod tests {
     #[test]
     fn parser_accepts_minimal_transfer_token_fixture() {
         let ast = parse_aspect_package(MINIMAL_TRANSFER_TOKEN_FIXTURE).unwrap();
-        assert_eq!(ast.declarations.len(), 435);
+        assert_eq!(ast.declarations.len(), 441);
 
         let canonical = canonical_aspect_source(&ast);
         assert!(canonical.contains("(bundle MinimalTransferToken)"));
@@ -2212,9 +2212,9 @@ mod tests {
     fn verifier_accepts_minimal_transfer_token_fixture() {
         let (canonical, ir, verified) =
             parse_verify_module(MINIMAL_TRANSFER_TOKEN_FIXTURE).unwrap();
-        assert_eq!(ir.projections.len(), 50);
-        assert_eq!(ir.abi.len(), 50);
-        assert_eq!(ir.policies.len(), 50);
+        assert_eq!(ir.projections.len(), 51);
+        assert_eq!(ir.abi.len(), 51);
+        assert_eq!(ir.policies.len(), 51);
 
         let closure = verified
             .bundle_aspect_closures

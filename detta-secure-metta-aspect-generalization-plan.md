@@ -1395,15 +1395,17 @@ Progress note: `VotableBalanceAspect` and `VotableToken` expose
 balance and supply snapshots and read them back after later transfers.
 `VaultShareBalanceAspect` and `VaultShareToken` support checked
 deposit/redeem share math, return minted/redeemed amounts, maintain reserve,
-share supply, and share balances, and emit concrete vault accounting events.
+share supply, and share balances, and settle supplied native token custody
+through restricted host calls.
 `WrappedBalanceAspect` and `WrappedToken` support 1:1 wrap, transfer, and
-unwrap accounting over aspect-owned balances, supply, and reserve state.
+unwrap accounting over aspect-owned balances, supply, and reserve state while
+moving supplied native token custody through restricted host calls.
 `StakeBalanceAspect`, `RewardedStakeBalanceAspect`, and `RewardedStakeToken`
 support stake, unstake, deterministic block-height reward accrual, and reward
-claim flows entirely through MeTTa projections. `WrappedToken` models wrapped
-asset accounting inside aspect-owned state; production custody movement is a
-future cross-contract host-capability extension rather than part of this
-accepted accounting slice.
+claim flows through MeTTa projections. Stake, unstake, reward funding, and
+reward claims settle supplied native token custody through the token
+`transferFrom`/`transfer` host-call adapter, and reward claims require a
+prefunded aspect reward reserve.
 `BridgeMintBurnAspect` and `BridgeMintBurnToken` use a `bridge-verify!` host
 adapter for kernel-verified inbound bridge certificates, store consumed bridge
 message ids in aspect-owned replay state, mint through MeTTa-defined balance

@@ -2482,6 +2482,15 @@ enum AssetLedger {
     AspectToken { contract: ContractId },
 }
 
+#[derive(Clone, Copy, Debug)]
+struct AssetTransfer<'a> {
+    ledger: &'a AssetLedger,
+    from: &'a Principal,
+    to: &'a Principal,
+    asset: &'a AssetId,
+    amount: Amount,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AmmParameters {
     pub swap_fee_bps: u64,
@@ -4127,8 +4136,12 @@ impl DeTTaState {
                     asset_b,
                     swap_fee_bps,
                 } => match tx.method {
-                    Method::AddLiquidity => self.add_liquidity(tx, msg_sender, asset_a, asset_b),
-                    Method::Swap => self.swap(tx, msg_sender, asset_a, asset_b, swap_fee_bps),
+                    Method::AddLiquidity => {
+                        self.add_liquidity(tx, msg_sender, asset_a, asset_b, call_context)
+                    }
+                    Method::Swap => {
+                        self.swap(tx, msg_sender, asset_a, asset_b, swap_fee_bps, call_context)
+                    }
                     _ => Err(ExecutionError::PolicyMissing),
                 },
                 ContractKind::Oracle { asset, max_age } => match tx.method {
@@ -4136,7 +4149,9 @@ impl DeTTaState {
                     _ => Err(ExecutionError::PolicyMissing),
                 },
                 ContractKind::Bridge { source_chain } => match tx.method {
-                    Method::QueueBridgeMessage => self.queue_bridge_message(tx, msg_sender),
+                    Method::QueueBridgeMessage => {
+                        self.queue_bridge_message(tx, msg_sender, call_context)
+                    }
                     Method::RedeemBridgeMessage => {
                         self.redeem_bridge_message(tx, msg_sender, source_chain)
                     }
@@ -4176,7 +4191,9 @@ impl DeTTaState {
                     interest_bps_per_block,
                     liquidation_threshold_bps,
                 } => match tx.method {
-                    Method::DepositCollateral => self.deposit_collateral(tx, collateral_asset),
+                    Method::DepositCollateral => {
+                        self.deposit_collateral(tx, collateral_asset, call_context)
+                    }
                     Method::Borrow => self.borrow(
                         tx,
                         msg_sender,
@@ -4189,6 +4206,7 @@ impl DeTTaState {
                             interest_bps_per_block,
                             liquidation_threshold_bps,
                         },
+                        call_context,
                     ),
                     Method::Liquidate => self.liquidate(
                         tx,
@@ -4202,6 +4220,7 @@ impl DeTTaState {
                             interest_bps_per_block,
                             liquidation_threshold_bps,
                         },
+                        call_context,
                     ),
                     _ => Err(ExecutionError::PolicyMissing),
                 },
@@ -4211,14 +4230,19 @@ impl DeTTaState {
                     reward_per_block,
                     unstake_penalty_bps,
                 } => match tx.method {
-                    Method::Stake => self.stake(tx, msg_sender, asset, reward_per_block),
+                    Method::Stake => {
+                        self.stake(tx, msg_sender, asset, reward_per_block, call_context)
+                    }
                     Method::Unstake => self.unstake(
                         tx,
                         msg_sender,
                         asset,
-                        reward_per_block,
-                        unbonding_delay,
-                        unstake_penalty_bps,
+                        StakingParameters::new(
+                            unbonding_delay,
+                            reward_per_block,
+                            unstake_penalty_bps,
+                        ),
+                        call_context,
                     ),
                     Method::RequestUnstake => self.request_unstake(
                         tx,
@@ -4228,7 +4252,9 @@ impl DeTTaState {
                         unbonding_delay,
                         unstake_penalty_bps,
                     ),
-                    Method::CompleteUnstake => self.complete_unstake(tx, msg_sender, asset),
+                    Method::CompleteUnstake => {
+                        self.complete_unstake(tx, msg_sender, asset, call_context)
+                    }
                     Method::ClaimStakingRewards => {
                         self.claim_staking_rewards(tx, msg_sender, asset, reward_per_block)
                     }
@@ -4244,7 +4270,9 @@ impl DeTTaState {
                     Method::DeployToken => self.deploy_token_from_factory(tx),
                     Method::DeployAmmPool => self.deploy_amm_pool_from_factory(tx),
                     Method::SubmitAspectModule => self.submit_aspect_module_from_factory(tx),
-                    Method::DeployAspectContract => self.deploy_aspect_contract_from_factory(tx),
+                    Method::DeployAspectContract => {
+                        self.deploy_aspect_contract_from_factory(tx, call_context)
+                    }
                     _ => Err(ExecutionError::PolicyMissing),
                 },
                 ContractKind::AccountRegistry => match tx.method {
@@ -4260,7 +4288,13 @@ impl DeTTaState {
                     module_hash,
                     bundle_id,
                     ..
-                } => self.execute_aspect_module_method(tx, msg_sender, module_hash, bundle_id),
+                } => self.execute_aspect_module_method(
+                    tx,
+                    msg_sender,
+                    module_hash,
+                    bundle_id,
+                    call_context,
+                ),
             }
         })();
         call_context.exit();
@@ -4273,6 +4307,7 @@ impl DeTTaState {
         msg_sender: Principal,
         module_hash: String,
         bundle_id: String,
+        call_context: &mut CallContext,
     ) -> Result<ReturnValue, ExecutionError> {
         let Method::Other(projection) = &tx.method else {
             return Err(ExecutionError::MethodNotExported);
@@ -4306,7 +4341,7 @@ impl DeTTaState {
             write_scope: aspect_write_scope(&tx.target, &bundle_id, &module)?,
         };
         for op in report.trace {
-            self.apply_aspect_host_op(tx, &module, &bundle_id, &frame, op)?;
+            self.apply_aspect_host_op(tx, &module, &bundle_id, &frame, call_context, op)?;
         }
         self.check_aspect_method_invariants(&module, &bundle_id, projection, tx.budget, context)?;
         aspect_value_to_return(report.return_value)
@@ -4352,6 +4387,7 @@ impl DeTTaState {
         module: &AspectModuleRecord,
         bundle_id: &str,
         frame: &AuthorizedFrame,
+        call_context: &mut CallContext,
         op: AspectHostOp,
     ) -> Result<(), ExecutionError> {
         match op {
@@ -4373,8 +4409,12 @@ impl DeTTaState {
             }
             AspectHostOp::RegistryGet { .. }
             | AspectHostOp::RegistrySet { .. }
-            | AspectHostOp::RegistryConsume { .. }
-            | AspectHostOp::CallContract { .. } => Err(ExecutionError::InvalidArguments),
+            | AspectHostOp::RegistryConsume { .. } => Err(ExecutionError::InvalidArguments),
+            AspectHostOp::CallContract {
+                contract,
+                method,
+                args,
+            } => self.apply_aspect_call_contract(tx, frame, call_context, contract, method, args),
             AspectHostOp::PermitVerify {
                 owner,
                 spender,
@@ -4401,6 +4441,36 @@ impl DeTTaState {
                 },
             ),
         }
+    }
+
+    fn apply_aspect_call_contract(
+        &mut self,
+        tx: &Transaction,
+        frame: &AuthorizedFrame,
+        call_context: &mut CallContext,
+        contract: ContractId,
+        method: String,
+        args: Vec<AspectValue>,
+    ) -> Result<(), ExecutionError> {
+        if contract.is_empty() {
+            return Err(ExecutionError::InvalidArguments);
+        }
+        let method = parse_policy_method(&method)?;
+        let args = aspect_values_to_call_args(&method, args)?;
+        let nested_tx = Transaction {
+            chain_id: tx.chain_id.clone(),
+            tx_hash: tx.tx_hash.clone(),
+            sender: tx.sender.clone(),
+            nonce: tx.nonce,
+            valid_until_height: tx.valid_until_height,
+            target: contract,
+            method,
+            args,
+            signature_ok: tx.signature_ok,
+            budget: tx.budget,
+        };
+        self.execute_call(&nested_tx, frame.contract.clone(), call_context)?;
+        Ok(())
     }
 
     fn enforce_method_authority(
@@ -4656,6 +4726,7 @@ impl DeTTaState {
         msg_sender: Principal,
         asset_a: AssetId,
         asset_b: AssetId,
+        call_context: &mut CallContext,
     ) -> Result<ReturnValue, ExecutionError> {
         let [amount_a, amount_b] = expect_args(&tx.args)?;
         let amount_a = expect_amount(amount_a)?;
@@ -4692,19 +4763,25 @@ impl DeTTaState {
 
         self.transfer_asset_balance(
             tx,
-            &asset_a_ledger,
-            &provider,
-            &tx.target,
-            &asset_a,
-            amount_a,
+            AssetTransfer {
+                ledger: &asset_a_ledger,
+                from: &provider,
+                to: &tx.target,
+                asset: &asset_a,
+                amount: amount_a,
+            },
+            call_context,
         )?;
         self.transfer_asset_balance(
             tx,
-            &asset_b_ledger,
-            &provider,
-            &tx.target,
-            &asset_b,
-            amount_b,
+            AssetTransfer {
+                ledger: &asset_b_ledger,
+                from: &provider,
+                to: &tx.target,
+                asset: &asset_b,
+                amount: amount_b,
+            },
+            call_context,
         )?;
         self.state_set(
             &frame,
@@ -4769,6 +4846,7 @@ impl DeTTaState {
         asset_a: AssetId,
         asset_b: AssetId,
         swap_fee_bps: u64,
+        call_context: &mut CallContext,
     ) -> Result<ReturnValue, ExecutionError> {
         let [input_asset, amount_in, min_output] = expect_args(&tx.args)?;
         let input_asset = expect_asset(input_asset)?;
@@ -4821,19 +4899,25 @@ impl DeTTaState {
 
         self.transfer_asset_balance(
             tx,
-            &input_ledger,
-            &msg_sender,
-            &tx.target,
-            &input_asset,
-            amount_in,
+            AssetTransfer {
+                ledger: &input_ledger,
+                from: &msg_sender,
+                to: &tx.target,
+                asset: &input_asset,
+                amount: amount_in,
+            },
+            call_context,
         )?;
         self.transfer_asset_balance(
             tx,
-            &output_ledger,
-            &tx.target,
-            &msg_sender,
-            &output_asset,
-            amount_out,
+            AssetTransfer {
+                ledger: &output_ledger,
+                from: &tx.target,
+                to: &msg_sender,
+                asset: &output_asset,
+                amount: amount_out,
+            },
+            call_context,
         )?;
         self.state_set(
             &frame,
@@ -4931,19 +5015,25 @@ impl DeTTaState {
     fn transfer_asset_balance(
         &mut self,
         tx: &Transaction,
-        ledger: &AssetLedger,
-        from: &Principal,
-        to: &Principal,
-        asset: &AssetId,
-        amount: Amount,
+        transfer: AssetTransfer<'_>,
+        call_context: &mut CallContext,
     ) -> Result<(), ExecutionError> {
-        match ledger {
-            AssetLedger::NativeToken { contract } => {
-                self.transfer_native_asset_balance(contract, from, to, asset, amount)
-            }
-            AssetLedger::AspectToken { contract } => {
-                self.transfer_aspect_asset_balance(tx, contract, from, to, amount)
-            }
+        match transfer.ledger {
+            AssetLedger::NativeToken { contract } => self.transfer_native_asset_balance(
+                contract,
+                transfer.from,
+                transfer.to,
+                transfer.asset,
+                transfer.amount,
+            ),
+            AssetLedger::AspectToken { contract } => self.transfer_aspect_asset_balance(
+                tx,
+                contract,
+                transfer.from,
+                transfer.to,
+                transfer.amount,
+                call_context,
+            ),
         }
     }
 
@@ -5054,20 +5144,16 @@ impl DeTTaState {
         from: &Principal,
         to: &Principal,
         amount: Amount,
+        call_context: &mut CallContext,
     ) -> Result<(), ExecutionError> {
         let contract = self
             .contracts
             .get(aspect_contract)
             .cloned()
             .ok_or(ExecutionError::ContractNotFound)?;
-        let ContractKind::AspectModule {
-            module_hash,
-            bundle_id,
-            ..
-        } = contract.kind
-        else {
+        if !matches!(contract.kind, ContractKind::AspectModule { .. }) {
             return Err(ExecutionError::InvalidPoolAsset);
-        };
+        }
         if !contract
             .exported_methods
             .contains(&Method::Other("ERC20-transfer".into()))
@@ -5089,7 +5175,7 @@ impl DeTTaState {
             signature_ok: true,
             budget: tx.budget,
         };
-        self.execute_aspect_module_method(&child_tx, from.clone(), module_hash, bundle_id)?;
+        self.execute_call(&child_tx, from.clone(), call_context)?;
         Ok(())
     }
 
@@ -5146,6 +5232,7 @@ impl DeTTaState {
         &mut self,
         tx: &Transaction,
         msg_sender: Principal,
+        call_context: &mut CallContext,
     ) -> Result<ReturnValue, ExecutionError> {
         let [destination_chain, destination_contract, message_id, recipient, asset, amount] =
             expect_args(&tx.args)?;
@@ -5175,7 +5262,17 @@ impl DeTTaState {
             asset: asset.clone(),
             amount,
         };
-        self.transfer_asset_balance(tx, &asset_ledger, &msg_sender, &tx.target, &asset, amount)?;
+        self.transfer_asset_balance(
+            tx,
+            AssetTransfer {
+                ledger: &asset_ledger,
+                from: &msg_sender,
+                to: &tx.target,
+                asset: &asset,
+                amount,
+            },
+            call_context,
+        )?;
         self.outbound_message_ids.insert(message_id.clone());
         self.cross_shard_outbox.push(message);
 
@@ -5520,6 +5617,7 @@ impl DeTTaState {
         &mut self,
         tx: &Transaction,
         collateral_asset: AssetId,
+        call_context: &mut CallContext,
     ) -> Result<ReturnValue, ExecutionError> {
         let [asset, amount] = expect_args(&tx.args)?;
         let asset = expect_asset(asset)?;
@@ -5542,11 +5640,14 @@ impl DeTTaState {
         let current = self.uint_at(&collateral_key);
         self.transfer_asset_balance(
             tx,
-            &collateral_ledger,
-            &borrower,
-            &tx.target,
-            &asset,
-            amount,
+            AssetTransfer {
+                ledger: &collateral_ledger,
+                from: &borrower,
+                to: &tx.target,
+                asset: &asset,
+                amount,
+            },
+            call_context,
         )?;
         self.state_set(
             &frame,
@@ -5575,6 +5676,7 @@ impl DeTTaState {
         tx: &Transaction,
         msg_sender: Principal,
         config: LendingConfig,
+        call_context: &mut CallContext,
     ) -> Result<ReturnValue, ExecutionError> {
         let [asset, amount] = expect_args(&tx.args)?;
         let asset = expect_asset(asset)?;
@@ -5610,11 +5712,14 @@ impl DeTTaState {
         let debt_ledger = self.resolve_asset_ledger(&config.debt_asset)?;
         self.transfer_asset_balance(
             tx,
-            &debt_ledger,
-            &tx.target,
-            &borrower,
-            &config.debt_asset,
-            amount,
+            AssetTransfer {
+                ledger: &debt_ledger,
+                from: &tx.target,
+                to: &borrower,
+                asset: &config.debt_asset,
+                amount,
+            },
+            call_context,
         )?;
         self.state_set(&frame, debt_key, StateValue::UInt(next_debt))?;
 
@@ -5635,6 +5740,7 @@ impl DeTTaState {
         tx: &Transaction,
         msg_sender: Principal,
         config: LendingConfig,
+        call_context: &mut CallContext,
     ) -> Result<ReturnValue, ExecutionError> {
         let [borrower_arg, asset_arg, repay_arg] = expect_args(&tx.args)?;
         let borrower = expect_principal(borrower_arg)?;
@@ -5702,20 +5808,26 @@ impl DeTTaState {
         let collateral_ledger = self.resolve_asset_ledger(&config.collateral_asset)?;
         self.transfer_asset_balance(
             tx,
-            &debt_ledger,
-            &msg_sender,
-            &tx.target,
-            &config.debt_asset,
-            repaid_debt,
+            AssetTransfer {
+                ledger: &debt_ledger,
+                from: &msg_sender,
+                to: &tx.target,
+                asset: &config.debt_asset,
+                amount: repaid_debt,
+            },
+            call_context,
         )?;
         if seized_collateral != 0 {
             self.transfer_asset_balance(
                 tx,
-                &collateral_ledger,
-                &tx.target,
-                &msg_sender,
-                &config.collateral_asset,
-                seized_collateral,
+                AssetTransfer {
+                    ledger: &collateral_ledger,
+                    from: &tx.target,
+                    to: &msg_sender,
+                    asset: &config.collateral_asset,
+                    amount: seized_collateral,
+                },
+                call_context,
             )?;
         }
         self.state_set(&frame, debt_key, StateValue::UInt(debt_after))?;
@@ -5798,6 +5910,7 @@ impl DeTTaState {
         msg_sender: Principal,
         staking_asset: AssetId,
         reward_per_block: Amount,
+        call_context: &mut CallContext,
     ) -> Result<ReturnValue, ExecutionError> {
         let [asset, amount] = expect_args(&tx.args)?;
         let asset = expect_asset(asset)?;
@@ -5830,7 +5943,17 @@ impl DeTTaState {
         let current_stake = self.uint_at(&stake_key);
         let total_staked = self.uint_at(&total_key);
         let staking_ledger = self.resolve_asset_ledger(&asset)?;
-        self.transfer_asset_balance(tx, &staking_ledger, &staker, &tx.target, &asset, amount)?;
+        self.transfer_asset_balance(
+            tx,
+            AssetTransfer {
+                ledger: &staking_ledger,
+                from: &staker,
+                to: &tx.target,
+                asset: &asset,
+                amount,
+            },
+            call_context,
+        )?;
         self.state_set(
             &frame,
             stake_key,
@@ -5874,11 +5997,10 @@ impl DeTTaState {
         tx: &Transaction,
         msg_sender: Principal,
         staking_asset: AssetId,
-        reward_per_block: Amount,
-        unbonding_delay: u64,
-        unstake_penalty_bps: u64,
+        parameters: StakingParameters,
+        call_context: &mut CallContext,
     ) -> Result<ReturnValue, ExecutionError> {
-        if unbonding_delay > 0 {
+        if parameters.unbonding_delay > 0 {
             return Err(ExecutionError::TimelockNotReady);
         }
 
@@ -5910,7 +6032,13 @@ impl DeTTaState {
             ]),
         };
 
-        self.accrue_staking_rewards(&frame, &tx.target, &staker, &asset, reward_per_block)?;
+        self.accrue_staking_rewards(
+            &frame,
+            &tx.target,
+            &staker,
+            &asset,
+            parameters.reward_per_block,
+        )?;
 
         let current_stake = self.uint_at(&stake_key);
         if current_stake < amount {
@@ -5920,7 +6048,8 @@ impl DeTTaState {
         if total_staked < amount {
             return Err(ExecutionError::InvariantViolation);
         }
-        let (released_amount, penalty_amount) = apply_staking_penalty(amount, unstake_penalty_bps)?;
+        let (released_amount, penalty_amount) =
+            apply_staking_penalty(amount, parameters.unstake_penalty_bps)?;
         let staking_ledger = self.resolve_asset_ledger(&asset)?;
 
         self.state_set(&frame, stake_key, StateValue::UInt(current_stake - amount))?;
@@ -5940,11 +6069,14 @@ impl DeTTaState {
         if released_amount != 0 {
             self.transfer_asset_balance(
                 tx,
-                &staking_ledger,
-                &tx.target,
-                &staker,
-                &asset,
-                released_amount,
+                AssetTransfer {
+                    ledger: &staking_ledger,
+                    from: &tx.target,
+                    to: &staker,
+                    asset: &asset,
+                    amount: released_amount,
+                },
+                call_context,
             )?;
         }
 
@@ -6113,6 +6245,7 @@ impl DeTTaState {
         tx: &Transaction,
         msg_sender: Principal,
         staking_asset: AssetId,
+        call_context: &mut CallContext,
     ) -> Result<ReturnValue, ExecutionError> {
         let [asset, amount] = expect_args(&tx.args)?;
         let asset = expect_asset(asset)?;
@@ -6155,7 +6288,17 @@ impl DeTTaState {
             StateValue::UInt(total_pending - amount),
         )?;
         let staking_ledger = self.resolve_asset_ledger(&asset)?;
-        self.transfer_asset_balance(tx, &staking_ledger, &tx.target, &staker, &asset, amount)?;
+        self.transfer_asset_balance(
+            tx,
+            AssetTransfer {
+                ledger: &staking_ledger,
+                from: &tx.target,
+                to: &staker,
+                asset: &asset,
+                amount,
+            },
+            call_context,
+        )?;
 
         if !self.staking_pending_unbonding_invariants_hold(&tx.target, &asset) {
             return Err(ExecutionError::InvariantViolation);
@@ -6395,6 +6538,7 @@ impl DeTTaState {
     fn deploy_aspect_contract_from_factory(
         &mut self,
         tx: &Transaction,
+        call_context: &mut CallContext,
     ) -> Result<ReturnValue, ExecutionError> {
         if tx.args.len() < 3 {
             return Err(ExecutionError::InvalidArguments);
@@ -6439,7 +6583,7 @@ impl DeTTaState {
                 signature_ok: true,
                 budget: tx.budget,
             };
-            self.execute_aspect_module_method(&init_tx, tx.sender.clone(), module_hash, bundle_id)?;
+            self.execute_call(&init_tx, tx.sender.clone(), call_context)?;
         }
         Ok(ReturnValue::Unit)
     }
@@ -7007,6 +7151,61 @@ fn aspect_value_to_return(value: AspectValue) -> Result<ReturnValue, ExecutionEr
         AspectValue::Amount(value) => Ok(ReturnValue::UInt(value)),
         AspectValue::Bool(value) => Ok(ReturnValue::UInt(u128::from(value))),
         AspectValue::Atom(_) => Err(ExecutionError::InvalidArguments),
+    }
+}
+
+fn aspect_values_to_call_args(
+    method: &Method,
+    args: Vec<AspectValue>,
+) -> Result<Vec<Argument>, ExecutionError> {
+    match method {
+        Method::Transfer => {
+            let [to, asset, amount] = aspect_call_args::<3>(&args)?;
+            Ok(vec![
+                Argument::Principal(expect_aspect_atom(to)?),
+                Argument::Asset(expect_aspect_atom(asset)?),
+                Argument::Amount(expect_aspect_amount(amount)?),
+            ])
+        }
+        Method::Approve => {
+            let [spender, asset, amount] = aspect_call_args::<3>(&args)?;
+            Ok(vec![
+                Argument::Principal(expect_aspect_atom(spender)?),
+                Argument::Asset(expect_aspect_atom(asset)?),
+                Argument::Amount(expect_aspect_amount(amount)?),
+            ])
+        }
+        Method::TransferFrom => {
+            let [owner, to, asset, amount] = aspect_call_args::<4>(&args)?;
+            Ok(vec![
+                Argument::Principal(expect_aspect_atom(owner)?),
+                Argument::Principal(expect_aspect_atom(to)?),
+                Argument::Asset(expect_aspect_atom(asset)?),
+                Argument::Amount(expect_aspect_amount(amount)?),
+            ])
+        }
+        _ => Err(ExecutionError::InvalidArguments),
+    }
+}
+
+fn aspect_call_args<const N: usize>(
+    args: &[AspectValue],
+) -> Result<&[AspectValue; N], ExecutionError> {
+    args.try_into()
+        .map_err(|_| ExecutionError::InvalidArguments)
+}
+
+fn expect_aspect_atom(value: &AspectValue) -> Result<String, ExecutionError> {
+    match value {
+        AspectValue::Atom(value) if !value.is_empty() => Ok(value.clone()),
+        _ => Err(ExecutionError::InvalidArguments),
+    }
+}
+
+fn expect_aspect_amount(value: &AspectValue) -> Result<Amount, ExecutionError> {
+    match value {
+        AspectValue::Amount(value) => Ok(*value),
+        _ => Err(ExecutionError::InvalidArguments),
     }
 }
 
@@ -9247,6 +9446,13 @@ mod tests {
     #[test]
     fn vault_share_aspect_supports_checked_deposit_and_redeem_math() {
         let mut state = DeTTaState::new("detta-local");
+        state
+            .deploy_token(
+                "UnderlyingToken",
+                "UNDER",
+                vec![("Alice".into(), 100), ("Bob".into(), 50)],
+            )
+            .unwrap();
         state.deploy_factory("Factory").unwrap();
         let module = AspectModuleRecord::from_verified_source(
             "VaultShareToken",
@@ -9269,21 +9475,48 @@ mod tests {
         ));
         assert_eq!(deploy.status, TxStatus::Committed);
 
+        let alice_approve = state.apply_transaction(tx_to(
+            "UnderlyingToken",
+            "tx-vault-alice-approve",
+            "Alice",
+            1,
+            Method::Approve,
+            vec![
+                principal("VaultShareAspectToken"),
+                asset("UNDER"),
+                amount(100),
+            ],
+        ));
+        let bob_approve = state.apply_transaction(tx_to(
+            "UnderlyingToken",
+            "tx-vault-bob-approve",
+            "Bob",
+            1,
+            Method::Approve,
+            vec![
+                principal("VaultShareAspectToken"),
+                asset("UNDER"),
+                amount(50),
+            ],
+        ));
+        assert_eq!(alice_approve.status, TxStatus::Committed);
+        assert_eq!(bob_approve.status, TxStatus::Committed);
+
         let alice_deposit = state.apply_transaction(tx_to(
             "VaultShareAspectToken",
             "tx-vault-alice-deposit",
             "Alice",
-            1,
+            2,
             Method::Other("Vault-deposit".into()),
-            vec![amount(100)],
+            vec![principal("UnderlyingToken"), asset("UNDER"), amount(100)],
         ));
         let bob_deposit = state.apply_transaction(tx_to(
             "VaultShareAspectToken",
             "tx-vault-bob-deposit",
             "Bob",
-            1,
+            2,
             Method::Other("Vault-deposit".into()),
-            vec![amount(50)],
+            vec![principal("UnderlyingToken"), asset("UNDER"), amount(50)],
         ));
         assert_eq!(alice_deposit.status, TxStatus::Committed);
         assert_eq!(bob_deposit.status, TxStatus::Committed);
@@ -9294,9 +9527,9 @@ mod tests {
             "VaultShareAspectToken",
             "tx-vault-alice-redeem",
             "Alice",
-            2,
+            3,
             Method::Other("Vault-redeem".into()),
-            vec![amount(40)],
+            vec![principal("UnderlyingToken"), asset("UNDER"), amount(40)],
         ));
         assert_eq!(alice_redeem.status, TxStatus::Committed);
         assert_eq!(alice_redeem.return_value, Some(ReturnValue::UInt(40)));
@@ -9347,6 +9580,20 @@ mod tests {
             }),
             Some(&StateValue::UInt(50))
         );
+        assert_eq!(state.balance("UnderlyingToken", "Alice", "UNDER"), 40);
+        assert_eq!(state.balance("UnderlyingToken", "Bob", "UNDER"), 0);
+        assert_eq!(
+            state.balance("UnderlyingToken", "VaultShareAspectToken", "UNDER"),
+            110
+        );
+        assert_eq!(
+            state.allowance_remaining("UnderlyingToken", "Alice", "VaultShareAspectToken", "UNDER"),
+            Some(0)
+        );
+        assert_eq!(
+            state.allowance_remaining("UnderlyingToken", "Bob", "VaultShareAspectToken", "UNDER"),
+            Some(0)
+        );
 
         let aspect_events = state
             .events()
@@ -9369,6 +9616,9 @@ mod tests {
     #[test]
     fn wrapped_token_aspect_supports_wrap_transfer_and_unwrap() {
         let mut state = DeTTaState::new("detta-local");
+        state
+            .deploy_token("UnderlyingToken", "UNDER", vec![("Alice".into(), 100)])
+            .unwrap();
         state.deploy_factory("Factory").unwrap();
         let module = AspectModuleRecord::from_verified_source(
             "WrappedToken",
@@ -9391,13 +9641,23 @@ mod tests {
         ));
         assert_eq!(deploy.status, TxStatus::Committed);
 
+        let approve = state.apply_transaction(tx_to(
+            "UnderlyingToken",
+            "tx-wrap-alice-approve",
+            "Alice",
+            1,
+            Method::Approve,
+            vec![principal("WrappedAspectToken"), asset("UNDER"), amount(100)],
+        ));
+        assert_eq!(approve.status, TxStatus::Committed);
+
         let wrap = state.apply_transaction(tx_to(
             "WrappedAspectToken",
             "tx-wrap-alice",
             "Alice",
-            1,
+            2,
             Method::Other("Wrapped-wrap".into()),
-            vec![amount(100)],
+            vec![principal("UnderlyingToken"), asset("UNDER"), amount(100)],
         ));
         assert_eq!(wrap.status, TxStatus::Committed);
         assert_eq!(wrap.return_value, Some(ReturnValue::UInt(100)));
@@ -9406,7 +9666,7 @@ mod tests {
             "WrappedAspectToken",
             "tx-transfer-wrapped",
             "Alice",
-            2,
+            3,
             Method::Other("ERC20-transfer".into()),
             vec![principal("Bob"), amount(30)],
         ));
@@ -9418,7 +9678,7 @@ mod tests {
             "Bob",
             1,
             Method::Other("Wrapped-unwrap".into()),
-            vec![amount(10)],
+            vec![principal("UnderlyingToken"), asset("UNDER"), amount(10)],
         ));
         assert_eq!(unwrap.status, TxStatus::Committed);
         assert_eq!(unwrap.return_value, Some(ReturnValue::UInt(10)));
@@ -9458,6 +9718,16 @@ mod tests {
             }),
             Some(&StateValue::UInt(20))
         );
+        assert_eq!(state.balance("UnderlyingToken", "Alice", "UNDER"), 0);
+        assert_eq!(state.balance("UnderlyingToken", "Bob", "UNDER"), 10);
+        assert_eq!(
+            state.balance("UnderlyingToken", "WrappedAspectToken", "UNDER"),
+            90
+        );
+        assert_eq!(
+            state.allowance_remaining("UnderlyingToken", "Alice", "WrappedAspectToken", "UNDER"),
+            Some(0)
+        );
 
         let aspect_events = state
             .events()
@@ -9482,6 +9752,13 @@ mod tests {
     #[test]
     fn rewarded_stake_aspect_accrues_rewards_by_block_height() {
         let mut state = DeTTaState::new("detta-local");
+        state
+            .deploy_token(
+                "UnderlyingToken",
+                "UNDER",
+                vec![("Alice".into(), 100), ("RewardFunder".into(), 1_000)],
+            )
+            .unwrap();
         state.deploy_factory("Factory").unwrap();
         let module = AspectModuleRecord::from_verified_source(
             "RewardedStakeToken",
@@ -9528,13 +9805,50 @@ mod tests {
         ));
         assert_eq!(configure_reward.status, TxStatus::Committed);
 
+        let alice_approve = state.apply_transaction(tx_to(
+            "UnderlyingToken",
+            "tx-stake-alice-approve",
+            "Alice",
+            1,
+            Method::Approve,
+            vec![
+                principal("RewardedStakeAspectToken"),
+                asset("UNDER"),
+                amount(100),
+            ],
+        ));
+        let reward_funder_approve = state.apply_transaction(tx_to(
+            "UnderlyingToken",
+            "tx-stake-reward-funder-approve",
+            "RewardFunder",
+            1,
+            Method::Approve,
+            vec![
+                principal("RewardedStakeAspectToken"),
+                asset("UNDER"),
+                amount(1_000),
+            ],
+        ));
+        assert_eq!(alice_approve.status, TxStatus::Committed);
+        assert_eq!(reward_funder_approve.status, TxStatus::Committed);
+
+        let fund_rewards = state.apply_transaction(tx_to(
+            "RewardedStakeAspectToken",
+            "tx-fund-stake-rewards",
+            "RewardFunder",
+            2,
+            Method::Other("Staking-fundRewards".into()),
+            vec![principal("UnderlyingToken"), asset("UNDER"), amount(1_000)],
+        ));
+        assert_eq!(fund_rewards.status, TxStatus::Committed);
+
         let stake = state.apply_transaction(tx_to(
             "RewardedStakeAspectToken",
             "tx-stake-alice",
             "Alice",
-            1,
+            2,
             Method::Other("Staking-stake".into()),
-            vec![amount(100)],
+            vec![principal("UnderlyingToken"), asset("UNDER"), amount(100)],
         ));
         assert_eq!(stake.status, TxStatus::Committed);
 
@@ -9544,9 +9858,9 @@ mod tests {
                 "RewardedStakeAspectToken",
                 "tx-claim-alice-reward-1",
                 "Alice",
-                2,
+                3,
                 Method::Other("Staking-claimReward".into()),
-                vec![],
+                vec![principal("UnderlyingToken"), asset("UNDER")],
             )],
             5_000,
             "validator-1",
@@ -9564,9 +9878,9 @@ mod tests {
                 "RewardedStakeAspectToken",
                 "tx-unstake-alice",
                 "Alice",
-                3,
+                4,
                 Method::Other("Staking-unstake".into()),
-                vec![amount(40)],
+                vec![principal("UnderlyingToken"), asset("UNDER"), amount(40)],
             )],
             8_000,
             "validator-1",
@@ -9580,9 +9894,9 @@ mod tests {
                 "RewardedStakeAspectToken",
                 "tx-claim-alice-reward-2",
                 "Alice",
-                4,
+                5,
                 Method::Other("Staking-claimReward".into()),
-                vec![],
+                vec![principal("UnderlyingToken"), asset("UNDER")],
             )],
             9_000,
             "validator-1",
@@ -9629,6 +9943,45 @@ mod tests {
             }),
             Some(&StateValue::UInt(9))
         );
+        assert_eq!(
+            final_state.storage.get(&StateKey::AspectState {
+                contract: "RewardedStakeAspectToken".into(),
+                aspect: "RewardedStakeBalanceAspect".into(),
+                state: "rewardReserve".into(),
+                key: Vec::new(),
+            }),
+            Some(&StateValue::UInt(140))
+        );
+        assert_eq!(
+            final_state.balance("UnderlyingToken", "Alice", "UNDER"),
+            900
+        );
+        assert_eq!(
+            final_state.balance("UnderlyingToken", "RewardFunder", "UNDER"),
+            0
+        );
+        assert_eq!(
+            final_state.balance("UnderlyingToken", "RewardedStakeAspectToken", "UNDER"),
+            200
+        );
+        assert_eq!(
+            final_state.allowance_remaining(
+                "UnderlyingToken",
+                "Alice",
+                "RewardedStakeAspectToken",
+                "UNDER"
+            ),
+            Some(0)
+        );
+        assert_eq!(
+            final_state.allowance_remaining(
+                "UnderlyingToken",
+                "RewardFunder",
+                "RewardedStakeAspectToken",
+                "UNDER"
+            ),
+            Some(0)
+        );
 
         let aspect_events = final_state
             .events()
@@ -9641,6 +9994,7 @@ mod tests {
         assert_eq!(
             aspect_events,
             vec![
+                "(RewardFunded RewardFunder 1000)",
                 "(Stake Alice 100)",
                 "(RewardClaimed Alice 500)",
                 "(Unstake Alice 40)",

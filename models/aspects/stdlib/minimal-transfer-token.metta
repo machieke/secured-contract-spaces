@@ -108,6 +108,7 @@
 (owns StakeBalanceAspect stakeBalanceOf (-> Address Amount))
 (owns StakeBalanceAspect totalStakedBalance Amount)
 (owns RewardedStakeBalanceAspect rewardPerBlock Amount)
+(owns RewardedStakeBalanceAspect rewardReserve Amount)
 (owns RewardedStakeBalanceAspect pendingRewardOf (-> Address Amount))
 (owns RewardedStakeBalanceAspect lastRewardHeightOf (-> Address Amount))
 (owns BridgeMintBurnAspect bridgeMessageConsumed (-> Address Amount))
@@ -172,6 +173,7 @@
 (action StakeBalanceAspect unstakeBalance)
 (action StakeBalanceAspect readStakeBalance)
 (action RewardedStakeBalanceAspect configureStakeReward)
+(action RewardedStakeBalanceAspect fundStakeRewardReserve)
 (action RewardedStakeBalanceAspect accrueStakeReward)
 (action RewardedStakeBalanceAspect stakeWithRewardAccrual)
 (action RewardedStakeBalanceAspect unstakeWithRewardAccrual)
@@ -367,11 +369,12 @@
      (state-get snapshotSupply $snapshotId)))
 
 (derived VaultShareBalanceAspect depositVault
-  (= (depositVault $account $assets)
+  (= (depositVault $tokenContract $asset $account $assets)
      (begin
        (require (> $assets 0) ZERO_DEPOSIT)
        (if (= (state-get vaultShareSupply) 0)
          (begin
+           (call-contract! $tokenContract transferFrom $account current-contract $asset $assets)
            (state-set! vaultAssetReserve
              (safe-add (state-get vaultAssetReserve) $assets))
            (state-set! vaultShareSupply
@@ -382,6 +385,9 @@
            $assets)
          (begin
            (require (> (state-get vaultAssetReserve) 0) EMPTY_RESERVE)
+           (require (> (safe-div (safe-mul $assets (state-get vaultShareSupply))
+             (state-get vaultAssetReserve)) 0) ZERO_SHARES)
+           (call-contract! $tokenContract transferFrom $account current-contract $asset $assets)
            (state-set! vaultAssetReserve
              (safe-add (state-get vaultAssetReserve) $assets))
            (state-set! vaultShareSupply
@@ -399,12 +405,14 @@
              (state-get vaultAssetReserve)))))))
 
 (derived VaultShareBalanceAspect redeemVault
-  (= (redeemVault $account $shares)
+  (= (redeemVault $tokenContract $asset $account $shares)
      (begin
        (require (> $shares 0) ZERO_REDEEM)
        (require (> (state-get vaultShareSupply) 0) EMPTY_SHARE_SUPPLY)
        (require (>= (state-get vaultShareBalanceOf $account) $shares) INSUFFICIENT_SHARES)
        (require (>= (state-get vaultShareSupply) $shares) INSUFFICIENT_SHARE_SUPPLY)
+       (require (> (safe-div (safe-mul $shares (state-get vaultAssetReserve))
+         (state-get vaultShareSupply)) 0) ZERO_REDEEM_OUTPUT)
        (state-set! vaultShareBalanceOf $account
          (safe-sub (state-get vaultShareBalanceOf $account) $shares))
        (state-set! vaultShareSupply
@@ -413,6 +421,9 @@
          (safe-sub (state-get vaultAssetReserve)
            (safe-div (safe-mul $shares (state-get vaultAssetReserve))
              (state-get vaultShareSupply))))
+       (call-contract! $tokenContract transfer $account $asset
+         (safe-div (safe-mul $shares (state-get vaultAssetReserve))
+           (state-get vaultShareSupply)))
        (emit! (VaultRedeem $account
          (safe-div (safe-mul $shares (state-get vaultAssetReserve))
            (state-get vaultShareSupply))
@@ -425,9 +436,10 @@
      (state-get vaultShareBalanceOf $account)))
 
 (derived WrappedBalanceAspect wrapBalance
-  (= (wrapBalance $account $amount)
+  (= (wrapBalance $tokenContract $asset $account $amount)
      (begin
        (require (> $amount 0) ZERO_WRAP)
+       (call-contract! $tokenContract transferFrom $account current-contract $asset $amount)
        (state-set! wrappedUnderlyingReserve
          (safe-add (state-get wrappedUnderlyingReserve) $amount))
        (state-set! totalSupply
@@ -439,7 +451,7 @@
        $amount)))
 
 (derived WrappedBalanceAspect unwrapBalance
-  (= (unwrapBalance $account $amount)
+  (= (unwrapBalance $tokenContract $asset $account $amount)
      (begin
        (require (> $amount 0) ZERO_UNWRAP)
        (require (>= (state-get balanceOf $account) $amount) INSUFFICIENT_BALANCE)
@@ -451,6 +463,7 @@
          (safe-sub (state-get totalSupply) $amount))
        (state-set! wrappedUnderlyingReserve
          (safe-sub (state-get wrappedUnderlyingReserve) $amount))
+       (call-contract! $tokenContract transfer $account $asset $amount)
        (emit! (Transfer $account ZeroAddress $amount))
        (emit! (Unwrap $account $amount))
        $amount)))
@@ -489,6 +502,16 @@
        (state-set! rewardPerBlock $reward)
        True)))
 
+(derived RewardedStakeBalanceAspect fundStakeRewardReserve
+  (= (fundStakeRewardReserve $tokenContract $asset $account $amount)
+     (begin
+       (require (> $amount 0) ZERO_REWARD_FUND)
+       (call-contract! $tokenContract transferFrom $account current-contract $asset $amount)
+       (state-set! rewardReserve
+         (safe-add (state-get rewardReserve) $amount))
+       (emit! (RewardFunded $account $amount))
+       True)))
+
 (derived RewardedStakeBalanceAspect accrueStakeReward
   (= (accrueStakeReward $account)
      (begin
@@ -504,25 +527,56 @@
        True)))
 
 (derived RewardedStakeBalanceAspect stakeWithRewardAccrual
-  (= (stakeWithRewardAccrual $account $amount)
+  (= (stakeWithRewardAccrual $tokenContract $asset $account $amount)
      (begin
+       (require (> $amount 0) ZERO_STAKE)
+       (call-contract! $tokenContract transferFrom $account current-contract $asset $amount)
        (accrueStakeReward $account)
        (stakeBalance $account $amount)
        True)))
 
 (derived RewardedStakeBalanceAspect unstakeWithRewardAccrual
-  (= (unstakeWithRewardAccrual $account $amount)
+  (= (unstakeWithRewardAccrual $tokenContract $asset $account $amount)
      (begin
        (accrueStakeReward $account)
        (unstakeBalance $account $amount)
+       (call-contract! $tokenContract transfer $account $asset $amount)
        True)))
 
 (derived RewardedStakeBalanceAspect claimStakeReward
-  (= (claimStakeReward $account)
+  (= (claimStakeReward $tokenContract $asset $account)
      (begin
        (require (>= block-height (state-get lastRewardHeightOf $account)) REWARD_TIME_REWIND)
+       (require (> (safe-add (state-get pendingRewardOf $account)
+         (safe-mul
+           (safe-mul
+             (safe-sub block-height (state-get lastRewardHeightOf $account))
+             (state-get stakeBalanceOf $account))
+           (state-get rewardPerBlock))) 0) ZERO_REWARD)
+       (require (>= (state-get rewardReserve)
+         (safe-add (state-get pendingRewardOf $account)
+           (safe-mul
+             (safe-mul
+               (safe-sub block-height (state-get lastRewardHeightOf $account))
+               (state-get stakeBalanceOf $account))
+             (state-get rewardPerBlock)))) INSUFFICIENT_REWARD_RESERVE)
        (state-set! pendingRewardOf $account 0)
        (state-set! lastRewardHeightOf $account block-height)
+       (state-set! rewardReserve
+         (safe-sub (state-get rewardReserve)
+           (safe-add (state-get pendingRewardOf $account)
+             (safe-mul
+               (safe-mul
+                 (safe-sub block-height (state-get lastRewardHeightOf $account))
+                 (state-get stakeBalanceOf $account))
+               (state-get rewardPerBlock)))))
+       (call-contract! $tokenContract transfer $account $asset
+         (safe-add (state-get pendingRewardOf $account)
+           (safe-mul
+             (safe-mul
+               (safe-sub block-height (state-get lastRewardHeightOf $account))
+               (state-get stakeBalanceOf $account))
+             (state-get rewardPerBlock))))
        (emit! (RewardClaimed $account
          (safe-add (state-get pendingRewardOf $account)
            (safe-mul
@@ -822,24 +876,24 @@
      (readSnapshotSupply $snapshotId)))
 
 (projection VaultShareToken Vault-deposit
-  (= (Vault.deposit $assets)
-     (depositVault tx.sender $assets)))
+  (= (Vault.deposit $tokenContract $asset $assets)
+     (depositVault $tokenContract $asset tx.sender $assets)))
 
 (projection VaultShareToken Vault-redeem
-  (= (Vault.redeem $shares)
-     (redeemVault tx.sender $shares)))
+  (= (Vault.redeem $tokenContract $asset $shares)
+     (redeemVault $tokenContract $asset tx.sender $shares)))
 
 (projection VaultShareToken Vault-sharesOf
   (= (Vault.sharesOf $account)
      (readVaultShares $account)))
 
 (projection WrappedToken Wrapped-wrap
-  (= (Wrapped.wrap $amount)
-     (wrapBalance tx.sender $amount)))
+  (= (Wrapped.wrap $tokenContract $asset $amount)
+     (wrapBalance $tokenContract $asset tx.sender $amount)))
 
 (projection WrappedToken Wrapped-unwrap
-  (= (Wrapped.unwrap $amount)
-     (unwrapBalance tx.sender $amount)))
+  (= (Wrapped.unwrap $tokenContract $asset $amount)
+     (unwrapBalance $tokenContract $asset tx.sender $amount)))
 
 (projection WrappedToken ERC20-transfer
   (= (ERC20.transfer $to $amount)
@@ -849,17 +903,21 @@
   (= (Staking.configureReward $reward)
      (configureStakeReward $reward)))
 
+(projection RewardedStakeToken Staking-fundRewards
+  (= (Staking.fundRewards $tokenContract $asset $amount)
+     (fundStakeRewardReserve $tokenContract $asset tx.sender $amount)))
+
 (projection RewardedStakeToken Staking-stake
-  (= (Staking.stake $amount)
-     (stakeWithRewardAccrual tx.sender $amount)))
+  (= (Staking.stake $tokenContract $asset $amount)
+     (stakeWithRewardAccrual $tokenContract $asset tx.sender $amount)))
 
 (projection RewardedStakeToken Staking-unstake
-  (= (Staking.unstake $amount)
-     (unstakeWithRewardAccrual tx.sender $amount)))
+  (= (Staking.unstake $tokenContract $asset $amount)
+     (unstakeWithRewardAccrual $tokenContract $asset tx.sender $amount)))
 
 (projection RewardedStakeToken Staking-claimReward
-  (= (Staking.claimReward)
-     (claimStakeReward tx.sender)))
+  (= (Staking.claimReward $tokenContract $asset)
+     (claimStakeReward $tokenContract $asset tx.sender)))
 
 (projection RewardedStakeToken Staking-stakeOf
   (= (Staking.stakeOf $account)
@@ -1022,11 +1080,11 @@
   Amount)
 
 (method-abi VaultShareToken Vault-deposit
-  (args (assets Amount))
+  (args (tokenContract Address) (asset Asset) (assets Amount))
   Amount)
 
 (method-abi VaultShareToken Vault-redeem
-  (args (shares Amount))
+  (args (tokenContract Address) (asset Asset) (shares Amount))
   Amount)
 
 (method-abi VaultShareToken Vault-sharesOf
@@ -1034,11 +1092,11 @@
   Amount)
 
 (method-abi WrappedToken Wrapped-wrap
-  (args (amount Amount))
+  (args (tokenContract Address) (asset Asset) (amount Amount))
   Amount)
 
 (method-abi WrappedToken Wrapped-unwrap
-  (args (amount Amount))
+  (args (tokenContract Address) (asset Asset) (amount Amount))
   Amount)
 
 (method-abi WrappedToken ERC20-transfer
@@ -1049,16 +1107,20 @@
   (args (reward Amount))
   Bool)
 
+(method-abi RewardedStakeToken Staking-fundRewards
+  (args (tokenContract Address) (asset Asset) (amount Amount))
+  Bool)
+
 (method-abi RewardedStakeToken Staking-stake
-  (args (amount Amount))
+  (args (tokenContract Address) (asset Asset) (amount Amount))
   Bool)
 
 (method-abi RewardedStakeToken Staking-unstake
-  (args (amount Amount))
+  (args (tokenContract Address) (asset Asset) (amount Amount))
   Bool)
 
 (method-abi RewardedStakeToken Staking-claimReward
-  (args)
+  (args (tokenContract Address) (asset Asset))
   Amount)
 
 (method-abi RewardedStakeToken Staking-stakeOf
@@ -1265,12 +1327,12 @@
 
 (method-policy VaultShareToken Vault-deposit
   TxSender
-  (effects ReadState WriteState EmitEvent)
+  (effects ReadState WriteState EmitEvent CallContract)
   (invariants VAULT-1))
 
 (method-policy VaultShareToken Vault-redeem
   TxSender
-  (effects ReadState WriteState EmitEvent)
+  (effects ReadState WriteState EmitEvent CallContract)
   (invariants VAULT-1))
 
 (method-policy VaultShareToken Vault-sharesOf
@@ -1280,12 +1342,12 @@
 
 (method-policy WrappedToken Wrapped-wrap
   TxSender
-  (effects ReadState WriteState EmitEvent)
+  (effects ReadState WriteState EmitEvent CallContract)
   (invariants WRAP-1))
 
 (method-policy WrappedToken Wrapped-unwrap
   TxSender
-  (effects ReadState WriteState EmitEvent)
+  (effects ReadState WriteState EmitEvent CallContract)
   (invariants WRAP-1))
 
 (method-policy WrappedToken ERC20-transfer
@@ -1298,19 +1360,24 @@
   (effects WriteState)
   (invariants REWARD-1))
 
+(method-policy RewardedStakeToken Staking-fundRewards
+  TxSender
+  (effects ReadState WriteState EmitEvent CallContract)
+  (invariants REWARD-1))
+
 (method-policy RewardedStakeToken Staking-stake
   TxSender
-  (effects ReadState WriteState EmitEvent)
+  (effects ReadState WriteState EmitEvent CallContract)
   (invariants STAKE-1 REWARD-1))
 
 (method-policy RewardedStakeToken Staking-unstake
   TxSender
-  (effects ReadState WriteState EmitEvent)
+  (effects ReadState WriteState EmitEvent CallContract)
   (invariants STAKE-1 REWARD-1))
 
 (method-policy RewardedStakeToken Staking-claimReward
   TxSender
-  (effects ReadState WriteState EmitEvent)
+  (effects ReadState WriteState EmitEvent CallContract)
   (invariants REWARD-1))
 
 (method-policy RewardedStakeToken Staking-stakeOf
