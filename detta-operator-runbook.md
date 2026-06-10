@@ -26,7 +26,12 @@ Each validator data directory contains:
 
 Before joining a validator:
 
-- verify the binary with `scripts/detta-release-gate.sh`;
+- verify the binary with
+  `DETTA_E2E_FULL=1 DETTA_REQUIRE_DEP_AUDIT=1 scripts/detta-release-gate.sh`;
+- build the operator binary with `cargo build --release --bin detta-node`;
+- generate or verify the launch genesis snapshot with
+  `detta-node write-genesis`;
+- start the persistent validator with `detta-node serve --storage ...`;
 - check `ops/detta-public-testnet-readiness.json` and confirm it does not claim
   public-testnet readiness while blockers remain;
 - check `ops/detta-mainnet-candidate-readiness.json` and confirm it does not
@@ -168,8 +173,8 @@ when local release gates pass. Public-testnet launch requires:
 - state sync, RPC, governance, bridge, and DeFi workflow evidence;
 - a planned stability window of at least 168 hours;
 - no unresolved high or critical audit findings;
-- finalized validator binary packaging, genesis tooling, faucet, and sample
-  client distribution.
+- signed and published validator artifacts, finalized launch genesis, and
+  published faucet/sample-client distribution.
 
 When those conditions are met, update the manifest, keep the blocker list
 empty, and run `cargo test -p detta-verify public_testnet_readiness` before

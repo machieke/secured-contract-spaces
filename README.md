@@ -177,7 +177,8 @@ Rust workspace crates:
   artifact tooling for secure taxonomy-aligned MeTTa aspect modules.
 - `crates/detta-aspect-runtime`: deterministic executable runtime for verified
   aspect IR and guarded kernel host-call traces.
-- `crates/detta-node`: persistent validator node orchestration.
+- `crates/detta-node`: persistent validator node orchestration and the
+  `detta-node` operator binary.
 - `crates/detta-rpc`: HTTP/TCP JSON-RPC server and client-facing wire types.
 - `crates/detta-evaluator`: restricted MeTTa/PeTTa-style evaluator subset.
 - `crates/detta-verify`: replay, differential, symbolic, and proof artifact
@@ -206,6 +207,12 @@ For the full E2E profile:
 DETTA_E2E_FULL=1 scripts/detta-release-gate.sh
 ```
 
+For a release-candidate gate with dependency audit enforced locally:
+
+```sh
+DETTA_E2E_FULL=1 DETTA_REQUIRE_DEP_AUDIT=1 scripts/detta-release-gate.sh
+```
+
 The release gate checks formatting, clippy, workspace tests, selected or full
 E2E client flows, dependency advisory and supply-chain policy through
 `deny.toml`, verification crate tests, release builds, TLA+ model checking through
@@ -223,8 +230,42 @@ evidence for closed findings, or accepted-risk findings without a rationale.
 
 Public testnet readiness is represented by
 `ops/detta-public-testnet-readiness.json`. The checked-in status intentionally
-does not claim readiness until the stability window, packaging/genesis/faucet
-work, and external audit gate are completed.
+does not claim readiness until the stability window, signed release
+distribution, faucet/sample-client publication, and external audit gate are
+completed.
+
+## Operator Binary Quick Start
+
+Build the deployable node binary:
+
+```sh
+cargo build --release --bin detta-node
+```
+
+Generate a deterministic demo DeFi genesis snapshot:
+
+```sh
+cargo run -p detta-node --bin detta-node -- \
+  write-genesis --output ops/demo-genesis.json --chain-id detta-local
+```
+
+Start a persistent TCP JSON-RPC validator from that genesis:
+
+```sh
+cargo run -p detta-node --bin detta-node -- \
+  serve --storage /tmp/detta-validator-1 \
+  --genesis ops/demo-genesis.json \
+  --validator-id validator-1 \
+  --rpc 127.0.0.1:8080 \
+  --transport tcp
+```
+
+Create a faucet transfer transaction that can be submitted through RPC:
+
+```sh
+cargo run -p detta-node --bin detta-node -- \
+  faucet-tx --to Alice --amount 100 --nonce 1 --tx-hash faucet-alice-1
+```
 
 Mainnet-candidate readiness is represented by
 `ops/detta-mainnet-candidate-readiness.json`. The checked-in status

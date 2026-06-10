@@ -5,7 +5,7 @@
   "generated_at": "2026-06-09T00:00:00Z",
   "ready_for_public_testnet": false,
   "planned_stability_window_hours": 168,
-  "release_gate_command": "DETTA_E2E_FULL=1 scripts/detta-release-gate.sh",
+  "release_gate_command": "DETTA_E2E_FULL=1 DETTA_REQUIRE_DEP_AUDIT=1 scripts/detta-release-gate.sh",
   "required_workflows": [
     "state_sync",
     "rpc",
@@ -26,12 +26,13 @@
     "crates/detta-e2e/tests/protocol_client_flows.rs",
     "crates/detta-e2e/tests/factory_client_flows.rs",
     "crates/detta-e2e/tests/four_validator_convergence_flows.rs",
+    "crates/detta-node/src/bin/detta-node.rs",
     "scripts/detta-release-gate.sh",
     "security/detta-audit-findings.json"
   ],
   "blockers": [
     "Public testnet stability window has not run yet.",
-    "Deployable validator binary packaging, genesis tooling, faucet, and sample-client distribution are not finalized.",
+    "Signed validator release artifacts, finalized launch genesis, and faucet/sample-client publication are not complete.",
     "External security audit has not completed."
   ]
 }
