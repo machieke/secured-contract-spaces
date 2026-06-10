@@ -160,8 +160,8 @@ SCS specification
   tracker validated by `detta-verify`.
 - `scripts/detta-release-gate.sh`: release-gate verification script.
 - `scripts/detta-package-release.sh`: release artifact packaging script for
-  the validator binary, demo genesis, faucet sample, hashes, and signing
-  manifest.
+  the validator and client binaries, demo genesis, faucet sample, hashes, and
+  signing manifest.
 - `scripts/detta-release-signing-drill.sh`: hermetic release signing drill
   that signs packaged checksum attestations with an ephemeral key and verifies
   them with the production verifier.
@@ -179,6 +179,9 @@ Rust workspace crates:
   TCP protocol streams.
 - `crates/detta-storage`: durable blocks, mempool records, snapshots, metadata,
   audit records, and sync diagnostics.
+- `crates/detta-node/src/bin/detta-client.rs`: packaged TCP RPC client for
+  deploying tokens, creating pools, adding liquidity, swapping assets, reading
+  receipts, and querying roots.
 - `crates/detta-aspects`: parser, canonicalizer, verifier, IR lowering, and
   artifact tooling for secure taxonomy-aligned MeTTa aspect modules.
 - `crates/detta-aspect-runtime`: deterministic executable runtime for verified
@@ -282,9 +285,10 @@ DETTA_RELEASE_VERSION=rc-1 scripts/detta-package-release.sh
 ```
 
 The packaging script writes `dist/detta-release-<version>.json`, SHA-256
-attestations, a deterministic `detta-node` archive, a demo genesis snapshot,
-and a sample faucet transaction. Detached signatures are still an operator
-release step and should use the `*.sha256` files listed in the manifest:
+attestations, a deterministic archive containing `detta-node` and
+`detta-client`, a demo genesis snapshot, and a sample faucet transaction.
+Detached signatures are still an operator release step and should use the
+`*.sha256` files listed in the manifest:
 
 ```sh
 for checksum in dist/*.sha256; do

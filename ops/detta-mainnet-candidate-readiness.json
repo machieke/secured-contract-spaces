@@ -28,6 +28,7 @@
     "scripts/detta-package-release.sh",
     "scripts/detta-verify-release-signatures.sh",
     "scripts/detta-release-signing-drill.sh",
+    "crates/detta-node/src/bin/detta-client.rs",
     "scripts/detta-operator-launch-rehearsal.sh",
     "scripts/detta-incident-response-drill.sh",
     "scripts/detta-governance-bootstrap-drill.sh",

@@ -14,13 +14,15 @@ out_dir="${DETTA_RELEASE_OUT:-$repo_root/dist}"
 
 mkdir -p "$out_dir"
 
-cargo build --locked --release --bin detta-node
+cargo build --locked --release --bin detta-node --bin detta-client
 
 binary="$repo_root/target/release/detta-node"
+client_binary="$repo_root/target/release/detta-client"
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
 
 install -m 0755 "$binary" "$stage/detta-node"
+install -m 0755 "$client_binary" "$stage/detta-client"
 install -m 0644 README.md "$stage/README.md"
 install -m 0644 detta-rpc-api.md "$stage/detta-rpc-api.md"
 install -m 0644 detta-client-token-liquidity-guide.md \
@@ -81,6 +83,7 @@ cat >"$manifest_path" <<JSON
   "source_date_epoch": $source_date_epoch,
   "chain_id": "$chain_id",
   "release_gate_command": "DETTA_E2E_FULL=1 DETTA_REQUIRE_DEP_AUDIT=1 scripts/detta-release-gate.sh",
+  "included_binaries": ["detta-node", "detta-client"],
   "manifest_sha256_path": "$manifest_name.sha256",
   "manifest_signature_path": "$manifest_name.sha256.sig",
   "artifacts": [

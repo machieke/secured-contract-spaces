@@ -212,13 +212,14 @@ Mainnet candidacy requires:
   metadata.
 
 The hard release gate runs packaged-node launch, incident-response,
-governance-bootstrap, and validator-onboarding drills from a temporary release
-directory. Use the standalone scripts below when the operator needs retained
-release-candidate reports under `dist/`.
+governance-bootstrap, validator-onboarding, and release-signing drills from a
+temporary release directory. Use the standalone scripts below when the
+operator needs retained release-candidate reports under `dist/`.
 
 Use `scripts/detta-package-release.sh` after the hard release gate passes. The
-script produces a deterministic validator archive, demo genesis snapshot,
-sample faucet transaction, SHA-256 attestations, and
+script produces a deterministic archive containing `detta-node` and
+`detta-client`, a demo genesis snapshot, sample faucet transaction, SHA-256
+attestations, and
 `dist/detta-release-<version>.json`. Sign every generated `*.sha256` file with
 the release key, including the release manifest checksum:
 

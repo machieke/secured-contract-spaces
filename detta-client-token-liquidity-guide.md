@@ -54,6 +54,81 @@ For local development and test harnesses, the examples use
 the same transaction through `submit_signed_transaction`; see
 `Production Signing` below.
 
+## Packaged CLI
+
+Release archives include `detta-client`, a TCP RPC client for the same workflow.
+Set the TCP RPC endpoint for a local node:
+
+```sh
+export DETTA_RPC_ADDR=127.0.0.1:8080
+```
+
+Deploy the token and produce a local demo block:
+
+```sh
+detta-client deploy-token \
+  --rpc "$DETTA_RPC_ADDR" \
+  --sender Issuer \
+  --nonce 1 \
+  --tx-hash client-deploy-token-1 \
+  --contract ClientToken \
+  --asset CLT \
+  --initial-holder Alice \
+  --initial-supply 1000 \
+  --produce-height 1
+```
+
+Create the pool, add liquidity, buy with USDC, and sell CLT back to USDC:
+
+```sh
+detta-client deploy-pool \
+  --rpc "$DETTA_RPC_ADDR" \
+  --sender Issuer \
+  --nonce 2 \
+  --tx-hash client-deploy-pool-1 \
+  --contract ClientPool \
+  --asset-a CLT \
+  --asset-b USDC \
+  --produce-height 2
+
+detta-client add-liquidity \
+  --rpc "$DETTA_RPC_ADDR" \
+  --sender Alice \
+  --nonce 1 \
+  --tx-hash client-add-liquidity-1 \
+  --pool ClientPool \
+  --asset-a-amount 100 \
+  --asset-b-amount 50 \
+  --produce-height 3
+
+detta-client swap \
+  --rpc "$DETTA_RPC_ADDR" \
+  --sender Bob \
+  --nonce 1 \
+  --tx-hash client-buy-token-1 \
+  --pool ClientPool \
+  --input-asset USDC \
+  --amount-in 10 \
+  --min-output 15 \
+  --produce-height 4
+
+detta-client swap \
+  --rpc "$DETTA_RPC_ADDR" \
+  --sender Bob \
+  --nonce 2 \
+  --tx-hash client-sell-token-1 \
+  --pool ClientPool \
+  --input-asset CLT \
+  --amount-in 15 \
+  --min-output 8 \
+  --produce-height 5
+```
+
+Each command prints JSON containing submission status, the produced block
+summary when `--produce-height` is used, and the transaction receipt. On a real
+validator network, omit `--produce-height` and query receipts after consensus
+finality.
+
 ## Local Block Production
 
 On a local development RPC service, submitted transactions sit in the mempool
@@ -96,7 +171,7 @@ curl -s "$DETTA_RPC_URL/rpc" \
         "args": [
           {"Text": "ClientToken"},
           {"Asset": "CLT"},
-          {"Principal": "Issuer"},
+          {"Principal": "Alice"},
           {"Amount": 1000}
         ],
         "signature_ok": true,
@@ -131,11 +206,11 @@ curl -s "$DETTA_RPC_URL/rpc" \
 
 curl -s "$DETTA_RPC_URL/rpc" \
   -H "Content-Type: application/json" \
-  -d '{"method":"get_balance","params":{"contract":"ClientToken","owner":"Issuer","asset":"CLT"}}'
+  -d '{"method":"get_balance","params":{"contract":"ClientToken","owner":"Alice","asset":"CLT"}}'
 ```
 
 The receipt should be committed, the contract should be a token contract, the
-total supply should be `1000`, and `Issuer` should hold the initial `CLT`
+total supply should be `1000`, and `Alice` should hold the initial `CLT`
 balance.
 
 ## 2. Create The Liquidity Pool
@@ -217,8 +292,8 @@ curl -s "$DETTA_RPC_URL/rpc" \
       "transaction": {
         "chain_id": "detta-local",
         "tx_hash": "client-add-liquidity-1",
-        "sender": "Issuer",
-        "nonce": 3,
+        "sender": "Alice",
+        "nonce": 1,
         "valid_until_height": null,
         "target": "ClientPool",
         "method": "AddLiquidity",
@@ -293,8 +368,8 @@ curl -s "$DETTA_RPC_URL/rpc" \
       "transaction": {
         "chain_id": "detta-local",
         "tx_hash": "client-sell-clt-1",
-        "sender": "Issuer",
-        "nonce": 4,
+        "sender": "Alice",
+        "nonce": 2,
         "valid_until_height": null,
         "target": "ClientPool",
         "method": "Swap",

@@ -27,6 +27,7 @@
     "crates/detta-e2e/tests/factory_client_flows.rs",
     "crates/detta-e2e/tests/four_validator_convergence_flows.rs",
     "crates/detta-node/src/bin/detta-node.rs",
+    "crates/detta-node/src/bin/detta-client.rs",
     "scripts/detta-release-gate.sh",
     "scripts/detta-package-release.sh",
     "scripts/detta-verify-release-signatures.sh",
@@ -39,7 +40,7 @@
   ],
   "blockers": [
     "Public testnet stability window has not run yet.",
-    "Signed validator release artifacts, finalized launch genesis, and faucet/sample-client publication are not complete.",
+    "Signed validator release artifacts and finalized launch genesis are not complete; faucet and sample-client artifacts are packaged but not externally published.",
     "External security audit has not completed."
   ]
 }

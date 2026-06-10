@@ -483,6 +483,9 @@ Completed production-plan slices:
 - [x] Release signing drill signs packaged release checksum attestations with
   an ephemeral GPG key, verifies them with the production release-signature
   verifier, and records a signing-drill report.
+- [x] Packaged `detta-client` TCP RPC binary submits token deployment, pool
+  deployment, liquidity, swap, receipt, block-production, and state-root
+  commands for end-user DeFi workflows.
 
 Next implementation slices:
 
