@@ -372,3 +372,13 @@ cargo fmt && cargo test && cargo clippy --all-targets -- -D warnings
 
 The manifest must remain timestamp-free and deterministic so release
 attestations are stable across machines.
+
+When `models/aspects/stdlib/minimal-transfer-token.metta` changes, run:
+
+```sh
+cargo run -p detta-verify --bin refresh_aspect_stdlib_artifacts
+```
+
+That command regenerates the standard-library aspect artifact, updates the
+proof-obligation source and IR roots, validates both manifests, and rewrites the
+aspect release-attestation files.

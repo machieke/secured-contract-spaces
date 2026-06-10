@@ -53,6 +53,9 @@ This directory contains formal-model artifacts for the DeTTa runtime.
   programmable-module proof obligations for the standard-library token bundle.
 - `aspects/stdlib/*.sha256` files bind the checked-in aspect source, artifact,
   and proof-obligation manifest to release-gate checksum checks.
+- `cargo run -p detta-verify --bin refresh_aspect_stdlib_artifacts` refreshes
+  the standard-library aspect artifact, proof-obligation roots, and aspect
+  checksum files after an intentional aspect-source change.
 - `formal-model-checking-runbook.md` describes the repository checks, external
   model-checker preparation, and manifest refresh procedure.
 - `../detta-restricted-evaluator-subset.md` documents the implemented

@@ -271,6 +271,9 @@ aspect-token contract and the bundle exports the guarded `ERC20-transfer`
 method. Other aspect bundles such as vault shares, wrapping, and rewarded
 staking are tested as aspect-owned accounting modules unless a kernel adapter is
 explicitly used; they do not silently move unrelated native token ledgers.
+Privileged aspect operations that change supply or bridge replay state reject
+zero amounts before emitting events, mutating supply, or consuming bridge
+message IDs.
 
 ## DeFi Client Coverage
 

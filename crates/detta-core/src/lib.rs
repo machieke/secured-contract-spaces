@@ -8697,21 +8697,43 @@ mod tests {
         ));
         assert_eq!(deploy.status, TxStatus::Committed);
 
+        let zero_mint = state.apply_transaction(tx_to(
+            "MintBurnAspectToken",
+            "tx-zero-mint-bob",
+            "Issuer",
+            2,
+            Method::Other("Mint-mint".into()),
+            vec![principal("Bob"), amount(0)],
+        ));
+        assert_eq!(zero_mint.status, TxStatus::Reverted);
+        assert_eq!(zero_mint.error, Some(ExecutionError::InvalidArguments));
+
         let mint = state.apply_transaction(tx_to(
             "MintBurnAspectToken",
             "tx-mint-bob",
             "Issuer",
-            2,
+            3,
             Method::Other("Mint-mint".into()),
             vec![principal("Bob"), amount(25)],
         ));
         assert_eq!(mint.status, TxStatus::Committed);
 
+        let zero_burn = state.apply_transaction(tx_to(
+            "MintBurnAspectToken",
+            "tx-zero-burn-bob",
+            "Bob",
+            1,
+            Method::Other("Burn-burn".into()),
+            vec![amount(0)],
+        ));
+        assert_eq!(zero_burn.status, TxStatus::Reverted);
+        assert_eq!(zero_burn.error, Some(ExecutionError::InvalidArguments));
+
         let burn = state.apply_transaction(tx_to(
             "MintBurnAspectToken",
             "tx-burn-bob",
             "Bob",
-            1,
+            2,
             Method::Other("Burn-burn".into()),
             vec![amount(10)],
         ));
@@ -9563,11 +9585,38 @@ mod tests {
         assert_eq!(bad_mint.status, TxStatus::Reverted);
         assert_eq!(bad_mint.error, Some(ExecutionError::InvalidBridgeMessage));
 
+        let zero_mint = state.apply_transaction(tx_to(
+            "BridgeAspectToken",
+            "tx-bridge-zero-mint",
+            "Relayer",
+            2,
+            Method::Other("Bridge-mint".into()),
+            vec![
+                text("SourceChain"),
+                text("msg-bridge-zero"),
+                principal("Alice"),
+                asset("USDC"),
+                amount(0),
+                Argument::Certificate(certificate.clone()),
+            ],
+        ));
+        assert_eq!(zero_mint.status, TxStatus::Reverted);
+        assert_eq!(zero_mint.error, Some(ExecutionError::InvalidArguments));
+        assert_eq!(
+            state.storage.get(&StateKey::AspectState {
+                contract: "BridgeAspectToken".into(),
+                aspect: "BridgeMintBurnAspect".into(),
+                state: "bridgeMessageConsumed".into(),
+                key: vec!["msg-bridge-zero".into()],
+            }),
+            None
+        );
+
         let mint = state.apply_transaction(tx_to(
             "BridgeAspectToken",
             "tx-bridge-mint",
             "Relayer",
-            2,
+            3,
             Method::Other("Bridge-mint".into()),
             vec![
                 text("SourceChain"),
@@ -9584,7 +9633,7 @@ mod tests {
             "BridgeAspectToken",
             "tx-bridge-mint-replay",
             "Relayer",
-            3,
+            4,
             Method::Other("Bridge-mint".into()),
             vec![
                 text("SourceChain"),
@@ -9598,11 +9647,22 @@ mod tests {
         assert_eq!(replay.status, TxStatus::Reverted);
         assert_eq!(replay.error, Some(ExecutionError::InvalidArguments));
 
+        let zero_burn = state.apply_transaction(tx_to(
+            "BridgeAspectToken",
+            "tx-bridge-zero-burn",
+            "Alice",
+            1,
+            Method::Other("Bridge-burn".into()),
+            vec![amount(0)],
+        ));
+        assert_eq!(zero_burn.status, TxStatus::Reverted);
+        assert_eq!(zero_burn.error, Some(ExecutionError::InvalidArguments));
+
         let burn = state.apply_transaction(tx_to(
             "BridgeAspectToken",
             "tx-bridge-burn",
             "Alice",
-            1,
+            2,
             Method::Other("Bridge-burn".into()),
             vec![amount(40)],
         ));

@@ -309,6 +309,7 @@
 (derived MintableBalanceAspect mintBalance
   (= (mintBalance $to $amount)
      (begin
+       (require (> $amount 0) ZERO_MINT)
        (state-set! totalSupply
          (safe-add (state-get totalSupply) $amount))
        (state-set! balanceOf $to
@@ -319,6 +320,7 @@
 (derived BurnableBalanceAspect burnBalance
   (= (burnBalance $from $amount)
      (begin
+       (require (> $amount 0) ZERO_BURN)
        (require (>= (state-get balanceOf $from) $amount) INSUFFICIENT_BALANCE)
        (require (>= (state-get totalSupply) $amount) INSUFFICIENT_SUPPLY)
        (state-set! balanceOf $from
@@ -538,6 +540,7 @@
 (derived BridgeMintBurnAspect bridgeMintBalance
   (= (bridgeMintBalance $sourceChain $messageId $recipient $asset $amount $certificate)
      (begin
+       (require (> $amount 0) ZERO_BRIDGE_MINT)
        (bridge-verify! $sourceChain $messageId $recipient $asset $amount $certificate)
        (require (= (state-get bridgeMessageConsumed $messageId) 0) BRIDGE_MESSAGE_REPLAY)
        (state-set! bridgeMessageConsumed $messageId 1)
@@ -547,6 +550,7 @@
 (derived BridgeMintBurnAspect bridgeBurnBalance
   (= (bridgeBurnBalance $account $amount)
      (begin
+       (require (> $amount 0) ZERO_BRIDGE_BURN)
        (burnBalance $account $amount)
        True)))
 
