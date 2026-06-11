@@ -381,4 +381,8 @@ empty, include every signed release artifact, and run
 `scripts/detta-verify-readiness-manifests.sh`, then regenerate
 `dist/detta-readiness-status.json` and verify it with
 `scripts/detta-verify-readiness-status-report.sh` before proposing a mainnet
-release candidate.
+release candidate. Current v2 readiness status reports also bind
+`models/detta-proof-artifact-manifest.json`, its SHA-256 attestation, and every
+manifest-referenced model/runtime proof artifact; the verifier rechecks those
+bindings against either the current checkout or an explicit packaged source
+snapshot via `DETTA_READINESS_STATUS_BASE_DIR`.

@@ -36,8 +36,8 @@ fi
 jq empty "$report_path" || fail "invalid JSON: $report_path"
 
 if ! jq -e '
-  .schema == "detta.readiness-status-report.v1"
-  and .schema_version == 1
+  ((.schema == "detta.readiness-status-report.v1" and .schema_version == 1)
+   or (.schema == "detta.readiness-status-report.v2" and .schema_version == 2))
   and .project == "DeTTa"
   and (.git_commit | type == "string" and length > 0)
   and (.source_state.schema == "detta.source-state.v1")
@@ -46,6 +46,16 @@ if ! jq -e '
   and (.manifests.public_testnet.path == "ops/detta-public-testnet-readiness.json")
   and (.manifests.mainnet_candidate.path == "ops/detta-mainnet-candidate-readiness.json")
   and (.manifests.audit_findings.path == "security/detta-audit-findings.json")
+  and (if .schema_version == 2 then
+      .formal_proof_artifacts.manifest.path == "models/detta-proof-artifact-manifest.json"
+      and .formal_proof_artifacts.manifest.sha256_path == "models/detta-proof-artifact-manifest.sha256"
+      and (.formal_proof_artifacts.manifest.sha256 | type == "string" and test("^[0-9a-f]{64}$"))
+      and (.formal_proof_artifacts.manifest.schema | type == "string" and length > 0)
+      and (.formal_proof_artifacts.manifest.schema_version | type == "number")
+      and (.formal_proof_artifacts.manifest.model_artifact_count | type == "number")
+      and (.formal_proof_artifacts.manifest.runtime_artifact_count | type == "number")
+      and (.formal_proof_artifacts.manifest.theorem_count | type == "number")
+    else true end)
   and (.evidence_inventory.count | type == "number")
   and (.evidence_inventory.sha256 | type == "string" and test("^[0-9a-f]{64}$"))
   and (.evidence_inventory.files | type == "array")
@@ -100,6 +110,9 @@ verify_bound_file() {
 verify_bound_file '.manifests.public_testnet.path' '.manifests.public_testnet.sha256'
 verify_bound_file '.manifests.mainnet_candidate.path' '.manifests.mainnet_candidate.sha256'
 verify_bound_file '.manifests.audit_findings.path' '.manifests.audit_findings.sha256'
+if [ "$(jq -r '.schema_version' "$report_path")" = "2" ]; then
+  verify_bound_file '.formal_proof_artifacts.manifest.path' '.formal_proof_artifacts.manifest.sha256'
+fi
 
 tmpdir="$(mktemp -d)"
 cleanup() {
@@ -135,6 +148,15 @@ jq -c '.evidence_inventory.files[]' "$report_path" | while IFS= read -r entry; d
     fail "byte count mismatch for evidence path $path: expected $expected_bytes, got $actual_bytes"
 done
 
+require_inventory_path() {
+  local required_path="$1"
+  if ! jq -e --arg path "$required_path" '
+    any(.evidence_inventory.files[]; .path == $path)
+  ' "$report_path" >/dev/null; then
+    fail "required evidence path missing from readiness inventory: $required_path"
+  fi
+}
+
 public_manifest_path="$(repo_file_path ops/detta-public-testnet-readiness.json)"
 mainnet_manifest_path="$(repo_file_path ops/detta-mainnet-candidate-readiness.json)"
 audit_manifest_path="$(repo_file_path security/detta-audit-findings.json)"
@@ -161,6 +183,39 @@ if ! jq -e --slurpfile audit "$audit_manifest_path" '
   and .manifests.audit_findings.unresolved_count == ([$audit[0].findings[]? | select(.status == "Open" or .status == "InRemediation")] | length)
 ' "$report_path" >/dev/null; then
   fail "audit finding manifest state does not match report"
+fi
+
+if [ "$(jq -r '.schema_version' "$report_path")" = "2" ]; then
+  proof_manifest_path="$(repo_file_path models/detta-proof-artifact-manifest.json)"
+  proof_manifest_sha_path="$(repo_file_path models/detta-proof-artifact-manifest.sha256)"
+  (
+    cd "$(dirname "$proof_manifest_sha_path")"
+    sha256sum -c "$(basename "$proof_manifest_sha_path")" >/dev/null
+  ) || fail "proof artifact manifest checksum verification failed"
+
+  require_inventory_path "models/detta-proof-artifact-manifest.json"
+  require_inventory_path "models/detta-proof-artifact-manifest.sha256"
+
+  if ! jq -e --slurpfile proof "$proof_manifest_path" '
+    .formal_proof_artifacts.manifest.schema == $proof[0].schema
+    and .formal_proof_artifacts.manifest.schema_version == $proof[0].schema_version
+    and .formal_proof_artifacts.manifest.model_artifact_count == ($proof[0].model_artifacts | length)
+    and .formal_proof_artifacts.manifest.runtime_artifact_count == ($proof[0].runtime_artifacts | length)
+    and .formal_proof_artifacts.manifest.theorem_count == $proof[0].theorem_count
+  ' "$report_path" >/dev/null; then
+    fail "formal proof artifact manifest state does not match report"
+  fi
+
+  while IFS= read -r artifact || [ -n "$artifact" ]; do
+    [ -n "$artifact" ] || continue
+    artifact_path="$(jq -r '.path' <<<"$artifact")"
+    expected_sha="$(jq -r '.sha256' <<<"$artifact")"
+    resolved_artifact_path="$(repo_file_path "$artifact_path")"
+    require_inventory_path "$artifact_path"
+    actual_sha="$(sha256sum "$resolved_artifact_path" | awk '{print $1}')"
+    [ "$actual_sha" = "$expected_sha" ] ||
+      fail "proof artifact checksum mismatch for $artifact_path: expected $expected_sha, got $actual_sha"
+  done < <(jq -c '.model_artifacts[]?, .runtime_artifacts[]?' "$proof_manifest_path")
 fi
 
 if ! jq -e '

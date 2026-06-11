@@ -291,6 +291,11 @@ scripts/detta-readiness-status-report.sh dist/detta-readiness-status.json
 scripts/detta-verify-readiness-status-report.sh dist/detta-readiness-status.json
 ```
 
+The generated v2 readiness status report also binds
+`models/detta-proof-artifact-manifest.json`, its SHA-256 attestation, and every
+model/runtime proof artifact referenced by that manifest. The verifier accepts
+older v1 reports but enforces those proof-artifact bindings for v2 reports.
+
 ## Operator Binary Quick Start
 
 Build the deployable node binary:
@@ -458,6 +463,10 @@ repeat that check after transfer:
 scripts/detta-verify-release-candidate-evidence-bundle.sh \
   dist/detta-release-candidate-evidence-rc-1.tar.gz
 ```
+
+For v2 readiness reports, that transfer check also revalidates the formal proof
+artifact manifest and every manifest-referenced model/runtime proof artifact
+against the packaged source snapshot.
 
 This creates retained operator evidence; it does not replace the hard release
 gate or the real public-testnet stability window.

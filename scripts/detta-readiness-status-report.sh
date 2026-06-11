@@ -18,6 +18,8 @@ done
 public_manifest="ops/detta-public-testnet-readiness.json"
 mainnet_manifest="ops/detta-mainnet-candidate-readiness.json"
 audit_manifest="security/detta-audit-findings.json"
+proof_manifest="models/detta-proof-artifact-manifest.json"
+proof_manifest_sha256_path="models/detta-proof-artifact-manifest.sha256"
 out_path="${1:-${DETTA_READINESS_STATUS_OUT:-}}"
 
 case "${DETTA_SKIP_READINESS_VERIFY:-0}" in
@@ -31,6 +33,7 @@ source_date_epoch="${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct)}"
 public_sha="$(sha256sum "$public_manifest" | awk '{print $1}')"
 mainnet_sha="$(sha256sum "$mainnet_manifest" | awk '{print $1}')"
 audit_sha="$(sha256sum "$audit_manifest" | awk '{print $1}')"
+proof_sha="$(sha256sum "$proof_manifest" | awk '{print $1}')"
 
 tmpdir="$(mktemp -d)"
 cleanup() {
@@ -44,10 +47,13 @@ evidence_inventory="$tmpdir/readiness-evidence-inventory.jsonl"
 {
   jq -r '.evidence[]?' "$public_manifest"
   jq -r '.evidence[]?' "$mainnet_manifest"
+  jq -r '.model_artifacts[]?.path, .runtime_artifacts[]?.path' "$proof_manifest"
   printf '%s\n' \
     "$public_manifest" \
     "$mainnet_manifest" \
     "$audit_manifest" \
+    "$proof_manifest" \
+    "$proof_manifest_sha256_path" \
     "scripts/detta-verify-readiness-manifests.sh" \
     "scripts/detta-readiness-status-report.sh"
 } | sort -u >"$evidence_paths"
@@ -85,15 +91,18 @@ evidence_inventory_sha="$(sha256sum "$evidence_inventory" | awk '{print $1}')"
 
 render_report() {
   jq -n \
-    --arg schema "detta.readiness-status-report.v1" \
+    --arg schema "detta.readiness-status-report.v2" \
     --arg project "DeTTa" \
     --arg git_commit "$git_commit" \
     --arg public_manifest "$public_manifest" \
     --arg mainnet_manifest "$mainnet_manifest" \
     --arg audit_manifest "$audit_manifest" \
+    --arg proof_manifest "$proof_manifest" \
+    --arg proof_manifest_sha256_path "$proof_manifest_sha256_path" \
     --arg public_sha "$public_sha" \
     --arg mainnet_sha "$mainnet_sha" \
     --arg audit_sha "$audit_sha" \
+    --arg proof_sha "$proof_sha" \
     --arg evidence_inventory_sha "$evidence_inventory_sha" \
     --argjson source_date_epoch "$source_date_epoch" \
     --argjson source_state "$source_state_json" \
@@ -101,10 +110,11 @@ render_report() {
     --slurpfile public "$public_manifest" \
     --slurpfile mainnet "$mainnet_manifest" \
     --slurpfile audit "$audit_manifest" \
+    --slurpfile proof "$proof_manifest" \
     --slurpfile evidence "$evidence_inventory" \
     '{
       schema: $schema,
-      schema_version: 1,
+      schema_version: 2,
       project: $project,
       git_commit: $git_commit,
       source_state: $source_state,
@@ -130,6 +140,18 @@ render_report() {
           sha256: $audit_sha,
           finding_count: ($audit[0].findings | length),
           unresolved_count: ([$audit[0].findings[]? | select(.status == "Open" or .status == "InRemediation")] | length)
+        }
+      },
+      formal_proof_artifacts: {
+        manifest: {
+          path: $proof_manifest,
+          sha256: $proof_sha,
+          sha256_path: $proof_manifest_sha256_path,
+          schema: $proof[0].schema,
+          schema_version: $proof[0].schema_version,
+          model_artifact_count: ($proof[0].model_artifacts | length),
+          runtime_artifact_count: ($proof[0].runtime_artifacts | length),
+          theorem_count: $proof[0].theorem_count
         }
       },
       evidence_inventory: {

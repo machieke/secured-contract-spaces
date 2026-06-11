@@ -402,6 +402,12 @@ Completed production-plan slices:
 - [x] Readiness status reports have a standalone verifier that checks transfer
   checksums, schema, manifest hashes, evidence inventory hashes, evidence file
   bytes, blocker/status consistency, and current manifest binding.
+- [x] Readiness status report v2 binds the formal proof artifact manifest, its
+  SHA-256 attestation, and every manifest-referenced model/runtime proof
+  artifact into the launch-review evidence inventory.
+- [x] Readiness status report v2 verification rechecks each manifest-referenced
+  proof artifact hash against either the current checkout or a packaged source
+  snapshot.
 - [x] Local release gate performs a locked release build reproducibility smoke
   check.
 - [x] Local release gate runs the deterministic generated-corpus fuzz smoke
