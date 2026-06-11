@@ -166,7 +166,8 @@ SCS specification
   reporter that hashes readiness manifests, evidence paths, blockers, and
   source-state metadata for launch review.
 - `scripts/detta-verify-readiness-status-report.sh`: standalone verifier for
-  transferred readiness status reports and their evidence inventory hashes.
+  transferred readiness status reports and their evidence inventory hashes,
+  with optional base-directory verification against packaged source snapshots.
 - `scripts/detta-package-release.sh`: release artifact packaging script for
   the validator and client binaries, demo genesis, faucet sample, hashes, and
   signing manifest.
@@ -449,7 +450,9 @@ attestations, then runs the standalone evidence-bundle verifier. The verifier
 also imports the packaged signing public key and reruns release-signature
 verification against the packaged release artifacts, while checking source-state
 consistency across the release manifest, audit-readiness report, and readiness
-status report. Reviewers can repeat that check after transfer:
+status report. It verifies the packaged readiness status report against the
+source snapshot inside the bundled audit-readiness package, so reviewers can
+repeat that check after transfer:
 
 ```sh
 scripts/detta-verify-release-candidate-evidence-bundle.sh \

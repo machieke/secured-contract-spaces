@@ -531,6 +531,10 @@ Completed production-plan slices:
 - [x] Retained release-candidate evidence bundle verification checks
   source-state consistency across the top-level evidence report, release
   manifest, audit-readiness report, and readiness status report.
+- [x] Retained release-candidate evidence bundle verification checks the
+  packaged readiness status report against the source snapshot embedded in the
+  bundled audit-readiness package rather than relying only on the current
+  checkout.
 - [x] Hard release gate runs the standalone readiness-manifest verifier so
   launch status metadata cannot drift from checked evidence paths.
 - [x] Hard release gate generates the deterministic readiness status report so

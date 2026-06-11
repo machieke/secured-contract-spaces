@@ -297,7 +297,12 @@ cp "${signature_files[@]}" "$signature_verify_dir/"
 
 scripts/detta-verify-audit-readiness-package.sh \
   "$extract_dir/audit/detta-audit-readiness-package-${version}.tar.gz" >/dev/null
-scripts/detta-verify-readiness-status-report.sh "$readiness_report_path" >/dev/null
+audit_source_extract_dir="$tmpdir/audit-source"
+mkdir -p "$audit_source_extract_dir"
+tar -xzf "$extract_dir/audit/detta-audit-readiness-package-${version}.tar.gz" \
+  -C "$audit_source_extract_dir"
+DETTA_READINESS_STATUS_BASE_DIR="$audit_source_extract_dir/source" \
+  scripts/detta-verify-readiness-status-report.sh "$readiness_report_path" >/dev/null
 audit_report_path="$extract_dir/audit/detta-audit-readiness-${version}.json"
 if ! jq -e --slurpfile report "$report_path" '
   .source_state == $report[0].source_state

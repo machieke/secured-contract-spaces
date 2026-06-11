@@ -22,6 +22,9 @@ done
 
 report_path="$1"
 [ -f "$report_path" ] || fail "missing report: $report_path"
+base_dir="${DETTA_READINESS_STATUS_BASE_DIR:-$repo_root}"
+[ -d "$base_dir" ] || fail "readiness status base directory is missing: $base_dir"
+base_dir="$(cd "$base_dir" && pwd)"
 
 if [ -f "$report_path.sha256" ]; then
   (
@@ -53,14 +56,16 @@ if ! jq -e '
   fail "report schema is invalid"
 fi
 
-safe_repo_path() {
+repo_file_path() {
   local path="$1"
   case "$path" in
     ""|/*|*"/../"*|"../"*|*".."|*\\*)
       fail "unsafe report path: $path"
       ;;
   esac
-  [ -e "$path" ] || fail "report-bound path is missing: $path"
+  local resolved="$base_dir/$path"
+  [ -e "$resolved" ] || fail "report-bound path is missing: $path under $base_dir"
+  printf '%s\n' "$resolved"
 }
 
 category_for_path() {
@@ -83,10 +88,11 @@ verify_bound_file() {
   local path
   local expected_sha
   local actual_sha
+  local resolved_path
   path="$(jq -r "$path_filter" "$report_path")"
   expected_sha="$(jq -r "$sha_filter" "$report_path")"
-  safe_repo_path "$path"
-  actual_sha="$(sha256sum "$path" | awk '{print $1}')"
+  resolved_path="$(repo_file_path "$path")"
+  actual_sha="$(sha256sum "$resolved_path" | awk '{print $1}')"
   [ "$actual_sha" = "$expected_sha" ] ||
     fail "checksum mismatch for $path: expected $expected_sha, got $actual_sha"
 }
@@ -118,25 +124,29 @@ jq -c '.evidence_inventory.files[]' "$report_path" | while IFS= read -r entry; d
   category="$(jq -r '.category' <<<"$entry")"
   expected_sha="$(jq -r '.sha256' <<<"$entry")"
   expected_bytes="$(jq -r '.bytes' <<<"$entry")"
-  safe_repo_path "$path"
+  resolved_path="$(repo_file_path "$path")"
   [ "$(category_for_path "$path")" = "$category" ] ||
     fail "category mismatch for evidence path: $path"
-  actual_sha="$(sha256sum "$path" | awk '{print $1}')"
+  actual_sha="$(sha256sum "$resolved_path" | awk '{print $1}')"
   [ "$actual_sha" = "$expected_sha" ] ||
     fail "checksum mismatch for evidence path $path: expected $expected_sha, got $actual_sha"
-  actual_bytes="$(wc -c <"$path" | tr -d '[:space:]')"
+  actual_bytes="$(wc -c <"$resolved_path" | tr -d '[:space:]')"
   [ "$actual_bytes" = "$expected_bytes" ] ||
     fail "byte count mismatch for evidence path $path: expected $expected_bytes, got $actual_bytes"
 done
 
-if ! jq -e --slurpfile public ops/detta-public-testnet-readiness.json '
+public_manifest_path="$(repo_file_path ops/detta-public-testnet-readiness.json)"
+mainnet_manifest_path="$(repo_file_path ops/detta-mainnet-candidate-readiness.json)"
+audit_manifest_path="$(repo_file_path security/detta-audit-findings.json)"
+
+if ! jq -e --slurpfile public "$public_manifest_path" '
   .manifests.public_testnet.ready == $public[0].ready_for_public_testnet
   and .manifests.public_testnet.blockers == $public[0].blockers
 ' "$report_path" >/dev/null; then
   fail "public-testnet manifest state does not match report"
 fi
 
-if ! jq -e --slurpfile mainnet ops/detta-mainnet-candidate-readiness.json '
+if ! jq -e --slurpfile mainnet "$mainnet_manifest_path" '
   .manifests.mainnet_candidate.ready == $mainnet[0].ready_for_mainnet
   and .manifests.mainnet_candidate.blockers == $mainnet[0].blockers
   and .manifests.mainnet_candidate.release_candidate_id == $mainnet[0].release_candidate_id
@@ -146,7 +156,7 @@ if ! jq -e --slurpfile mainnet ops/detta-mainnet-candidate-readiness.json '
   fail "mainnet-candidate manifest state does not match report"
 fi
 
-if ! jq -e --slurpfile audit security/detta-audit-findings.json '
+if ! jq -e --slurpfile audit "$audit_manifest_path" '
   .manifests.audit_findings.finding_count == ($audit[0].findings | length)
   and .manifests.audit_findings.unresolved_count == ([$audit[0].findings[]? | select(.status == "Open" or .status == "InRemediation")] | length)
 ' "$report_path" >/dev/null; then
