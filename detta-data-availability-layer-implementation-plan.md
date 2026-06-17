@@ -670,7 +670,7 @@ Artifacts to add:
 - [x] Add versioned DA payload schema.
 - [x] Decide whether block header migration uses optional DA fields or a
   versioned header enum.
-- [ ] Add feature flag `experimental-da` for incremental work.
+- [x] Add feature flag `experimental-da` for incremental work.
 - [x] Add architecture tests that ensure DA-disabled and DA-enabled blocks are
   explicitly distinguished.
 

@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 
+[features]
+default = []
+experimental-da = ["detta-core/experimental-da"]
+
 [dependencies]
 detta-core = { path = "../detta-core" }
 reed-solomon-erasure = "6.0.0"

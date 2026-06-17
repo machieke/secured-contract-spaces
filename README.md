@@ -262,6 +262,12 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
+For the DA-enabled compatibility build:
+
+```sh
+cargo check --workspace --all-targets --features experimental-da
+```
+
 For the DeTTa release gate:
 
 ```sh
@@ -280,11 +286,12 @@ For a release-candidate gate with dependency audit enforced locally:
 DETTA_E2E_FULL=1 DETTA_REQUIRE_DEP_AUDIT=1 scripts/detta-release-gate.sh
 ```
 
-The release gate checks formatting, clippy, workspace tests, selected or full
-E2E client flows, dependency advisory and supply-chain policy through
-`deny.toml`, verification crate tests, release builds, packaged-node launch,
-incident-response, governance-bootstrap, validator-onboarding,
-packaged-client-flow, local-stability, DA incident-response, DA stability,
+The release gate checks formatting, clippy, the `experimental-da` compatibility
+build, workspace tests, selected or full E2E client flows, dependency advisory
+and supply-chain policy through `deny.toml`, verification crate tests, release
+builds, packaged-node launch, incident-response, governance-bootstrap,
+validator-onboarding, packaged-client-flow, local-stability,
+DA incident-response, DA stability,
 audit-readiness, and release-signing drills from a temporary release directory,
 the standalone readiness-manifest verifier, readiness status report generation,
 TLA+ model checking through

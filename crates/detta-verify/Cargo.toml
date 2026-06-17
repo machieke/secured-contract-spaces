@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 
+[features]
+default = []
+experimental-da = ["detta-aspects/experimental-da", "detta-core/experimental-da"]
+
 [dependencies]
 detta-aspects = { path = "../detta-aspects" }
 detta-core = { path = "../detta-core" }
