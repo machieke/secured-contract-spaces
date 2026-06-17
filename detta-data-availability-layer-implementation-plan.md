@@ -827,7 +827,7 @@ Acceptance:
 - [x] Persist DA challenge records.
 - [x] Add slashing records for signed unavailable shares.
 - [x] Expose challenge records over RPC.
-- [ ] Add governance policy for DA slashing parameters.
+- [x] Add governance policy for DA slashing parameters.
 
 Acceptance:
 

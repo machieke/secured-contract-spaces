@@ -31,6 +31,8 @@ pub enum Method {
     ExecuteUpgrade,
     SchedulePolicyUpdate,
     ExecutePolicyUpdate,
+    ScheduleDaSlashingPolicyUpdate,
+    ExecuteDaSlashingPolicyUpdate,
     DepositCollateral,
     Borrow,
     Liquidate,
@@ -459,6 +461,51 @@ pub struct ScheduledPolicyUpdate {
     pub executed: bool,
 }
 
+pub const DA_SLASHING_POLICY_SCOPE: &str = "detta.da-slashing-policy";
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaSlashingPolicy {
+    pub slash_missing_response: bool,
+    pub slash_invalid_response: bool,
+    pub min_observed_delay_blocks: u64,
+    pub max_observed_delay_blocks: u64,
+}
+
+impl Default for DaSlashingPolicy {
+    fn default() -> Self {
+        Self {
+            slash_missing_response: true,
+            slash_invalid_response: true,
+            min_observed_delay_blocks: 0,
+            max_observed_delay_blocks: 0,
+        }
+    }
+}
+
+impl DaSlashingPolicy {
+    pub fn validate(&self) -> Result<(), ExecutionError> {
+        if !self.slash_missing_response && !self.slash_invalid_response {
+            return Err(ExecutionError::InvalidArguments);
+        }
+        if self.max_observed_delay_blocks != 0
+            && self.max_observed_delay_blocks < self.min_observed_delay_blocks
+        {
+            return Err(ExecutionError::InvalidArguments);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ScheduledDaSlashingPolicyUpdate {
+    pub update_id: String,
+    pub governance_contract: ContractId,
+    pub target_scope: String,
+    pub policy: DaSlashingPolicy,
+    pub execute_after_height: u64,
+    pub executed: bool,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CrossShardMessage {
     pub source_chain: ChainId,
@@ -577,6 +624,8 @@ pub enum PolicyEffect {
     ContractCodeUpgrade,
     PolicyUpdateSchedule,
     MethodPolicyUpdate,
+    DaSlashingPolicyUpdateSchedule,
+    DaSlashingPolicyUpdate,
     CrossContractCall,
     CrossShardOutboxAppend,
     ContractDeploy,
@@ -837,6 +886,34 @@ impl ContractRecord {
                     method_policy(
                         PolicyAuthority::GovernanceAdminGrant,
                         [PolicyEffect::MethodPolicyUpdate, PolicyEffect::EventEmit],
+                        [
+                            ContractInvariant::GovernanceChangesRequireAdminGrant,
+                            ContractInvariant::GovernanceUpgradesRespectTimelock,
+                        ],
+                    ),
+                ),
+                (
+                    Method::ScheduleDaSlashingPolicyUpdate,
+                    method_policy(
+                        PolicyAuthority::GovernanceAdminGrant,
+                        [
+                            PolicyEffect::DaSlashingPolicyUpdateSchedule,
+                            PolicyEffect::EventEmit,
+                        ],
+                        [
+                            ContractInvariant::GovernanceChangesRequireAdminGrant,
+                            ContractInvariant::GovernanceUpgradesRespectTimelock,
+                        ],
+                    ),
+                ),
+                (
+                    Method::ExecuteDaSlashingPolicyUpdate,
+                    method_policy(
+                        PolicyAuthority::GovernanceAdminGrant,
+                        [
+                            PolicyEffect::DaSlashingPolicyUpdate,
+                            PolicyEffect::EventEmit,
+                        ],
                         [
                             ContractInvariant::GovernanceChangesRequireAdminGrant,
                             ContractInvariant::GovernanceUpgradesRespectTimelock,
@@ -1342,8 +1419,12 @@ fn method_resource_units(method: &Method) -> u64 {
         Method::QueueBridgeMessage => 34,
         Method::RedeemBridgeMessage => 48,
         Method::PauseContract | Method::UnpauseContract => 20,
-        Method::ScheduleUpgrade | Method::SchedulePolicyUpdate => 30,
-        Method::ExecuteUpgrade | Method::ExecutePolicyUpdate => 40,
+        Method::ScheduleUpgrade
+        | Method::SchedulePolicyUpdate
+        | Method::ScheduleDaSlashingPolicyUpdate => 30,
+        Method::ExecuteUpgrade
+        | Method::ExecutePolicyUpdate
+        | Method::ExecuteDaSlashingPolicyUpdate => 40,
         Method::DepositCollateral | Method::Stake | Method::Unstake => 22,
         Method::RequestUnstake | Method::CompleteUnstake | Method::ClaimStakingRewards => 26,
         Method::Borrow => 38,
@@ -1458,6 +1539,18 @@ pub enum EventPayload {
         effect: PolicyEffect,
         old_policy_root: String,
         new_policy_root: String,
+        admin: Principal,
+    },
+    DaSlashingPolicyUpdateScheduled {
+        update_id: String,
+        policy: DaSlashingPolicy,
+        execute_after_height: u64,
+        admin: Principal,
+    },
+    DaSlashingPolicyUpdateExecuted {
+        update_id: String,
+        old_policy: DaSlashingPolicy,
+        new_policy: DaSlashingPolicy,
         admin: Principal,
     },
     CollateralDeposited {
@@ -1585,6 +1678,9 @@ pub enum ExecutionError {
     PolicyUpdateAlreadyScheduled,
     PolicyUpdateNotFound,
     PolicyUpdateAlreadyExecuted,
+    DaSlashingPolicyUpdateAlreadyScheduled,
+    DaSlashingPolicyUpdateNotFound,
+    DaSlashingPolicyUpdateAlreadyExecuted,
     OutOfGas,
     InsufficientCollateral,
     InsufficientStake,
@@ -2615,8 +2711,12 @@ pub struct DeTTaState {
     used_nonces: BTreeSet<(Principal, Nonce)>,
     used_certificate_nonces: BTreeSet<String>,
     paused_contracts: BTreeSet<ContractId>,
+    #[serde(default)]
+    da_slashing_policy: DaSlashingPolicy,
     scheduled_upgrades: BTreeMap<String, ScheduledUpgrade>,
     scheduled_policy_updates: BTreeMap<String, ScheduledPolicyUpdate>,
+    #[serde(default)]
+    scheduled_da_slashing_policy_updates: BTreeMap<String, ScheduledDaSlashingPolicyUpdate>,
     trusted_bridge_validator_sets: BTreeMap<ChainId, BridgeValidatorSet>,
     outbound_message_ids: BTreeSet<String>,
     cross_shard_outbox: Vec<CrossShardMessage>,
@@ -2683,8 +2783,10 @@ impl DeTTaState {
             used_nonces: BTreeSet::new(),
             used_certificate_nonces: BTreeSet::new(),
             paused_contracts: BTreeSet::new(),
+            da_slashing_policy: DaSlashingPolicy::default(),
             scheduled_upgrades: BTreeMap::new(),
             scheduled_policy_updates: BTreeMap::new(),
+            scheduled_da_slashing_policy_updates: BTreeMap::new(),
             trusted_bridge_validator_sets: BTreeMap::new(),
             outbound_message_ids: BTreeSet::new(),
             cross_shard_outbox: Vec::new(),
@@ -3388,8 +3490,11 @@ impl DeTTaState {
         let checkpoint_paused_contracts = self.paused_contracts.clone();
         let checkpoint_contracts = self.contracts.clone();
         let checkpoint_aspect_modules = self.aspect_modules.clone();
+        let checkpoint_da_slashing_policy = self.da_slashing_policy.clone();
         let checkpoint_scheduled_upgrades = self.scheduled_upgrades.clone();
         let checkpoint_scheduled_policy_updates = self.scheduled_policy_updates.clone();
+        let checkpoint_scheduled_da_slashing_policy_updates =
+            self.scheduled_da_slashing_policy_updates.clone();
         let checkpoint_outbound_message_ids = self.outbound_message_ids.clone();
         let checkpoint_cross_shard_outbox = self.cross_shard_outbox.clone();
 
@@ -3407,8 +3512,11 @@ impl DeTTaState {
                 self.events = checkpoint_events;
                 self.used_certificate_nonces = checkpoint_certificate_nonces;
                 self.paused_contracts = checkpoint_paused_contracts;
+                self.da_slashing_policy = checkpoint_da_slashing_policy;
                 self.scheduled_upgrades = checkpoint_scheduled_upgrades;
                 self.scheduled_policy_updates = checkpoint_scheduled_policy_updates;
+                self.scheduled_da_slashing_policy_updates =
+                    checkpoint_scheduled_da_slashing_policy_updates;
                 self.outbound_message_ids = checkpoint_outbound_message_ids;
                 self.cross_shard_outbox = checkpoint_cross_shard_outbox;
                 self.reverted_receipt(tx.tx_hash, error, resource_units_used)
@@ -3761,6 +3869,23 @@ impl DeTTaState {
         self.scheduled_policy_updates.values()
     }
 
+    pub fn da_slashing_policy(&self) -> &DaSlashingPolicy {
+        &self.da_slashing_policy
+    }
+
+    pub fn scheduled_da_slashing_policy_update(
+        &self,
+        update_id: &str,
+    ) -> Option<&ScheduledDaSlashingPolicyUpdate> {
+        self.scheduled_da_slashing_policy_updates.get(update_id)
+    }
+
+    pub fn scheduled_da_slashing_policy_updates(
+        &self,
+    ) -> impl Iterator<Item = &ScheduledDaSlashingPolicyUpdate> {
+        self.scheduled_da_slashing_policy_updates.values()
+    }
+
     pub fn paused_contracts(&self) -> impl Iterator<Item = &ContractId> {
         self.paused_contracts.iter()
     }
@@ -4063,24 +4188,49 @@ impl DeTTaState {
     }
 
     pub fn global_state_root(&self) -> String {
-        root_of(&(
-            &self.chain_id,
-            self.height,
-            &self.contracts,
-            self.aspect_module_root(),
-            self.storage_root(),
-            self.registry_root(),
-            self.policy_root(),
-            &self.used_nonces,
-            &self.used_certificate_nonces,
-            &self.paused_contracts,
-            &self.scheduled_upgrades,
-            &self.scheduled_policy_updates,
-            &self.trusted_bridge_validator_sets,
-            &self.outbound_message_ids,
-            self.outbox_root(),
-            self.event_root(),
-        ))
+        #[derive(Serialize)]
+        struct GlobalStateRootInput<'a> {
+            chain_id: &'a ChainId,
+            height: u64,
+            contracts: &'a BTreeMap<ContractId, ContractRecord>,
+            aspect_module_root: String,
+            storage_root: String,
+            registry_root: String,
+            policy_root: String,
+            used_nonces: &'a BTreeSet<(Principal, Nonce)>,
+            used_certificate_nonces: &'a BTreeSet<String>,
+            paused_contracts: &'a BTreeSet<ContractId>,
+            da_slashing_policy: &'a DaSlashingPolicy,
+            scheduled_upgrades: &'a BTreeMap<String, ScheduledUpgrade>,
+            scheduled_policy_updates: &'a BTreeMap<String, ScheduledPolicyUpdate>,
+            scheduled_da_slashing_policy_updates:
+                &'a BTreeMap<String, ScheduledDaSlashingPolicyUpdate>,
+            trusted_bridge_validator_sets: &'a BTreeMap<ChainId, BridgeValidatorSet>,
+            outbound_message_ids: &'a BTreeSet<String>,
+            outbox_root: String,
+            event_root: String,
+        }
+
+        root_of(&GlobalStateRootInput {
+            chain_id: &self.chain_id,
+            height: self.height,
+            contracts: &self.contracts,
+            aspect_module_root: self.aspect_module_root(),
+            storage_root: self.storage_root(),
+            registry_root: self.registry_root(),
+            policy_root: self.policy_root(),
+            used_nonces: &self.used_nonces,
+            used_certificate_nonces: &self.used_certificate_nonces,
+            paused_contracts: &self.paused_contracts,
+            da_slashing_policy: &self.da_slashing_policy,
+            scheduled_upgrades: &self.scheduled_upgrades,
+            scheduled_policy_updates: &self.scheduled_policy_updates,
+            scheduled_da_slashing_policy_updates: &self.scheduled_da_slashing_policy_updates,
+            trusted_bridge_validator_sets: &self.trusted_bridge_validator_sets,
+            outbound_message_ids: &self.outbound_message_ids,
+            outbox_root: self.outbox_root(),
+            event_root: self.event_root(),
+        })
     }
 
     fn storage_entries(&self) -> Vec<(StateKey, StateValue)> {
@@ -4209,6 +4359,16 @@ impl DeTTaState {
                     ),
                     Method::ExecutePolicyUpdate => {
                         self.execute_policy_update(tx, msg_sender, governed_contract)
+                    }
+                    Method::ScheduleDaSlashingPolicyUpdate => self
+                        .schedule_da_slashing_policy_update(
+                            tx,
+                            msg_sender,
+                            governed_contract,
+                            timelock_delay,
+                        ),
+                    Method::ExecuteDaSlashingPolicyUpdate => {
+                        self.execute_da_slashing_policy_update(tx, msg_sender, governed_contract)
                     }
                     _ => Err(ExecutionError::PolicyMissing),
                 },
@@ -5793,6 +5953,122 @@ impl DeTTaState {
         Ok(ReturnValue::Unit)
     }
 
+    fn schedule_da_slashing_policy_update(
+        &mut self,
+        tx: &Transaction,
+        msg_sender: Principal,
+        governed_contract: ContractId,
+        timelock_delay: u64,
+    ) -> Result<ReturnValue, ExecutionError> {
+        if governed_contract != DA_SLASHING_POLICY_SCOPE {
+            return Err(ExecutionError::InvalidArguments);
+        }
+        let [update_id, slash_missing_response, slash_invalid_response, min_observed_delay_blocks, max_observed_delay_blocks] =
+            expect_args(&tx.args)?;
+        let update_id = expect_text(update_id)?;
+        let policy = DaSlashingPolicy {
+            slash_missing_response: expect_bool_text(slash_missing_response)?,
+            slash_invalid_response: expect_bool_text(slash_invalid_response)?,
+            min_observed_delay_blocks: expect_u64_amount(min_observed_delay_blocks)?,
+            max_observed_delay_blocks: expect_u64_amount(max_observed_delay_blocks)?,
+        };
+        policy.validate()?;
+
+        self.require_governance_admin(&tx.target, &msg_sender)?;
+        if self
+            .scheduled_da_slashing_policy_updates
+            .contains_key(&update_id)
+        {
+            return Err(ExecutionError::DaSlashingPolicyUpdateAlreadyScheduled);
+        }
+
+        let execute_after_height = self
+            .height
+            .checked_add(timelock_delay)
+            .ok_or(ExecutionError::ArithmeticOverflow)?;
+        let update = ScheduledDaSlashingPolicyUpdate {
+            update_id: update_id.clone(),
+            governance_contract: tx.target.clone(),
+            target_scope: governed_contract,
+            policy: policy.clone(),
+            execute_after_height,
+            executed: false,
+        };
+        self.scheduled_da_slashing_policy_updates
+            .insert(update_id.clone(), update);
+
+        self.emit(
+            &tx.target,
+            &tx.tx_hash,
+            EventPayload::DaSlashingPolicyUpdateScheduled {
+                update_id,
+                policy,
+                execute_after_height,
+                admin: msg_sender,
+            },
+        );
+        Ok(ReturnValue::Unit)
+    }
+
+    fn execute_da_slashing_policy_update(
+        &mut self,
+        tx: &Transaction,
+        msg_sender: Principal,
+        governed_contract: ContractId,
+    ) -> Result<ReturnValue, ExecutionError> {
+        if governed_contract != DA_SLASHING_POLICY_SCOPE {
+            return Err(ExecutionError::InvalidArguments);
+        }
+        let [update_id] = expect_args(&tx.args)?;
+        let update_id = expect_text(update_id)?;
+
+        self.require_governance_admin(&tx.target, &msg_sender)?;
+
+        let storage_root_before = self.storage_root();
+        let registry_root_before = self.registry_root();
+        let old_policy = self.da_slashing_policy.clone();
+        let update = self
+            .scheduled_da_slashing_policy_updates
+            .get(&update_id)
+            .cloned()
+            .ok_or(ExecutionError::DaSlashingPolicyUpdateNotFound)?;
+
+        if update.executed {
+            return Err(ExecutionError::DaSlashingPolicyUpdateAlreadyExecuted);
+        }
+        if update.governance_contract != tx.target || update.target_scope != governed_contract {
+            return Err(ExecutionError::DaSlashingPolicyUpdateNotFound);
+        }
+        if self.height < update.execute_after_height {
+            return Err(ExecutionError::TimelockNotReady);
+        }
+
+        update.policy.validate()?;
+        self.da_slashing_policy = update.policy.clone();
+        self.scheduled_da_slashing_policy_updates
+            .get_mut(&update_id)
+            .ok_or(ExecutionError::DaSlashingPolicyUpdateNotFound)?
+            .executed = true;
+
+        if self.storage_root() != storage_root_before
+            || self.registry_root() != registry_root_before
+        {
+            return Err(ExecutionError::MigrationInvariantViolation);
+        }
+
+        self.emit(
+            &tx.target,
+            &tx.tx_hash,
+            EventPayload::DaSlashingPolicyUpdateExecuted {
+                update_id,
+                old_policy,
+                new_policy: update.policy,
+                admin: msg_sender,
+            },
+        );
+        Ok(ReturnValue::Unit)
+    }
+
     fn deposit_collateral(
         &mut self,
         tx: &Transaction,
@@ -7315,6 +7591,18 @@ fn expect_text(arg: &Argument) -> Result<String, ExecutionError> {
     }
 }
 
+fn expect_bool_text(arg: &Argument) -> Result<bool, ExecutionError> {
+    match expect_text(arg)?.as_str() {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => Err(ExecutionError::InvalidArguments),
+    }
+}
+
+fn expect_u64_amount(arg: &Argument) -> Result<u64, ExecutionError> {
+    u64::try_from(expect_amount(arg)?).map_err(|_| ExecutionError::InvalidArguments)
+}
+
 fn aspect_value_from_argument(arg: &Argument) -> AspectValue {
     match arg {
         Argument::Principal(value)
@@ -7399,6 +7687,8 @@ fn native_method_arg_kinds(method: &Method) -> Option<&'static [AbiArgKind]> {
         Method::ExecuteUpgrade => Some(&[Text]),
         Method::SchedulePolicyUpdate => Some(&[Text, Text, Text]),
         Method::ExecutePolicyUpdate => Some(&[Text]),
+        Method::ScheduleDaSlashingPolicyUpdate => Some(&[Text, Text, Text, Amount, Amount]),
+        Method::ExecuteDaSlashingPolicyUpdate => Some(&[Text]),
         Method::DepositCollateral => Some(&[Asset, Amount]),
         Method::Borrow => Some(&[Asset, Amount]),
         Method::Liquidate => Some(&[Principal, Asset, Amount]),
@@ -7673,6 +7963,8 @@ fn parse_policy_method(value: &str) -> Result<Method, ExecutionError> {
         "executeUpgrade" => Ok(Method::ExecuteUpgrade),
         "schedulePolicyUpdate" => Ok(Method::SchedulePolicyUpdate),
         "executePolicyUpdate" => Ok(Method::ExecutePolicyUpdate),
+        "scheduleDaSlashingPolicyUpdate" => Ok(Method::ScheduleDaSlashingPolicyUpdate),
+        "executeDaSlashingPolicyUpdate" => Ok(Method::ExecuteDaSlashingPolicyUpdate),
         "depositCollateral" => Ok(Method::DepositCollateral),
         "borrow" => Ok(Method::Borrow),
         "liquidate" => Ok(Method::Liquidate),
@@ -7703,6 +7995,8 @@ fn parse_policy_effect(value: &str) -> Result<PolicyEffect, ExecutionError> {
         "contractCodeUpgrade" => Ok(PolicyEffect::ContractCodeUpgrade),
         "policyUpdateSchedule" => Ok(PolicyEffect::PolicyUpdateSchedule),
         "methodPolicyUpdate" => Ok(PolicyEffect::MethodPolicyUpdate),
+        "daSlashingPolicyUpdateSchedule" => Ok(PolicyEffect::DaSlashingPolicyUpdateSchedule),
+        "daSlashingPolicyUpdate" => Ok(PolicyEffect::DaSlashingPolicyUpdate),
         "crossContractCall" => Ok(PolicyEffect::CrossContractCall),
         "crossShardOutboxAppend" => Ok(PolicyEffect::CrossShardOutboxAppend),
         "contractDeploy" => Ok(PolicyEffect::ContractDeploy),
@@ -13444,6 +13738,106 @@ mod tests {
         assert!(matches!(
             next_state.events().last().unwrap().payload,
             EventPayload::PolicyUpdateExecuted { .. }
+        ));
+    }
+
+    #[test]
+    fn governance_schedules_and_executes_da_slashing_policy_update() {
+        let mut state = seeded_state();
+        state
+            .deploy_governance_with_timelock("GovDA", DA_SLASHING_POLICY_SCOPE, "Admin", 2)
+            .unwrap();
+        let storage_before = state.storage_root();
+        let registry_before = state.registry_root();
+        let old_policy = state.da_slashing_policy().clone();
+        let new_policy = DaSlashingPolicy {
+            slash_missing_response: false,
+            slash_invalid_response: true,
+            min_observed_delay_blocks: 2,
+            max_observed_delay_blocks: 64,
+        };
+
+        let schedule = state.apply_transaction(tx_to(
+            "GovDA",
+            "tx-da-slashing-policy-1",
+            "Admin",
+            1,
+            Method::ScheduleDaSlashingPolicyUpdate,
+            vec![
+                text("da-slash-policy-1"),
+                text("false"),
+                text("true"),
+                amount(2),
+                amount(64),
+            ],
+        ));
+        assert_eq!(schedule.status, TxStatus::Committed);
+        assert_eq!(state.da_slashing_policy(), &old_policy);
+        assert_eq!(
+            state
+                .scheduled_da_slashing_policy_update("da-slash-policy-1")
+                .unwrap()
+                .policy,
+            new_policy
+        );
+        assert_eq!(
+            state
+                .scheduled_da_slashing_policy_update("da-slash-policy-1")
+                .unwrap()
+                .execute_after_height,
+            2
+        );
+
+        let early_state = state.clone();
+        let (early_block, _) = early_state.build_block(
+            1,
+            vec![tx_to(
+                "GovDA",
+                "tx-da-slashing-policy-2",
+                "Admin",
+                2,
+                Method::ExecuteDaSlashingPolicyUpdate,
+                vec![text("da-slash-policy-1")],
+            )],
+            1_000,
+            "validator-1",
+            "cert-1",
+        );
+        assert_eq!(early_block.receipts[0].status, TxStatus::Reverted);
+        assert_eq!(
+            early_block.receipts[0].error,
+            Some(ExecutionError::TimelockNotReady)
+        );
+
+        let (block, next_state) = state.build_block(
+            2,
+            vec![tx_to(
+                "GovDA",
+                "tx-da-slashing-policy-3",
+                "Admin",
+                2,
+                Method::ExecuteDaSlashingPolicyUpdate,
+                vec![text("da-slash-policy-1")],
+            )],
+            2_000,
+            "validator-1",
+            "cert-2",
+        );
+
+        assert_eq!(block.receipts[0].status, TxStatus::Committed);
+        assert_eq!(next_state.da_slashing_policy(), &new_policy);
+        assert!(
+            next_state
+                .scheduled_da_slashing_policy_update("da-slash-policy-1")
+                .unwrap()
+                .executed
+        );
+        assert_eq!(next_state.storage_root(), storage_before);
+        assert_eq!(next_state.registry_root(), registry_before);
+        assert_eq!(next_state.check_declared_invariants(), vec![]);
+        assert!(matches!(
+            next_state.events().last().unwrap().payload,
+            EventPayload::DaSlashingPolicyUpdateExecuted { .. }
         ));
     }
 

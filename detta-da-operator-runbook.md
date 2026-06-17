@@ -37,6 +37,11 @@ Operators should treat retention changes as governance-sensitive operational
 changes. A policy that drops shares too early can preserve data integrity roots
 while weakening practical data availability.
 
+DA slashing policy changes are chain-governed through the
+`detta.da-slashing-policy` scope. Operators should retain the scheduling and
+execution receipts for any change to missing-response slashability,
+invalid-response slashability, or observed-delay windows.
+
 ## Operator Checks
 
 Before pruning:
@@ -52,6 +57,8 @@ Before pruning:
 6. Verify light-client samples with `get_da_sample_proofs`.
 7. Confirm DA index bytes are nonzero after finalized DA blocks and that
    manifest/certificate lookups by block coordinates return expected entries.
+8. Confirm the active DA slashing policy matches the current governance
+   decision before processing challenge evidence.
 
 After pruning:
 
@@ -85,6 +92,7 @@ For each release candidate or audit window, retain:
 - DA manifests for finalized blocks in scope;
 - DA certificates;
 - DA index roots or lookup evidence for representative finalized blocks;
+- DA slashing policy schedule/execute receipts when policy changed;
 - challenge records and slashing evidence;
 - DA storage stats before and after pruning;
 - sample proof bundles for representative blocks;

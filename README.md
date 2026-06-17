@@ -112,8 +112,9 @@ The current implementation includes slices for:
   aggregation, deterministic custody share checks before DA vote signing,
   Reed-Solomon threshold reconstruction, durable DA share sets, payloads,
   certificates, repair records, challenge records, validated DA indexes, DA
-  gossip persistence, DA challenge/slashing evidence, payload-aware DA-certified
-  production finality mode, and DA retrieval RPCs on
+  gossip persistence, DA challenge/slashing evidence, governed DA slashing
+  policy parameters, payload-aware DA-certified production finality mode, and DA
+  retrieval RPCs on
   `experimental/data-availability-layer`.
 
 The production roadmap and progress tracker live in

@@ -1,6 +1,6 @@
 use detta_consensus::{
-    quorum_for, ConsensusCluster, ConsensusError, EquivocationEvidence, FinalityCertificate,
-    SlashingEvidence, SlashingRecord, Vote,
+    quorum_for, validate_da_slashing_evidence, ConsensusCluster, ConsensusError,
+    EquivocationEvidence, FinalityCertificate, SlashingEvidence, SlashingRecord, Vote,
 };
 use detta_core::{
     transaction_resource_units, Block, BlockError, ChainId, DataAvailabilityCommitment, DeTTaState,
@@ -2080,6 +2080,10 @@ impl PersistentValidatorNode {
         evidence: DaChallengeEvidence,
     ) -> Result<SlashingRecord, NodeError> {
         evidence.validate().map_err(NodeError::DataAvailability)?;
+        validate_da_slashing_evidence(self.rpc.node().state().da_slashing_policy(), &evidence)
+            .map_err(|error| {
+                NodeError::DataAvailability(DaError::InvalidChallenge(format!("{error:?}")))
+            })?;
         if let Some(mut record) = self
             .storage
             .maybe_load_da_challenge_record(&evidence.challenge_hash)
@@ -3712,7 +3716,7 @@ mod tests {
     use super::*;
     use detta_core::{
         Argument, Method, PolicyEffect, ScheduledPolicyUpdate, ScheduledUpgrade, TxStatus,
-        DEFAULT_BLOCK_RESOURCE_LIMIT, DEFAULT_MEMPOOL_MAX_PENDING,
+        DA_SLASHING_POLICY_SCOPE, DEFAULT_BLOCK_RESOURCE_LIMIT, DEFAULT_MEMPOOL_MAX_PENDING,
         DEFAULT_MEMPOOL_MAX_PENDING_PER_SENDER, DEFAULT_MEMPOOL_MAX_TRANSACTION_BYTES,
     };
     use detta_network::{InMemoryTransport, TcpProtocolStream};
@@ -3744,6 +3748,45 @@ mod tests {
                 vec![("Alice".into(), 100), ("Bob".into(), 50)],
             )
             .unwrap();
+        state
+    }
+
+    fn state_rejecting_invalid_da_slashing_evidence() -> DeTTaState {
+        let mut state = seeded_state();
+        state
+            .deploy_governance_with_timelock("GovDA", DA_SLASHING_POLICY_SCOPE, "Admin", 1)
+            .unwrap();
+        let schedule = state.apply_transaction(tx_to(
+            "GovDA",
+            "tx-da-policy-schedule",
+            "Admin",
+            1,
+            Method::ScheduleDaSlashingPolicyUpdate,
+            vec![
+                Argument::Text("da-policy-1".into()),
+                Argument::Text("true".into()),
+                Argument::Text("false".into()),
+                Argument::Amount(0),
+                Argument::Amount(0),
+            ],
+        ));
+        assert_eq!(schedule.status, TxStatus::Committed);
+        let (block, state) = state.build_block(
+            1,
+            vec![tx_to(
+                "GovDA",
+                "tx-da-policy-execute",
+                "Admin",
+                2,
+                Method::ExecuteDaSlashingPolicyUpdate,
+                vec![Argument::Text("da-policy-1".into())],
+            )],
+            1_000,
+            "validator-1",
+            "cert-1",
+        );
+        assert_eq!(block.receipts[0].status, TxStatus::Committed);
+        assert!(!state.da_slashing_policy().slash_invalid_response);
         state
     }
 
@@ -5859,6 +5902,62 @@ mod tests {
                 code: "rpc.da_challenge_record_not_found".into(),
                 message: "DA challenge record was not found".into(),
             })
+        );
+
+        fs::remove_dir_all(peer_dir).unwrap();
+    }
+
+    #[test]
+    fn node_da_slashing_policy_rejects_disabled_invalid_response_fault() {
+        let peer_dir = temp_dir("da-slashing-policy-peer");
+        let peer = PersistentValidatorNode::bootstrap(
+            "validator-3",
+            state_rejecting_invalid_da_slashing_evidence(),
+            &peer_dir,
+        )
+        .unwrap();
+        let payload = DaPayload::new(
+            "detta-local",
+            7,
+            "prev-block",
+            vec![DaNamespaceSection::new(
+                DaNamespace::new("detta.tx").unwrap(),
+                vec![DaRecord::SignedTransaction(transfer_tx())],
+            )
+            .unwrap()],
+        )
+        .unwrap();
+        let share_set = DaShareSet::from_payload(&payload, "block-7", 64).unwrap();
+        let vote = DaAvailabilityVote::from_manifest_with_custody(
+            &share_set.manifest,
+            "validator-1",
+            [0],
+            [],
+        )
+        .unwrap();
+        let challenge =
+            DaShareChallenge::from_availability_vote(&vote, "validator-2", 0, 11).unwrap();
+        let mut invalid_share = share_set.shares[0].clone();
+        invalid_share.bytes[0] ^= 0x01;
+        let response = DaShareChallengeResponse::from_share(&challenge, invalid_share).unwrap();
+        let evidence = DaChallengeEvidence::invalid_response(
+            &challenge,
+            &response,
+            &share_set.manifest,
+            "validator-2",
+            10,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            peer.persist_da_challenge_evidence(evidence),
+            Err(NodeError::DataAvailability(DaError::InvalidChallenge(_)))
+        ));
+        assert_eq!(
+            peer.storage
+                .maybe_load_slashing_record("validator-1")
+                .unwrap(),
+            None
         );
 
         fs::remove_dir_all(peer_dir).unwrap();

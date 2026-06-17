@@ -34,6 +34,9 @@ versioned payload schema for DeTTa. The implementation plan remains in
   the manifest hash, block hash, and client randomness.
 - **Repair record**: durable local evidence that a manifest needs missing-share
   repair or payload reconstruction work.
+- **DA slashing policy**: chain-governed parameters for whether missing
+  challenge responses or invalid challenge responses are slashable, plus
+  minimum and maximum observed-delay windows for admissible evidence.
 
 ## Threat Model
 
@@ -119,3 +122,18 @@ referenced object and rejects stale, unsorted, duplicate, or mismatched index
 entries. `rebuild_da_indexes` reconstructs the indexes from stored manifests and
 certificates after restore or repair, and the DA store root includes the index
 root so index drift is externally visible.
+
+## Governed Slashing Policy
+
+The active `DaSlashingPolicy` is part of deterministic DeTTa state and is
+updated only through a timelocked governance contract scoped to
+`detta.da-slashing-policy`. The policy controls:
+
+- whether missing-response evidence is slashable;
+- whether invalid-response evidence is slashable;
+- the minimum observed delay between the DA height and evidence observation;
+- the maximum observed delay, where `0` means unbounded.
+
+Persistent nodes validate DA challenge evidence against the active policy before
+persisting a slashing record. Consensus clusters use the same validation before
+removing a validator from the active quorum.

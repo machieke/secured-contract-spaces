@@ -1,10 +1,10 @@
 use detta_core::{
-    receipt_root, transaction_root, Block, BlockError, DeTTaState, Receipt, Transaction,
-    ValidatorNode,
+    receipt_root, transaction_root, Block, BlockError, DaSlashingPolicy, DeTTaState, Receipt,
+    Transaction, ValidatorNode,
 };
 use detta_da::{
-    DaAvailabilityCertificate, DaAvailabilityVote, DaChallengeEvidence, DaManifest, DaPayload,
-    DaRecord,
+    DaAvailabilityCertificate, DaAvailabilityVote, DaChallengeEvidence, DaChallengeFault,
+    DaManifest, DaPayload, DaRecord,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -100,6 +100,7 @@ pub struct ConsensusCluster {
     slashing_records: BTreeMap<String, SlashingRecord>,
     applied_validator_set_updates: BTreeSet<String>,
     finality_mode: FinalityMode,
+    da_slashing_policy: DaSlashingPolicy,
 }
 
 impl ConsensusCluster {
@@ -131,11 +132,27 @@ impl ConsensusCluster {
             slashing_records: BTreeMap::new(),
             applied_validator_set_updates: BTreeSet::new(),
             finality_mode,
+            da_slashing_policy: DaSlashingPolicy::default(),
         })
     }
 
     pub fn finality_mode(&self) -> FinalityMode {
         self.finality_mode
+    }
+
+    pub fn da_slashing_policy(&self) -> &DaSlashingPolicy {
+        &self.da_slashing_policy
+    }
+
+    pub fn set_da_slashing_policy(
+        &mut self,
+        policy: DaSlashingPolicy,
+    ) -> Result<(), ConsensusError> {
+        policy
+            .validate()
+            .map_err(|error| ConsensusError::DataAvailabilityInvalid(format!("{error:?}")))?;
+        self.da_slashing_policy = policy;
+        Ok(())
     }
 
     pub fn validator_count(&self) -> usize {
@@ -271,6 +288,7 @@ impl ConsensusCluster {
         evidence: DaChallengeEvidence,
     ) -> Result<&SlashingRecord, ConsensusError> {
         validate_da_result(evidence.validate())?;
+        validate_da_slashing_evidence(&self.da_slashing_policy, &evidence)?;
         if !self
             .validators
             .contains_key(&evidence.challenged_validator_id)
@@ -841,10 +859,45 @@ fn validate_da_result<T, E: std::fmt::Debug>(result: Result<T, E>) -> Result<T, 
     result.map_err(|error| ConsensusError::DataAvailabilityInvalid(format!("{error:?}")))
 }
 
+pub fn validate_da_slashing_evidence(
+    policy: &DaSlashingPolicy,
+    evidence: &DaChallengeEvidence,
+) -> Result<(), ConsensusError> {
+    validate_da_result(policy.validate())?;
+    match &evidence.fault {
+        DaChallengeFault::MissingResponse if !policy.slash_missing_response => {
+            return Err(ConsensusError::DataAvailabilityInvalid(
+                "DA slashing policy rejects missing-response evidence".into(),
+            ));
+        }
+        DaChallengeFault::InvalidResponse { .. } if !policy.slash_invalid_response => {
+            return Err(ConsensusError::DataAvailabilityInvalid(
+                "DA slashing policy rejects invalid-response evidence".into(),
+            ));
+        }
+        _ => {}
+    }
+
+    let observed_delay = evidence.observed_at_height.saturating_sub(evidence.height);
+    if observed_delay < policy.min_observed_delay_blocks {
+        return Err(ConsensusError::DataAvailabilityInvalid(
+            "DA slashing evidence is earlier than the governed minimum delay".into(),
+        ));
+    }
+    if policy.max_observed_delay_blocks != 0 && observed_delay > policy.max_observed_delay_blocks {
+        return Err(ConsensusError::DataAvailabilityInvalid(
+            "DA slashing evidence is older than the governed maximum delay".into(),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use detta_core::{Argument, DataAvailabilityCommitment, DeTTaState, Method, Transaction};
+    use detta_core::{
+        Argument, DaSlashingPolicy, DataAvailabilityCommitment, DeTTaState, Method, Transaction,
+    };
     use detta_da::{
         DaAvailabilityCertificate, DaAvailabilityVote, DaChallengeEvidence, DaChallengeFault,
         DaManifest, DaNamespace, DaNamespaceSection, DaPayload, DaRecord, DaShareSet,
@@ -1611,6 +1664,47 @@ mod tests {
                 evidence: SlashingEvidence::DataAvailability(evidence),
             }
         );
+    }
+
+    #[test]
+    fn data_availability_slashing_policy_rejects_disallowed_faults() {
+        let mut cluster = ConsensusCluster::new(vec![
+            ("v1".into(), seeded_state()),
+            ("v2".into(), seeded_state()),
+            ("v3".into(), seeded_state()),
+        ])
+        .unwrap();
+        cluster
+            .set_da_slashing_policy(DaSlashingPolicy {
+                slash_missing_response: false,
+                slash_invalid_response: true,
+                min_observed_delay_blocks: 0,
+                max_observed_delay_blocks: 0,
+            })
+            .unwrap();
+        let evidence = DaChallengeEvidence {
+            schema: DA_CHALLENGE_EVIDENCE_SCHEMA.into(),
+            schema_version: 1,
+            chain_id: "detta-local".into(),
+            height: 9,
+            block_hash: "block-9".into(),
+            manifest_hash: "manifest-9".into(),
+            share_root: "share-root-9".into(),
+            challenged_validator_id: "v1".into(),
+            reporter_id: "v2".into(),
+            share_index: 3,
+            challenge_hash: "challenge-9".into(),
+            response_hash: None,
+            observed_at_height: 13,
+            fault: DaChallengeFault::MissingResponse,
+        };
+
+        assert!(matches!(
+            cluster.record_data_availability_fault(evidence),
+            Err(ConsensusError::DataAvailabilityInvalid(_))
+        ));
+        assert!(!cluster.is_slashed("v1"));
+        assert_eq!(cluster.active_validator_count(), 3);
     }
 
     #[test]
