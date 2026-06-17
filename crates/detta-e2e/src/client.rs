@@ -14,9 +14,9 @@ pub enum ClientError {
     InvalidHttpResponse(String),
     UnexpectedResult {
         expected: &'static str,
-        actual: RpcResult,
+        actual: Box<RpcResult>,
     },
-    UnexpectedSuccess(RpcResult),
+    UnexpectedSuccess(Box<RpcResult>),
 }
 
 impl fmt::Display for ClientError {
@@ -100,7 +100,7 @@ impl TcpRpcClient {
     pub fn error(&mut self, request: RpcRequest) -> ClientResult<RpcErrorBody> {
         match self.request(request)? {
             RpcResponse::Error(error) => Ok(error),
-            RpcResponse::Ok(result) => Err(ClientError::UnexpectedSuccess(result)),
+            RpcResponse::Ok(result) => Err(ClientError::UnexpectedSuccess(Box::new(result))),
         }
     }
 

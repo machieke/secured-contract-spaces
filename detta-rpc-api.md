@@ -72,10 +72,12 @@ The shared `RpcService` supports:
 - `get_node_health`: fetch chain, height, mempool, and root diagnostics.
 - `get_operator_metrics`: fetch peer count, mempool size, consensus and
   finality height, recent execution/proof latency, storage bytes, and RPC error
-  count for persistent operator nodes.
+  count for persistent operator nodes, plus DA manifest/share/payload,
+  challenge, custody-failure, repair-lag, and byte counters.
 - `get_operator_alerts`: fetch evaluated operator alerts for peer isolation,
   stalled consensus, root mismatch, excessive reverts, slashing evidence, disk
-  pressure, RPC overload, and mempool saturation.
+  pressure, RPC overload, mempool saturation, missing DA shares, pending or
+  lagging DA repair, custody failures, and DA challenge failures.
 - `get_mempool_status`: fetch pending transaction count, per-sender pending
   counts, admission limits, and the current block resource limit.
 - `get_state_root`: fetch the latest global state root.
@@ -154,14 +156,18 @@ Persistent validator nodes additionally handle:
 - `get_da_namespace`: reconstruct the canonical experimental DA payload and
   return one namespace section, such as `detta.block`, `detta.tx`, or
   `detta.receipt`.
+- `get_da_sample_proofs`: derive deterministic light-client sample indices
+  from manifest hash, block hash, and client randomness, then return the
+  sampled shares with share-root inclusion proofs and optional namespace
+  proofs.
 - `get_da_status`: report manifest availability, DA certificate availability,
   expected and missing share indices, and payload reconstruction status for a
   manifest hash.
 - `get_da_repair_status`: report whether a manifest currently needs repair,
   which share indices are missing, and whether payload reconstruction succeeds.
 - `get_da_storage_stats`: report persisted experimental DA manifest count,
-  expected shares, stored shares, missing shares, challenge records, and DA byte
-  totals.
+  expected shares, stored shares, missing shares, reconstructed payloads,
+  challenge and repair records, and DA byte totals.
 - `propose_validator_set_metadata_update`: submit a signed validator-set update
   authorization.
 - `get_validator_set_metadata_update_status`: report pending authorization

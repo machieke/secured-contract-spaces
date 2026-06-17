@@ -1,6 +1,9 @@
 use detta_consensus::{FinalityCertificate, SlashingRecord};
 use detta_core::{Block, DeTTaState, Receipt, SnapshotError, StateSnapshot, Transaction};
-use detta_da::{DaAvailabilityCertificate, DaChallengeRecord, DaManifest, DaShare, DaShareSet};
+use detta_da::{
+    payload_hash, DaAvailabilityCertificate, DaChallengeRecord, DaManifest, DaPayload, DaShare,
+    DaShareSet,
+};
 use detta_protocol::{SignedValidatorMessage, ValidatorSetMetadata, ValidatorSignatureDomain};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -74,13 +77,60 @@ pub struct DaStorageStats {
     pub expected_share_count: u64,
     pub stored_share_count: u64,
     pub missing_share_count: u64,
+    pub payload_count: u64,
     pub certificate_count: u64,
     pub challenge_count: u64,
+    pub repair_record_count: u64,
     pub manifest_bytes: u64,
     pub share_bytes: u64,
+    pub payload_bytes: u64,
     pub certificate_bytes: u64,
     pub challenge_bytes: u64,
+    pub repair_record_bytes: u64,
     pub total_bytes: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+pub enum DaRetentionClass {
+    Hot,
+    Warm,
+    Cold,
+    Checkpoint,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaRetentionPolicy {
+    pub class: DaRetentionClass,
+    pub retain_payloads: bool,
+    pub retain_all_shares: bool,
+    pub min_retention_blocks: u64,
+    pub max_payload_bytes: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaRetentionPolicyConfig {
+    pub policies: Vec<DaRetentionPolicy>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaRepairRecord {
+    pub manifest_hash: String,
+    pub missing_share_indices: Vec<u32>,
+    pub recorded_at_height: u64,
+    pub reason: String,
+    pub completed: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaStoreRoots {
+    pub manifest_root: String,
+    pub share_root: String,
+    pub payload_root: String,
+    pub certificate_root: String,
+    pub challenge_root: String,
+    pub repair_root: String,
+    pub retention_policy_root: Option<String>,
+    pub root: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -101,8 +151,10 @@ impl FileStorage {
         fs::create_dir_all(root.join("consensus_signing_records")).map_err(io_error)?;
         fs::create_dir_all(root.join("da").join("manifests")).map_err(io_error)?;
         fs::create_dir_all(root.join("da").join("shares")).map_err(io_error)?;
+        fs::create_dir_all(root.join("da").join("payloads")).map_err(io_error)?;
         fs::create_dir_all(root.join("da").join("certificates")).map_err(io_error)?;
         fs::create_dir_all(root.join("da").join("challenges")).map_err(io_error)?;
+        fs::create_dir_all(root.join("da").join("repairs")).map_err(io_error)?;
         Ok(Self { root })
     }
 
@@ -118,8 +170,10 @@ impl FileStorage {
         let mut stats = DaStorageStats::default();
         let manifests_dir = self.root.join("da").join("manifests");
         let shares_dir = self.root.join("da").join("shares");
+        let payloads_dir = self.root.join("da").join("payloads");
         let certificates_dir = self.root.join("da").join("certificates");
         let challenges_dir = self.root.join("da").join("challenges");
+        let repairs_dir = self.root.join("da").join("repairs");
 
         for entry in fs::read_dir(&manifests_dir).map_err(io_error)? {
             let path = entry.map_err(io_error)?.path();
@@ -148,17 +202,25 @@ impl FileStorage {
         let share_file_stats = directory_file_stats(&shares_dir)?;
         stats.stored_share_count = share_file_stats.file_count;
         stats.share_bytes = share_file_stats.total_bytes;
+        let payload_file_stats = directory_file_stats(&payloads_dir)?;
+        stats.payload_count = payload_file_stats.file_count;
+        stats.payload_bytes = payload_file_stats.total_bytes;
         let certificate_file_stats = directory_file_stats(&certificates_dir)?;
         stats.certificate_count = certificate_file_stats.file_count;
         stats.certificate_bytes = certificate_file_stats.total_bytes;
         let challenge_file_stats = directory_file_stats(&challenges_dir)?;
         stats.challenge_count = challenge_file_stats.file_count;
         stats.challenge_bytes = challenge_file_stats.total_bytes;
+        let repair_file_stats = directory_file_stats(&repairs_dir)?;
+        stats.repair_record_count = repair_file_stats.file_count;
+        stats.repair_record_bytes = repair_file_stats.total_bytes;
         stats.total_bytes = stats
             .manifest_bytes
             .saturating_add(stats.share_bytes)
+            .saturating_add(stats.payload_bytes)
             .saturating_add(stats.certificate_bytes)
-            .saturating_add(stats.challenge_bytes);
+            .saturating_add(stats.challenge_bytes)
+            .saturating_add(stats.repair_record_bytes);
         Ok(stats)
     }
 
@@ -718,6 +780,76 @@ impl FileStorage {
         Ok(record)
     }
 
+    pub fn load_da_challenge_records(&self) -> Result<Vec<DaChallengeRecord>, StorageError> {
+        let mut records = Vec::new();
+        for path in sorted_bin_paths(&self.root.join("da").join("challenges"))? {
+            let record: DaChallengeRecord = read_json(&path)?;
+            record.validate().map_err(da_error)?;
+            let challenge_id = record.challenge_id().map_err(da_error)?;
+            let expected_file_name = format!("{}.bin", file_safe_id(&challenge_id));
+            if path.file_name().and_then(|name| name.to_str()) != Some(expected_file_name.as_str())
+            {
+                return Err(StorageError::CorruptData(
+                    "DA challenge record filename does not match challenge hash".into(),
+                ));
+            }
+            records.push(record);
+        }
+        Ok(records)
+    }
+
+    pub fn commit_da_payload(
+        &self,
+        manifest_hash: &str,
+        payload: &DaPayload,
+    ) -> Result<(), StorageError> {
+        self.validate_da_payload(manifest_hash, payload)?;
+        write_json_atomic(
+            &self.da_payload_path(manifest_hash),
+            &payload.canonicalized(),
+        )
+    }
+
+    pub fn maybe_load_da_payload(
+        &self,
+        manifest_hash: &str,
+    ) -> Result<Option<DaPayload>, StorageError> {
+        let path = self.da_payload_path(manifest_hash);
+        if !path.exists() {
+            return Ok(None);
+        }
+        self.load_da_payload(manifest_hash).map(Some)
+    }
+
+    pub fn load_da_payload(&self, manifest_hash: &str) -> Result<DaPayload, StorageError> {
+        let payload: DaPayload = read_json(&self.da_payload_path(manifest_hash))?;
+        self.validate_da_payload(manifest_hash, &payload)?;
+        Ok(payload.canonicalized())
+    }
+
+    fn validate_da_payload(
+        &self,
+        manifest_hash: &str,
+        payload: &DaPayload,
+    ) -> Result<(), StorageError> {
+        let manifest = self.load_da_manifest(manifest_hash)?;
+        let actual_payload_hash = payload_hash(payload).map_err(da_error)?;
+        if actual_payload_hash != manifest.payload_hash {
+            return Err(StorageError::CorruptData(format!(
+                "DA payload hash mismatch: expected {}, got {actual_payload_hash}",
+                manifest.payload_hash
+            )));
+        }
+        let actual_namespace_root = payload.namespace_root().map_err(da_error)?;
+        if actual_namespace_root != manifest.namespace_root {
+            return Err(StorageError::CorruptData(format!(
+                "DA payload namespace root mismatch: expected {}, got {actual_namespace_root}",
+                manifest.namespace_root
+            )));
+        }
+        Ok(())
+    }
+
     pub fn commit_da_share(&self, share: &DaShare) -> Result<(), StorageError> {
         let actual_hash = detta_da::hash_share_bytes(&share.bytes);
         if actual_hash != share.share_hash {
@@ -769,7 +901,7 @@ impl FileStorage {
     }
 
     pub fn commit_da_share_set(&self, share_set: &DaShareSet) -> Result<String, StorageError> {
-        share_set.verify().map_err(da_error)?;
+        let payload = share_set.reconstruct_payload().map_err(da_error)?;
         let manifest_hash = self.commit_da_manifest(&share_set.manifest)?;
         for share in &share_set.shares {
             if share.manifest_hash != manifest_hash {
@@ -780,6 +912,7 @@ impl FileStorage {
             }
             self.commit_da_share(share)?;
         }
+        self.commit_da_payload(&manifest_hash, &payload)?;
         Ok(manifest_hash)
     }
 
@@ -792,6 +925,114 @@ impl FileStorage {
         let share_set = DaShareSet { manifest, shares };
         share_set.verify().map_err(da_error)?;
         Ok(share_set)
+    }
+
+    pub fn commit_da_repair_record(&self, record: &DaRepairRecord) -> Result<String, StorageError> {
+        let manifest = self.load_da_manifest(&record.manifest_hash)?;
+        ensure_sorted_unique_u32(&record.missing_share_indices, "missing_share_indices")?;
+        if record
+            .missing_share_indices
+            .iter()
+            .any(|index| *index >= manifest.encoded_share_count)
+        {
+            return Err(StorageError::CorruptData(
+                "DA repair record references an out-of-range share".into(),
+            ));
+        }
+        if record.reason.is_empty() {
+            return Err(StorageError::CorruptData(
+                "DA repair record reason must be nonempty".into(),
+            ));
+        }
+        let record_id = hash_canonical_json(record)?;
+        write_json_atomic(&self.da_repair_record_path(&record_id), record)?;
+        Ok(record_id)
+    }
+
+    pub fn load_da_repair_record(&self, record_id: &str) -> Result<DaRepairRecord, StorageError> {
+        let record: DaRepairRecord = read_json(&self.da_repair_record_path(record_id))?;
+        let actual_id = hash_canonical_json(&record)?;
+        if actual_id != record_id {
+            return Err(StorageError::CorruptData(format!(
+                "DA repair record hash mismatch: expected {record_id}, got {actual_id}"
+            )));
+        }
+        Ok(record)
+    }
+
+    pub fn load_da_repair_records(&self) -> Result<Vec<DaRepairRecord>, StorageError> {
+        let mut records = Vec::new();
+        for path in sorted_bin_paths(&self.root.join("da").join("repairs"))? {
+            let record: DaRepairRecord = read_json(&path)?;
+            let record_id = hash_canonical_json(&record)?;
+            let expected_file_name = format!("{}.bin", file_safe_id(&record_id));
+            if path.file_name().and_then(|name| name.to_str()) != Some(expected_file_name.as_str())
+            {
+                return Err(StorageError::CorruptData(
+                    "DA repair record filename does not match repair record hash".into(),
+                ));
+            }
+            records.push(record);
+        }
+        Ok(records)
+    }
+
+    pub fn commit_da_retention_policy(
+        &self,
+        config: &DaRetentionPolicyConfig,
+    ) -> Result<String, StorageError> {
+        validate_da_retention_policy(config)?;
+        let root = hash_canonical_json(config)?;
+        write_json_atomic(&self.da_retention_policy_path(), config)?;
+        Ok(root)
+    }
+
+    pub fn maybe_load_da_retention_policy(
+        &self,
+    ) -> Result<Option<DaRetentionPolicyConfig>, StorageError> {
+        let path = self.da_retention_policy_path();
+        if !path.exists() {
+            return Ok(None);
+        }
+        self.load_da_retention_policy().map(Some)
+    }
+
+    pub fn load_da_retention_policy(&self) -> Result<DaRetentionPolicyConfig, StorageError> {
+        let config: DaRetentionPolicyConfig = read_json(&self.da_retention_policy_path())?;
+        validate_da_retention_policy(&config)?;
+        Ok(config)
+    }
+
+    pub fn da_store_roots(&self) -> Result<DaStoreRoots, StorageError> {
+        let manifest_root = directory_content_root(&self.root.join("da").join("manifests"))?;
+        let share_root = directory_content_root(&self.root.join("da").join("shares"))?;
+        let payload_root = directory_content_root(&self.root.join("da").join("payloads"))?;
+        let certificate_root = directory_content_root(&self.root.join("da").join("certificates"))?;
+        let challenge_root = directory_content_root(&self.root.join("da").join("challenges"))?;
+        let repair_root = directory_content_root(&self.root.join("da").join("repairs"))?;
+        let retention_policy_root = self
+            .maybe_load_da_retention_policy()?
+            .map(|config| hash_canonical_json(&config))
+            .transpose()?;
+        let root = hash_canonical_json(&(
+            &manifest_root,
+            &share_root,
+            &payload_root,
+            &certificate_root,
+            &challenge_root,
+            &repair_root,
+            &retention_policy_root,
+        ))?;
+        Ok(DaStoreRoots {
+            manifest_root,
+            share_root,
+            payload_root,
+            certificate_root,
+            challenge_root,
+            repair_root,
+            retention_policy_root,
+            root,
+        })
     }
 
     pub fn commit_consensus_signing_record_if_absent(
@@ -920,6 +1161,24 @@ impl FileStorage {
             .join(format!("{}.bin", file_safe_id(challenge_id)))
     }
 
+    fn da_payload_path(&self, manifest_hash: &str) -> PathBuf {
+        self.root
+            .join("da")
+            .join("payloads")
+            .join(format!("{}.bin", file_safe_id(manifest_hash)))
+    }
+
+    fn da_repair_record_path(&self, record_id: &str) -> PathBuf {
+        self.root
+            .join("da")
+            .join("repairs")
+            .join(format!("{}.bin", file_safe_id(record_id)))
+    }
+
+    fn da_retention_policy_path(&self) -> PathBuf {
+        self.root.join("da").join("retention_policy.bin")
+    }
+
     fn da_share_path(&self, manifest_hash: &str, index: u32) -> PathBuf {
         self.root
             .join("da")
@@ -927,6 +1186,39 @@ impl FileStorage {
             .join(file_safe_id(manifest_hash))
             .join(format!("{index}.bin"))
     }
+}
+
+fn validate_da_retention_policy(config: &DaRetentionPolicyConfig) -> Result<(), StorageError> {
+    if config.policies.is_empty() {
+        return Err(StorageError::CorruptData(
+            "DA retention policy config must include at least one policy".into(),
+        ));
+    }
+    let mut classes = BTreeMap::new();
+    for policy in &config.policies {
+        if classes.insert(policy.class, ()).is_some() {
+            return Err(StorageError::CorruptData(format!(
+                "duplicate DA retention policy class {:?}",
+                policy.class
+            )));
+        }
+        if !policy.retain_payloads && !policy.retain_all_shares {
+            return Err(StorageError::CorruptData(format!(
+                "DA retention policy {:?} must retain payloads or shares",
+                policy.class
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn ensure_sorted_unique_u32(values: &[u32], field: &str) -> Result<(), StorageError> {
+    if !values.windows(2).all(|window| window[0] < window[1]) {
+        return Err(StorageError::CorruptData(format!(
+            "{field} must be sorted and unique"
+        )));
+    }
+    Ok(())
 }
 
 fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), StorageError> {
@@ -1062,6 +1354,18 @@ fn directory_size_bytes(path: &Path) -> Result<u64, StorageError> {
     Ok(total)
 }
 
+fn sorted_bin_paths(path: &Path) -> Result<Vec<PathBuf>, StorageError> {
+    let mut paths = Vec::new();
+    for entry in fs::read_dir(path).map_err(io_error)? {
+        let path = entry.map_err(io_error)?.path();
+        if path.extension().and_then(|extension| extension.to_str()) == Some("bin") {
+            paths.push(path);
+        }
+    }
+    paths.sort();
+    Ok(paths)
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct DirectoryFileStats {
     file_count: u64,
@@ -1090,6 +1394,52 @@ fn directory_file_stats(path: &Path) -> Result<DirectoryFileStats, StorageError>
         stats.total_bytes = stats.total_bytes.saturating_add(child.total_bytes);
     }
     Ok(stats)
+}
+
+fn directory_content_root(path: &Path) -> Result<String, StorageError> {
+    let mut entries = Vec::new();
+    collect_directory_content_roots(path, path, &mut entries)?;
+    entries.sort();
+    hash_canonical_json(&entries)
+}
+
+fn collect_directory_content_roots(
+    root: &Path,
+    path: &Path,
+    entries: &mut Vec<(String, String)>,
+) -> Result<(), StorageError> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let metadata = fs::metadata(path).map_err(io_error)?;
+    if metadata.is_file() {
+        let relative_path = path
+            .strip_prefix(root)
+            .map_err(|error| StorageError::CorruptData(error.to_string()))?
+            .to_string_lossy()
+            .replace('\\', "/");
+        let bytes = fs::read(path).map_err(io_error)?;
+        if bytes.len() as u64 > MAX_ENCODED_BYTES {
+            return Err(StorageError::CorruptData(format!(
+                "encoded storage value exceeds {MAX_ENCODED_BYTES} bytes"
+            )));
+        }
+        entries.push((relative_path, bytes_hash(&bytes)));
+        return Ok(());
+    }
+    if !metadata.is_dir() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(path).map_err(io_error)? {
+        collect_directory_content_roots(root, &entry.map_err(io_error)?.path(), entries)?;
+    }
+    Ok(())
+}
+
+fn bytes_hash(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hex_lower(&hasher.finalize())
 }
 
 fn copy_directory_contents(
@@ -1398,6 +1748,14 @@ mod tests {
             loaded_share_set.reconstruct_payload().unwrap(),
             da_payload().canonicalized()
         );
+        assert_eq!(
+            storage.maybe_load_da_payload(&manifest_hash).unwrap(),
+            Some(da_payload().canonicalized())
+        );
+        assert_eq!(
+            storage.load_da_payload(&manifest_hash).unwrap(),
+            da_payload().canonicalized()
+        );
 
         let manifest = storage.backup_to(&backup_dir).unwrap();
         assert!(manifest.file_count > share_set.shares.len());
@@ -1405,6 +1763,10 @@ mod tests {
         assert_eq!(
             restored.load_da_share_set(&manifest_hash).unwrap().shares,
             share_set.shares
+        );
+        assert_eq!(
+            restored.load_da_payload(&manifest_hash).unwrap(),
+            da_payload().canonicalized()
         );
 
         fs::remove_dir_all(dir).unwrap();
@@ -1472,6 +1834,81 @@ mod tests {
     }
 
     #[test]
+    fn persists_da_repair_records_retention_policy_and_store_roots() {
+        let dir = temp_dir("da-store-roots");
+        let storage = FileStorage::open(&dir).unwrap();
+        let share_set = DaShareSet::from_payload(&da_payload(), "block-7", 64).unwrap();
+        let manifest_hash = storage.commit_da_share_set(&share_set).unwrap();
+        let empty_roots = storage.da_store_roots().unwrap();
+        assert_ne!(empty_roots.manifest_root, empty_roots.share_root);
+
+        let repair_record = DaRepairRecord {
+            manifest_hash: manifest_hash.clone(),
+            missing_share_indices: vec![0],
+            recorded_at_height: 7,
+            reason: "test repair".into(),
+            completed: false,
+        };
+        let repair_id = storage.commit_da_repair_record(&repair_record).unwrap();
+        assert_eq!(
+            storage.load_da_repair_record(&repair_id).unwrap(),
+            repair_record
+        );
+        assert!(matches!(
+            storage.commit_da_repair_record(&DaRepairRecord {
+                manifest_hash: manifest_hash.clone(),
+                missing_share_indices: vec![1, 1],
+                recorded_at_height: 7,
+                reason: "duplicate".into(),
+                completed: false,
+            }),
+            Err(StorageError::CorruptData(_))
+        ));
+
+        let retention_policy = DaRetentionPolicyConfig {
+            policies: vec![
+                DaRetentionPolicy {
+                    class: DaRetentionClass::Hot,
+                    retain_payloads: true,
+                    retain_all_shares: true,
+                    min_retention_blocks: 128,
+                    max_payload_bytes: Some(1024 * 1024),
+                },
+                DaRetentionPolicy {
+                    class: DaRetentionClass::Checkpoint,
+                    retain_payloads: true,
+                    retain_all_shares: false,
+                    min_retention_blocks: 1024,
+                    max_payload_bytes: None,
+                },
+            ],
+        };
+        let retention_root = storage
+            .commit_da_retention_policy(&retention_policy)
+            .unwrap();
+        assert_eq!(
+            storage.maybe_load_da_retention_policy().unwrap(),
+            Some(retention_policy.clone())
+        );
+        assert_eq!(
+            storage.load_da_retention_policy().unwrap(),
+            retention_policy
+        );
+
+        let roots = storage.da_store_roots().unwrap();
+        assert_ne!(roots.root, empty_roots.root);
+        assert_eq!(roots.retention_policy_root, Some(retention_root));
+        assert_ne!(roots.repair_root, empty_roots.repair_root);
+        let stats = storage.da_storage_stats().unwrap();
+        assert_eq!(stats.payload_count, 1);
+        assert_eq!(stats.repair_record_count, 1);
+        assert!(stats.payload_bytes > 0);
+        assert!(stats.repair_record_bytes > 0);
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn reports_da_storage_stats_and_missing_shares() {
         let dir = temp_dir("da-storage-stats");
         let storage = FileStorage::open(&dir).unwrap();
@@ -1486,18 +1923,24 @@ mod tests {
         );
         assert_eq!(stats.stored_share_count, share_set.shares.len() as u64);
         assert_eq!(stats.missing_share_count, 0);
+        assert_eq!(stats.payload_count, 1);
         assert_eq!(stats.certificate_count, 0);
         assert_eq!(stats.challenge_count, 0);
+        assert_eq!(stats.repair_record_count, 0);
         assert!(stats.manifest_bytes > 0);
         assert!(stats.share_bytes > 0);
+        assert!(stats.payload_bytes > 0);
         assert_eq!(stats.certificate_bytes, 0);
         assert_eq!(stats.challenge_bytes, 0);
+        assert_eq!(stats.repair_record_bytes, 0);
         assert_eq!(
             stats.total_bytes,
             stats.manifest_bytes
                 + stats.share_bytes
+                + stats.payload_bytes
                 + stats.certificate_bytes
                 + stats.challenge_bytes
+                + stats.repair_record_bytes
         );
 
         fs::remove_file(storage.da_share_path(&manifest_hash, 0)).unwrap();

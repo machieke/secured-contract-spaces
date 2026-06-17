@@ -2,7 +2,7 @@
 
 **Project:** DeTTa  
 **Branch:** `experimental/data-availability-layer`  
-**Updated:** 2026-06-16  
+**Updated:** 2026-06-17
 **Goal:** Add a production-grade data availability layer so finalized DeTTa
 blocks are not only valid by consensus and execution roots, but also
 independently retrievable, reconstructable, and auditable by honest nodes and
@@ -75,7 +75,33 @@ clients.
 - [x] Checkpoint snapshots can be encoded as `detta.snapshot` DA payloads,
   reconstructed from Reed-Solomon threshold shares, and imported with DA
   manifest/certificate provenance in snapshot import audit records.
-- [ ] DA-backed state sync is implemented.
+- [x] Checkpoint DA shares can be fetched from multiple TCP peers with bounded
+  share requests, invalid share rejection, duplicate accounting, and
+  threshold reconstruction.
+- [x] DA-certified blocks can be reconstructed from DA payloads and replayed
+  after checkpoint import.
+- [x] DA-backed state sync is implemented.
+- [x] DA payloads, repair records, retention policy structures, and DA store
+  roots are persisted in `detta-storage`.
+- [x] DA share requests are bounded by a node-level maximum and oversized
+  requests are rejected.
+- [x] DA storage counters and DA missing-share/repair alerts are exposed
+  through operator metrics and alerts.
+- [x] Light-client DA sampling proof bundles are available over persistent-node
+  RPC, with deterministic sample schedules, share-root inclusion proofs,
+  namespace proofs, and local verification helpers.
+- [x] DA protocol messages have a stable aggregate encoded-envelope fixture
+  root covering requests, manifests, shares, votes, challenges, evidence, and
+  certificates.
+- [x] DA share sync metrics score peers positively for verified shares and
+  negatively for invalid DA responses or failed requests.
+- [x] DA share serving exposes a per-peer rate-limit hook for bounded request
+  admission.
+- [x] DA glossary, threat model, and versioned payload schema are documented
+  and linked from the production roadmap.
+- [x] Operator metrics and alerts cover DA custody-failure slashing evidence,
+  pending repair lag, and DA challenge evidence failures.
+- [x] DA retention and repair operator runbook is documented.
 
 ## 0. Current Baseline
 
@@ -639,9 +665,9 @@ Artifacts to add:
 
 ### Phase 0: Specification And Compatibility
 
-- [ ] Add this plan to the production acceptance roadmap.
-- [ ] Define DA glossary and threat model in docs.
-- [ ] Add versioned DA payload schema.
+- [x] Add this plan to the production acceptance roadmap.
+- [x] Define DA glossary and threat model in docs.
+- [x] Add versioned DA payload schema.
 - [x] Decide whether block header migration uses optional DA fields or a
   versioned header enum.
 - [ ] Add feature flag `experimental-da` for incremental work.
@@ -693,12 +719,14 @@ Acceptance:
 - [ ] Persist manifests, certificates, shares, payloads, challenges, repair
   records, and indexes.
 - [x] Persist manifests and deterministic shares.
+- [x] Persist reconstructed DA payloads keyed by manifest hash.
 - [x] Persist experimental DA certificates.
 - [x] Persist DA challenge records and include challenge bytes in DA storage
   stats.
-- [ ] Add DA store roots.
+- [x] Persist DA repair records.
+- [x] Add DA store roots.
 - [x] Add DA storage metrics.
-- [ ] Add retention policy structures.
+- [x] Add retention policy structures.
 - [x] Add backup/restore coverage for DA data.
 
 Acceptance:
@@ -712,11 +740,12 @@ Acceptance:
 - [x] Add DA protocol message types to `detta-protocol` for manifests, shares,
   availability votes, certificates, and share challenges.
 - [x] Add DA signature domains.
-- [ ] Add encoding/decoding golden fixtures.
+- [x] Add encoding/decoding golden fixtures.
 - [x] Route DA manifest/share/challenge messages through existing TCP
   envelopes.
-- [ ] Add peer scoring for invalid DA shares.
-- [ ] Add bounded request handling and rate-limit hooks.
+- [x] Add peer scoring for invalid DA shares.
+- [x] Add bounded request handling.
+- [x] Add rate-limit hooks.
 
 Acceptance:
 
@@ -777,9 +806,9 @@ Acceptance:
 ### Phase 8: DA-Backed State Sync
 
 - [x] Encode checkpoint snapshots as DA payloads.
-- [ ] Fetch snapshot shares from multiple peers.
+- [x] Fetch snapshot shares from multiple peers.
 - [x] Reconstruct and verify DA-certified checkpoints from threshold shares.
-- [ ] Replay DA-certified blocks after checkpoint.
+- [x] Replay DA-certified blocks after checkpoint.
 - [x] Persist DA manifest/certificate provenance in snapshot import audit records.
 
 Acceptance:
@@ -805,11 +834,11 @@ Acceptance:
 
 ### Phase 10: Light Client Sampling
 
-- [ ] Add sampling proof APIs.
-- [ ] Add light-client DA verification helper.
-- [ ] Add sample schedule derivation from block hash and client randomness.
-- [ ] Verify sampled shares against DA share root.
-- [ ] Add namespace proof verification.
+- [x] Add sampling proof APIs.
+- [x] Add light-client DA verification helper.
+- [x] Add sample schedule derivation from block hash and client randomness.
+- [x] Verify sampled shares against DA share root.
+- [x] Add namespace proof verification.
 
 Acceptance:
 
@@ -819,10 +848,11 @@ Acceptance:
 
 ### Phase 11: Operations And Release Evidence
 
-- [ ] Add DA metrics to operator metrics.
-- [ ] Add DA alerts for missing custody shares, repair lag, and challenge
-  failures.
-- [ ] Add DA retention runbook.
+- [x] Add DA metrics to operator metrics.
+- [x] Add DA alerts for missing shares and pending repair records.
+- [x] Add DA alerts for custody-share assignment failures, repair lag, and
+  challenge failures.
+- [x] Add DA retention runbook.
 - [ ] Add DA incident-response drill.
 - [ ] Add DA stability drill.
 - [ ] Add DA evidence to audit-readiness and release-candidate bundles.

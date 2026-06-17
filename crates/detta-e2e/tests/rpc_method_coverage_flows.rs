@@ -291,6 +291,16 @@ fn public_rpc_method_coverage_guard_calls_every_openapi_method() {
     call_ok(
         &mut client,
         &mut covered,
+        RpcRequest::GetDaSampleProofs {
+            manifest_hash: da_manifest_hash.clone(),
+            client_randomness: "coverage-randomness".into(),
+            sample_count: 2,
+            namespaces: vec!["detta.tx".into()],
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
         RpcRequest::GetDaStatus {
             manifest_hash: da_manifest_hash.clone(),
         },

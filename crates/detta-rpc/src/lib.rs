@@ -8,7 +8,7 @@ use detta_core::{
 };
 use detta_da::{
     DaAvailabilityCertificate, DaChallengeRecord, DaManifest, DaNamespaceSection, DaPayload,
-    DaShare,
+    DaSampleProofBundle, DaShare,
 };
 use detta_evaluator::{
     canonical_script_source, parse_restricted_script, restricted_evaluator_fixture_inventory,
@@ -244,6 +244,12 @@ pub enum RpcRequest {
     GetDaNamespace {
         manifest_hash: String,
         namespace: String,
+    },
+    GetDaSampleProofs {
+        manifest_hash: String,
+        client_randomness: String,
+        sample_count: u32,
+        namespaces: Vec<String>,
     },
     GetDaStatus {
         manifest_hash: String,
@@ -533,6 +539,16 @@ pub struct OperatorMetricsReport {
     pub last_proof_serving_micros: Option<u64>,
     pub storage_bytes: Option<u64>,
     pub rpc_error_count: u64,
+    pub da_manifest_count: u64,
+    pub da_missing_share_count: u64,
+    pub da_payload_count: u64,
+    pub da_challenge_record_count: u64,
+    pub da_challenge_evidence_count: u64,
+    pub da_custody_failure_count: u64,
+    pub da_repair_record_count: u64,
+    pub da_pending_repair_record_count: u64,
+    pub da_oldest_pending_repair_age_blocks: Option<u64>,
+    pub da_total_bytes: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -543,6 +559,7 @@ pub struct OperatorAlertPolicy {
     pub max_rpc_error_count: u64,
     pub max_mempool_size: usize,
     pub max_latest_block_failure_ratio_per_mille: u16,
+    pub max_da_repair_lag_blocks: u64,
 }
 
 impl Default for OperatorAlertPolicy {
@@ -554,6 +571,7 @@ impl Default for OperatorAlertPolicy {
             max_rpc_error_count: 100,
             max_mempool_size: 10_000,
             max_latest_block_failure_ratio_per_mille: 500,
+            max_da_repair_lag_blocks: 32,
         }
     }
 }
@@ -717,6 +735,7 @@ pub enum RpcResult {
     DaChallengeRecord(Box<DaChallengeRecord>),
     DaPayload(Box<DaPayload>),
     DaNamespace(Box<DaNamespaceSection>),
+    DaSampleProofs(Box<DaSampleProofBundle>),
     DaStatus(Box<DaStatusReport>),
     DaRepairStatus(Box<DaRepairStatusReport>),
     DaStorageStats(DaStorageStats),
@@ -1481,6 +1500,7 @@ impl RpcService {
             | RpcRequest::GetDaChallengeRecord { .. }
             | RpcRequest::GetDaPayload { .. }
             | RpcRequest::GetDaNamespace { .. }
+            | RpcRequest::GetDaSampleProofs { .. }
             | RpcRequest::GetDaStatus { .. }
             | RpcRequest::GetDaRepairStatus { .. }
             | RpcRequest::GetDaStorageStats
@@ -2088,6 +2108,7 @@ mod tests {
             "get_da_challenge_record",
             "get_da_payload",
             "get_da_namespace",
+            "get_da_sample_proofs",
             "get_da_status",
             "get_da_repair_status",
             "get_da_storage_stats",
@@ -2349,6 +2370,16 @@ mod tests {
                 last_proof_serving_micros: Some(40),
                 storage_bytes: Some(4096),
                 rpc_error_count: 2,
+                da_manifest_count: 1,
+                da_missing_share_count: 0,
+                da_payload_count: 1,
+                da_challenge_record_count: 0,
+                da_challenge_evidence_count: 0,
+                da_custody_failure_count: 0,
+                da_repair_record_count: 0,
+                da_pending_repair_record_count: 0,
+                da_oldest_pending_repair_age_blocks: None,
+                da_total_bytes: 512,
             },
         )));
         let fixture = concat!(
@@ -2357,7 +2388,13 @@ mod tests {
             r#""peer_count":3,"mempool_size":5,"consensus_height":11,"#,
             r#""highest_finalized_height":10,"finality_lag":1,"#,
             r#""last_block_execution_micros":120,"last_proof_serving_micros":40,"#,
-            r#""storage_bytes":4096,"rpc_error_count":2}}}"#,
+            r#""storage_bytes":4096,"rpc_error_count":2,"#,
+            r#""da_manifest_count":1,"da_missing_share_count":0,"#,
+            r#""da_payload_count":1,"da_challenge_record_count":0,"#,
+            r#""da_challenge_evidence_count":0,"da_custody_failure_count":0,"#,
+            r#""da_repair_record_count":0,"da_pending_repair_record_count":0,"#,
+            r#""da_oldest_pending_repair_age_blocks":null,"#,
+            r#""da_total_bytes":512}}}"#,
         );
 
         assert_eq!(serde_json::to_string(&response).unwrap(), fixture);
@@ -2376,6 +2413,7 @@ mod tests {
             max_rpc_error_count: 3,
             max_mempool_size: 10,
             max_latest_block_failure_ratio_per_mille: 500,
+            max_da_repair_lag_blocks: 8,
         };
         let metrics = OperatorMetricsReport {
             network_id: Some("detta-localnet".into()),
@@ -2389,6 +2427,16 @@ mod tests {
             last_proof_serving_micros: Some(40),
             storage_bytes: Some(8192),
             rpc_error_count: 4,
+            da_manifest_count: 1,
+            da_missing_share_count: 2,
+            da_payload_count: 1,
+            da_challenge_record_count: 1,
+            da_challenge_evidence_count: 1,
+            da_custody_failure_count: 1,
+            da_repair_record_count: 1,
+            da_pending_repair_record_count: 1,
+            da_oldest_pending_repair_age_blocks: Some(9),
+            da_total_bytes: 1024,
         };
         let response = RpcResponse::Ok(RpcResult::OperatorAlerts(Box::new(OperatorAlertReport {
             policy,
@@ -2414,12 +2462,19 @@ mod tests {
             r#"{"status":"ok","body":{"result":"operator_alerts","data":{"#,
             r#""policy":{"min_peer_count":1,"max_finality_lag":2,"#,
             r#""max_storage_bytes":4096,"max_rpc_error_count":3,"#,
-            r#""max_mempool_size":10,"max_latest_block_failure_ratio_per_mille":500},"#,
+            r#""max_mempool_size":10,"max_latest_block_failure_ratio_per_mille":500,"#,
+            r#""max_da_repair_lag_blocks":8},"#,
             r#""metrics":{"network_id":"detta-localnet","validator_id":"validator-1","#,
             r#""peer_count":0,"mempool_size":12,"consensus_height":11,"#,
             r#""highest_finalized_height":8,"finality_lag":3,"#,
             r#""last_block_execution_micros":120,"last_proof_serving_micros":40,"#,
-            r#""storage_bytes":8192,"rpc_error_count":4},"#,
+            r#""storage_bytes":8192,"rpc_error_count":4,"#,
+            r#""da_manifest_count":1,"da_missing_share_count":2,"#,
+            r#""da_payload_count":1,"da_challenge_record_count":1,"#,
+            r#""da_challenge_evidence_count":1,"da_custody_failure_count":1,"#,
+            r#""da_repair_record_count":1,"da_pending_repair_record_count":1,"#,
+            r#""da_oldest_pending_repair_age_blocks":9,"#,
+            r#""da_total_bytes":1024},"#,
             r#""alerts":[{"code":"operator.peer_isolation","severity":"critical","#,
             r#""message":"observed peer count is below policy minimum"},"#,
             r#"{"code":"operator.rpc_overload","severity":"warning","#,

@@ -13,6 +13,8 @@ Updated: 2026-06-10
 Completed production-plan slices:
 
 - [x] Production implementation plan created.
+- [x] Production data availability layer plan and DA glossary/threat/schema
+  reference added to the production roadmap.
 - [x] Release artifact signing verification checks the release manifest
   checksum/signature plus every packaged artifact checksum/signature.
 - [x] Incident-response drill script exercises packaged-node operator health,

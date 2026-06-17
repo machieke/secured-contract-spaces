@@ -7,13 +7,15 @@ use detta_core::{
     MempoolError, StateSnapshot, Transaction, TxStatus, ValidatorNode,
 };
 use detta_da::{
-    DaAvailabilityCertificate, DaAvailabilityVote, DaChallengeEvidence, DaChallengeRecord, DaError,
-    DaManifest, DaNamespace, DaNamespaceSection, DaPayload, DaRecord, DaShare, DaShareChallenge,
+    derive_sample_schedule, prove_namespace, prove_share_inclusion, verify_light_client_samples,
+    verify_share_against_manifest, DaAvailabilityCertificate, DaAvailabilityVote,
+    DaChallengeEvidence, DaChallengeRecord, DaError, DaManifest, DaNamespace, DaNamespaceSection,
+    DaPayload, DaRecord, DaSampleProof, DaSampleProofBundle, DaShare, DaShareChallenge,
     DaShareChallengeResponse, DaShareSet,
 };
 use detta_network::{Envelope, InMemoryTransport, NetworkError, NetworkMessage, TcpProtocolStream};
 use detta_protocol::{
-    build_snapshot_chunks_with_metadata_roots, ProtocolMessageKind, SignatureError,
+    build_snapshot_chunks_with_metadata_roots, DaShareRequest, ProtocolMessageKind, SignatureError,
     SignedValidatorMessage, SnapshotChunk, SnapshotChunkManifest, SnapshotChunkRequest,
     SnapshotChunkSet, SnapshotSyncError, ValidatorPublicKey, ValidatorSetMetadata,
     ValidatorSetMetadataUpdate, ValidatorSignatureDomain, ValidatorSigningKey,
@@ -35,7 +37,7 @@ use detta_storage::{
     StorageError, ValidatorSetMetadataAuditOutcome, ValidatorSetMetadataAuditRecord,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{btree_map::Entry, BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -46,6 +48,8 @@ pub const DEFAULT_MAX_VALIDATOR_SET_METADATA_AUDIT_RECORDS: usize = 4_096;
 pub const DEFAULT_MAX_VALIDATOR_SET_METADATA_AUDIT_PAGE_SIZE: usize = 100;
 pub const DEFAULT_MAX_SNAPSHOT_IMPORT_AUDIT_RECORDS: usize = 4_096;
 pub const DEFAULT_MAX_SNAPSHOT_IMPORT_AUDIT_PAGE_SIZE: usize = 100;
+pub const DEFAULT_MAX_DA_SHARES_PER_REQUEST: u32 = 128;
+pub const DEFAULT_MAX_DA_SHARE_REQUESTS_PER_PEER: u32 = 64;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NodeError {
@@ -170,6 +174,78 @@ pub struct SnapshotSyncClientMetrics {
     pub required_metadata_roots_root: Option<String>,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaShareSyncClientMetrics {
+    pub peer_attempts: u32,
+    pub peer_failures: u32,
+    pub requests_sent: u32,
+    pub manifests_received: u32,
+    pub shares_received: u32,
+    pub duplicate_shares: u32,
+    pub invalid_responses: u32,
+    pub payload_reconstructable: bool,
+    pub peer_scores: Vec<DaShareSyncPeerScore>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaShareSyncPeerScore {
+    pub peer_index: usize,
+    pub score: i64,
+    pub valid_responses: u32,
+    pub invalid_responses: u32,
+    pub failures: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DaShareRequestRateLimiter {
+    max_requests_per_peer: u32,
+    requests_by_peer: BTreeMap<String, u32>,
+}
+
+impl DaShareRequestRateLimiter {
+    pub fn new(max_requests_per_peer: u32) -> Result<Self, DaError> {
+        if max_requests_per_peer == 0 {
+            return Err(DaError::InvalidPayload(
+                "DA share request rate limit must be positive".into(),
+            ));
+        }
+        Ok(Self {
+            max_requests_per_peer,
+            requests_by_peer: BTreeMap::new(),
+        })
+    }
+
+    pub fn admit(&mut self, peer_id: &str) -> Result<(), DaError> {
+        if peer_id.is_empty() {
+            return Err(DaError::InvalidPayload(
+                "DA share request peer ID must be nonempty".into(),
+            ));
+        }
+        let requests = self
+            .requests_by_peer
+            .entry(peer_id.to_string())
+            .or_default();
+        if *requests >= self.max_requests_per_peer {
+            return Err(DaError::InvalidPayload(format!(
+                "DA share request rate limit exceeded for peer {peer_id}"
+            )));
+        }
+        *requests = requests.saturating_add(1);
+        Ok(())
+    }
+
+    pub fn request_count(&self, peer_id: &str) -> u32 {
+        self.requests_by_peer.get(peer_id).copied().unwrap_or(0)
+    }
+}
+
+impl Default for DaShareRequestRateLimiter {
+    fn default() -> Self {
+        Self::new(DEFAULT_MAX_DA_SHARE_REQUESTS_PER_PEER)
+            .expect("default DA share request limit is positive")
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SnapshotSyncRetryPolicy {
     pub max_attempts: u32,
@@ -270,6 +346,45 @@ pub fn fetch_verified_snapshot_chunk_set_over_tcp_with_retries(
     }))
 }
 
+fn record_da_peer_valid_response(metrics: &mut DaShareSyncClientMetrics, peer_index: usize) {
+    let peer_score = da_peer_score_mut(metrics, peer_index);
+    peer_score.score = peer_score.score.saturating_add(1);
+    peer_score.valid_responses = peer_score.valid_responses.saturating_add(1);
+}
+
+fn record_da_peer_invalid_response(metrics: &mut DaShareSyncClientMetrics, peer_index: usize) {
+    let peer_score = da_peer_score_mut(metrics, peer_index);
+    peer_score.score = peer_score.score.saturating_sub(1);
+    peer_score.invalid_responses = peer_score.invalid_responses.saturating_add(1);
+}
+
+fn record_da_peer_failure(metrics: &mut DaShareSyncClientMetrics, peer_index: usize) {
+    let peer_score = da_peer_score_mut(metrics, peer_index);
+    peer_score.score = peer_score.score.saturating_sub(1);
+    peer_score.failures = peer_score.failures.saturating_add(1);
+}
+
+fn da_peer_score_mut(
+    metrics: &mut DaShareSyncClientMetrics,
+    peer_index: usize,
+) -> &mut DaShareSyncPeerScore {
+    if let Some(position) = metrics
+        .peer_scores
+        .iter()
+        .position(|score| score.peer_index == peer_index)
+    {
+        return &mut metrics.peer_scores[position];
+    }
+    metrics.peer_scores.push(DaShareSyncPeerScore {
+        peer_index,
+        ..DaShareSyncPeerScore::default()
+    });
+    metrics
+        .peer_scores
+        .last_mut()
+        .expect("peer score was just inserted")
+}
+
 pub fn fetch_verified_snapshot_chunk_set_over_tcp_with_metrics(
     stream: &mut TcpProtocolStream,
     snapshot_root: impl Into<String>,
@@ -359,6 +474,148 @@ pub fn fetch_verified_snapshot_chunk_set_over_tcp_with_metrics(
         }
         start_index += expected_chunks;
     }
+}
+
+pub fn fetch_da_share_set_from_tcp_peers(
+    mut connect_peer: impl FnMut(usize) -> Result<TcpProtocolStream, NetworkError>,
+    peer_count: usize,
+    manifest_hash: impl Into<String>,
+    max_shares_per_request: u32,
+) -> Result<(DaShareSet, DaShareSyncClientMetrics), NodeError> {
+    if peer_count == 0 {
+        return Err(NodeError::DataAvailability(DaError::InsufficientShares {
+            required: 1,
+            actual: 0,
+        }));
+    }
+    if max_shares_per_request == 0 {
+        return Err(NodeError::DataAvailability(DaError::InvalidChunkSize));
+    }
+    if max_shares_per_request > DEFAULT_MAX_DA_SHARES_PER_REQUEST {
+        return Err(NodeError::DataAvailability(DaError::InvalidPayload(
+            "DA share request exceeds maximum share count".into(),
+        )));
+    }
+
+    let manifest_hash = manifest_hash.into();
+    let mut manifest = None;
+    let mut shares = BTreeMap::new();
+    let mut metrics = DaShareSyncClientMetrics::default();
+
+    for peer_index in 0..peer_count {
+        metrics.peer_attempts = metrics.peer_attempts.saturating_add(1);
+        da_peer_score_mut(&mut metrics, peer_index);
+        let mut stream = match connect_peer(peer_index) {
+            Ok(stream) => stream,
+            Err(_) => {
+                metrics.peer_failures = metrics.peer_failures.saturating_add(1);
+                record_da_peer_failure(&mut metrics, peer_index);
+                continue;
+            }
+        };
+        let start_index = first_missing_da_share_index(manifest.as_ref(), &shares).unwrap_or(0);
+        let request = DaShareRequest {
+            manifest_hash: manifest_hash.clone(),
+            start_index,
+            max_shares: max_shares_per_request,
+        };
+        metrics.requests_sent = metrics.requests_sent.saturating_add(1);
+        if stream
+            .send(&NetworkMessage::DaShareRequest(request))
+            .is_err()
+        {
+            metrics.peer_failures = metrics.peer_failures.saturating_add(1);
+            record_da_peer_failure(&mut metrics, peer_index);
+            continue;
+        }
+
+        let peer_manifest = match stream.receive() {
+            Ok(NetworkMessage::DaManifest(peer_manifest)) => *peer_manifest,
+            Ok(_) => {
+                metrics.invalid_responses = metrics.invalid_responses.saturating_add(1);
+                record_da_peer_invalid_response(&mut metrics, peer_index);
+                continue;
+            }
+            Err(_) => {
+                metrics.peer_failures = metrics.peer_failures.saturating_add(1);
+                record_da_peer_failure(&mut metrics, peer_index);
+                continue;
+            }
+        };
+        let peer_manifest_hash = peer_manifest
+            .manifest_hash()
+            .map_err(NodeError::DataAvailability)?;
+        if peer_manifest_hash != manifest_hash {
+            metrics.invalid_responses = metrics.invalid_responses.saturating_add(1);
+            record_da_peer_invalid_response(&mut metrics, peer_index);
+            continue;
+        }
+        if let Some(expected_manifest) = &manifest {
+            if expected_manifest != &peer_manifest {
+                metrics.invalid_responses = metrics.invalid_responses.saturating_add(1);
+                record_da_peer_invalid_response(&mut metrics, peer_index);
+                continue;
+            }
+        } else {
+            manifest = Some(peer_manifest);
+        }
+        metrics.manifests_received = metrics.manifests_received.saturating_add(1);
+
+        let manifest_ref = manifest.as_ref().expect("manifest set above");
+        let expected_shares = manifest_ref
+            .encoded_share_count
+            .saturating_sub(start_index)
+            .min(max_shares_per_request);
+        let mut peer_valid = true;
+        for _ in 0..expected_shares {
+            let share = match stream.receive() {
+                Ok(NetworkMessage::DaShare(share)) => share,
+                Ok(_) => {
+                    metrics.invalid_responses = metrics.invalid_responses.saturating_add(1);
+                    record_da_peer_invalid_response(&mut metrics, peer_index);
+                    peer_valid = false;
+                    break;
+                }
+                Err(_) => {
+                    metrics.peer_failures = metrics.peer_failures.saturating_add(1);
+                    record_da_peer_failure(&mut metrics, peer_index);
+                    peer_valid = false;
+                    break;
+                }
+            };
+            if verify_share_against_manifest(manifest_ref, &share).is_err() {
+                metrics.invalid_responses = metrics.invalid_responses.saturating_add(1);
+                record_da_peer_invalid_response(&mut metrics, peer_index);
+                peer_valid = false;
+                break;
+            }
+            record_da_peer_valid_response(&mut metrics, peer_index);
+            match shares.entry(share.index) {
+                Entry::Vacant(entry) => {
+                    metrics.shares_received = metrics.shares_received.saturating_add(1);
+                    entry.insert(share);
+                }
+                Entry::Occupied(_) => {
+                    metrics.duplicate_shares = metrics.duplicate_shares.saturating_add(1);
+                }
+            }
+        }
+        if !peer_valid {
+            continue;
+        }
+        if let Some(share_set) = reconstructable_da_share_set(manifest_ref, &shares)? {
+            metrics.payload_reconstructable = true;
+            return Ok((share_set, metrics));
+        }
+    }
+
+    let required = manifest
+        .as_ref()
+        .map_or(1, |manifest| manifest.reconstruction_threshold);
+    Err(NodeError::DataAvailability(DaError::InsufficientShares {
+        required,
+        actual: shares.len() as u32,
+    }))
 }
 
 impl PersistentValidatorNode {
@@ -916,6 +1173,24 @@ impl PersistentValidatorNode {
                 Ok(None) => Err(RpcError::DaNamespaceNotFound).into(),
                 Err(error) => node_rpc_error_response(error),
             },
+            RpcRequest::GetDaSampleProofs {
+                manifest_hash,
+                client_randomness,
+                sample_count,
+                namespaces,
+            } => self
+                .da_sample_proof_bundle(
+                    &manifest_hash,
+                    &client_randomness,
+                    sample_count,
+                    &namespaces,
+                )
+                .map(|bundle| RpcResult::DaSampleProofs(Box::new(bundle)))
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(|error| match error {
+                    NodeError::Rpc(error) => Err(error).into(),
+                    error => node_rpc_error_response(error),
+                }),
             RpcRequest::GetDaStatus { manifest_hash } => self
                 .da_status(&manifest_hash)
                 .map(|status| RpcResult::DaStatus(Box::new(status)))
@@ -1028,6 +1303,31 @@ impl PersistentValidatorNode {
     pub fn operator_metrics(&self) -> Result<OperatorMetricsReport, NodeError> {
         let height = self.current_height();
         let highest_finalized_height = self.highest_finalized_height()?;
+        let da_stats = self
+            .storage
+            .da_storage_stats()
+            .map_err(NodeError::Storage)?;
+        let da_challenge_records = self
+            .storage
+            .load_da_challenge_records()
+            .map_err(NodeError::Storage)?;
+        let da_repair_records = self
+            .storage
+            .load_da_repair_records()
+            .map_err(NodeError::Storage)?;
+        let slashing_records = self
+            .storage
+            .load_slashing_records()
+            .map_err(NodeError::Storage)?;
+        let da_pending_repair_record_count = da_repair_records
+            .iter()
+            .filter(|record| !record.completed)
+            .count() as u64;
+        let da_oldest_pending_repair_age_blocks = da_repair_records
+            .iter()
+            .filter(|record| !record.completed)
+            .map(|record| height.saturating_sub(record.recorded_at_height))
+            .max();
         Ok(OperatorMetricsReport {
             network_id: Some(self.network_id.clone()),
             validator_id: Some(self.validator_id.clone()),
@@ -1041,6 +1341,22 @@ impl PersistentValidatorNode {
             last_proof_serving_micros: self.last_proof_serving_micros,
             storage_bytes: Some(self.storage.storage_bytes().map_err(NodeError::Storage)?),
             rpc_error_count: self.rpc_error_count,
+            da_manifest_count: da_stats.manifest_count,
+            da_missing_share_count: da_stats.missing_share_count,
+            da_payload_count: da_stats.payload_count,
+            da_challenge_record_count: da_challenge_records.len() as u64,
+            da_challenge_evidence_count: da_challenge_records
+                .iter()
+                .filter(|record| record.evidence.is_some())
+                .count() as u64,
+            da_custody_failure_count: slashing_records
+                .iter()
+                .filter(|record| matches!(record.evidence, SlashingEvidence::DataAvailability(_)))
+                .count() as u64,
+            da_repair_record_count: da_stats.repair_record_count,
+            da_pending_repair_record_count,
+            da_oldest_pending_repair_age_blocks,
+            da_total_bytes: da_stats.total_bytes,
         })
     }
 
@@ -2103,6 +2419,7 @@ impl PersistentValidatorNode {
             | NetworkMessage::SnapshotChunkRequest(_)
             | NetworkMessage::SnapshotChunkManifest(_)
             | NetworkMessage::SnapshotChunk(_)
+            | NetworkMessage::DaShareRequest(_)
             | NetworkMessage::DaAvailabilityVote(_) => {
                 Ok(NetworkIngestOutcome::IgnoredControlMessage)
             }
@@ -2123,6 +2440,48 @@ impl PersistentValidatorNode {
         self.storage
             .load_da_share(manifest_hash, index)
             .map_err(NodeError::Storage)
+    }
+
+    pub fn serve_da_share_request(
+        &self,
+        request: &DaShareRequest,
+    ) -> Result<Vec<NetworkMessage>, NodeError> {
+        if request.max_shares == 0 {
+            return Err(NodeError::DataAvailability(DaError::InvalidChunkSize));
+        }
+        if request.max_shares > DEFAULT_MAX_DA_SHARES_PER_REQUEST {
+            return Err(NodeError::DataAvailability(DaError::InvalidPayload(
+                "DA share request exceeds maximum share count".into(),
+            )));
+        }
+        let manifest = self.load_da_manifest(&request.manifest_hash)?;
+        let end_index = request
+            .start_index
+            .saturating_add(request.max_shares)
+            .min(manifest.encoded_share_count);
+        let mut messages = vec![NetworkMessage::DaManifest(Box::new(manifest))];
+        for index in request.start_index..end_index {
+            if let Some(share) = self
+                .storage
+                .maybe_load_da_share(&request.manifest_hash, index)
+                .map_err(NodeError::Storage)?
+            {
+                messages.push(NetworkMessage::DaShare(share));
+            }
+        }
+        Ok(messages)
+    }
+
+    pub fn serve_da_share_request_with_rate_limit(
+        &self,
+        peer_id: &str,
+        request: &DaShareRequest,
+        rate_limiter: &mut DaShareRequestRateLimiter,
+    ) -> Result<Vec<NetworkMessage>, NodeError> {
+        rate_limiter
+            .admit(peer_id)
+            .map_err(NodeError::DataAvailability)?;
+        self.serve_da_share_request(request)
     }
 
     pub fn persist_da_certificate(
@@ -2150,9 +2509,21 @@ impl PersistentValidatorNode {
     }
 
     pub fn load_da_payload(&self, manifest_hash: &str) -> Result<DaPayload, NodeError> {
-        self.load_da_share_set(manifest_hash)?
+        if let Some(payload) = self
+            .storage
+            .maybe_load_da_payload(manifest_hash)
+            .map_err(NodeError::Storage)?
+        {
+            return Ok(payload);
+        }
+        let payload = self
+            .load_da_share_set(manifest_hash)?
             .reconstruct_payload()
-            .map_err(NodeError::DataAvailability)
+            .map_err(NodeError::DataAvailability)?;
+        self.storage
+            .commit_da_payload(manifest_hash, &payload)
+            .map_err(NodeError::Storage)?;
+        Ok(payload)
     }
 
     pub fn build_snapshot_da_share_set(
@@ -2249,6 +2620,40 @@ impl PersistentValidatorNode {
         )
     }
 
+    pub fn import_da_certified_block_after_checkpoint(
+        &mut self,
+        share_set: &DaShareSet,
+        certificate: &DaAvailabilityCertificate,
+    ) -> Result<Block, NodeError> {
+        validate_da_certificate_for_share_set(certificate, share_set)?;
+        let payload = share_set
+            .reconstruct_payload()
+            .map_err(NodeError::DataAvailability)?;
+        let mut block = block_from_da_payload(&payload)?;
+        let execution_block_hash = block.block_hash();
+        if execution_block_hash != share_set.manifest.block_hash {
+            return Err(NodeError::DataAvailability(DaError::InvalidPayload(
+                "DA block payload does not match manifest block hash".into(),
+            )));
+        }
+        let manifest_hash = share_set
+            .manifest
+            .manifest_hash()
+            .map_err(NodeError::DataAvailability)?;
+        block.header.data_availability = Some(DataAvailabilityCommitment {
+            payload_root: share_set.manifest.payload_hash.clone(),
+            manifest_hash,
+            share_root: share_set.manifest.share_root.clone(),
+            certificate_hash: Some(
+                certificate
+                    .certificate_hash()
+                    .map_err(NodeError::DataAvailability)?,
+            ),
+        });
+        self.import_block(&block)?;
+        Ok(block)
+    }
+
     pub fn load_da_namespace(
         &self,
         manifest_hash: &str,
@@ -2260,6 +2665,60 @@ impl PersistentValidatorNode {
             .namespaces
             .into_iter()
             .find(|section| section.namespace == namespace))
+    }
+
+    pub fn da_sample_proof_bundle(
+        &self,
+        manifest_hash: &str,
+        client_randomness: &str,
+        sample_count: u32,
+        namespaces: &[String],
+    ) -> Result<DaSampleProofBundle, NodeError> {
+        let manifest = self
+            .storage
+            .maybe_load_da_manifest(manifest_hash)
+            .map_err(NodeError::Storage)?
+            .ok_or(NodeError::Rpc(RpcError::DaManifestNotFound))?;
+        let schedule =
+            derive_sample_schedule(&manifest, client_randomness.as_bytes(), sample_count)
+                .map_err(NodeError::DataAvailability)?;
+        let mut sample_proofs = Vec::with_capacity(schedule.share_indices.len());
+        for index in &schedule.share_indices {
+            let share = self
+                .storage
+                .maybe_load_da_share(manifest_hash, *index)
+                .map_err(NodeError::Storage)?
+                .ok_or(NodeError::Rpc(RpcError::DaShareNotFound))?;
+            sample_proofs.push(DaSampleProof {
+                share,
+                inclusion_proof: prove_share_inclusion(&manifest, *index)
+                    .map_err(NodeError::DataAvailability)?,
+            });
+        }
+
+        let namespace_proofs = namespaces
+            .iter()
+            .map(|namespace| {
+                let namespace =
+                    DaNamespace::new(namespace.clone()).map_err(NodeError::DataAvailability)?;
+                prove_namespace(&manifest, &namespace).map_err(NodeError::DataAvailability)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let verification = verify_light_client_samples(
+            &manifest,
+            client_randomness.as_bytes(),
+            sample_count,
+            &sample_proofs,
+            &namespace_proofs,
+        )
+        .map_err(NodeError::DataAvailability)?;
+
+        Ok(DaSampleProofBundle {
+            schedule,
+            sample_proofs,
+            namespace_proofs,
+            verification,
+        })
     }
 
     pub fn da_status(&self, manifest_hash: &str) -> Result<DaStatusReport, NodeError> {
@@ -2917,6 +3376,72 @@ fn snapshot_checkpoint_block_hash(chunk_set: &SnapshotChunkSet) -> Result<String
     ))
 }
 
+fn block_from_da_payload(payload: &DaPayload) -> Result<Block, NodeError> {
+    payload.validate().map_err(NodeError::DataAvailability)?;
+    let block_namespace = DaNamespace::new("detta.block").map_err(NodeError::DataAvailability)?;
+    let tx_namespace = DaNamespace::new("detta.tx").map_err(NodeError::DataAvailability)?;
+    let receipt_namespace =
+        DaNamespace::new("detta.receipt").map_err(NodeError::DataAvailability)?;
+    let mut header = None;
+    let mut transactions = Vec::new();
+    let mut receipts = Vec::new();
+
+    for section in &payload.namespaces {
+        if section.namespace == block_namespace {
+            for record in &section.records {
+                let DaRecord::BlockHeader(block_header) = record else {
+                    return Err(NodeError::DataAvailability(DaError::InvalidPayload(
+                        "DA block namespace contains a non-header record".into(),
+                    )));
+                };
+                if header.is_some() {
+                    return Err(NodeError::DataAvailability(DaError::InvalidPayload(
+                        "DA block payload contains multiple block headers".into(),
+                    )));
+                }
+                header = Some((**block_header).clone());
+            }
+        } else if section.namespace == tx_namespace {
+            for record in &section.records {
+                let DaRecord::SignedTransaction(transaction) = record else {
+                    return Err(NodeError::DataAvailability(DaError::InvalidPayload(
+                        "DA transaction namespace contains a non-transaction record".into(),
+                    )));
+                };
+                transactions.push(transaction.clone());
+            }
+        } else if section.namespace == receipt_namespace {
+            for record in &section.records {
+                let DaRecord::Receipt(receipt) = record else {
+                    return Err(NodeError::DataAvailability(DaError::InvalidPayload(
+                        "DA receipt namespace contains a non-receipt record".into(),
+                    )));
+                };
+                receipts.push(receipt.clone());
+            }
+        }
+    }
+
+    let header = header.ok_or_else(|| {
+        NodeError::DataAvailability(DaError::InvalidPayload(
+            "DA block payload has no block header".into(),
+        ))
+    })?;
+    if payload.chain_id != header.chain_id
+        || payload.height != header.height
+        || payload.previous_block_hash != header.previous_block_hash
+    {
+        return Err(NodeError::DataAvailability(DaError::InvalidPayload(
+            "DA block payload metadata does not match block header".into(),
+        )));
+    }
+    Ok(Block {
+        header,
+        transactions,
+        receipts,
+    })
+}
+
 fn validate_da_certificate_for_share_set(
     certificate: &DaAvailabilityCertificate,
     share_set: &DaShareSet,
@@ -2941,6 +3466,32 @@ fn validate_da_certificate_for_share_set(
         ));
     }
     Ok(())
+}
+
+fn first_missing_da_share_index(
+    manifest: Option<&DaManifest>,
+    shares: &BTreeMap<u32, DaShare>,
+) -> Option<u32> {
+    let manifest = manifest?;
+    (0..manifest.encoded_share_count).find(|index| !shares.contains_key(index))
+}
+
+fn reconstructable_da_share_set(
+    manifest: &DaManifest,
+    shares: &BTreeMap<u32, DaShare>,
+) -> Result<Option<DaShareSet>, NodeError> {
+    if shares.len() < manifest.reconstruction_threshold as usize {
+        return Ok(None);
+    }
+    let share_set = DaShareSet {
+        manifest: manifest.clone(),
+        shares: shares.values().cloned().collect(),
+    };
+    match share_set.verify() {
+        Ok(()) => Ok(Some(share_set)),
+        Err(DaError::InsufficientShares { .. }) => Ok(None),
+        Err(error) => Err(NodeError::DataAvailability(error)),
+    }
 }
 
 fn records_proof_latency(request: &RpcRequest) -> bool {
@@ -3026,6 +3577,44 @@ fn operator_alerts_for_state(
             "operator.rpc_overload",
             OperatorAlertSeverity::Warning,
             "RPC error count exceeds policy threshold",
+        ));
+    }
+    if metrics.da_missing_share_count > 0 {
+        alerts.push(operator_alert(
+            "operator.da_missing_shares",
+            OperatorAlertSeverity::Critical,
+            "data availability store has missing shares",
+        ));
+    }
+    if metrics.da_repair_record_count > 0 {
+        alerts.push(operator_alert(
+            "operator.da_repair_pending",
+            OperatorAlertSeverity::Warning,
+            "data availability repair records are pending",
+        ));
+    }
+    if metrics.da_custody_failure_count > 0 {
+        alerts.push(operator_alert(
+            "operator.da_custody_failure",
+            OperatorAlertSeverity::Critical,
+            "data availability custody failure slashing evidence is present",
+        ));
+    }
+    if metrics
+        .da_oldest_pending_repair_age_blocks
+        .is_some_and(|age| age > policy.max_da_repair_lag_blocks)
+    {
+        alerts.push(operator_alert(
+            "operator.da_repair_lag",
+            OperatorAlertSeverity::Warning,
+            "data availability repair lag exceeds policy threshold",
+        ));
+    }
+    if metrics.da_challenge_evidence_count > 0 {
+        alerts.push(operator_alert(
+            "operator.da_challenge_failure",
+            OperatorAlertSeverity::Critical,
+            "data availability challenge failure evidence is present",
         ));
     }
     if metrics.mempool_size > policy.max_mempool_size {
@@ -3413,6 +4002,32 @@ mod tests {
                 message: "DA namespace was not found".into(),
             })
         );
+        let sample_response = node.handle_rpc_request(RpcRequest::GetDaSampleProofs {
+            manifest_hash: commitment.manifest_hash.clone(),
+            client_randomness: "node-test-randomness".into(),
+            sample_count: 2,
+            namespaces: vec!["detta.tx".into(), "detta.oracle".into()],
+        });
+        let RpcResponse::Ok(RpcResult::DaSampleProofs(sample_bundle)) = sample_response else {
+            panic!("expected DA sample proof bundle, got {sample_response:?}");
+        };
+        assert!(sample_bundle.verification.valid);
+        assert_eq!(sample_bundle.schedule.requested_sample_count, 2);
+        assert_eq!(sample_bundle.sample_proofs.len(), 2);
+        assert_eq!(sample_bundle.namespace_proofs.len(), 2);
+        assert!(sample_bundle.namespace_proofs[0].range.is_some());
+        assert!(sample_bundle.namespace_proofs[1].range.is_none());
+        assert_eq!(
+            verify_light_client_samples(
+                &share_set.manifest,
+                b"node-test-randomness",
+                2,
+                &sample_bundle.sample_proofs,
+                &sample_bundle.namespace_proofs,
+            )
+            .unwrap(),
+            sample_bundle.verification
+        );
         let stats_response = node.handle_rpc_request(RpcRequest::GetDaStorageStats);
         let RpcResponse::Ok(RpcResult::DaStorageStats(stats)) = stats_response else {
             panic!("expected DA storage stats, got {stats_response:?}");
@@ -3577,6 +4192,235 @@ mod tests {
     }
 
     #[test]
+    fn fetches_da_snapshot_shares_from_multiple_tcp_peers_and_skips_invalid_share() {
+        let source_dir = temp_dir("da-snapshot-multi-peer-source");
+        let mut source =
+            PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &source_dir).unwrap();
+        source.submit_transaction(transfer_tx()).unwrap();
+        source.produce_block(1, 1_000).unwrap();
+        let (_, share_set) = source.build_snapshot_da_share_set(64, 3, 2).unwrap();
+        let manifest_hash = share_set.manifest.manifest_hash().unwrap();
+
+        let mut addrs = Vec::new();
+        let mut handles = Vec::new();
+
+        let bad_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        addrs.push(bad_listener.local_addr().unwrap());
+        let bad_manifest = share_set.manifest.clone();
+        let mut bad_share = share_set.shares[0].clone();
+        bad_share.bytes[0] ^= 0xff;
+        handles.push(thread::spawn(move || {
+            let (stream, _) = bad_listener.accept().unwrap();
+            let mut tcp = TcpProtocolStream::from_stream(stream);
+            match tcp.receive().unwrap() {
+                NetworkMessage::DaShareRequest(_) => {
+                    tcp.send(&NetworkMessage::DaManifest(Box::new(bad_manifest)))
+                        .unwrap();
+                    tcp.send(&NetworkMessage::DaShare(bad_share)).unwrap();
+                }
+                message => panic!("expected DA share request, got {message:?}"),
+            }
+        }));
+
+        for peer_index in 0..3 {
+            let peer_dir = temp_dir(&format!("da-snapshot-share-peer-{peer_index}"));
+            let peer = PersistentValidatorNode::bootstrap(
+                format!("validator-{}", peer_index + 2),
+                seeded_state(),
+                &peer_dir,
+            )
+            .unwrap();
+            peer.storage.commit_da_share_set(&share_set).unwrap();
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            addrs.push(listener.local_addr().unwrap());
+            handles.push(thread::spawn(move || {
+                let (stream, _) = listener.accept().unwrap();
+                let mut tcp = TcpProtocolStream::from_stream(stream);
+                match tcp.receive().unwrap() {
+                    NetworkMessage::DaShareRequest(request) => {
+                        for response in peer.serve_da_share_request(&request).unwrap() {
+                            tcp.send(&response).unwrap();
+                        }
+                    }
+                    message => panic!("expected DA share request, got {message:?}"),
+                }
+                fs::remove_dir_all(peer_dir).unwrap();
+            }));
+        }
+
+        let (fetched, metrics) = fetch_da_share_set_from_tcp_peers(
+            |peer_index| TcpProtocolStream::connect(addrs[peer_index]),
+            addrs.len(),
+            manifest_hash,
+            1,
+        )
+        .unwrap();
+
+        assert_eq!(fetched.manifest, share_set.manifest);
+        assert_eq!(
+            fetched.shares.len() as u32,
+            fetched.manifest.reconstruction_threshold
+        );
+        assert_eq!(
+            fetched.reconstruct_payload().unwrap(),
+            share_set.reconstruct_payload().unwrap()
+        );
+        assert_eq!(metrics.peer_attempts, 4);
+        assert_eq!(metrics.peer_failures, 0);
+        assert_eq!(metrics.invalid_responses, 1);
+        assert_eq!(metrics.shares_received, 3);
+        assert!(metrics.payload_reconstructable);
+        assert_eq!(metrics.peer_scores.len(), 4);
+        assert_eq!(
+            metrics.peer_scores[0],
+            DaShareSyncPeerScore {
+                peer_index: 0,
+                score: -1,
+                valid_responses: 0,
+                invalid_responses: 1,
+                failures: 0,
+            }
+        );
+        for peer_score in &metrics.peer_scores[1..] {
+            assert_eq!(peer_score.score, 1);
+            assert_eq!(peer_score.valid_responses, 1);
+            assert_eq!(peer_score.invalid_responses, 0);
+            assert_eq!(peer_score.failures, 0);
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        fs::remove_dir_all(source_dir).unwrap();
+    }
+
+    #[test]
+    fn da_share_request_rate_limiter_blocks_excessive_peer_requests() {
+        let source_dir = temp_dir("da-share-rate-limit-source");
+        let mut source =
+            PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &source_dir).unwrap();
+        source.submit_transaction(transfer_tx()).unwrap();
+        let block = source
+            .produce_block_with_data_availability(1, 1_000, 64)
+            .unwrap();
+        let manifest_hash = block
+            .header
+            .data_availability
+            .as_ref()
+            .unwrap()
+            .manifest_hash
+            .clone();
+        let request = DaShareRequest {
+            manifest_hash,
+            start_index: 0,
+            max_shares: 1,
+        };
+        let mut limiter = DaShareRequestRateLimiter::new(1).unwrap();
+
+        let first_response = source
+            .serve_da_share_request_with_rate_limit("peer-1", &request, &mut limiter)
+            .unwrap();
+        assert_eq!(limiter.request_count("peer-1"), 1);
+        assert!(matches!(first_response[0], NetworkMessage::DaManifest(_)));
+        assert!(matches!(first_response[1], NetworkMessage::DaShare(_)));
+
+        assert!(matches!(
+            source.serve_da_share_request_with_rate_limit("peer-1", &request, &mut limiter),
+            Err(NodeError::DataAvailability(DaError::InvalidPayload(_)))
+        ));
+        assert_eq!(limiter.request_count("peer-1"), 1);
+
+        source
+            .serve_da_share_request_with_rate_limit("peer-2", &request, &mut limiter)
+            .unwrap();
+        assert_eq!(limiter.request_count("peer-2"), 1);
+
+        fs::remove_dir_all(source_dir).unwrap();
+    }
+
+    #[test]
+    fn persistent_node_replays_da_certified_block_after_checkpoint_import() {
+        let source_dir = temp_dir("da-checkpoint-replay-source");
+        let sink_dir = temp_dir("da-checkpoint-replay-sink");
+        let mut source =
+            PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &source_dir).unwrap();
+        let sink = PersistentValidatorNode::bootstrap(
+            "validator-2",
+            DeTTaState::new("detta-local"),
+            &sink_dir,
+        )
+        .unwrap();
+        source.submit_transaction(transfer_tx()).unwrap();
+        source.produce_block(1, 1_000).unwrap();
+        let (checkpoint_chunk_set, checkpoint_share_set) =
+            source.build_snapshot_da_share_set(64, 3, 2).unwrap();
+        let checkpoint_certificate = DaAvailabilityCertificate::from_manifest(
+            &checkpoint_share_set.manifest,
+            vec!["validator-1".into(), "validator-2".into()],
+        )
+        .unwrap();
+        sink.import_snapshot_from_da_share_set_with_certificate(
+            &checkpoint_share_set,
+            Some(&checkpoint_certificate),
+            &checkpoint_chunk_set.manifest.metadata_roots,
+        )
+        .unwrap();
+        let mut sink = PersistentValidatorNode::restart("validator-2", &sink_dir).unwrap();
+        assert_eq!(sink.current_height(), 1);
+
+        source
+            .submit_transaction(tx_to(
+                "TokenA",
+                "tx2",
+                "Alice",
+                2,
+                Method::Transfer,
+                vec![
+                    Argument::Principal("Bob".into()),
+                    Argument::Asset("USDC".into()),
+                    Argument::Amount(10),
+                ],
+            ))
+            .unwrap();
+        let source_block = source
+            .produce_block_with_data_availability(2, 2_000, 64)
+            .unwrap();
+        let commitment = source_block.header.data_availability.as_ref().unwrap();
+        let block_share_set = source.load_da_share_set(&commitment.manifest_hash).unwrap();
+        let block_certificate = DaAvailabilityCertificate::from_manifest(
+            &block_share_set.manifest,
+            vec!["validator-1".into(), "validator-2".into()],
+        )
+        .unwrap();
+
+        let imported_block = sink
+            .import_da_certified_block_after_checkpoint(&block_share_set, &block_certificate)
+            .unwrap();
+        let mut expected_block = source_block.clone();
+        expected_block
+            .header
+            .data_availability
+            .as_mut()
+            .unwrap()
+            .certificate_hash = Some(block_certificate.certificate_hash().unwrap());
+        assert_eq!(imported_block, expected_block);
+        assert_eq!(sink.current_height(), 2);
+        assert_eq!(sink.rpc().call_balance_view("TokenA", "Bob", "USDC"), 70);
+
+        let mut wrong_certificate = block_certificate.clone();
+        wrong_certificate.block_hash = "wrong-block-hash".into();
+        assert!(matches!(
+            sink.import_da_certified_block_after_checkpoint(&block_share_set, &wrong_certificate),
+            Err(NodeError::DataAvailability(
+                DaError::InvalidAvailabilityCertificate(_)
+            ))
+        ));
+
+        fs::remove_dir_all(source_dir).unwrap();
+        fs::remove_dir_all(sink_dir).unwrap();
+    }
+
+    #[test]
     fn persistent_node_stores_da_manifest_and_share_gossip() {
         let source_dir = temp_dir("da-gossip-source");
         let sink_dir = temp_dir("da-gossip-sink");
@@ -3638,6 +4482,14 @@ mod tests {
             sink.load_da_certificate(&certificate_hash).unwrap(),
             certificate
         );
+        assert!(matches!(
+            sink.serve_da_share_request(&DaShareRequest {
+                manifest_hash: commitment.manifest_hash.clone(),
+                start_index: 0,
+                max_shares: DEFAULT_MAX_DA_SHARES_PER_REQUEST + 1,
+            }),
+            Err(NodeError::DataAvailability(DaError::InvalidPayload(_)))
+        ));
 
         fs::remove_dir_all(source_dir).unwrap();
         fs::remove_dir_all(sink_dir).unwrap();
@@ -3768,6 +4620,16 @@ mod tests {
         assert!(metrics.last_proof_serving_micros.is_some());
         assert!(metrics.storage_bytes.unwrap() > 0);
         assert_eq!(metrics.rpc_error_count, 1);
+        assert_eq!(metrics.da_manifest_count, 0);
+        assert_eq!(metrics.da_missing_share_count, 0);
+        assert_eq!(metrics.da_payload_count, 0);
+        assert_eq!(metrics.da_challenge_record_count, 0);
+        assert_eq!(metrics.da_challenge_evidence_count, 0);
+        assert_eq!(metrics.da_custody_failure_count, 0);
+        assert_eq!(metrics.da_repair_record_count, 0);
+        assert_eq!(metrics.da_pending_repair_record_count, 0);
+        assert_eq!(metrics.da_oldest_pending_repair_age_blocks, None);
+        assert_eq!(metrics.da_total_bytes, 0);
 
         fs::remove_dir_all(dir).unwrap();
     }
@@ -3784,6 +4646,7 @@ mod tests {
             max_rpc_error_count: 0,
             max_mempool_size: 0,
             max_latest_block_failure_ratio_per_mille: 0,
+            max_da_repair_lag_blocks: 0,
         });
         let failing_tx = tx_to(
             "TokenA",
@@ -3815,6 +4678,57 @@ mod tests {
             second_block_hash: "block-b".into(),
         })
         .unwrap();
+        let da_payload = DaPayload::new(
+            "detta-local",
+            1,
+            "previous-block",
+            vec![DaNamespaceSection::new(
+                DaNamespace::new("detta.tx").unwrap(),
+                vec![DaRecord::SignedTransaction(transfer_tx())],
+            )
+            .unwrap()],
+        )
+        .unwrap();
+        let da_share_set = DaShareSet::from_payload(&da_payload, "block-da", 64).unwrap();
+        let da_manifest_hash = node
+            .storage
+            .commit_da_manifest(&da_share_set.manifest)
+            .unwrap();
+        let da_vote = DaAvailabilityVote::from_manifest_with_custody(
+            &da_share_set.manifest,
+            "validator-1",
+            [0],
+            [],
+        )
+        .unwrap();
+        let da_challenge =
+            DaShareChallenge::from_availability_vote(&da_vote, "validator-3", 0, 3).unwrap();
+        node.persist_da_share_challenge(da_challenge.clone())
+            .unwrap();
+        let mut invalid_da_share = da_share_set.shares[0].clone();
+        invalid_da_share.bytes[0] ^= 0x01;
+        let da_response =
+            DaShareChallengeResponse::from_share(&da_challenge, invalid_da_share).unwrap();
+        node.persist_da_share_challenge_response(da_response.clone())
+            .unwrap();
+        let da_evidence = DaChallengeEvidence::invalid_response(
+            &da_challenge,
+            &da_response,
+            &da_share_set.manifest,
+            "validator-3",
+            2,
+        )
+        .unwrap();
+        node.persist_da_challenge_evidence(da_evidence).unwrap();
+        node.storage
+            .commit_da_repair_record(&detta_storage::DaRepairRecord {
+                manifest_hash: da_manifest_hash.clone(),
+                missing_share_indices: vec![0],
+                recorded_at_height: 0,
+                reason: "operator alert test".into(),
+                completed: false,
+            })
+            .unwrap();
 
         assert!(matches!(
             node.handle_rpc_request(RpcRequest::GetBlock { height: 99 }),
@@ -3823,7 +4737,7 @@ mod tests {
 
         let response = node.handle_rpc_request(RpcRequest::GetOperatorAlerts);
         let RpcResponse::Ok(RpcResult::OperatorAlerts(report)) = response else {
-            panic!("expected operator alert response");
+            panic!("expected operator alert response, got {response:?}");
         };
         let codes: Vec<_> = report
             .alerts
@@ -3840,10 +4754,15 @@ mod tests {
                 "operator.slashing_evidence",
                 "operator.disk_pressure",
                 "operator.rpc_overload",
+                "operator.da_missing_shares",
+                "operator.da_repair_pending",
+                "operator.da_custody_failure",
+                "operator.da_repair_lag",
+                "operator.da_challenge_failure",
             ]
         );
         assert!(report.root_mismatch);
-        assert_eq!(report.slashing_record_count, 1);
+        assert_eq!(report.slashing_record_count, 2);
         assert_eq!(report.latest_block_failure_count, 1);
         assert_eq!(report.latest_block_receipt_count, 1);
         assert_eq!(report.metrics.consensus_height, 1);
@@ -3851,6 +4770,19 @@ mod tests {
         assert_eq!(report.metrics.finality_lag, None);
         assert_eq!(report.metrics.peer_count, Some(0));
         assert_eq!(report.metrics.rpc_error_count, 1);
+        assert_eq!(report.metrics.da_manifest_count, 1);
+        assert_eq!(
+            report.metrics.da_missing_share_count,
+            da_share_set.manifest.encoded_share_count as u64
+        );
+        assert_eq!(report.metrics.da_payload_count, 0);
+        assert_eq!(report.metrics.da_challenge_record_count, 1);
+        assert_eq!(report.metrics.da_challenge_evidence_count, 1);
+        assert_eq!(report.metrics.da_custody_failure_count, 1);
+        assert_eq!(report.metrics.da_repair_record_count, 1);
+        assert_eq!(report.metrics.da_pending_repair_record_count, 1);
+        assert_eq!(report.metrics.da_oldest_pending_repair_age_blocks, Some(1));
+        assert!(report.metrics.da_total_bytes > 0);
 
         fs::remove_dir_all(dir).unwrap();
     }

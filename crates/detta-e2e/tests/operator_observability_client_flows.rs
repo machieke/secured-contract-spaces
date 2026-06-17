@@ -23,6 +23,7 @@ fn client_observes_operator_metrics_and_induced_alerts() {
         max_rpc_error_count: 0,
         max_mempool_size: 0,
         max_latest_block_failure_ratio_per_mille: 0,
+        max_da_repair_lag_blocks: 0,
     });
 
     let (addr, server) = spawn_tcp_persistent_node(node).unwrap();

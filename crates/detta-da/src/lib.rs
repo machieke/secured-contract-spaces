@@ -8,6 +8,8 @@ pub const DA_MANIFEST_SCHEMA: &str = "detta.da-manifest.v1";
 pub const DA_CERTIFICATE_SCHEMA: &str = "detta.da-certificate.v1";
 pub const DA_CHALLENGE_SCHEMA: &str = "detta.da-share-challenge.v1";
 pub const DA_CHALLENGE_EVIDENCE_SCHEMA: &str = "detta.da-challenge-evidence.v1";
+pub const DA_SAMPLE_PROOF_SCHEMA: &str = "detta.da-sample-proof.v1";
+pub const DA_PAYLOAD_SCHEMA: &str = "detta.da-payload.v1";
 pub const DA_PAYLOAD_VERSION: u32 = 1;
 pub const REED_SOLOMON_MAX_SHARES: u32 = 256;
 
@@ -288,8 +290,85 @@ impl DaManifest {
                 actual: self.share_root.clone(),
             });
         }
+        validate_namespace_ranges(&self.namespace_ranges)?;
+        let expected_namespace_root = namespace_root_for_ranges(&self.namespace_ranges)?;
+        if self.namespace_root != expected_namespace_root {
+            return Err(DaError::NamespaceRootMismatch {
+                expected: expected_namespace_root,
+                actual: self.namespace_root.clone(),
+            });
+        }
         Ok(())
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DaMerkleSiblingSide {
+    Left,
+    Right,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaMerkleSibling {
+    pub side: DaMerkleSiblingSide,
+    pub hash: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaShareInclusionProof {
+    pub schema: String,
+    pub schema_version: u32,
+    pub manifest_hash: String,
+    pub share_root: String,
+    pub share_index: u32,
+    pub share_hash: String,
+    pub leaf_count: u32,
+    pub siblings: Vec<DaMerkleSibling>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaSampleProof {
+    pub share: DaShare,
+    pub inclusion_proof: DaShareInclusionProof,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaSamplingSchedule {
+    pub manifest_hash: String,
+    pub block_hash: String,
+    pub client_randomness_hash: String,
+    pub requested_sample_count: u32,
+    pub share_indices: Vec<u32>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaNamespaceProof {
+    pub manifest_hash: String,
+    pub namespace_root: String,
+    pub namespace: DaNamespace,
+    pub range: Option<DaNamespaceRange>,
+    pub namespace_ranges: Vec<DaNamespaceRange>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaLightClientSamplingReport {
+    pub manifest_hash: String,
+    pub block_hash: String,
+    pub client_randomness_hash: String,
+    pub requested_sample_count: u32,
+    pub sampled_share_indices: Vec<u32>,
+    pub verified_share_count: u32,
+    pub namespace_proof_count: u32,
+    pub valid: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaSampleProofBundle {
+    pub schedule: DaSamplingSchedule,
+    pub sample_proofs: Vec<DaSampleProof>,
+    pub namespace_proofs: Vec<DaNamespaceProof>,
+    pub verification: DaLightClientSamplingReport,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1277,6 +1356,253 @@ pub fn verify_manifest_matches_challenge(
     Ok(())
 }
 
+pub fn derive_sample_schedule(
+    manifest: &DaManifest,
+    client_randomness: &[u8],
+    sample_count: u32,
+) -> Result<DaSamplingSchedule, DaError> {
+    manifest.validate()?;
+    if client_randomness.is_empty() {
+        return Err(DaError::InvalidSampling(
+            "client randomness must be nonempty".into(),
+        ));
+    }
+    if sample_count == 0 {
+        return Err(DaError::InvalidSampling(
+            "sample_count must be positive".into(),
+        ));
+    }
+
+    let manifest_hash = manifest.manifest_hash()?;
+    let target = sample_count.min(manifest.encoded_share_count);
+    let mut sampled = BTreeSet::new();
+    let mut counter = 0_u64;
+    while sampled.len() < target as usize {
+        let mut hasher = Sha256::new();
+        hasher.update(b"detta.da.sampling.v1");
+        hasher.update((manifest_hash.len() as u64).to_be_bytes());
+        hasher.update(manifest_hash.as_bytes());
+        hasher.update((manifest.block_hash.len() as u64).to_be_bytes());
+        hasher.update(manifest.block_hash.as_bytes());
+        hasher.update((client_randomness.len() as u64).to_be_bytes());
+        hasher.update(client_randomness);
+        hasher.update(counter.to_be_bytes());
+        let digest = hasher.finalize();
+        let mut bytes = [0_u8; 8];
+        bytes.copy_from_slice(&digest[..8]);
+        sampled.insert((u64::from_be_bytes(bytes) % manifest.encoded_share_count as u64) as u32);
+        counter = counter.saturating_add(1);
+    }
+
+    Ok(DaSamplingSchedule {
+        manifest_hash,
+        block_hash: manifest.block_hash.clone(),
+        client_randomness_hash: hash_bytes(client_randomness),
+        requested_sample_count: sample_count,
+        share_indices: sampled.into_iter().collect(),
+    })
+}
+
+pub fn prove_share_inclusion(
+    manifest: &DaManifest,
+    share_index: u32,
+) -> Result<DaShareInclusionProof, DaError> {
+    manifest.validate()?;
+    if share_index >= manifest.encoded_share_count {
+        return Err(DaError::UnexpectedShare {
+            index: share_index,
+            share_count: manifest.encoded_share_count,
+        });
+    }
+
+    let leaves = manifest
+        .share_hashes
+        .iter()
+        .map(merkle_leaf)
+        .collect::<Result<Vec<_>, _>>()?;
+    let siblings = merkle_inclusion_siblings(leaves, share_index as usize)?;
+    Ok(DaShareInclusionProof {
+        schema: DA_SAMPLE_PROOF_SCHEMA.into(),
+        schema_version: 1,
+        manifest_hash: manifest.manifest_hash()?,
+        share_root: manifest.share_root.clone(),
+        share_index,
+        share_hash: manifest.share_hashes[share_index as usize].clone(),
+        leaf_count: manifest.encoded_share_count,
+        siblings,
+    })
+}
+
+pub fn verify_share_inclusion_proof(
+    manifest: &DaManifest,
+    share: &DaShare,
+    proof: &DaShareInclusionProof,
+) -> Result<(), DaError> {
+    manifest.validate()?;
+    if proof.schema != DA_SAMPLE_PROOF_SCHEMA {
+        return Err(DaError::InvalidSampling(format!(
+            "unexpected sample proof schema {}",
+            proof.schema
+        )));
+    }
+    if proof.schema_version != 1 {
+        return Err(DaError::InvalidSampling(format!(
+            "unexpected sample proof schema version {}",
+            proof.schema_version
+        )));
+    }
+    let manifest_hash = manifest.manifest_hash()?;
+    if proof.manifest_hash != manifest_hash {
+        return Err(DaError::ManifestHashMismatch {
+            expected: manifest_hash.clone(),
+            actual: proof.manifest_hash.clone(),
+        });
+    }
+    if proof.share_root != manifest.share_root {
+        return Err(DaError::ShareRootMismatch {
+            expected: manifest.share_root.clone(),
+            actual: proof.share_root.clone(),
+        });
+    }
+    if proof.leaf_count != manifest.encoded_share_count {
+        return Err(DaError::ManifestShareCountMismatch {
+            declared: manifest.encoded_share_count,
+            actual: proof.leaf_count,
+        });
+    }
+    if proof.share_index >= manifest.encoded_share_count || share.index != proof.share_index {
+        return Err(DaError::UnexpectedShare {
+            index: share.index,
+            share_count: manifest.encoded_share_count,
+        });
+    }
+    verify_share_against_manifest(manifest, share)?;
+    let expected_share_hash = &manifest.share_hashes[proof.share_index as usize];
+    if &proof.share_hash != expected_share_hash || share.share_hash != proof.share_hash {
+        return Err(DaError::ShareHashMismatch {
+            index: proof.share_index,
+        });
+    }
+
+    let mut current = merkle_leaf(&proof.share_hash)?;
+    for sibling in &proof.siblings {
+        let sibling_hash = decode_hex_hash(&sibling.hash)?;
+        current = match sibling.side {
+            DaMerkleSiblingSide::Left => merkle_parent(&sibling_hash, &current),
+            DaMerkleSiblingSide::Right => merkle_parent(&current, &sibling_hash),
+        };
+    }
+    let actual_root = hex_lower(&current);
+    if actual_root != proof.share_root {
+        return Err(DaError::ShareRootMismatch {
+            expected: proof.share_root.clone(),
+            actual: actual_root,
+        });
+    }
+    Ok(())
+}
+
+pub fn prove_namespace(
+    manifest: &DaManifest,
+    namespace: &DaNamespace,
+) -> Result<DaNamespaceProof, DaError> {
+    manifest.validate()?;
+    let range = manifest
+        .namespace_ranges
+        .iter()
+        .find(|range| &range.namespace == namespace)
+        .cloned();
+    Ok(DaNamespaceProof {
+        manifest_hash: manifest.manifest_hash()?,
+        namespace_root: manifest.namespace_root.clone(),
+        namespace: namespace.clone(),
+        range,
+        namespace_ranges: manifest.namespace_ranges.clone(),
+    })
+}
+
+pub fn verify_namespace_proof(
+    manifest: &DaManifest,
+    proof: &DaNamespaceProof,
+) -> Result<Option<DaNamespaceRange>, DaError> {
+    manifest.validate()?;
+    let manifest_hash = manifest.manifest_hash()?;
+    if proof.manifest_hash != manifest_hash {
+        return Err(DaError::ManifestHashMismatch {
+            expected: manifest_hash,
+            actual: proof.manifest_hash.clone(),
+        });
+    }
+    let expected_namespace_root = namespace_root_for_ranges(&proof.namespace_ranges)?;
+    if proof.namespace_root != expected_namespace_root {
+        return Err(DaError::NamespaceRootMismatch {
+            expected: expected_namespace_root,
+            actual: proof.namespace_root.clone(),
+        });
+    }
+    if proof.namespace_root != manifest.namespace_root {
+        return Err(DaError::NamespaceRootMismatch {
+            expected: manifest.namespace_root.clone(),
+            actual: proof.namespace_root.clone(),
+        });
+    }
+    validate_namespace_ranges(&proof.namespace_ranges)?;
+    if proof.namespace_ranges != manifest.namespace_ranges {
+        return Err(DaError::NamespaceRootMismatch {
+            expected: namespace_root_for_ranges(&manifest.namespace_ranges)?,
+            actual: namespace_root_for_ranges(&proof.namespace_ranges)?,
+        });
+    }
+    let actual_range = proof
+        .namespace_ranges
+        .iter()
+        .find(|range| range.namespace == proof.namespace)
+        .cloned();
+    if proof.range != actual_range {
+        return Err(DaError::InvalidSampling(
+            "namespace proof range does not match committed ranges".into(),
+        ));
+    }
+    Ok(actual_range)
+}
+
+pub fn verify_light_client_samples(
+    manifest: &DaManifest,
+    client_randomness: &[u8],
+    sample_count: u32,
+    sample_proofs: &[DaSampleProof],
+    namespace_proofs: &[DaNamespaceProof],
+) -> Result<DaLightClientSamplingReport, DaError> {
+    let schedule = derive_sample_schedule(manifest, client_randomness, sample_count)?;
+    let expected_indices = &schedule.share_indices;
+    let actual_indices = sample_proofs
+        .iter()
+        .map(|proof| proof.share.index)
+        .collect::<Vec<_>>();
+    if &actual_indices != expected_indices {
+        return Err(DaError::InvalidSampling(format!(
+            "sample proof indices {actual_indices:?} do not match schedule {expected_indices:?}"
+        )));
+    }
+    for proof in sample_proofs {
+        verify_share_inclusion_proof(manifest, &proof.share, &proof.inclusion_proof)?;
+    }
+    for proof in namespace_proofs {
+        verify_namespace_proof(manifest, proof)?;
+    }
+
+    Ok(DaLightClientSamplingReport {
+        manifest_hash: schedule.manifest_hash,
+        block_hash: schedule.block_hash,
+        client_randomness_hash: schedule.client_randomness_hash,
+        requested_sample_count: schedule.requested_sample_count,
+        sampled_share_indices: schedule.share_indices,
+        verified_share_count: actual_indices.len() as u32,
+        namespace_proof_count: namespace_proofs.len() as u32,
+        valid: true,
+    })
+}
+
 fn namespace_ranges(payload: &DaPayload) -> Vec<DaNamespaceRange> {
     payload
         .namespaces
@@ -1288,6 +1614,35 @@ fn namespace_ranges(payload: &DaPayload) -> Vec<DaNamespaceRange> {
             record_count: section.records.len() as u32,
         })
         .collect()
+}
+
+fn validate_namespace_ranges(ranges: &[DaNamespaceRange]) -> Result<(), DaError> {
+    let mut previous_namespace: Option<&DaNamespace> = None;
+    for (position, range) in ranges.iter().enumerate() {
+        if range.section_index != position as u32 {
+            return Err(DaError::InvalidManifest(
+                "namespace ranges must be ordered by section index".into(),
+            ));
+        }
+        if range.record_count == 0 {
+            return Err(DaError::InvalidManifest(
+                "namespace ranges must have positive record counts".into(),
+            ));
+        }
+        if let Some(previous) = previous_namespace {
+            if previous >= &range.namespace {
+                return Err(DaError::InvalidManifest(
+                    "namespace ranges must be unique and sorted".into(),
+                ));
+            }
+        }
+        previous_namespace = Some(&range.namespace);
+    }
+    Ok(())
+}
+
+fn namespace_root_for_ranges(ranges: &[DaNamespaceRange]) -> Result<String, DaError> {
+    hash_canonical(&ranges)
 }
 
 fn share_root(share_hashes: &[String]) -> Result<String, DaError> {
@@ -1368,15 +1723,61 @@ fn merkle_root_bytes(mut level: Vec<Vec<u8>>) -> Vec<u8> {
         for pair in level.chunks(2) {
             let left = &pair[0];
             let right = pair.get(1).unwrap_or(left);
-            let mut hasher = Sha256::new();
-            hasher.update(b"detta.da.node.v1");
-            hasher.update(left);
-            hasher.update(right);
-            next.push(hasher.finalize().to_vec());
+            next.push(merkle_parent(left, right));
         }
         level = next;
     }
     level.remove(0)
+}
+
+fn merkle_inclusion_siblings(
+    mut level: Vec<Vec<u8>>,
+    mut index: usize,
+) -> Result<Vec<DaMerkleSibling>, DaError> {
+    if level.is_empty() || index >= level.len() {
+        return Err(DaError::UnexpectedShare {
+            index: index as u32,
+            share_count: level.len() as u32,
+        });
+    }
+
+    let mut siblings = Vec::new();
+    while level.len() > 1 {
+        let is_right = index % 2 == 1;
+        let sibling_index = if is_right {
+            index - 1
+        } else if index + 1 < level.len() {
+            index + 1
+        } else {
+            index
+        };
+        siblings.push(DaMerkleSibling {
+            side: if is_right {
+                DaMerkleSiblingSide::Left
+            } else {
+                DaMerkleSiblingSide::Right
+            },
+            hash: hex_lower(&level[sibling_index]),
+        });
+
+        let mut next = Vec::with_capacity(level.len().div_ceil(2));
+        for pair in level.chunks(2) {
+            let left = &pair[0];
+            let right = pair.get(1).unwrap_or(left);
+            next.push(merkle_parent(left, right));
+        }
+        index /= 2;
+        level = next;
+    }
+    Ok(siblings)
+}
+
+fn merkle_parent(left: &[u8], right: &[u8]) -> Vec<u8> {
+    let mut hasher = Sha256::new();
+    hasher.update(b"detta.da.node.v1");
+    hasher.update(left);
+    hasher.update(right);
+    hasher.finalize().to_vec()
 }
 
 fn hash_canonical<T: Serialize>(value: &T) -> Result<String, DaError> {
@@ -1399,6 +1800,31 @@ fn hex_lower(bytes: &[u8]) -> String {
         out.push(HEX[(byte & 0x0f) as usize] as char);
     }
     out
+}
+
+fn decode_hex_hash(value: &str) -> Result<Vec<u8>, DaError> {
+    if value.len() != 64 || !value.len().is_multiple_of(2) {
+        return Err(DaError::InvalidSampling(
+            "merkle proof hash must be 32 lowercase hex bytes".into(),
+        ));
+    }
+    let mut bytes = Vec::with_capacity(value.len() / 2);
+    for chunk in value.as_bytes().chunks_exact(2) {
+        let high = hex_nibble(chunk[0])?;
+        let low = hex_nibble(chunk[1])?;
+        bytes.push((high << 4) | low);
+    }
+    Ok(bytes)
+}
+
+fn hex_nibble(byte: u8) -> Result<u8, DaError> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        _ => Err(DaError::InvalidSampling(
+            "merkle proof hashes must be lowercase hex".into(),
+        )),
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1428,6 +1854,7 @@ pub enum DaError {
     ErasureCodingFailed(String),
     InvalidChallenge(String),
     InvalidChallengeResponse(String),
+    InvalidSampling(String),
     EncodeFailed,
     DecodeFailed,
 }
@@ -1981,6 +2408,170 @@ mod tests {
         let missing = DaChallengeEvidence::missing_response(&challenge, "validator-2", 13).unwrap();
         assert_eq!(missing.response_hash, None);
         assert_eq!(missing.fault, DaChallengeFault::MissingResponse);
+    }
+
+    #[test]
+    fn light_client_sampling_schedule_and_proofs_verify() {
+        let payload = payload_with_tx_count(7);
+        let share_set = DaShareSet::from_payload_reed_solomon(&payload, "block-7", 4, 2).unwrap();
+        let schedule =
+            derive_sample_schedule(&share_set.manifest, b"client-randomness", 3).unwrap();
+        let repeated =
+            derive_sample_schedule(&share_set.manifest, b"client-randomness", 3).unwrap();
+        let different =
+            derive_sample_schedule(&share_set.manifest, b"different-randomness", 3).unwrap();
+
+        assert_eq!(schedule, repeated);
+        assert_ne!(
+            schedule.client_randomness_hash,
+            different.client_randomness_hash
+        );
+        assert_eq!(schedule.share_indices.len(), 3);
+        assert!(schedule
+            .share_indices
+            .windows(2)
+            .all(|pair| pair[0] < pair[1]));
+
+        let sample_proofs = schedule
+            .share_indices
+            .iter()
+            .map(|index| DaSampleProof {
+                share: share_set
+                    .shares
+                    .iter()
+                    .find(|share| share.index == *index)
+                    .unwrap()
+                    .clone(),
+                inclusion_proof: prove_share_inclusion(&share_set.manifest, *index).unwrap(),
+            })
+            .collect::<Vec<_>>();
+        let namespace_proof =
+            prove_namespace(&share_set.manifest, &DaNamespace::new("detta.tx").unwrap()).unwrap();
+
+        let report = verify_light_client_samples(
+            &share_set.manifest,
+            b"client-randomness",
+            3,
+            &sample_proofs,
+            std::slice::from_ref(&namespace_proof),
+        )
+        .unwrap();
+
+        assert!(report.valid);
+        assert_eq!(report.sampled_share_indices, schedule.share_indices);
+        assert_eq!(report.verified_share_count, 3);
+        assert_eq!(report.namespace_proof_count, 1);
+        assert_eq!(
+            verify_namespace_proof(&share_set.manifest, &namespace_proof)
+                .unwrap()
+                .unwrap()
+                .namespace,
+            DaNamespace::new("detta.tx").unwrap()
+        );
+    }
+
+    #[test]
+    fn light_client_sampling_rejects_missing_wrong_and_tampered_samples() {
+        let payload = payload_with_tx_count(7);
+        let share_set = DaShareSet::from_payload_reed_solomon(&payload, "block-7", 4, 2).unwrap();
+        let schedule =
+            derive_sample_schedule(&share_set.manifest, b"client-randomness", 3).unwrap();
+        let sample_proofs = schedule
+            .share_indices
+            .iter()
+            .map(|index| DaSampleProof {
+                share: share_set
+                    .shares
+                    .iter()
+                    .find(|share| share.index == *index)
+                    .unwrap()
+                    .clone(),
+                inclusion_proof: prove_share_inclusion(&share_set.manifest, *index).unwrap(),
+            })
+            .collect::<Vec<_>>();
+
+        assert!(matches!(
+            verify_light_client_samples(
+                &share_set.manifest,
+                b"client-randomness",
+                3,
+                &sample_proofs[..2],
+                &[],
+            ),
+            Err(DaError::InvalidSampling(_))
+        ));
+
+        let mut wrong_order = sample_proofs.clone();
+        wrong_order.swap(0, 1);
+        assert!(matches!(
+            verify_light_client_samples(
+                &share_set.manifest,
+                b"client-randomness",
+                3,
+                &wrong_order,
+                &[],
+            ),
+            Err(DaError::InvalidSampling(_))
+        ));
+
+        let mut tampered_share = sample_proofs.clone();
+        tampered_share[0].share.bytes[0] ^= 0x01;
+        assert!(matches!(
+            verify_light_client_samples(
+                &share_set.manifest,
+                b"client-randomness",
+                3,
+                &tampered_share,
+                &[],
+            ),
+            Err(DaError::ShareHashMismatch { .. })
+        ));
+
+        let mut tampered_proof = sample_proofs;
+        tampered_proof[0].inclusion_proof.siblings[0].hash =
+            "0000000000000000000000000000000000000000000000000000000000000000".into();
+        assert!(matches!(
+            verify_light_client_samples(
+                &share_set.manifest,
+                b"client-randomness",
+                3,
+                &tampered_proof,
+                &[],
+            ),
+            Err(DaError::ShareRootMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn namespace_proof_verifies_committed_ranges() {
+        let payload = payload_with_sections(vec![
+            tx_section(
+                "detta.governance",
+                vec![DaRecord::GovernancePayload {
+                    proposal_id: "proposal-1".into(),
+                    payload: "upgrade".into(),
+                }],
+            ),
+            tx_section("detta.tx", vec![DaRecord::SignedTransaction(tx("tx-1", 1))]),
+        ]);
+        let share_set = DaShareSet::from_payload(&payload, "block-7", 96).unwrap();
+        let namespace = DaNamespace::new("detta.governance").unwrap();
+        let mut proof = prove_namespace(&share_set.manifest, &namespace).unwrap();
+
+        assert_eq!(
+            verify_namespace_proof(&share_set.manifest, &proof).unwrap(),
+            Some(DaNamespaceRange {
+                namespace,
+                section_index: 0,
+                record_count: 1,
+            })
+        );
+
+        proof.namespace_ranges.swap(0, 1);
+        assert!(matches!(
+            verify_namespace_proof(&share_set.manifest, &proof),
+            Err(DaError::NamespaceRootMismatch { .. }) | Err(DaError::InvalidManifest(_))
+        ));
     }
 
     #[test]

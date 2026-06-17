@@ -87,6 +87,13 @@ pub struct SnapshotChunkRequest {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaShareRequest {
+    pub manifest_hash: String,
+    pub start_index: u32,
+    pub max_shares: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SnapshotChunkManifest {
     pub snapshot_root: String,
     pub snapshot_hash: String,
@@ -126,6 +133,7 @@ pub enum ProtocolMessage {
     SnapshotChunkRequest(SnapshotChunkRequest),
     SnapshotChunkManifest(SnapshotChunkManifest),
     SnapshotChunk(SnapshotChunk),
+    DaShareRequest(DaShareRequest),
     DaManifest(Box<DaManifest>),
     DaShare(DaShare),
     DaAvailabilityVote(DaAvailabilityVote),
@@ -150,6 +158,7 @@ pub enum ProtocolMessageKind {
     SnapshotChunkRequest,
     SnapshotChunkManifest,
     SnapshotChunk,
+    DaShareRequest,
     DaManifest,
     DaShare,
     DaAvailabilityVote,
@@ -240,6 +249,7 @@ impl ProtocolMessage {
             ProtocolMessage::SnapshotChunkRequest(_) => ProtocolMessageKind::SnapshotChunkRequest,
             ProtocolMessage::SnapshotChunkManifest(_) => ProtocolMessageKind::SnapshotChunkManifest,
             ProtocolMessage::SnapshotChunk(_) => ProtocolMessageKind::SnapshotChunk,
+            ProtocolMessage::DaShareRequest(_) => ProtocolMessageKind::DaShareRequest,
             ProtocolMessage::DaManifest(_) => ProtocolMessageKind::DaManifest,
             ProtocolMessage::DaShare(_) => ProtocolMessageKind::DaShare,
             ProtocolMessage::DaAvailabilityVote(_) => ProtocolMessageKind::DaAvailabilityVote,
@@ -463,6 +473,7 @@ fn claimed_message_signer(message: &ProtocolMessage) -> Option<&str> {
         | ProtocolMessage::SnapshotChunkRequest(_)
         | ProtocolMessage::SnapshotChunkManifest(_)
         | ProtocolMessage::SnapshotChunk(_)
+        | ProtocolMessage::DaShareRequest(_)
         | ProtocolMessage::DaManifest(_)
         | ProtocolMessage::DaShare(_)
         | ProtocolMessage::DaAvailabilityCertificate(_) => None,
@@ -888,6 +899,19 @@ mod tests {
     const VOTE_ENVELOPE_HEX: &str =
         "4454544100010000004e7b22566f7465223a7b2276616c696461746f725f6964223a2276616c696461746f722d31222c22686569676874223a372c22626c6f636b5f68617368223a22626c6f636b2d686173682d31227d7d";
 
+    fn decode_hex(value: &str) -> Result<Vec<u8>, ()> {
+        if !value.len().is_multiple_of(2) {
+            return Err(());
+        }
+        let mut bytes = Vec::with_capacity(value.len() / 2);
+        for chunk in value.as_bytes().chunks_exact(2) {
+            let high = decode_hex_nibble(chunk[0])?;
+            let low = decode_hex_nibble(chunk[1])?;
+            bytes.push((high << 4) | low);
+        }
+        Ok(bytes)
+    }
+
     fn transfer_tx() -> Transaction {
         Transaction {
             chain_id: "detta-local".into(),
@@ -993,6 +1017,11 @@ mod tests {
         )
         .unwrap();
         let messages = [
+            ProtocolMessage::DaShareRequest(DaShareRequest {
+                manifest_hash: share_set.manifest.manifest_hash().unwrap(),
+                start_index: 0,
+                max_shares: 1,
+            }),
             ProtocolMessage::DaManifest(Box::new(share_set.manifest.clone())),
             ProtocolMessage::DaShare(share_set.shares[0].clone()),
             ProtocolMessage::DaAvailabilityVote(vote),
@@ -1004,6 +1033,57 @@ mod tests {
             let encoded = encode_message(&message).unwrap();
 
             assert_eq!(expected_kind, decode_message(&encoded).unwrap().kind());
+            assert_eq!(decode_message(&encoded), Ok(message));
+        }
+    }
+
+    #[test]
+    fn da_protocol_envelope_fixture_root_is_stable() {
+        let share_set = da_share_set();
+        let vote = DaAvailabilityVote::from_manifest_with_custody(
+            &share_set.manifest,
+            "validator-1",
+            [0],
+            [],
+        )
+        .unwrap();
+        let challenge =
+            DaShareChallenge::from_availability_vote(&vote, "validator-2", 0, 12).unwrap();
+        let response =
+            DaShareChallengeResponse::from_share(&challenge, share_set.shares[0].clone()).unwrap();
+        let evidence =
+            DaChallengeEvidence::missing_response(&challenge, "validator-2", 13).unwrap();
+        let certificate = DaAvailabilityCertificate::from_manifest(
+            &share_set.manifest,
+            vec!["validator-1".into(), "validator-2".into()],
+        )
+        .unwrap();
+        let messages = [
+            ProtocolMessage::DaShareRequest(DaShareRequest {
+                manifest_hash: share_set.manifest.manifest_hash().unwrap(),
+                start_index: 0,
+                max_shares: 2,
+            }),
+            ProtocolMessage::DaManifest(Box::new(share_set.manifest.clone())),
+            ProtocolMessage::DaShare(share_set.shares[0].clone()),
+            ProtocolMessage::DaAvailabilityVote(vote),
+            ProtocolMessage::DaShareChallenge(challenge),
+            ProtocolMessage::DaShareChallengeResponse(response),
+            ProtocolMessage::DaChallengeEvidence(Box::new(evidence)),
+            ProtocolMessage::DaAvailabilityCertificate(Box::new(certificate)),
+        ];
+        let encoded_hex = messages
+            .iter()
+            .map(|message| hex_lower(&encode_message(message).unwrap()))
+            .collect::<Vec<_>>();
+        let fixture_root = hash_protocol_json(&encoded_hex).unwrap();
+
+        assert_eq!(
+            fixture_root,
+            "495bf9ee41af7ec893bd4ca5c6df54db0fdbdf282663125c058166925c043e69"
+        );
+        for (message, encoded_hex) in messages.into_iter().zip(encoded_hex) {
+            let encoded = decode_hex(&encoded_hex).unwrap();
             assert_eq!(decode_message(&encoded), Ok(message));
         }
     }

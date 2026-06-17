@@ -108,6 +108,7 @@
           "get_da_challenge_record",
           "get_da_payload",
           "get_da_namespace",
+          "get_da_sample_proofs",
           "get_da_status",
           "get_da_repair_status",
           "get_da_storage_stats",

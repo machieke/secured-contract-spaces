@@ -144,8 +144,11 @@ SCS specification
 - `scs-formal.md`: formal verification companion for SCS.
 - `detta-production-implementation-plan.md`: production DeTTa implementation
   plan and progress tracker.
+- `detta-data-availability-layer.md`: DA glossary, threat model, and versioned
+  payload schema.
 - `detta-data-availability-layer-implementation-plan.md`: production-grade
   data availability layer plan and branch progress tracker.
+- `detta-da-operator-runbook.md`: DA retention and repair operating guidance.
 - `detta-secure-metta-aspect-generalization-plan.md`: implementation plan for
   replacing hard-coded DeFi behavior with secure, restricted MeTTa aspect
   modules aligned with the token aspect taxonomy.
