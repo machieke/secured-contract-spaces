@@ -107,7 +107,7 @@ The current implementation includes slices for:
   wrapping, rewarded staking, and bridge mint/burn adapters;
 - E2E client tests covering deployment, liquidity, buys and sells, proofs,
   RPC coverage, adversarial cases, state sync, networking, and operator APIs.
-- experimental DA-committed block production, DA manifest/share/certificate
+- DA v1-committed block production, DA manifest/share/certificate
   protocol messages, signed DA availability votes, quorum DA certificate
   aggregation, deterministic custody share checks before DA vote signing,
   Reed-Solomon threshold reconstruction, durable DA share sets, payloads,
@@ -221,7 +221,7 @@ Rust workspace crates:
   logic.
 - `crates/detta-protocol`: versioned protocol envelopes, signatures, DA
   manifest/share/certificate/challenge messages, and snapshot sync wire types.
-- `crates/detta-da`: experimental data availability payloads, manifests,
+- `crates/detta-da`: DA v1 data availability payloads, manifests,
   deterministic and Reed-Solomon share commitments, reconstruction, custody
   challenges, and tamper/withholding verification.
 - `crates/detta-network`: validator transport, peer handshakes, retries, and
@@ -230,7 +230,7 @@ Rust workspace crates:
   audit records, DA manifests/shares/payloads/certificates, DA coordinate
   indexes, repair records, and sync diagnostics.
 - `crates/detta-node`: persistent validator orchestration, including
-  experimental DA-committed block production and DA gossip persistence.
+  DA v1-committed block production and DA gossip persistence.
 - `crates/detta-node/src/bin/detta-client.rs`: packaged TCP RPC client for
   deploying tokens, creating pools, adding liquidity, swapping assets, reading
   receipts, querying roots, and inspecting DA manifests, certificates,
