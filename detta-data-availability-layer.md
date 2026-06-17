@@ -160,6 +160,8 @@ indexes for operator and sync workflows:
 
 - manifests by block height;
 - manifests by execution block hash;
+- manifests by DA namespace;
+- manifests by derived retention class;
 - certificates by manifest hash;
 - certificates by block height;
 - certificates by execution block hash.
@@ -167,9 +169,10 @@ indexes for operator and sync workflows:
 Index lookups return lists, not singletons, so fork or equivocation evidence for
 the same height or block hash can remain discoverable. Each lookup reloads the
 referenced object and rejects stale, unsorted, duplicate, or mismatched index
-entries. `rebuild_da_indexes` reconstructs the indexes from stored manifests and
-certificates after restore or repair, and the DA store root includes the index
-root so index drift is externally visible.
+entries, including namespace and retention-class mismatches. `rebuild_da_indexes`
+reconstructs the indexes from stored manifests and certificates after restore or
+repair, and the DA store root includes the index root so index drift is
+externally visible.
 
 ## Governed Slashing Policy
 

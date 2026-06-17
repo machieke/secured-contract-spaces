@@ -1,8 +1,8 @@
 use detta_consensus::{FinalityCertificate, SlashingRecord};
 use detta_core::{Block, DeTTaState, Receipt, SnapshotError, StateSnapshot, Transaction};
 use detta_da::{
-    payload_hash, DaAvailabilityCertificate, DaChallengeRecord, DaManifest, DaPayload, DaShare,
-    DaShareSet, DA_V1_ARCHIVE_MIN_RETENTION_BLOCKS, DA_V1_VALIDATOR_MIN_RETENTION_BLOCKS,
+    payload_hash, DaAvailabilityCertificate, DaChallengeRecord, DaManifest, DaNamespace, DaPayload,
+    DaShare, DaShareSet, DA_V1_ARCHIVE_MIN_RETENTION_BLOCKS, DA_V1_VALIDATOR_MIN_RETENTION_BLOCKS,
 };
 use detta_protocol::{SignedValidatorMessage, ValidatorSetMetadata, ValidatorSignatureDomain};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -271,6 +271,18 @@ impl FileStorage {
             root.join("da")
                 .join("indexes")
                 .join("manifests_by_block_hash"),
+        )
+        .map_err(io_error)?;
+        fs::create_dir_all(
+            root.join("da")
+                .join("indexes")
+                .join("manifests_by_namespace"),
+        )
+        .map_err(io_error)?;
+        fs::create_dir_all(
+            root.join("da")
+                .join("indexes")
+                .join("manifests_by_retention_class"),
         )
         .map_err(io_error)?;
         fs::create_dir_all(
@@ -975,6 +987,8 @@ impl FileStorage {
             &self.da_manifests_by_height_index_path(height),
             Some(height),
             None,
+            None,
+            None,
         )
     }
 
@@ -986,6 +1000,35 @@ impl FileStorage {
             &self.da_manifests_by_block_hash_index_path(block_hash),
             None,
             Some(block_hash),
+            None,
+            None,
+        )
+    }
+
+    pub fn load_da_manifest_index_by_namespace(
+        &self,
+        namespace: &str,
+    ) -> Result<Vec<DaManifestIndexEntry>, StorageError> {
+        let namespace = DaNamespace::new(namespace).map_err(da_error)?;
+        self.load_da_manifest_index_entries(
+            &self.da_manifests_by_namespace_index_path(&namespace),
+            None,
+            None,
+            Some(&namespace),
+            None,
+        )
+    }
+
+    pub fn load_da_manifest_index_by_retention_class(
+        &self,
+        class: DaRetentionClass,
+    ) -> Result<Vec<DaManifestIndexEntry>, StorageError> {
+        self.load_da_manifest_index_entries(
+            &self.da_manifests_by_retention_class_index_path(class),
+            None,
+            None,
+            None,
+            Some(class),
         )
     }
 
@@ -1117,12 +1160,34 @@ impl FileStorage {
             &self.da_manifests_by_height_index_path(manifest.height),
             Some(manifest.height),
             None,
+            None,
+            None,
             &entry,
         )?;
         self.upsert_da_manifest_index_entry(
             &self.da_manifests_by_block_hash_index_path(&manifest.block_hash),
             None,
             Some(&manifest.block_hash),
+            None,
+            None,
+            &entry,
+        )?;
+        for range in &manifest.namespace_ranges {
+            self.upsert_da_manifest_index_entry(
+                &self.da_manifests_by_namespace_index_path(&range.namespace),
+                None,
+                None,
+                Some(&range.namespace),
+                None,
+                &entry,
+            )?;
+        }
+        self.upsert_da_manifest_index_entry(
+            &self.da_manifests_by_retention_class_index_path(da_manifest_retention_class(manifest)),
+            None,
+            None,
+            None,
+            Some(da_manifest_retention_class(manifest)),
             &entry,
         )
     }
@@ -1132,10 +1197,17 @@ impl FileStorage {
         path: &Path,
         expected_height: Option<u64>,
         expected_block_hash: Option<&str>,
+        expected_namespace: Option<&DaNamespace>,
+        expected_retention_class: Option<DaRetentionClass>,
         entry: &DaManifestIndexEntry,
     ) -> Result<(), StorageError> {
-        let mut entries =
-            self.load_da_manifest_index_entries(path, expected_height, expected_block_hash)?;
+        let mut entries = self.load_da_manifest_index_entries(
+            path,
+            expected_height,
+            expected_block_hash,
+            expected_namespace,
+            expected_retention_class,
+        )?;
         entries.retain(|existing| existing.manifest_hash != entry.manifest_hash);
         entries.push(entry.clone());
         entries.sort_by(|left, right| left.manifest_hash.cmp(&right.manifest_hash));
@@ -1147,6 +1219,8 @@ impl FileStorage {
         path: &Path,
         expected_height: Option<u64>,
         expected_block_hash: Option<&str>,
+        expected_namespace: Option<&DaNamespace>,
+        expected_retention_class: Option<DaRetentionClass>,
     ) -> Result<Vec<DaManifestIndexEntry>, StorageError> {
         if !path.exists() {
             return Ok(Vec::new());
@@ -1192,6 +1266,23 @@ impl FileStorage {
             {
                 return Err(StorageError::CorruptData(
                     "DA manifest index entry does not match stored manifest".into(),
+                ));
+            }
+            if expected_namespace.is_some_and(|namespace| {
+                !manifest
+                    .namespace_ranges
+                    .iter()
+                    .any(|range| &range.namespace == namespace)
+            }) {
+                return Err(StorageError::CorruptData(
+                    "DA manifest index namespace does not match stored manifest".into(),
+                ));
+            }
+            if expected_retention_class
+                .is_some_and(|class| da_manifest_retention_class(&manifest) != class)
+            {
+                return Err(StorageError::CorruptData(
+                    "DA manifest index retention class does not match stored manifest".into(),
                 ));
             }
         }
@@ -1772,6 +1863,10 @@ impl FileStorage {
         fs::create_dir_all(self.da_indexes_path().join("manifests_by_height")).map_err(io_error)?;
         fs::create_dir_all(self.da_indexes_path().join("manifests_by_block_hash"))
             .map_err(io_error)?;
+        fs::create_dir_all(self.da_indexes_path().join("manifests_by_namespace"))
+            .map_err(io_error)?;
+        fs::create_dir_all(self.da_indexes_path().join("manifests_by_retention_class"))
+            .map_err(io_error)?;
         fs::create_dir_all(self.da_indexes_path().join("certificates_by_manifest"))
             .map_err(io_error)?;
         fs::create_dir_all(self.da_indexes_path().join("certificates_by_height"))
@@ -1790,6 +1885,18 @@ impl FileStorage {
         self.da_indexes_path()
             .join("manifests_by_block_hash")
             .join(format!("{}.bin", file_safe_id(block_hash)))
+    }
+
+    fn da_manifests_by_namespace_index_path(&self, namespace: &DaNamespace) -> PathBuf {
+        self.da_indexes_path()
+            .join("manifests_by_namespace")
+            .join(format!("{}.bin", file_safe_id(&namespace.0)))
+    }
+
+    fn da_manifests_by_retention_class_index_path(&self, class: DaRetentionClass) -> PathBuf {
+        self.da_indexes_path()
+            .join("manifests_by_retention_class")
+            .join(format!("{}.bin", da_retention_class_path_fragment(class)))
     }
 
     fn da_certificates_by_manifest_index_path(&self, manifest_hash: &str) -> PathBuf {
@@ -1856,6 +1963,15 @@ fn da_manifest_retention_class(manifest: &DaManifest) -> DaRetentionClass {
         DaRetentionClass::Checkpoint
     } else {
         DaRetentionClass::Hot
+    }
+}
+
+fn da_retention_class_path_fragment(class: DaRetentionClass) -> &'static str {
+    match class {
+        DaRetentionClass::Hot => "hot",
+        DaRetentionClass::Warm => "warm",
+        DaRetentionClass::Cold => "cold",
+        DaRetentionClass::Checkpoint => "checkpoint",
     }
 }
 
@@ -2443,8 +2559,28 @@ mod tests {
                 .unwrap(),
             storage.load_da_manifest_index_by_height(1).unwrap()
         );
+        assert_eq!(
+            storage
+                .load_da_manifest_index_by_namespace("detta.tx")
+                .unwrap(),
+            storage.load_da_manifest_index_by_height(1).unwrap()
+        );
+        assert_eq!(
+            storage
+                .load_da_manifest_index_by_retention_class(DaRetentionClass::Hot)
+                .unwrap(),
+            storage.load_da_manifest_index_by_height(1).unwrap()
+        );
         assert!(storage
             .load_da_manifest_index_by_block_hash("missing-block")
+            .unwrap()
+            .is_empty());
+        assert!(storage
+            .load_da_manifest_index_by_namespace("detta.governance")
+            .unwrap()
+            .is_empty());
+        assert!(storage
+            .load_da_manifest_index_by_retention_class(DaRetentionClass::Checkpoint)
             .unwrap()
             .is_empty());
 
@@ -2458,6 +2594,22 @@ mod tests {
         assert_eq!(
             restored.load_da_manifest_index_by_height(1).unwrap(),
             storage.load_da_manifest_index_by_height(1).unwrap()
+        );
+        assert_eq!(
+            restored
+                .load_da_manifest_index_by_namespace("detta.tx")
+                .unwrap(),
+            storage
+                .load_da_manifest_index_by_namespace("detta.tx")
+                .unwrap()
+        );
+        assert_eq!(
+            restored
+                .load_da_manifest_index_by_retention_class(DaRetentionClass::Hot)
+                .unwrap(),
+            storage
+                .load_da_manifest_index_by_retention_class(DaRetentionClass::Hot)
+                .unwrap()
         );
         assert_eq!(
             restored.load_da_payload(&manifest_hash).unwrap(),
@@ -2781,7 +2933,7 @@ mod tests {
         assert_eq!(stats.certificate_count, 0);
         assert_eq!(stats.challenge_count, 0);
         assert_eq!(stats.repair_record_count, 0);
-        assert_eq!(stats.index_file_count, 2);
+        assert_eq!(stats.index_file_count, 4);
         assert!(stats.manifest_bytes > 0);
         assert!(stats.share_bytes > 0);
         assert!(stats.payload_bytes > 0);
@@ -2891,7 +3043,7 @@ mod tests {
         let stats = storage.da_storage_stats().unwrap();
         assert_eq!(stats.certificate_count, 1);
         assert!(stats.certificate_bytes > 0);
-        assert_eq!(stats.index_file_count, 5);
+        assert_eq!(stats.index_file_count, 7);
         assert!(stats.index_bytes > 0);
         let roots_after_certificate = storage.da_store_roots().unwrap();
         assert_ne!(
@@ -2913,6 +3065,16 @@ mod tests {
         let share_set = DaShareSet::from_payload(&da_payload(), "block-7", 64).unwrap();
         storage.commit_da_share_set(&share_set).unwrap();
         let mut entries = storage.load_da_manifest_index_by_height(1).unwrap();
+        let wrong_namespace = DaNamespace::new("detta.governance").unwrap();
+        write_json_atomic(
+            &storage.da_manifests_by_namespace_index_path(&wrong_namespace),
+            &entries,
+        )
+        .unwrap();
+        assert!(matches!(
+            storage.load_da_manifest_index_by_namespace("detta.governance"),
+            Err(StorageError::CorruptData(_))
+        ));
         entries[0].payload_hash = "wrong-payload-hash".into();
         write_json_atomic(&storage.da_manifests_by_height_index_path(1), &entries).unwrap();
 

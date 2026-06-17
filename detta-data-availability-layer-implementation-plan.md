@@ -733,6 +733,7 @@ Acceptance:
   stats.
 - [x] Persist DA repair records.
 - [x] Persist manifest indexes by height and block hash.
+- [x] Persist manifest indexes by namespace and derived retention class.
 - [x] Persist certificate indexes by manifest hash, height, and block hash.
 - [x] Add DA index rebuild and corruption checks.
 - [x] Add DA store roots.
@@ -745,7 +746,9 @@ Acceptance:
 
 - DA data survives restart;
 - backup/restore preserves DA manifests, shares, certificates, and indexes;
-- storage metrics expose DA byte use and missing-share counts.
+- storage metrics expose DA byte use and missing-share counts;
+- manifest indexes support height, block hash, namespace, and retention-class
+  lookup with corruption checks.
 
 ### Phase 4: Protocol Messages
 

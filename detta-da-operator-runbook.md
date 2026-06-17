@@ -57,7 +57,8 @@ Before pruning:
 6. Reconstruct at least one recent DA payload with `get_da_payload`.
 7. Verify light-client samples with `get_da_sample_proofs`.
 8. Confirm DA index bytes are nonzero after finalized DA blocks and that
-   manifest/certificate lookups by block coordinates return expected entries.
+   manifest/certificate lookups by block coordinates, namespace, and retention
+   class return expected entries.
 9. Confirm the active DA slashing policy matches the current governance
    decision before processing challenge evidence.
 
