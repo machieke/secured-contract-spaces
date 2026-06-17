@@ -46,6 +46,8 @@ clients.
 - [x] Persistent node RPC and packaged `detta-client` expose
   `produce_da_block` / `produce-da-block` for operator-driven DA-committed
   block production with bounded share-size inputs.
+- [x] Production DA block production uses Reed-Solomon v1 encoded shares with
+  the RPC share-size input treated as a bounded target share size.
 - [x] Production block DA payloads emit explicit `detta.aspect`,
   `detta.governance`, `detta.bridge`, and `detta.oracle` records for committed
   aspect module submissions, governance actions, bridge messages, and oracle
@@ -74,6 +76,8 @@ clients.
   and receipt roots against the block before validator replay.
 - [x] Production-mode DA finality verifies typed aspect/governance/bridge/oracle
   DA evidence records match the committed transactions before validator replay.
+- [x] Production-mode DA finality rejects manifests whose erasure scheme does
+  not match `DaProductionProfile::v1()`.
 - [x] Production-mode block finality requires block-header DA commitments and
   DA certificates through `FinalityMode::DataAvailabilityRequired`.
 - [x] Persistent nodes store experimental DA certificates through node
@@ -150,8 +154,9 @@ DeTTa already has strong data integrity mechanisms:
 - DA payload finality checks that bind typed aspect/governance/bridge/oracle
   evidence records back to committed transactions, rejecting omitted or spoofed
   specialized evidence;
-- Reed-Solomon share encoding, deterministic custody assignments, light-client
-  sample schedules, namespace proofs, and threshold reconstruction;
+- Reed-Solomon share encoding for block and checkpoint DA, deterministic
+  custody assignments, light-client sample schedules, namespace proofs, and
+  threshold reconstruction;
 - availability challenge/evidence records that can produce durable slashing
   records under governed DA slashing policy;
 - DA-backed checkpoint state sync and DA-certified block replay after
@@ -1009,6 +1014,10 @@ DeTTa has a production-grade DA layer when all of these are true:
 - DeTTa production DA v1 uses Merkle SHA-256 share commitments over encoded
   share hashes. KZG commitments are deferred to a future manifest/payload
   version.
+- Production block and checkpoint DA share sets use Reed-Solomon v1; the
+  `produce_da_block` / `produce-da-block` share-size parameter is a target
+  maximum data-share size used to derive equal data/parity share counts within
+  the v1 max-share bound.
 - Validators sign deterministic custody assignments, and votes may additionally
   carry light-client sample indices. The v1 profile requires at least two
   custody shares and three light-client samples where those checks are used.

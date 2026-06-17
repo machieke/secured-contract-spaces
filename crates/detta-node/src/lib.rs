@@ -2402,8 +2402,12 @@ impl PersistentValidatorNode {
 
         let execution_block_hash = block.block_hash();
         let payload = da_payload_for_block(&block)?;
-        let share_set = DaShareSet::from_payload(&payload, &execution_block_hash, share_size_bytes)
-            .map_err(NodeError::DataAvailability)?;
+        let share_set = DaShareSet::from_payload_reed_solomon_with_target_share_size(
+            &payload,
+            &execution_block_hash,
+            share_size_bytes,
+        )
+        .map_err(NodeError::DataAvailability)?;
         let manifest_hash = share_set
             .manifest
             .manifest_hash()
@@ -4331,6 +4335,18 @@ mod tests {
 
         assert_eq!(share_set.manifest.payload_hash, commitment.payload_root);
         assert_eq!(share_set.manifest.share_root, commitment.share_root);
+        assert_eq!(
+            share_set.manifest.erasure_scheme,
+            detta_da::ErasureScheme::ReedSolomonV1
+        );
+        assert_eq!(
+            share_set.manifest.encoded_share_count,
+            share_set.manifest.original_share_count * 2
+        );
+        assert_eq!(
+            share_set.manifest.reconstruction_threshold,
+            share_set.manifest.original_share_count
+        );
         assert_eq!(share_set.manifest.height, 1);
         assert_eq!(share_set.manifest.chain_id, "detta-local");
         assert_eq!(share_set.manifest.block_hash, {
@@ -5204,7 +5220,7 @@ mod tests {
                 .unwrap();
         }
         let block = source
-            .produce_block_with_data_availability(1, 1_000, 128)
+            .produce_block_with_data_availability(1, 1_000, 4096)
             .unwrap();
         let commitment = block.header.data_availability.as_ref().unwrap().clone();
         let share_set = source.load_da_share_set(&commitment.manifest_hash).unwrap();
@@ -5218,6 +5234,11 @@ mod tests {
         .unwrap();
 
         assert!(share_set.manifest.payload_bytes > 24 * 1024);
+        assert_eq!(
+            share_set.manifest.erasure_scheme,
+            detta_da::ErasureScheme::ReedSolomonV1
+        );
+        assert!(share_set.manifest.share_size_bytes <= 4096);
         assert_eq!(block.receipts.len(), 9);
         assert!(block
             .receipts

@@ -297,9 +297,12 @@ if ! jq -e \
     and .data.height == 6
     and .data.payload_hash == $payload_root
     and .data.share_root == $share_root
+    and .data.erasure_scheme == "ReedSolomonV1"
     and .data.encoded_share_count > 0
+    and .data.encoded_share_count == (.data.original_share_count * 2)
+    and .data.reconstruction_threshold == .data.original_share_count
     and (.data.share_hashes | length) == .data.encoded_share_count
-    and .data.share_size_bytes == 96' \
+    and .data.share_size_bytes <= 96' \
   "$da_manifest" >/dev/null; then
   echo "packaged client da-manifest command did not return expected manifest" >&2
   cat "$da_manifest" >&2

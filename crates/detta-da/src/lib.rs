@@ -1193,6 +1193,18 @@ impl DaShareSet {
         build_reed_solomon_share_set(payload, block_hash, data_share_count, parity_share_count)
     }
 
+    pub fn from_payload_reed_solomon_with_target_share_size(
+        payload: &DaPayload,
+        block_hash: impl Into<String>,
+        target_share_size_bytes: usize,
+    ) -> Result<Self, DaError> {
+        build_reed_solomon_share_set_with_target_share_size(
+            payload,
+            block_hash,
+            target_share_size_bytes,
+        )
+    }
+
     pub fn verify(&self) -> Result<(), DaError> {
         self.reconstruct_payload().map(|_| ())
     }
@@ -1508,6 +1520,29 @@ pub fn build_reed_solomon_share_set(
         })
         .collect();
     Ok(DaShareSet { manifest, shares })
+}
+
+pub fn build_reed_solomon_share_set_with_target_share_size(
+    payload: &DaPayload,
+    block_hash: impl Into<String>,
+    target_share_size_bytes: usize,
+) -> Result<DaShareSet, DaError> {
+    if target_share_size_bytes == 0 {
+        return Err(DaError::InvalidChunkSize);
+    }
+    let payload = payload.canonicalized();
+    payload.validate()?;
+    let payload_bytes = canonical_bytes(&payload)?;
+    let data_share_count = payload_bytes.len().div_ceil(target_share_size_bytes).max(1);
+    let max_data_share_count = (REED_SOLOMON_MAX_SHARES / 2) as usize;
+    if data_share_count > max_data_share_count {
+        return Err(DaError::InvalidManifest(format!(
+            "reed-solomon target share size {target_share_size_bytes} would require {data_share_count} data shares, max is {max_data_share_count}"
+        )));
+    }
+    let data_share_count =
+        u32::try_from(data_share_count).map_err(|_| DaError::ShareCountOverflow)?;
+    build_reed_solomon_share_set(&payload, block_hash, data_share_count, data_share_count)
 }
 
 pub fn payload_hash(payload: &DaPayload) -> Result<String, DaError> {
@@ -2372,6 +2407,43 @@ mod tests {
             payload.canonicalized()
         );
         threshold_subset.verify().unwrap();
+    }
+
+    #[test]
+    fn reed_solomon_target_share_size_builds_profile_share_set() {
+        let payload = payload_with_tx_count(7);
+        let share_set =
+            DaShareSet::from_payload_reed_solomon_with_target_share_size(&payload, "block-7", 128)
+                .unwrap();
+
+        assert_eq!(
+            share_set.manifest.erasure_scheme,
+            ErasureScheme::ReedSolomonV1
+        );
+        assert!(share_set.manifest.share_size_bytes <= 128);
+        assert_eq!(
+            share_set.manifest.encoded_share_count,
+            share_set.manifest.original_share_count * 2
+        );
+        assert_eq!(
+            share_set.manifest.reconstruction_threshold,
+            share_set.manifest.original_share_count
+        );
+        assert_eq!(
+            share_set.reconstruct_payload().unwrap(),
+            payload.canonicalized()
+        );
+    }
+
+    #[test]
+    fn reed_solomon_target_share_size_rejects_unbounded_share_count() {
+        let payload = payload_with_tx_count(200);
+
+        assert!(matches!(
+            DaShareSet::from_payload_reed_solomon_with_target_share_size(&payload, "block-7", 1),
+            Err(DaError::InvalidManifest(message))
+                if message.contains("would require") && message.contains("data shares")
+        ));
     }
 
     #[test]

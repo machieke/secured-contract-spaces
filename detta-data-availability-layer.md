@@ -116,6 +116,9 @@ Production v1 decisions:
 - Share commitments use Merkle SHA-256 roots over encoded share hashes.
 - Erasure coding uses Reed-Solomon v1; KZG commitments are deferred to a future
   payload/manifest version.
+- DA block production derives equal data/parity Reed-Solomon share counts from
+  the operator-provided target share size while respecting the v1 max-share
+  bound.
 - Validator DA votes use deterministic custody assignments and may also carry
   light-client sample indices.
 - Production RPC payload serving requires a full locally verified or

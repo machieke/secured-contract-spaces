@@ -749,10 +749,17 @@ pub fn verify_data_availability_payload(
     validate_da_result(manifest.validate())?;
     validate_da_result(payload.validate())?;
     let canonical_payload = payload.canonicalized();
+    let production_profile = DaProductionProfile::v1();
     validate_da_result(validate_production_block_payload(
         &canonical_payload,
-        &DaProductionProfile::v1(),
+        &production_profile,
     ))?;
+    if manifest.erasure_scheme != production_profile.erasure_scheme {
+        return Err(ConsensusError::DataAvailabilityInvalid(format!(
+            "production DA manifest erasure scheme {:?} does not match profile {:?}",
+            manifest.erasure_scheme, production_profile.erasure_scheme
+        )));
+    }
     let payload_hash = validate_da_result(canonical_payload.hash())?;
     let namespace_root = validate_da_result(canonical_payload.namespace_root())?;
 
@@ -1126,7 +1133,12 @@ mod tests {
         let mut execution_block = block.clone();
         execution_block.header.data_availability = None;
         let execution_block_hash = execution_block.block_hash();
-        let share_set = DaShareSet::from_payload(payload, &execution_block_hash, 128).unwrap();
+        let share_set = DaShareSet::from_payload_reed_solomon_with_target_share_size(
+            payload,
+            &execution_block_hash,
+            4096,
+        )
+        .unwrap();
         let certificate = DaAvailabilityCertificate::from_manifest(
             &share_set.manifest,
             signers.into_iter().map(String::from),
@@ -1778,6 +1790,29 @@ mod tests {
             verify_data_availability_payload(&block, &payload, &manifest),
             Err(ConsensusError::DataAvailabilityInvalid(message))
                 if message.contains("detta.governance DA records do not match committed transactions")
+        ));
+    }
+
+    #[test]
+    fn production_da_payload_verifier_rejects_non_profile_erasure_scheme() {
+        let (mut block, payload, _, _) = da_certified_block(vec!["v1", "v2", "v3"]);
+        let mut execution_block = block.clone();
+        execution_block.header.data_availability = None;
+        let share_set =
+            DaShareSet::from_payload(&payload, execution_block.block_hash(), 128).unwrap();
+        let manifest = share_set.manifest;
+        let manifest_hash = manifest.manifest_hash().unwrap();
+        block.header.data_availability = Some(DataAvailabilityCommitment {
+            payload_root: manifest.payload_hash.clone(),
+            manifest_hash,
+            share_root: manifest.share_root.clone(),
+            certificate_hash: None,
+        });
+
+        assert!(matches!(
+            verify_data_availability_payload(&block, &payload, &manifest),
+            Err(ConsensusError::DataAvailabilityInvalid(message))
+                if message.contains("production DA manifest erasure scheme")
         ));
     }
 

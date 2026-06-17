@@ -111,7 +111,8 @@ The current implementation includes slices for:
 - DA v1-committed block production, DA manifest/share/certificate
   protocol messages, signed DA availability votes, quorum DA certificate
   aggregation, deterministic custody share checks before DA vote signing,
-  Reed-Solomon threshold reconstruction, durable DA share sets, payloads,
+  Reed-Solomon v1 block/checkpoint share production and threshold
+  reconstruction, durable DA share sets, payloads,
   certificates, repair records, challenge records, validated DA indexes, DA
   gossip persistence, DA challenge/slashing evidence, governed DA slashing
   policy parameters, explicit DA namespaces for aspect/governance/bridge/oracle
