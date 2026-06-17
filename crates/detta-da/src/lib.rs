@@ -1901,6 +1901,52 @@ mod tests {
         payload_with_sections(vec![tx_section("detta.tx", records)])
     }
 
+    fn forged_deterministic_share_set_from_payload_bytes(
+        reference_payload: &DaPayload,
+        payload_bytes: &[u8],
+        share_size_bytes: usize,
+    ) -> DaShareSet {
+        assert!(!payload_bytes.is_empty());
+        assert!(share_size_bytes > 0);
+        let chunks: Vec<Vec<u8>> = payload_bytes
+            .chunks(share_size_bytes)
+            .map(|chunk| chunk.to_vec())
+            .collect();
+        let share_hashes: Vec<String> = chunks.iter().map(|chunk| hash_bytes(chunk)).collect();
+        let encoded_share_count = u32::try_from(share_hashes.len()).unwrap();
+        let manifest = DaManifest {
+            schema: DA_MANIFEST_SCHEMA.into(),
+            schema_version: 1,
+            chain_id: reference_payload.chain_id.clone(),
+            height: reference_payload.height,
+            block_hash: "block-7".into(),
+            payload_hash: hash_bytes(payload_bytes),
+            payload_bytes: payload_bytes.len() as u64,
+            namespace_root: reference_payload.namespace_root().unwrap(),
+            share_root: share_root(&share_hashes).unwrap(),
+            erasure_scheme: ErasureScheme::DeterministicChunks,
+            original_share_count: encoded_share_count,
+            encoded_share_count,
+            reconstruction_threshold: encoded_share_count,
+            share_size_bytes: u32::try_from(share_size_bytes).unwrap(),
+            share_hashes,
+            namespace_ranges: namespace_ranges(reference_payload),
+        };
+        manifest.validate().unwrap();
+        let manifest_hash = manifest.manifest_hash().unwrap();
+        let shares = chunks
+            .into_iter()
+            .enumerate()
+            .map(|(index, bytes)| DaShare {
+                manifest_hash: manifest_hash.clone(),
+                index: index as u32,
+                share_hash: hash_bytes(&bytes),
+                bytes,
+            })
+            .collect();
+        DaShareSet { manifest, shares }
+    }
+
     #[test]
     fn share_set_reconstructs_canonical_payload() {
         let payload = payload_with_sections(vec![
@@ -2055,6 +2101,129 @@ mod tests {
                     subset.reconstruct_payload().unwrap(),
                     payload.canonicalized()
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn payload_decode_fuzz_smoke_rejects_malformed_reconstructed_bytes() {
+        let reference_payload = payload_with_tx_count(2);
+        let noncanonical_payload = DaPayload {
+            chain_id: "detta-test".into(),
+            height: 7,
+            previous_block_hash: "prev-block".into(),
+            block_payload_version: DA_PAYLOAD_VERSION,
+            namespaces: vec![
+                tx_section("detta.tx", vec![DaRecord::SignedTransaction(tx("tx-1", 1))]),
+                tx_section(
+                    "detta.governance",
+                    vec![DaRecord::GovernancePayload {
+                        proposal_id: "proposal-1".into(),
+                        payload: "upgrade".into(),
+                    }],
+                ),
+            ],
+        };
+        let unsupported_version = serde_json::json!({
+            "chain_id": "detta-test",
+            "height": 7,
+            "previous_block_hash": "prev-block",
+            "block_payload_version": DA_PAYLOAD_VERSION + 1,
+            "namespaces": [{
+                "namespace": "detta.tx",
+                "records": [{"SignedTransaction": tx("tx-1", 1)}]
+            }]
+        });
+        let corpus = vec![
+            b"null".to_vec(),
+            b"[]".to_vec(),
+            b"{".to_vec(),
+            b"{\"chain_id\":\"detta-test\"}".to_vec(),
+            serde_json::to_vec(&unsupported_version).unwrap(),
+            canonical_bytes(&noncanonical_payload).unwrap(),
+        ];
+
+        for payload_bytes in corpus {
+            let share_set = forged_deterministic_share_set_from_payload_bytes(
+                &reference_payload,
+                &payload_bytes,
+                17,
+            );
+            assert!(
+                share_set.verify().is_err(),
+                "malformed payload bytes unexpectedly verified: {payload_bytes:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn share_reconstruction_fuzz_smoke_rejects_mutated_shares_and_manifests() {
+        let payload = payload_with_tx_count(16);
+        let share_set = DaShareSet::from_payload_reed_solomon(&payload, "block-7", 4, 2).unwrap();
+
+        for seed in 0..72_u32 {
+            let mut selected = std::collections::BTreeSet::new();
+            let mut offset = 0;
+            while selected.len() < share_set.manifest.reconstruction_threshold as usize {
+                selected.insert((seed + offset) % share_set.manifest.encoded_share_count);
+                offset += 1;
+            }
+            let mut candidate = DaShareSet {
+                manifest: share_set.manifest.clone(),
+                shares: share_set
+                    .shares
+                    .iter()
+                    .filter(|share| selected.contains(&share.index))
+                    .cloned()
+                    .collect(),
+            };
+
+            match seed % 6 {
+                0 => {
+                    assert_eq!(
+                        candidate.reconstruct_payload().unwrap(),
+                        payload.canonicalized()
+                    );
+                }
+                1 => {
+                    candidate.shares.pop();
+                    assert!(matches!(
+                        candidate.verify(),
+                        Err(DaError::InsufficientShares { .. })
+                    ));
+                }
+                2 => {
+                    candidate.shares.push(candidate.shares[0].clone());
+                    assert!(matches!(
+                        candidate.verify(),
+                        Err(DaError::DuplicateShare { .. })
+                    ));
+                }
+                3 => {
+                    candidate.shares[0].index = candidate.manifest.encoded_share_count;
+                    assert!(matches!(
+                        candidate.verify(),
+                        Err(DaError::UnexpectedShare { .. })
+                    ));
+                }
+                4 => {
+                    candidate.shares[0].bytes[0] ^= 0x01;
+                    assert!(matches!(
+                        candidate.verify(),
+                        Err(DaError::ShareHashMismatch { .. })
+                    ));
+                }
+                _ => {
+                    candidate.manifest.payload_hash = "00".repeat(32);
+                    let manifest_hash = candidate.manifest.manifest_hash().unwrap();
+                    for share in &mut candidate.shares {
+                        share.manifest_hash = manifest_hash.clone();
+                    }
+                    assert!(matches!(
+                        candidate.verify(),
+                        Err(DaError::PayloadHashMismatch { .. })
+                    ));
+                }
             }
         }
     }

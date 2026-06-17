@@ -33,6 +33,11 @@ pub const DEFAULT_MAX_BLOCK_PAGE_SIZE: usize = 100;
 pub const DEFAULT_MAX_SUBSCRIPTION_EVENT_PAGE_SIZE: usize = 1_000;
 pub const DEFAULT_MAX_SUBSCRIPTION_EVENTS: usize = 10_000;
 pub const DEFAULT_MAX_RESTRICTED_EVALUATOR_STEPS: u64 = 10_000;
+pub const DEFAULT_MAX_DA_RPC_ID_BYTES: usize = 128;
+pub const DEFAULT_MAX_DA_RPC_RANDOMNESS_BYTES: usize = 256;
+pub const DEFAULT_MAX_DA_RPC_SAMPLE_COUNT: u32 = 128;
+pub const DEFAULT_MAX_DA_RPC_NAMESPACES: usize = 32;
+pub const DEFAULT_MAX_DA_RPC_NAMESPACE_BYTES: usize = 128;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RpcError {
@@ -56,6 +61,7 @@ pub enum RpcError {
     EvaluatorParse(String),
     EvaluatorExecution(EvaluatorError),
     EvaluatorStepBudgetTooLarge,
+    RequestBoundsExceeded,
     UnsupportedNodeMethod,
 }
 
@@ -348,6 +354,62 @@ pub enum RpcRequest {
     GetSnapshotImportAuditRoot,
     GetSnapshotImportAuditConfigRoot,
     GetSnapshotImportAuditConfig,
+}
+
+impl RpcRequest {
+    pub fn validate_bounds(&self) -> Result<(), RpcError> {
+        match self {
+            RpcRequest::GetDaManifest { manifest_hash }
+            | RpcRequest::GetDaPayload { manifest_hash }
+            | RpcRequest::GetDaStatus { manifest_hash }
+            | RpcRequest::GetDaRepairStatus { manifest_hash } => validate_da_rpc_id(manifest_hash),
+            RpcRequest::GetDaShare { manifest_hash, .. } => validate_da_rpc_id(manifest_hash),
+            RpcRequest::GetDaCertificate { certificate_hash } => {
+                validate_da_rpc_id(certificate_hash)
+            }
+            RpcRequest::GetDaChallengeRecord { challenge_id } => validate_da_rpc_id(challenge_id),
+            RpcRequest::GetDaNamespace {
+                manifest_hash,
+                namespace,
+            } => {
+                validate_da_rpc_id(manifest_hash)?;
+                validate_da_rpc_namespace(namespace)
+            }
+            RpcRequest::GetDaSampleProofs {
+                manifest_hash,
+                client_randomness,
+                sample_count,
+                namespaces,
+            } => {
+                validate_da_rpc_id(manifest_hash)?;
+                if client_randomness.len() > DEFAULT_MAX_DA_RPC_RANDOMNESS_BYTES
+                    || *sample_count > DEFAULT_MAX_DA_RPC_SAMPLE_COUNT
+                    || namespaces.len() > DEFAULT_MAX_DA_RPC_NAMESPACES
+                {
+                    return Err(RpcError::RequestBoundsExceeded);
+                }
+                for namespace in namespaces {
+                    validate_da_rpc_namespace(namespace)?;
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+fn validate_da_rpc_id(value: &str) -> Result<(), RpcError> {
+    if value.is_empty() || value.len() > DEFAULT_MAX_DA_RPC_ID_BYTES {
+        return Err(RpcError::RequestBoundsExceeded);
+    }
+    Ok(())
+}
+
+fn validate_da_rpc_namespace(value: &str) -> Result<(), RpcError> {
+    if value.is_empty() || value.len() > DEFAULT_MAX_DA_RPC_NAMESPACE_BYTES {
+        return Err(RpcError::RequestBoundsExceeded);
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1349,6 +1411,10 @@ impl RpcService {
     }
 
     pub fn handle_request(&mut self, request: RpcRequest) -> RpcResponse {
+        if let Err(error) = request.validate_bounds() {
+            return Err(error).into();
+        }
+
         match request {
             RpcRequest::SubmitTransaction { transaction } => self
                 .submit_transaction(transaction)
@@ -1616,7 +1682,10 @@ pub fn json_rpc_response_for_request(
     handle: impl FnOnce(RpcRequest) -> RpcResponse,
 ) -> Result<Vec<u8>, RpcTransportError> {
     let response = match serde_json::from_slice::<RpcRequest>(request) {
-        Ok(request) => handle(request),
+        Ok(request) => match request.validate_bounds() {
+            Ok(()) => handle(request),
+            Err(error) => Err(error).into(),
+        },
         Err(error) => RpcResponse::Error(RpcErrorBody {
             code: "rpc.decode_error".into(),
             message: error.to_string(),
@@ -1863,6 +1932,7 @@ fn rpc_error_code(error: &RpcError) -> &'static str {
         }
         RpcError::EvaluatorExecution(EvaluatorError::Aborted) => "evaluator.aborted",
         RpcError::EvaluatorStepBudgetTooLarge => "evaluator.step_budget_too_large",
+        RpcError::RequestBoundsExceeded => "rpc.request_bounds_exceeded",
         RpcError::UnsupportedNodeMethod => "rpc.unsupported_node_method",
     }
 }
@@ -1948,6 +2018,7 @@ fn rpc_error_message(error: &RpcError) -> &'static str {
         }
         RpcError::EvaluatorExecution(EvaluatorError::Aborted) => "restricted evaluator aborted",
         RpcError::EvaluatorStepBudgetTooLarge => "restricted evaluator step budget is too large",
+        RpcError::RequestBoundsExceeded => "RPC request exceeds method-specific bounds",
         RpcError::UnsupportedNodeMethod => "method must be handled by a persistent validator node",
     }
 }
@@ -3444,6 +3515,11 @@ mod tests {
                 .to_vec(),
             br#"{"method":"get_subscription_events","params":{"subscription_id":false,"from_sequence":0,"limit":10}}"#
                 .to_vec(),
+            br#"{"method":"get_da_share","params":{"manifest_hash":"abc","index":-1}}"#.to_vec(),
+            br#"{"method":"get_da_sample_proofs","params":{"manifest_hash":"abc","client_randomness":false,"sample_count":1,"namespaces":[]}}"#
+                .to_vec(),
+            br#"{"method":"get_da_namespace","params":{"manifest_hash":"abc","namespace":123}}"#
+                .to_vec(),
         ];
         for split in 0..valid_request.len() {
             corpus.push(valid_request[..split].to_vec());
@@ -3492,6 +3568,20 @@ mod tests {
                 from_sequence: u64::MAX,
                 limit: usize::MAX,
             },
+            RpcRequest::GetDaShare {
+                manifest_hash: "a".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES),
+                index: u32::MAX,
+            },
+            RpcRequest::GetDaSampleProofs {
+                manifest_hash: "b".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES),
+                client_randomness: "r".repeat(DEFAULT_MAX_DA_RPC_RANDOMNESS_BYTES),
+                sample_count: DEFAULT_MAX_DA_RPC_SAMPLE_COUNT,
+                namespaces: vec!["n".repeat(DEFAULT_MAX_DA_RPC_NAMESPACE_BYTES)],
+            },
+            RpcRequest::GetDaNamespace {
+                manifest_hash: "c".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES),
+                namespace: "d".repeat(DEFAULT_MAX_DA_RPC_NAMESPACE_BYTES),
+            },
         ];
 
         for request in corpus {
@@ -3502,6 +3592,57 @@ mod tests {
             if let RpcResponse::Error(error) = response {
                 assert_ne!(error.code, "rpc.decode_error");
             }
+        }
+    }
+
+    #[test]
+    fn da_rpc_request_bounds_reject_oversized_sampling_inputs() {
+        let oversized = vec![
+            RpcRequest::GetDaManifest {
+                manifest_hash: "m".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES + 1),
+            },
+            RpcRequest::GetDaNamespace {
+                manifest_hash: "m".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES),
+                namespace: "n".repeat(DEFAULT_MAX_DA_RPC_NAMESPACE_BYTES + 1),
+            },
+            RpcRequest::GetDaSampleProofs {
+                manifest_hash: "m".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES),
+                client_randomness: "r".repeat(DEFAULT_MAX_DA_RPC_RANDOMNESS_BYTES + 1),
+                sample_count: 1,
+                namespaces: Vec::new(),
+            },
+            RpcRequest::GetDaSampleProofs {
+                manifest_hash: "m".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES),
+                client_randomness: "r".into(),
+                sample_count: DEFAULT_MAX_DA_RPC_SAMPLE_COUNT + 1,
+                namespaces: Vec::new(),
+            },
+            RpcRequest::GetDaSampleProofs {
+                manifest_hash: "m".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES),
+                client_randomness: "r".into(),
+                sample_count: 1,
+                namespaces: vec!["detta.tx".into(); DEFAULT_MAX_DA_RPC_NAMESPACES + 1],
+            },
+        ];
+
+        for request in oversized {
+            assert_eq!(
+                request.validate_bounds(),
+                Err(RpcError::RequestBoundsExceeded)
+            );
+            let payload = serde_json::to_vec(&request).unwrap();
+            let response = json_rpc_response_for_request(&payload, |_| {
+                panic!("oversized DA RPC request unexpectedly reached handler")
+            })
+            .unwrap();
+            let response: RpcResponse = serde_json::from_slice(&response).unwrap();
+            assert_eq!(
+                response,
+                RpcResponse::Error(RpcErrorBody {
+                    code: "rpc.request_bounds_exceeded".into(),
+                    message: "RPC request exceeds method-specific bounds".into(),
+                })
+            );
         }
     }
 

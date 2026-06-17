@@ -872,8 +872,8 @@ Acceptance:
 
 - [ ] Load test DA gossip with large aspect deployments.
 - [ ] Load test sustained AMM/lending/staking traffic with DA certificates.
-- [ ] Fuzz DA payload decoding and share reconstruction.
-- [ ] Fuzz DA RPC request bounds.
+- [x] Fuzz DA payload decoding and share reconstruction.
+- [x] Fuzz DA RPC request bounds.
 - [ ] Add long-running multi-validator retention simulation.
 - [ ] Add chaos tests for offline validators during retrieval.
 - [ ] Add archive-node reconstruction tests.

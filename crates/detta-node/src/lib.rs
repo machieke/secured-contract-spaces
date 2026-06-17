@@ -1031,6 +1031,15 @@ impl PersistentValidatorNode {
     pub fn handle_rpc_request(&mut self, request: RpcRequest) -> RpcResponse {
         let records_proof_latency = records_proof_latency(&request);
         let started = Instant::now();
+        if let Err(error) = request.validate_bounds() {
+            let response = Err(error).into();
+            if records_proof_latency {
+                self.last_proof_serving_micros = Some(elapsed_micros(started));
+            }
+            self.rpc_error_count = self.rpc_error_count.saturating_add(1);
+            return response;
+        }
+
         let response = match request {
             RpcRequest::SubmitTransaction { transaction } => self
                 .submit_transaction(transaction)
@@ -1084,14 +1093,15 @@ impl PersistentValidatorNode {
                 }
                 Err(error) => node_rpc_error_response(NodeError::Storage(error)),
             },
-            RpcRequest::GetTransaction { tx_hash } => match self.storage.find_transaction(&tx_hash)
-            {
-                Ok(Some(transaction)) => {
-                    RpcResponse::Ok(RpcResult::Transaction(Box::new(transaction)))
+            RpcRequest::GetTransaction { tx_hash } => {
+                match self.storage.find_transaction(&tx_hash) {
+                    Ok(Some(transaction)) => {
+                        RpcResponse::Ok(RpcResult::Transaction(Box::new(transaction)))
+                    }
+                    Ok(None) => Err(RpcError::TransactionNotFound).into(),
+                    Err(error) => node_rpc_error_response(NodeError::Storage(error)),
                 }
-                Ok(None) => Err(RpcError::TransactionNotFound).into(),
-                Err(error) => node_rpc_error_response(NodeError::Storage(error)),
-            },
+            }
             RpcRequest::GetReceipt { tx_hash } => match self.storage.find_receipt(&tx_hash) {
                 Ok(Some(receipt)) => RpcResponse::Ok(RpcResult::Receipt(Box::new(receipt))),
                 Ok(None) => Err(RpcError::ReceiptNotFound).into(),
