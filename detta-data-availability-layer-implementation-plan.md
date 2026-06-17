@@ -828,7 +828,9 @@ Acceptance:
 - [x] Add retention prune-plan APIs.
 - [x] Add manifest and certificate index APIs by height and block hash.
 - [x] Update OpenAPI and RPC docs.
-- [x] Extend `detta-client` with DA inspection commands.
+- [x] Extend `detta-client` with DA inspection commands for manifests, shares,
+  certificates, payloads, namespaces, sampling proofs, status, repair,
+  retention, and indexes.
 
 Acceptance:
 

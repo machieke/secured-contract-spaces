@@ -1,5 +1,6 @@
 use detta_core::{Argument, Block, Method, Receipt, Transaction};
 use detta_rpc::{RpcRequest, RpcResponse, RpcResult};
+use detta_storage::DaRetentionClass;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::env;
@@ -98,6 +99,15 @@ fn run(args: Vec<String>) -> Result<(), String> {
             })?;
             print_json(&result)
         }
+        "da-sample-proofs" => {
+            let result = client.ok(RpcRequest::GetDaSampleProofs {
+                manifest_hash: options.required("manifest-hash")?,
+                client_randomness: options.required("client-randomness")?,
+                sample_count: parse_u32(&options.required("sample-count")?, "sample-count")?,
+                namespaces: parse_csv_option(options.optional("namespaces")),
+            })?;
+            print_json(&result)
+        }
         "da-status" => {
             let result = client.ok(RpcRequest::GetDaStatus {
                 manifest_hash: options.required("manifest-hash")?,
@@ -112,6 +122,56 @@ fn run(args: Vec<String>) -> Result<(), String> {
         }
         "da-stats" => {
             let result = client.ok(RpcRequest::GetDaStorageStats)?;
+            print_json(&result)
+        }
+        "da-retention-audit" => {
+            let result = client.ok(RpcRequest::GetDaRetentionAudit)?;
+            print_json(&result)
+        }
+        "da-retention-prune-plan" => {
+            let result = client.ok(RpcRequest::GetDaRetentionPrunePlan)?;
+            print_json(&result)
+        }
+        "da-manifest-index-by-height" => {
+            let result = client.ok(RpcRequest::GetDaManifestIndexByHeight {
+                height: parse_u64(&options.required("height")?, "height")?,
+            })?;
+            print_json(&result)
+        }
+        "da-manifest-index-by-block" => {
+            let result = client.ok(RpcRequest::GetDaManifestIndexByBlockHash {
+                block_hash: options.required("block-hash")?,
+            })?;
+            print_json(&result)
+        }
+        "da-manifest-index-by-namespace" => {
+            let result = client.ok(RpcRequest::GetDaManifestIndexByNamespace {
+                namespace: options.required("namespace")?,
+            })?;
+            print_json(&result)
+        }
+        "da-manifest-index-by-retention" => {
+            let result = client.ok(RpcRequest::GetDaManifestIndexByRetentionClass {
+                class: parse_da_retention_class(&options.required("class")?)?,
+            })?;
+            print_json(&result)
+        }
+        "da-certificate-index-by-manifest" => {
+            let result = client.ok(RpcRequest::GetDaCertificateIndexByManifest {
+                manifest_hash: options.required("manifest-hash")?,
+            })?;
+            print_json(&result)
+        }
+        "da-certificate-index-by-height" => {
+            let result = client.ok(RpcRequest::GetDaCertificateIndexByHeight {
+                height: parse_u64(&options.required("height")?, "height")?,
+            })?;
+            print_json(&result)
+        }
+        "da-certificate-index-by-block" => {
+            let result = client.ok(RpcRequest::GetDaCertificateIndexByBlockHash {
+                block_hash: options.required("block-hash")?,
+            })?;
             print_json(&result)
         }
         "state-root" => {
@@ -427,6 +487,31 @@ fn parse_u128(value: &str, label: &str) -> Result<u128, String> {
         .map_err(|error| format!("invalid --{label}: {error}"))
 }
 
+fn parse_da_retention_class(value: &str) -> Result<DaRetentionClass, String> {
+    match value.to_ascii_lowercase().as_str() {
+        "hot" => Ok(DaRetentionClass::Hot),
+        "warm" => Ok(DaRetentionClass::Warm),
+        "cold" => Ok(DaRetentionClass::Cold),
+        "checkpoint" => Ok(DaRetentionClass::Checkpoint),
+        _ => Err(format!(
+            "invalid --class: expected hot, warm, cold, or checkpoint, got {value}"
+        )),
+    }
+}
+
+fn parse_csv_option(value: Option<String>) -> Vec<String> {
+    value
+        .into_iter()
+        .flat_map(|raw| {
+            raw.split(',')
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
 fn print_json<T: Serialize>(value: &T) -> Result<(), String> {
     println!(
         "{}",
@@ -449,9 +534,19 @@ fn usage() -> String {
   detta-client da-challenge --challenge-id <hash>
   detta-client da-payload --manifest-hash <hash>
   detta-client da-namespace --manifest-hash <hash> --namespace <name>
+  detta-client da-sample-proofs --manifest-hash <hash> --client-randomness <bytes> --sample-count <n> [--namespaces <csv>]
   detta-client da-status --manifest-hash <hash>
   detta-client da-repair-status --manifest-hash <hash>
   detta-client da-stats
+  detta-client da-retention-audit
+  detta-client da-retention-prune-plan
+  detta-client da-manifest-index-by-height --height <h>
+  detta-client da-manifest-index-by-block --block-hash <hash>
+  detta-client da-manifest-index-by-namespace --namespace <name>
+  detta-client da-manifest-index-by-retention --class <hot|warm|cold|checkpoint>
+  detta-client da-certificate-index-by-manifest --manifest-hash <hash>
+  detta-client da-certificate-index-by-height --height <h>
+  detta-client da-certificate-index-by-block --block-hash <hash>
   detta-client state-root
 
 Common options:
@@ -535,5 +630,31 @@ mod tests {
                 Argument::Amount(8)
             ]
         );
+    }
+
+    #[test]
+    fn parses_da_retention_class_names() {
+        assert_eq!(
+            parse_da_retention_class("hot").unwrap(),
+            DaRetentionClass::Hot
+        );
+        assert_eq!(
+            parse_da_retention_class("Checkpoint").unwrap(),
+            DaRetentionClass::Checkpoint
+        );
+        assert!(parse_da_retention_class("archive").is_err());
+    }
+
+    #[test]
+    fn parses_optional_csv_namespaces() {
+        assert_eq!(
+            parse_csv_option(Some("detta.tx, detta.receipt,,detta.block".into())),
+            vec![
+                "detta.tx".to_string(),
+                "detta.receipt".to_string(),
+                "detta.block".to_string()
+            ]
+        );
+        assert!(parse_csv_option(None).is_empty());
     }
 }

@@ -233,7 +233,8 @@ Rust workspace crates:
   experimental DA-committed block production and DA gossip persistence.
 - `crates/detta-node/src/bin/detta-client.rs`: packaged TCP RPC client for
   deploying tokens, creating pools, adding liquidity, swapping assets, reading
-  receipts, querying roots, and inspecting experimental DA records.
+  receipts, querying roots, and inspecting DA manifests, certificates,
+  payloads, sampling proofs, retention reports, and indexes.
 - `crates/detta-aspects`: parser, canonicalizer, verifier, IR lowering, and
   artifact tooling for secure taxonomy-aligned MeTTa aspect modules.
 - `crates/detta-aspect-runtime`: deterministic executable runtime for verified
