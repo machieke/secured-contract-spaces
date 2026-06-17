@@ -94,6 +94,7 @@
           "submit_transaction",
           "submit_signed_transaction",
           "produce_block",
+          "produce_da_block",
           "import_block",
           "get_transaction",
           "get_receipt",

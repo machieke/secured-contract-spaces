@@ -1075,6 +1075,15 @@ impl PersistentValidatorNode {
                 .map(|block| RpcResult::Block(Box::new(block)))
                 .map(RpcResponse::Ok)
                 .unwrap_or_else(node_rpc_error_response),
+            RpcRequest::ProduceDaBlock {
+                height,
+                timestamp,
+                share_size_bytes,
+            } => self
+                .produce_block_with_data_availability(height, timestamp, share_size_bytes as usize)
+                .map(|block| RpcResult::Block(Box::new(block)))
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(node_rpc_error_response),
             RpcRequest::ImportBlock { block } => self
                 .import_block(&block)
                 .map(|()| RpcResult::Imported)

@@ -43,6 +43,9 @@ clients.
   canonical DA certificate when quorum votes bind the same manifest.
 - [x] Persistent nodes can produce a DA v1-committed block, persist
   the matching share set, and reload it after restart.
+- [x] Persistent node RPC and packaged `detta-client` expose
+  `produce_da_block` / `produce-da-block` for operator-driven DA-committed
+  block production with bounded share-size inputs.
 - [x] Persistent nodes can gossip a block's committed DA manifest and shares
   from durable storage.
 - [x] Persistent nodes store DA manifest/share gossip messages.
@@ -116,6 +119,10 @@ clients.
 - [x] Operator metrics and alerts cover DA custody-failure slashing evidence,
   pending repair lag, and DA challenge evidence failures.
 - [x] DA retention and repair operator runbook is documented.
+- [x] Packaged-client release drill produces a DA-committed block through the
+  shipped client and verifies DA manifest, share, payload, namespace, sampling,
+  status, repair, retention, manifest-index, and empty certificate-index
+  queries against the shipped node.
 
 ## 0. Current Implementation Baseline
 
@@ -548,6 +555,7 @@ Retention classes:
 Add public RPC methods:
 
 ```text
+produce_da_block(height, timestamp, share_size_bytes)
 get_da_manifest(block_hash | height)
 get_da_certificate(block_hash | height)
 get_da_share(manifest_hash, share_index)
@@ -827,10 +835,14 @@ Acceptance:
 - [x] Add repair status APIs.
 - [x] Add retention prune-plan APIs.
 - [x] Add manifest and certificate index APIs by height and block hash.
+- [x] Add persistent-node DA block-production RPC.
 - [x] Update OpenAPI and RPC docs.
 - [x] Extend `detta-client` with DA inspection commands for manifests, shares,
   certificates, payloads, namespaces, sampling proofs, status, repair,
   retention, and indexes.
+- [x] Extend `detta-client` with DA-committed block production and packaged
+  release-drill coverage for production, retrieval, sampling, retention, and
+  indexes.
 
 Acceptance:
 

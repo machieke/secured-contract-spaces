@@ -69,8 +69,8 @@ commands:
 11. Confirm the active DA slashing policy matches the current governance
    decision before processing challenge evidence.
 
-The packaged client command names mirror the workflow: `da-stats`,
-`da-retention-audit`, `da-retention-prune-plan`, `da-payload`,
+The packaged client command names mirror the workflow: `produce-da-block`,
+`da-stats`, `da-retention-audit`, `da-retention-prune-plan`, `da-payload`,
 `da-sample-proofs`, `da-manifest-index-by-*`, and
 `da-certificate-index-by-*`.
 

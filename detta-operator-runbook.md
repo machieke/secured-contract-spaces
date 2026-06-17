@@ -353,7 +353,8 @@ attestation. Retain this report as validator-onboarding evidence.
 Use `scripts/detta-packaged-client-flow-drill.sh` before publishing the sample
 client. The drill unpacks the release archive, starts packaged `detta-node`,
 runs packaged `detta-client` through token deployment, pool deployment,
-liquidity, buy, and sell commands, verifies committed receipts, and writes
+liquidity, buy, sell, DA block production, DA retrieval, sampling, retention,
+and index commands, verifies committed receipts and DA availability, and writes
 `dist/detta-packaged-client-flow-drill-<version>.json` plus a SHA-256
 attestation. Retain this report as packaged-client evidence.
 

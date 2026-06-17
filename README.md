@@ -106,7 +106,8 @@ The current implementation includes slices for:
   fees, pauses, restrictions, locks, mint/burn/caps, snapshots, vault shares,
   wrapping, rewarded staking, and bridge mint/burn adapters;
 - E2E client tests covering deployment, liquidity, buys and sells, proofs,
-  RPC coverage, adversarial cases, state sync, networking, and operator APIs.
+  RPC coverage, adversarial cases, state sync, networking, operator APIs, and
+  packaged DA production/inspection.
 - DA v1-committed block production, DA manifest/share/certificate
   protocol messages, signed DA availability votes, quorum DA certificate
   aggregation, deterministic custody share checks before DA vote signing,
@@ -114,7 +115,7 @@ The current implementation includes slices for:
   certificates, repair records, challenge records, validated DA indexes, DA
   gossip persistence, DA challenge/slashing evidence, governed DA slashing
   policy parameters, payload-aware DA-certified production finality mode, and DA
-  retrieval RPCs on
+  retrieval/production RPCs on
   `experimental/data-availability-layer`.
 
 The production roadmap and progress tracker live in
@@ -202,7 +203,8 @@ SCS specification
   validator identities, quorum, and checksums into a finalization report.
 - `scripts/detta-packaged-client-flow-drill.sh`: release-archive drill that
   boots packaged `detta-node` and drives packaged `detta-client` through token,
-  liquidity, buy, and sell workflows.
+  liquidity, buy/sell, DA block production, DA retrieval, sampling, retention,
+  and index workflows.
 - `scripts/detta-public-testnet-stability-drill.sh`: packaged local stability
   drill that runs a sustained multi-block DeFi workload and records
   health/metrics/alert evidence.
@@ -233,7 +235,8 @@ Rust workspace crates:
   DA v1-committed block production and DA gossip persistence.
 - `crates/detta-node/src/bin/detta-client.rs`: packaged TCP RPC client for
   deploying tokens, creating pools, adding liquidity, swapping assets, reading
-  receipts, querying roots, and inspecting DA manifests, certificates,
+  receipts, producing ordinary or DA-committed blocks, querying roots, and
+  inspecting DA manifests, certificates,
   payloads, sampling proofs, retention reports, and indexes.
 - `crates/detta-aspects`: parser, canonicalizer, verifier, IR lowering, and
   artifact tooling for secure taxonomy-aligned MeTTa aspect modules.
@@ -418,7 +421,9 @@ DETTA_RELEASE_VERSION=rc-1 scripts/detta-packaged-client-flow-drill.sh
 
 The drill unpacks the release archive, boots packaged `detta-node`, runs
 packaged `detta-client` through token deployment, pool deployment, liquidity,
-buy, and sell commands, verifies committed receipts, and writes
+buy, sell, DA block production, DA manifest/share/payload/namespace retrieval,
+sampling, status, repair, retention, and index commands, verifies committed
+receipts and DA availability, and writes
 `dist/detta-packaged-client-flow-drill-<version>.json`.
 
 Run a local genesis-finalization drill before publishing launch artifacts:

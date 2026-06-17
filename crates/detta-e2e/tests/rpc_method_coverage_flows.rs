@@ -197,6 +197,29 @@ fn public_rpc_method_coverage_guard_calls_every_openapi_method() {
             timestamp: 3_000,
         },
     );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::SubmitTransaction {
+            transaction: tx_to(
+                TOKEN_CONTRACT,
+                "coverage-rpc-da-transfer-1",
+                "Bob",
+                3,
+                Method::Transfer,
+                vec![principal("Alice"), asset(USDC), amount(1)],
+            ),
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::ProduceDaBlock {
+            height: 4,
+            timestamp: 4_000,
+            share_size_bytes: 128,
+        },
+    );
 
     call_ok(
         &mut client,

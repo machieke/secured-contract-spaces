@@ -14,6 +14,7 @@ const DEFAULT_FACTORY_CONTRACT: &str = "FactoryA";
 const DEFAULT_POOL_CONTRACT: &str = "PoolAB";
 const DEFAULT_SENDER: &str = "Alice";
 const DEFAULT_BUDGET: u64 = 1_000_000;
+const DEFAULT_DA_SHARE_SIZE_BYTES: u32 = 128;
 
 fn main() {
     if let Err(error) = run(env::args().collect()) {
@@ -53,6 +54,25 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 .transpose()?
                 .unwrap_or(height * 1_000);
             let result = client.ok(RpcRequest::ProduceBlock { height, timestamp })?;
+            print_json(&result)
+        }
+        "produce-da-block" => {
+            let height = parse_u64(&options.required("height")?, "height")?;
+            let timestamp = options
+                .optional("timestamp")
+                .map(|value| parse_u64(&value, "timestamp"))
+                .transpose()?
+                .unwrap_or(height * 1_000);
+            let share_size_bytes = options
+                .optional("share-size")
+                .map(|value| parse_u32(&value, "share-size"))
+                .transpose()?
+                .unwrap_or(DEFAULT_DA_SHARE_SIZE_BYTES);
+            let result = client.ok(RpcRequest::ProduceDaBlock {
+                height,
+                timestamp,
+                share_size_bytes,
+            })?;
             print_json(&result)
         }
         "receipt" => {
@@ -527,6 +547,7 @@ fn usage() -> String {
   detta-client add-liquidity --pool <id> --asset-a-amount <amount> --asset-b-amount <amount> --nonce <n> [--produce-height <h>]
   detta-client swap --pool <id> --input-asset <symbol> --amount-in <amount> --min-output <amount> --nonce <n> [--produce-height <h>]
   detta-client produce-block --height <h> [--timestamp <t>]
+  detta-client produce-da-block --height <h> [--timestamp <t>] [--share-size <bytes>]
   detta-client receipt --tx-hash <hash>
   detta-client da-manifest --manifest-hash <hash>
   detta-client da-share --manifest-hash <hash> --index <i>

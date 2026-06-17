@@ -502,10 +502,11 @@ Completed production-plan slices:
   verifier, and records a signing-drill report.
 - [x] Packaged `detta-client` TCP RPC binary submits token deployment, pool
   deployment, liquidity, swap, receipt, block-production, and state-root
-  commands for end-user DeFi workflows.
+  commands for end-user DeFi workflows and DA block production/inspection.
 - [x] Packaged-client release drill unpacks the release archive, boots
   packaged `detta-node`, runs packaged `detta-client` through token, pool,
-  liquidity, buy, and sell commands, and records a checksummed report.
+  liquidity, buy, sell, DA block production, DA retrieval, sampling, retention,
+  and index commands, and records a checksummed report.
 - [x] Genesis-finalization drill binds the release manifest, generated genesis
   authenticated roots, faucet sample, validator identities, quorum, and
   checksums into a retained launch artifact report.

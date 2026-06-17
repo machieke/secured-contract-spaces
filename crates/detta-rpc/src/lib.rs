@@ -39,6 +39,7 @@ pub const DEFAULT_MAX_DA_RPC_RANDOMNESS_BYTES: usize = 256;
 pub const DEFAULT_MAX_DA_RPC_SAMPLE_COUNT: u32 = 128;
 pub const DEFAULT_MAX_DA_RPC_NAMESPACES: usize = 32;
 pub const DEFAULT_MAX_DA_RPC_NAMESPACE_BYTES: usize = 128;
+pub const DEFAULT_MAX_DA_PRODUCE_SHARE_SIZE_BYTES: u32 = 1024 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RpcError {
@@ -205,6 +206,11 @@ pub enum RpcRequest {
     ProduceBlock {
         height: u64,
         timestamp: u64,
+    },
+    ProduceDaBlock {
+        height: u64,
+        timestamp: u64,
+        share_size_bytes: u32,
     },
     ImportBlock {
         block: Box<Block>,
@@ -383,6 +389,16 @@ pub enum RpcRequest {
 impl RpcRequest {
     pub fn validate_bounds(&self) -> Result<(), RpcError> {
         match self {
+            RpcRequest::ProduceDaBlock {
+                share_size_bytes, ..
+            } => {
+                if *share_size_bytes == 0
+                    || *share_size_bytes > DEFAULT_MAX_DA_PRODUCE_SHARE_SIZE_BYTES
+                {
+                    return Err(RpcError::RequestBoundsExceeded);
+                }
+                Ok(())
+            }
             RpcRequest::GetDaManifest { manifest_hash }
             | RpcRequest::GetDaPayload { manifest_hash }
             | RpcRequest::GetDaStatus { manifest_hash }
@@ -1471,6 +1487,7 @@ impl RpcService {
                 .produce_block(height, timestamp)
                 .map(|block| RpcResult::Block(Box::new(block)))
                 .into(),
+            RpcRequest::ProduceDaBlock { .. } => Err(RpcError::UnsupportedNodeMethod).into(),
             RpcRequest::ImportBlock { block } => self
                 .import_block(&block)
                 .map(|()| RpcResult::Imported)
@@ -2234,6 +2251,7 @@ mod tests {
             "submit_transaction",
             "submit_signed_transaction",
             "produce_block",
+            "produce_da_block",
             "import_block",
             "get_transaction",
             "get_receipt",
@@ -3672,6 +3690,11 @@ mod tests {
                 manifest_hash: "c".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES),
                 namespace: "d".repeat(DEFAULT_MAX_DA_RPC_NAMESPACE_BYTES),
             },
+            RpcRequest::ProduceDaBlock {
+                height: u64::MAX,
+                timestamp: u64::MAX,
+                share_size_bytes: DEFAULT_MAX_DA_PRODUCE_SHARE_SIZE_BYTES,
+            },
         ];
 
         for request in corpus {
@@ -3712,6 +3735,16 @@ mod tests {
                 client_randomness: "r".into(),
                 sample_count: 1,
                 namespaces: vec!["detta.tx".into(); DEFAULT_MAX_DA_RPC_NAMESPACES + 1],
+            },
+            RpcRequest::ProduceDaBlock {
+                height: 1,
+                timestamp: 1_000,
+                share_size_bytes: 0,
+            },
+            RpcRequest::ProduceDaBlock {
+                height: 1,
+                timestamp: 1_000,
+                share_size_bytes: DEFAULT_MAX_DA_PRODUCE_SHARE_SIZE_BYTES + 1,
             },
         ];
 
