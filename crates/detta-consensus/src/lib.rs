@@ -3,8 +3,8 @@ use detta_core::{
     Transaction, ValidatorNode,
 };
 use detta_da::{
-    DaAvailabilityCertificate, DaAvailabilityVote, DaChallengeEvidence, DaChallengeFault,
-    DaManifest, DaPayload, DaRecord,
+    validate_production_block_payload, DaAvailabilityCertificate, DaAvailabilityVote,
+    DaChallengeEvidence, DaChallengeFault, DaManifest, DaPayload, DaProductionProfile, DaRecord,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -748,6 +748,10 @@ pub fn verify_data_availability_payload(
     validate_da_result(manifest.validate())?;
     validate_da_result(payload.validate())?;
     let canonical_payload = payload.canonicalized();
+    validate_da_result(validate_production_block_payload(
+        &canonical_payload,
+        &DaProductionProfile::v1(),
+    ))?;
     let payload_hash = validate_da_result(canonical_payload.hash())?;
     let namespace_root = validate_da_result(canonical_payload.namespace_root())?;
 

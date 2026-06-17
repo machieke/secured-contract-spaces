@@ -7,11 +7,12 @@ use detta_core::{
     MempoolError, StateSnapshot, Transaction, TxStatus, ValidatorNode,
 };
 use detta_da::{
-    derive_sample_schedule, prove_namespace, prove_share_inclusion, verify_light_client_samples,
-    verify_share_against_manifest, DaAvailabilityCertificate, DaAvailabilityVote,
-    DaChallengeEvidence, DaChallengeRecord, DaError, DaManifest, DaNamespace, DaNamespaceSection,
-    DaPayload, DaRecord, DaSampleProof, DaSampleProofBundle, DaShare, DaShareChallenge,
-    DaShareChallengeResponse, DaShareSet,
+    derive_sample_schedule, prove_namespace, prove_share_inclusion,
+    validate_production_block_payload, verify_light_client_samples, verify_share_against_manifest,
+    DaAvailabilityCertificate, DaAvailabilityVote, DaChallengeEvidence, DaChallengeRecord, DaError,
+    DaManifest, DaNamespace, DaNamespaceSection, DaPayload, DaProductionProfile, DaRecord,
+    DaSampleProof, DaSampleProofBundle, DaShare, DaShareChallenge, DaShareChallengeResponse,
+    DaShareSet,
 };
 use detta_network::{Envelope, InMemoryTransport, NetworkError, NetworkMessage, TcpProtocolStream};
 use detta_protocol::{
@@ -3242,13 +3243,16 @@ fn da_payload_for_block(block: &Block) -> Result<DaPayload, NodeError> {
         );
     }
 
-    DaPayload::new(
+    let payload = DaPayload::new(
         block.header.chain_id.clone(),
         block.header.height,
         block.header.previous_block_hash.clone(),
         sections,
     )
-    .map_err(NodeError::DataAvailability)
+    .map_err(NodeError::DataAvailability)?;
+    validate_production_block_payload(&payload, &DaProductionProfile::v1())
+        .map_err(NodeError::DataAvailability)?;
+    Ok(payload)
 }
 
 fn da_payload_for_snapshot_chunk_set(
@@ -3392,6 +3396,8 @@ fn snapshot_checkpoint_block_hash(chunk_set: &SnapshotChunkSet) -> Result<String
 
 fn block_from_da_payload(payload: &DaPayload) -> Result<Block, NodeError> {
     payload.validate().map_err(NodeError::DataAvailability)?;
+    validate_production_block_payload(payload, &DaProductionProfile::v1())
+        .map_err(NodeError::DataAvailability)?;
     let block_namespace = DaNamespace::new("detta.block").map_err(NodeError::DataAvailability)?;
     let tx_namespace = DaNamespace::new("detta.tx").map_err(NodeError::DataAvailability)?;
     let receipt_namespace =

@@ -105,6 +105,38 @@ Compatibility rule: new payload fields or record semantics require a new
 payload version and schema name. Existing v1 payload bytes must remain stable so
 fixture roots, manifests, certificates, and replay evidence stay auditable.
 
+## Production DA v1 Profile
+
+The production v1 profile is represented in code by
+`DaProductionProfile::v1()` and schema `detta.da-production-profile.v1`.
+
+Production v1 decisions:
+
+- Share commitments use Merkle SHA-256 roots over encoded share hashes.
+- Erasure coding uses Reed-Solomon v1; KZG commitments are deferred to a future
+  payload/manifest version.
+- Validator DA votes use deterministic custody assignments and may also carry
+  light-client sample indices.
+- Production RPC payload serving requires a full locally verified or
+  reconstructed payload, not a partial best-effort response.
+- Block DA payloads must carry one `detta.block` header section. If transaction
+  records are present in `detta.tx`, matching receipt records must be present in
+  `detta.receipt`.
+- Raw events are not mandatory block DA records in v1. Event integrity is
+  replay-deterministic through the block `event_root` and per-receipt
+  `event_root_after`; optional `detta.event` sections are type-checked when
+  present.
+- Data gas is priced in 1024-byte units by the v1 profile helper.
+- Validator hot retention is at least 65,536 blocks; archive/checkpoint
+  retention is at least 1,048,576 blocks.
+- DA slashing remains governed by timelocked validator-set governance.
+- Archive/storage providers are expected to be governance-registered before
+  public mainnet.
+
+The enforced production block-payload validator rejects unsupported namespaces,
+records in the wrong namespace, multiple block headers, receipts without
+transactions, and transaction/receipt count mismatches.
+
 ## Durable Storage Indexes
 
 The storage layer persists DA objects by content hash and also keeps coordinate

@@ -10,8 +10,14 @@ pub const DA_CHALLENGE_SCHEMA: &str = "detta.da-share-challenge.v1";
 pub const DA_CHALLENGE_EVIDENCE_SCHEMA: &str = "detta.da-challenge-evidence.v1";
 pub const DA_SAMPLE_PROOF_SCHEMA: &str = "detta.da-sample-proof.v1";
 pub const DA_PAYLOAD_SCHEMA: &str = "detta.da-payload.v1";
+pub const DA_PRODUCTION_PROFILE_SCHEMA: &str = "detta.da-production-profile.v1";
 pub const DA_PAYLOAD_VERSION: u32 = 1;
 pub const REED_SOLOMON_MAX_SHARES: u32 = 256;
+pub const DA_V1_MIN_CUSTODY_SHARE_COUNT: u32 = 2;
+pub const DA_V1_MIN_LIGHT_CLIENT_SAMPLE_COUNT: u32 = 3;
+pub const DA_V1_DATA_GAS_BYTES_PER_UNIT: u64 = 1024;
+pub const DA_V1_VALIDATOR_MIN_RETENTION_BLOCKS: u64 = 65_536;
+pub const DA_V1_ARCHIVE_MIN_RETENTION_BLOCKS: u64 = 1_048_576;
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub struct DaNamespace(pub String);
@@ -37,6 +43,10 @@ impl From<DaNamespace> for String {
     fn from(namespace: DaNamespace) -> Self {
         namespace.0
     }
+}
+
+fn namespace_unchecked(value: &str) -> DaNamespace {
+    DaNamespace::new(value).expect("checked-in DA namespace constants must be valid")
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -182,6 +192,272 @@ pub enum DaRecord {
         chunk_hash: String,
         bytes: Vec<u8>,
     },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum DaCommitmentScheme {
+    MerkleSha256V1,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum DaCustodyMode {
+    DeterministicCustodyWithLightClientSampling,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum DaEventAvailabilityMode {
+    RegeneratedFromExecutionRoots,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum DaSlashingGovernanceMode {
+    TimelockedValidatorSetGovernance,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum DaArchiveIncentiveMode {
+    GovernanceRegisteredStorageProviders,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaProductionProfile {
+    pub schema: String,
+    pub schema_version: u32,
+    pub commitment_scheme: DaCommitmentScheme,
+    pub erasure_scheme: ErasureScheme,
+    pub custody_mode: DaCustodyMode,
+    pub min_custody_share_count: u32,
+    pub min_light_client_sample_count: u32,
+    pub full_payload_required_for_rpc: bool,
+    pub receipts_are_payload_records: bool,
+    pub event_availability_mode: DaEventAvailabilityMode,
+    pub validator_min_retention_blocks: u64,
+    pub archive_min_retention_blocks: u64,
+    pub data_gas_bytes_per_unit: u64,
+    pub slashing_governance_mode: DaSlashingGovernanceMode,
+    pub archive_incentive_mode: DaArchiveIncentiveMode,
+    pub mandatory_da_namespaces: Vec<DaNamespace>,
+}
+
+impl DaProductionProfile {
+    pub fn v1() -> Self {
+        Self {
+            schema: DA_PRODUCTION_PROFILE_SCHEMA.into(),
+            schema_version: 1,
+            commitment_scheme: DaCommitmentScheme::MerkleSha256V1,
+            erasure_scheme: ErasureScheme::ReedSolomonV1,
+            custody_mode: DaCustodyMode::DeterministicCustodyWithLightClientSampling,
+            min_custody_share_count: DA_V1_MIN_CUSTODY_SHARE_COUNT,
+            min_light_client_sample_count: DA_V1_MIN_LIGHT_CLIENT_SAMPLE_COUNT,
+            full_payload_required_for_rpc: true,
+            receipts_are_payload_records: true,
+            event_availability_mode: DaEventAvailabilityMode::RegeneratedFromExecutionRoots,
+            validator_min_retention_blocks: DA_V1_VALIDATOR_MIN_RETENTION_BLOCKS,
+            archive_min_retention_blocks: DA_V1_ARCHIVE_MIN_RETENTION_BLOCKS,
+            data_gas_bytes_per_unit: DA_V1_DATA_GAS_BYTES_PER_UNIT,
+            slashing_governance_mode: DaSlashingGovernanceMode::TimelockedValidatorSetGovernance,
+            archive_incentive_mode: DaArchiveIncentiveMode::GovernanceRegisteredStorageProviders,
+            mandatory_da_namespaces: vec![
+                namespace_unchecked("detta.aspect"),
+                namespace_unchecked("detta.block"),
+                namespace_unchecked("detta.bridge"),
+                namespace_unchecked("detta.governance"),
+                namespace_unchecked("detta.oracle"),
+                namespace_unchecked("detta.receipt"),
+                namespace_unchecked("detta.tx"),
+            ],
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), DaError> {
+        if self.schema != DA_PRODUCTION_PROFILE_SCHEMA {
+            return Err(DaError::InvalidManifest(format!(
+                "unexpected DA production profile schema {}",
+                self.schema
+            )));
+        }
+        if self.schema_version != 1 {
+            return Err(DaError::InvalidManifest(format!(
+                "unexpected DA production profile version {}",
+                self.schema_version
+            )));
+        }
+        if self.commitment_scheme != DaCommitmentScheme::MerkleSha256V1 {
+            return Err(DaError::UnsupportedErasureScheme);
+        }
+        if self.erasure_scheme != ErasureScheme::ReedSolomonV1 {
+            return Err(DaError::UnsupportedErasureScheme);
+        }
+        if self.custody_mode != DaCustodyMode::DeterministicCustodyWithLightClientSampling {
+            return Err(DaError::InvalidAvailabilityVote(
+                "unsupported DA custody mode".into(),
+            ));
+        }
+        if self.min_custody_share_count == 0 || self.min_light_client_sample_count == 0 {
+            return Err(DaError::InvalidSampling(
+                "custody and sample counts must be positive".into(),
+            ));
+        }
+        if !self.full_payload_required_for_rpc {
+            return Err(DaError::InvalidPayload(
+                "production DA RPC requires full verified payloads".into(),
+            ));
+        }
+        if !self.receipts_are_payload_records {
+            return Err(DaError::InvalidPayload(
+                "production DA requires receipts as payload records".into(),
+            ));
+        }
+        if self.event_availability_mode != DaEventAvailabilityMode::RegeneratedFromExecutionRoots {
+            return Err(DaError::InvalidPayload(
+                "unsupported production event availability mode".into(),
+            ));
+        }
+        if self.validator_min_retention_blocks == 0
+            || self.archive_min_retention_blocks < self.validator_min_retention_blocks
+        {
+            return Err(DaError::InvalidManifest(
+                "archive retention must be at least validator retention".into(),
+            ));
+        }
+        if self.data_gas_bytes_per_unit == 0 {
+            return Err(DaError::InvalidManifest(
+                "DA data gas bytes per unit must be positive".into(),
+            ));
+        }
+        validate_sorted_unique_namespaces(&self.mandatory_da_namespaces)?;
+        for required in [
+            "detta.block",
+            "detta.tx",
+            "detta.receipt",
+            "detta.aspect",
+            "detta.governance",
+            "detta.bridge",
+            "detta.oracle",
+        ] {
+            if !self
+                .mandatory_da_namespaces
+                .iter()
+                .any(|namespace| namespace.0 == required)
+            {
+                return Err(DaError::InvalidManifest(format!(
+                    "production DA profile is missing required namespace {required}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn data_gas_for_bytes(&self, payload_bytes: u64) -> Result<u64, DaError> {
+        self.validate()?;
+        Ok(payload_bytes.div_ceil(self.data_gas_bytes_per_unit))
+    }
+}
+
+pub fn validate_production_block_payload(
+    payload: &DaPayload,
+    profile: &DaProductionProfile,
+) -> Result<(), DaError> {
+    profile.validate()?;
+    payload.validate()?;
+    let canonical = payload.canonicalized();
+    if &canonical != payload {
+        return Err(DaError::PayloadNotCanonical);
+    }
+
+    let mut block_header: Option<&BlockHeader> = None;
+    let mut tx_count = 0_usize;
+    let mut receipt_count = 0_usize;
+    validate_sorted_unique_namespaces(
+        &payload
+            .namespaces
+            .iter()
+            .map(|section| section.namespace.clone())
+            .collect::<Vec<_>>(),
+    )?;
+
+    for section in &payload.namespaces {
+        match section.namespace.0.as_str() {
+            "detta.block" => {
+                for record in &section.records {
+                    let DaRecord::BlockHeader(header) = record else {
+                        return Err(DaError::InvalidPayload(
+                            "detta.block contains a non-header record".into(),
+                        ));
+                    };
+                    if block_header.is_some() {
+                        return Err(DaError::InvalidPayload(
+                            "production DA payload contains multiple block headers".into(),
+                        ));
+                    }
+                    block_header = Some(header.as_ref());
+                }
+            }
+            "detta.tx" => {
+                for record in &section.records {
+                    if !matches!(record, DaRecord::SignedTransaction(_)) {
+                        return Err(DaError::InvalidPayload(
+                            "detta.tx contains a non-transaction record".into(),
+                        ));
+                    }
+                    tx_count += 1;
+                }
+            }
+            "detta.receipt" => {
+                for record in &section.records {
+                    if !matches!(record, DaRecord::Receipt(_)) {
+                        return Err(DaError::InvalidPayload(
+                            "detta.receipt contains a non-receipt record".into(),
+                        ));
+                    }
+                    receipt_count += 1;
+                }
+            }
+            "detta.aspect" => validate_section_records(section, |record| {
+                matches!(record, DaRecord::AspectArtifact(_))
+            })?,
+            "detta.governance" => validate_section_records(section, |record| {
+                matches!(record, DaRecord::GovernancePayload { .. })
+            })?,
+            "detta.bridge" => validate_section_records(section, |record| {
+                matches!(record, DaRecord::BridgeProof { .. })
+            })?,
+            "detta.oracle" => validate_section_records(section, |record| {
+                matches!(record, DaRecord::OracleEvidence { .. })
+            })?,
+            "detta.event" => {
+                validate_section_records(section, |record| matches!(record, DaRecord::Event(_)))?
+            }
+            other => {
+                return Err(DaError::InvalidPayload(format!(
+                    "unsupported production block DA namespace {other}"
+                )));
+            }
+        }
+    }
+
+    let header = block_header.ok_or_else(|| {
+        DaError::InvalidPayload("production DA payload must contain a block header".into())
+    })?;
+    if payload.chain_id != header.chain_id
+        || payload.height != header.height
+        || payload.previous_block_hash != header.previous_block_hash
+    {
+        return Err(DaError::InvalidPayload(
+            "production DA payload metadata does not match block header".into(),
+        ));
+    }
+    if tx_count == 0 && receipt_count != 0 {
+        return Err(DaError::InvalidPayload(
+            "production DA payload has receipts without transactions".into(),
+        ));
+    }
+    if tx_count != 0 && receipt_count != tx_count {
+        return Err(DaError::InvalidPayload(format!(
+            "production DA payload transaction count {tx_count} does not match receipt count {receipt_count}"
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1685,6 +1961,29 @@ fn canonical_share_indices(
     Ok(unique.into_iter().collect())
 }
 
+fn validate_sorted_unique_namespaces(namespaces: &[DaNamespace]) -> Result<(), DaError> {
+    if !namespaces.windows(2).all(|window| window[0] < window[1]) {
+        return Err(DaError::InvalidPayload(
+            "DA namespaces must be sorted and unique".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_section_records(
+    section: &DaNamespaceSection,
+    allowed: impl Fn(&DaRecord) -> bool,
+) -> Result<(), DaError> {
+    if section.records.iter().all(allowed) {
+        Ok(())
+    } else {
+        Err(DaError::InvalidPayload(format!(
+            "{} contains an unsupported record type",
+            section.namespace.0
+        )))
+    }
+}
+
 fn ensure_sorted_unique_indices(indices: &[u32], field: &str) -> Result<(), DaError> {
     let mut previous = None;
     for index in indices {
@@ -1862,7 +2161,7 @@ pub enum DaError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use detta_core::{Argument, Method};
+    use detta_core::{Argument, BlockHeader, Event, EventPayload, Method, Receipt, TxStatus};
 
     fn tx(hash: &str, nonce: u64) -> Transaction {
         Transaction {
@@ -1899,6 +2198,57 @@ mod tests {
             })
             .collect();
         payload_with_sections(vec![tx_section("detta.tx", records)])
+    }
+
+    fn block_header() -> BlockHeader {
+        BlockHeader {
+            chain_id: "detta-test".into(),
+            height: 7,
+            previous_block_hash: "prev-block".into(),
+            tx_root: "tx-root".into(),
+            receipt_root: "receipt-root".into(),
+            global_state_root: "global-root".into(),
+            storage_root: "storage-root".into(),
+            registry_root: "registry-root".into(),
+            policy_root: "policy-root".into(),
+            event_root: "event-root".into(),
+            nonce_root: "nonce-root".into(),
+            outbox_root: "outbox-root".into(),
+            timestamp: 1,
+            proposer: "validator-1".into(),
+            consensus_certificate: "cert".into(),
+            data_availability: None,
+        }
+    }
+
+    fn receipt(tx_hash: &str) -> Receipt {
+        Receipt {
+            tx_hash: tx_hash.into(),
+            status: TxStatus::Committed,
+            error: None,
+            return_value: None,
+            resource_units_used: 1,
+            storage_root_after: "storage-root".into(),
+            registry_root_after: "registry-root".into(),
+            policy_root_after: "policy-root".into(),
+            event_root_after: "event-root".into(),
+            nonce_root_after: "nonce-root".into(),
+            global_state_root_after: "global-root".into(),
+        }
+    }
+
+    fn event(tx_hash: &str) -> Event {
+        Event {
+            contract: "TokenA".into(),
+            tx_hash: tx_hash.into(),
+            index: 0,
+            payload: EventPayload::Transfer {
+                from: "Alice".into(),
+                to: "Bob".into(),
+                asset: "USDC".into(),
+                amount: 1,
+            },
+        }
     }
 
     fn forged_deterministic_share_set_from_payload_bytes(
@@ -2389,6 +2739,121 @@ mod tests {
         assert!(matches!(
             certificate.validate(),
             Err(DaError::InvalidAvailabilityCertificate(_))
+        ));
+    }
+
+    #[test]
+    fn production_profile_v1_answers_open_da_policy_questions() {
+        let profile = DaProductionProfile::v1();
+
+        profile.validate().unwrap();
+        assert_eq!(
+            profile.commitment_scheme,
+            DaCommitmentScheme::MerkleSha256V1
+        );
+        assert_eq!(profile.erasure_scheme, ErasureScheme::ReedSolomonV1);
+        assert_eq!(
+            profile.custody_mode,
+            DaCustodyMode::DeterministicCustodyWithLightClientSampling
+        );
+        assert!(profile.full_payload_required_for_rpc);
+        assert!(profile.receipts_are_payload_records);
+        assert_eq!(
+            profile.event_availability_mode,
+            DaEventAvailabilityMode::RegeneratedFromExecutionRoots
+        );
+        assert_eq!(profile.data_gas_for_bytes(0).unwrap(), 0);
+        assert_eq!(profile.data_gas_for_bytes(1).unwrap(), 1);
+        assert_eq!(
+            profile
+                .data_gas_for_bytes(DA_V1_DATA_GAS_BYTES_PER_UNIT + 1)
+                .unwrap(),
+            2
+        );
+        assert!(profile.archive_min_retention_blocks >= profile.validator_min_retention_blocks);
+        assert_eq!(
+            profile.mandatory_da_namespaces,
+            vec![
+                namespace_unchecked("detta.aspect"),
+                namespace_unchecked("detta.block"),
+                namespace_unchecked("detta.bridge"),
+                namespace_unchecked("detta.governance"),
+                namespace_unchecked("detta.oracle"),
+                namespace_unchecked("detta.receipt"),
+                namespace_unchecked("detta.tx"),
+            ]
+        );
+    }
+
+    #[test]
+    fn production_block_payload_policy_accepts_transactions_receipts_and_optional_events() {
+        let payload = payload_with_sections(vec![
+            tx_section(
+                "detta.block",
+                vec![DaRecord::BlockHeader(Box::new(block_header()))],
+            ),
+            tx_section("detta.tx", vec![DaRecord::SignedTransaction(tx("tx-1", 1))]),
+            tx_section("detta.receipt", vec![DaRecord::Receipt(receipt("tx-1"))]),
+            tx_section("detta.event", vec![DaRecord::Event(event("tx-1"))]),
+        ]);
+
+        validate_production_block_payload(&payload, &DaProductionProfile::v1()).unwrap();
+    }
+
+    #[test]
+    fn production_block_payload_policy_rejects_receipt_count_mismatch() {
+        let payload = payload_with_sections(vec![
+            tx_section(
+                "detta.block",
+                vec![DaRecord::BlockHeader(Box::new(block_header()))],
+            ),
+            tx_section(
+                "detta.tx",
+                vec![
+                    DaRecord::SignedTransaction(tx("tx-1", 1)),
+                    DaRecord::SignedTransaction(tx("tx-2", 2)),
+                ],
+            ),
+            tx_section("detta.receipt", vec![DaRecord::Receipt(receipt("tx-1"))]),
+        ]);
+
+        assert!(matches!(
+            validate_production_block_payload(&payload, &DaProductionProfile::v1()),
+            Err(DaError::InvalidPayload(message))
+                if message.contains("transaction count 2 does not match receipt count 1")
+        ));
+    }
+
+    #[test]
+    fn production_block_payload_policy_rejects_unsupported_namespace_records() {
+        let wrong_receipt_section = payload_with_sections(vec![
+            tx_section(
+                "detta.block",
+                vec![DaRecord::BlockHeader(Box::new(block_header()))],
+            ),
+            tx_section("detta.tx", vec![DaRecord::SignedTransaction(tx("tx-1", 1))]),
+            tx_section(
+                "detta.receipt",
+                vec![DaRecord::SignedTransaction(tx("tx-1", 1))],
+            ),
+        ]);
+        assert!(matches!(
+            validate_production_block_payload(&wrong_receipt_section, &DaProductionProfile::v1()),
+            Err(DaError::InvalidPayload(message))
+                if message.contains("detta.receipt contains a non-receipt record")
+        ));
+
+        let unsupported_namespace = payload_with_sections(vec![
+            tx_section(
+                "detta.block",
+                vec![DaRecord::BlockHeader(Box::new(block_header()))],
+            ),
+            tx_section("detta.debug", vec![DaRecord::Event(event("tx-1"))]),
+        ]);
+        assert!(matches!(
+            validate_production_block_payload(&unsupported_namespace, &DaProductionProfile::v1()),
+            Err(DaError::InvalidPayload(message))
+                if message.contains("unsupported production block DA namespace detta.debug")
         ));
     }
 

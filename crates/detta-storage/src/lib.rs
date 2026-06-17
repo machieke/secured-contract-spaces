@@ -2,7 +2,7 @@ use detta_consensus::{FinalityCertificate, SlashingRecord};
 use detta_core::{Block, DeTTaState, Receipt, SnapshotError, StateSnapshot, Transaction};
 use detta_da::{
     payload_hash, DaAvailabilityCertificate, DaChallengeRecord, DaManifest, DaPayload, DaShare,
-    DaShareSet,
+    DaShareSet, DA_V1_ARCHIVE_MIN_RETENTION_BLOCKS, DA_V1_VALIDATOR_MIN_RETENTION_BLOCKS,
 };
 use detta_protocol::{SignedValidatorMessage, ValidatorSetMetadata, ValidatorSignatureDomain};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -112,6 +112,47 @@ pub struct DaRetentionPolicy {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DaRetentionPolicyConfig {
     pub policies: Vec<DaRetentionPolicy>,
+}
+
+impl DaRetentionPolicyConfig {
+    pub fn production_default() -> Self {
+        Self {
+            policies: vec![
+                DaRetentionPolicy {
+                    class: DaRetentionClass::Hot,
+                    retain_payloads: true,
+                    retain_all_shares: true,
+                    min_retention_blocks: DA_V1_VALIDATOR_MIN_RETENTION_BLOCKS,
+                    max_payload_bytes: Some(MAX_ENCODED_BYTES),
+                },
+                DaRetentionPolicy {
+                    class: DaRetentionClass::Warm,
+                    retain_payloads: true,
+                    retain_all_shares: false,
+                    min_retention_blocks: DA_V1_VALIDATOR_MIN_RETENTION_BLOCKS * 4,
+                    max_payload_bytes: Some(MAX_ENCODED_BYTES),
+                },
+                DaRetentionPolicy {
+                    class: DaRetentionClass::Cold,
+                    retain_payloads: true,
+                    retain_all_shares: true,
+                    min_retention_blocks: DA_V1_ARCHIVE_MIN_RETENTION_BLOCKS,
+                    max_payload_bytes: None,
+                },
+                DaRetentionPolicy {
+                    class: DaRetentionClass::Checkpoint,
+                    retain_payloads: true,
+                    retain_all_shares: true,
+                    min_retention_blocks: DA_V1_ARCHIVE_MIN_RETENTION_BLOCKS,
+                    max_payload_bytes: None,
+                },
+            ],
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), StorageError> {
+        validate_da_retention_policy(self)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1620,6 +1661,18 @@ fn validate_da_retention_policy(config: &DaRetentionPolicyConfig) -> Result<(), 
                 policy.class
             )));
         }
+        if policy.min_retention_blocks == 0 {
+            return Err(StorageError::CorruptData(format!(
+                "DA retention policy {:?} must retain data for at least one block",
+                policy.class
+            )));
+        }
+        if policy.max_payload_bytes == Some(0) {
+            return Err(StorageError::CorruptData(format!(
+                "DA retention policy {:?} max payload bytes must be positive when set",
+                policy.class
+            )));
+        }
         if !policy.retain_payloads && !policy.retain_all_shares {
             return Err(StorageError::CorruptData(format!(
                 "DA retention policy {:?} must retain payloads or shares",
@@ -2351,6 +2404,79 @@ mod tests {
         assert!(stats.index_bytes > 0);
 
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn production_da_retention_policy_defaults_are_stable_and_valid() {
+        let policy = DaRetentionPolicyConfig::production_default();
+
+        policy.validate().unwrap();
+        assert_eq!(
+            policy.policies,
+            vec![
+                DaRetentionPolicy {
+                    class: DaRetentionClass::Hot,
+                    retain_payloads: true,
+                    retain_all_shares: true,
+                    min_retention_blocks: DA_V1_VALIDATOR_MIN_RETENTION_BLOCKS,
+                    max_payload_bytes: Some(MAX_ENCODED_BYTES),
+                },
+                DaRetentionPolicy {
+                    class: DaRetentionClass::Warm,
+                    retain_payloads: true,
+                    retain_all_shares: false,
+                    min_retention_blocks: DA_V1_VALIDATOR_MIN_RETENTION_BLOCKS * 4,
+                    max_payload_bytes: Some(MAX_ENCODED_BYTES),
+                },
+                DaRetentionPolicy {
+                    class: DaRetentionClass::Cold,
+                    retain_payloads: true,
+                    retain_all_shares: true,
+                    min_retention_blocks: DA_V1_ARCHIVE_MIN_RETENTION_BLOCKS,
+                    max_payload_bytes: None,
+                },
+                DaRetentionPolicy {
+                    class: DaRetentionClass::Checkpoint,
+                    retain_payloads: true,
+                    retain_all_shares: true,
+                    min_retention_blocks: DA_V1_ARCHIVE_MIN_RETENTION_BLOCKS,
+                    max_payload_bytes: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn da_retention_policy_rejects_zero_windows_and_zero_payload_limits() {
+        let zero_window = DaRetentionPolicyConfig {
+            policies: vec![DaRetentionPolicy {
+                class: DaRetentionClass::Hot,
+                retain_payloads: true,
+                retain_all_shares: true,
+                min_retention_blocks: 0,
+                max_payload_bytes: Some(MAX_ENCODED_BYTES),
+            }],
+        };
+        assert!(matches!(
+            zero_window.validate(),
+            Err(StorageError::CorruptData(message))
+                if message.contains("must retain data for at least one block")
+        ));
+
+        let zero_payload_limit = DaRetentionPolicyConfig {
+            policies: vec![DaRetentionPolicy {
+                class: DaRetentionClass::Hot,
+                retain_payloads: true,
+                retain_all_shares: true,
+                min_retention_blocks: 1,
+                max_payload_bytes: Some(0),
+            }],
+        };
+        assert!(matches!(
+            zero_payload_limit.validate(),
+            Err(StorageError::CorruptData(message))
+                if message.contains("max payload bytes must be positive")
+        ));
     }
 
     #[test]

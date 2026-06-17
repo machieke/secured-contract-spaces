@@ -933,22 +933,31 @@ DeTTa has a production-grade DA layer when all of these are true:
 - audit/readiness bundles include DA evidence and verifier checks;
 - formal/proof artifacts cover DA certificate and reconstruction invariants.
 
-## 21. Open Design Questions
+## 21. Resolved Production v1 Policy Decisions
 
-- Should DeTTa use Merkle-only share commitments for the first release, or move
-  directly to KZG commitments?
-- Should validators store deterministic assigned custody shares, random samples,
-  or both?
-- Should full nodes be required to reconstruct full payloads before serving RPC?
-- What is the minimum retention window for validators versus archive nodes?
-- Which data classes should be mandatory in DA versus deterministically
-  regenerable from DA-covered transactions?
-- Should receipts/events be DA payload records, or only committed roots plus
-  deterministic regeneration outputs?
-- How should DA data gas be priced relative to execution units?
-- How should DA slashing integrate with current validator-set governance?
-- What archive/storage-provider incentive model is acceptable before public
-  mainnet?
+- DeTTa production DA v1 uses Merkle SHA-256 share commitments over encoded
+  share hashes. KZG commitments are deferred to a future manifest/payload
+  version.
+- Validators sign deterministic custody assignments, and votes may additionally
+  carry light-client sample indices. The v1 profile requires at least two
+  custody shares and three light-client samples where those checks are used.
+- Full nodes must reconstruct or locally verify full DA payloads before serving
+  production payload RPC responses.
+- Validator hot retention is at least 65,536 blocks. Archive and checkpoint
+  retention are at least 1,048,576 blocks.
+- Mandatory DA record namespaces for production coverage are `detta.aspect`,
+  `detta.block`, `detta.bridge`, `detta.governance`, `detta.oracle`,
+  `detta.receipt`, and `detta.tx`.
+- Production block DA payloads carry transactions and receipts as payload
+  records. Raw events are optional records; event integrity is otherwise
+  replay-deterministic through the committed block `event_root` and receipt
+  `event_root_after` values.
+- DA data gas is priced in 1024-byte units by `DaProductionProfile::v1()`.
+- DA slashing is governed by the timelocked validator-set governance path
+  already used by `DaSlashingPolicy`.
+- Archive/storage providers are treated as governance-registered storage
+  providers for public-mainnet readiness; a separate open storage market can be
+  added after v1.
 
 ## 22. Recommended First Implementation Slice
 
