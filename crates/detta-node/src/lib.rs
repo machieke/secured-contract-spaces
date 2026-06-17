@@ -3725,7 +3725,7 @@ fn node_rpc_error_code(error: &NodeError) -> &'static str {
 mod tests {
     use super::*;
     use detta_core::{
-        Argument, Method, PolicyEffect, ScheduledPolicyUpdate, ScheduledUpgrade, TxStatus,
+        Amount, Argument, Method, PolicyEffect, ScheduledPolicyUpdate, ScheduledUpgrade, TxStatus,
         DA_SLASHING_POLICY_SCOPE, DEFAULT_BLOCK_RESOURCE_LIMIT, DEFAULT_MEMPOOL_MAX_PENDING,
         DEFAULT_MEMPOOL_MAX_PENDING_PER_SENDER, DEFAULT_MEMPOOL_MAX_TRANSACTION_BYTES,
     };
@@ -3740,6 +3740,9 @@ mod tests {
     use std::net::{Shutdown, TcpListener, TcpStream};
     use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    const ASPECT_SOURCE: &str =
+        include_str!("../../../models/aspects/stdlib/minimal-transfer-token.metta");
 
     fn temp_dir(name: &str) -> PathBuf {
         let nonce = SystemTime::now()
@@ -3906,6 +3909,77 @@ mod tests {
             signature_ok: true,
             budget: 1_000_000,
         }
+    }
+
+    fn text(value: impl Into<String>) -> Argument {
+        Argument::Text(value.into())
+    }
+
+    fn asset(value: impl Into<String>) -> Argument {
+        Argument::Asset(value.into())
+    }
+
+    fn amount(value: Amount) -> Argument {
+        Argument::Amount(value)
+    }
+
+    fn state_with_factory() -> DeTTaState {
+        let mut state = seeded_state();
+        state.deploy_factory("Factory").unwrap();
+        state
+    }
+
+    fn defi_da_state() -> DeTTaState {
+        let mut state = DeTTaState::new("detta-local");
+        state
+            .deploy_token(
+                "TokenUSDC",
+                "USDC",
+                vec![
+                    ("Alice".into(), 1_000),
+                    ("VaultA".into(), 1_000),
+                    ("Liquidator".into(), 1_000),
+                ],
+            )
+            .unwrap();
+        state
+            .deploy_token(
+                "TokenATOM",
+                "ATOM",
+                vec![("Alice".into(), 1_000), ("Liquidator".into(), 1_000)],
+            )
+            .unwrap();
+        state.deploy_amm_pool("PoolAB", "USDC", "ATOM").unwrap();
+        state
+            .deploy_oracle("OracleA", "ATOM", "OracleBot", 10)
+            .unwrap();
+        state
+            .deploy_lending_vault("VaultA", "ATOM", "USDC", "OracleA", 5_000, 10)
+            .unwrap();
+        state.deploy_staking("StakeA", "ATOM").unwrap();
+        state
+    }
+
+    fn large_aspect_submission(index: u64) -> Transaction {
+        let root_suffix = format!("{}-{index}", "x".repeat(512));
+        tx_to(
+            "Factory",
+            &format!("tx-aspect-load-{index}"),
+            "Issuer",
+            index,
+            Method::SubmitAspectModule,
+            vec![
+                text(format!("LoadAspect{index}")),
+                text("NormalizedBalanceFirst.v1"),
+                text(format!("source-root-{root_suffix}")),
+                text(format!("ir-root-{root_suffix}")),
+                text(format!("abi-root-{root_suffix}")),
+                text(format!("policy-root-{root_suffix}")),
+                text(format!("storage-schema-root-{root_suffix}")),
+                text(format!("registry-schema-root-{root_suffix}")),
+                text(format!("invariant-root-{root_suffix}")),
+            ],
+        )
     }
 
     #[test]
@@ -4546,6 +4620,515 @@ mod tests {
 
         fs::remove_dir_all(source_dir).unwrap();
         fs::remove_dir_all(sink_dir).unwrap();
+    }
+
+    #[test]
+    fn da_gossip_load_handles_large_aspect_module_deployments() {
+        let source_dir = temp_dir("da-gossip-large-aspect-source");
+        let sink_dirs = (2..=4)
+            .map(|validator| temp_dir(&format!("da-gossip-large-aspect-sink-{validator}")))
+            .collect::<Vec<_>>();
+        let mut source =
+            PersistentValidatorNode::bootstrap("validator-1", state_with_factory(), &source_dir)
+                .unwrap();
+        let mut sinks = sink_dirs
+            .iter()
+            .enumerate()
+            .map(|(index, dir)| {
+                PersistentValidatorNode::bootstrap(
+                    format!("validator-{}", index + 2),
+                    state_with_factory(),
+                    dir,
+                )
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+
+        source
+            .submit_transaction(tx_to(
+                "Factory",
+                "tx-aspect-load-source",
+                "Issuer",
+                1,
+                Method::SubmitAspectModule,
+                vec![text("ERC20ConformantToken"), text(ASPECT_SOURCE)],
+            ))
+            .unwrap();
+        for index in 2..=9 {
+            source
+                .submit_transaction(large_aspect_submission(index))
+                .unwrap();
+        }
+        let block = source
+            .produce_block_with_data_availability(1, 1_000, 128)
+            .unwrap();
+        let commitment = block.header.data_availability.as_ref().unwrap().clone();
+        let share_set = source.load_da_share_set(&commitment.manifest_hash).unwrap();
+        let expected_message_count = share_set.shares.len() + 1;
+        let mut transport = InMemoryTransport::new([
+            "validator-1".into(),
+            "validator-2".into(),
+            "validator-3".into(),
+            "validator-4".into(),
+        ])
+        .unwrap();
+
+        assert!(share_set.manifest.payload_bytes > 24 * 1024);
+        assert_eq!(block.receipts.len(), 9);
+        assert!(block
+            .receipts
+            .iter()
+            .all(|receipt| receipt.status == TxStatus::Committed));
+        assert_eq!(
+            source
+                .gossip_data_availability_for_block(&block, &mut transport)
+                .unwrap(),
+            expected_message_count * sinks.len()
+        );
+
+        for sink in &mut sinks {
+            let envelopes = transport.drain_peer(sink.validator_id()).unwrap();
+            assert_eq!(envelopes.len(), expected_message_count);
+            for envelope in envelopes {
+                assert_eq!(
+                    sink.ingest_network_envelope(&envelope).unwrap(),
+                    NetworkIngestOutcome::DataAvailabilityStored
+                );
+            }
+            let payload = sink.load_da_payload(&commitment.manifest_hash).unwrap();
+            assert_eq!(payload.height, 1);
+            assert_eq!(
+                payload.namespace_root().unwrap(),
+                share_set.manifest.namespace_root
+            );
+            let status = sink.da_status(&commitment.manifest_hash).unwrap();
+            assert!(status.payload_reconstructable);
+            assert!(status.missing_share_indices.is_empty());
+        }
+
+        fs::remove_dir_all(source_dir).unwrap();
+        for dir in sink_dirs {
+            fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn da_certified_blocks_sustain_defi_traffic_and_certificates() {
+        let dir = temp_dir("da-sustained-defi");
+        let mut node =
+            PersistentValidatorNode::bootstrap("validator-1", defi_da_state(), &dir).unwrap();
+        let workloads = vec![
+            vec![
+                tx_to(
+                    "OracleA",
+                    "tx-da-defi-oracle-1",
+                    "OracleBot",
+                    1,
+                    Method::SubmitPrice,
+                    vec![asset("ATOM"), amount(2), amount(0)],
+                ),
+                tx_to(
+                    "PoolAB",
+                    "tx-da-defi-liquidity-1",
+                    "Alice",
+                    1,
+                    Method::AddLiquidity,
+                    vec![amount(100), amount(100)],
+                ),
+                tx_to(
+                    "VaultA",
+                    "tx-da-defi-deposit-1",
+                    "Alice",
+                    2,
+                    Method::DepositCollateral,
+                    vec![asset("ATOM"), amount(100)],
+                ),
+                tx_to(
+                    "StakeA",
+                    "tx-da-defi-stake-1",
+                    "Alice",
+                    3,
+                    Method::Stake,
+                    vec![asset("ATOM"), amount(50)],
+                ),
+            ],
+            vec![
+                tx_to(
+                    "VaultA",
+                    "tx-da-defi-borrow-1",
+                    "Alice",
+                    4,
+                    Method::Borrow,
+                    vec![asset("USDC"), amount(50)],
+                ),
+                tx_to(
+                    "PoolAB",
+                    "tx-da-defi-swap-1",
+                    "Alice",
+                    5,
+                    Method::Swap,
+                    vec![asset("USDC"), amount(10), amount(1)],
+                ),
+            ],
+            vec![
+                tx_to(
+                    "OracleA",
+                    "tx-da-defi-oracle-2",
+                    "OracleBot",
+                    2,
+                    Method::SubmitPrice,
+                    vec![asset("ATOM"), amount(3), amount(2_000)],
+                ),
+                tx_to(
+                    "PoolAB",
+                    "tx-da-defi-liquidity-2",
+                    "Alice",
+                    6,
+                    Method::AddLiquidity,
+                    vec![amount(25), amount(25)],
+                ),
+                tx_to(
+                    "StakeA",
+                    "tx-da-defi-stake-2",
+                    "Alice",
+                    7,
+                    Method::Stake,
+                    vec![asset("ATOM"), amount(25)],
+                ),
+            ],
+        ];
+
+        for (height, transactions) in workloads.into_iter().enumerate() {
+            for transaction in transactions {
+                node.submit_transaction(transaction).unwrap();
+            }
+            let height = height as u64 + 1;
+            let block = node
+                .produce_block_with_data_availability(height, height * 1_000, 96)
+                .unwrap();
+            assert!(block
+                .receipts
+                .iter()
+                .all(|receipt| receipt.status == TxStatus::Committed));
+            let manifest_hash = block
+                .header
+                .data_availability
+                .as_ref()
+                .unwrap()
+                .manifest_hash
+                .clone();
+            let share_set = node.load_da_share_set(&manifest_hash).unwrap();
+            let certificate = DaAvailabilityCertificate::from_manifest(
+                &share_set.manifest,
+                vec![
+                    "validator-1".into(),
+                    "validator-2".into(),
+                    "validator-3".into(),
+                ],
+            )
+            .unwrap();
+            let certificate_hash = node.persist_da_certificate(&certificate).unwrap();
+            assert_eq!(
+                node.load_da_certificate(&certificate_hash).unwrap(),
+                certificate
+            );
+            let status = node.da_status(&manifest_hash).unwrap();
+            assert!(status.payload_reconstructable);
+            assert_eq!(status.stored_share_count, status.expected_share_count);
+        }
+
+        assert_eq!(
+            node.rpc().call_balance_view("TokenATOM", "Alice", "ATOM"),
+            708
+        );
+        assert_eq!(
+            node.rpc().call_balance_view("TokenUSDC", "Alice", "USDC"),
+            915
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn long_running_multi_validator_retention_simulation_survives_restart() {
+        let validator_ids = ["validator-1", "validator-2", "validator-3", "validator-4"];
+        let dirs = validator_ids
+            .iter()
+            .map(|validator| temp_dir(&format!("da-retention-{validator}")))
+            .collect::<Vec<_>>();
+        let keys = validator_ids
+            .iter()
+            .enumerate()
+            .map(|(index, validator)| validator_key(validator, index as u8 + 20))
+            .collect::<Vec<_>>();
+        let public_keys = keys.iter().map(|key| key.public_key()).collect::<Vec<_>>();
+        let mut validators = validator_ids
+            .iter()
+            .zip(dirs.iter())
+            .map(|(validator, dir)| {
+                PersistentValidatorNode::bootstrap_with_validator_set(
+                    *validator,
+                    seeded_state(),
+                    dir,
+                    "detta-testnet",
+                    public_keys.clone(),
+                )
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+
+        let retention_policy = detta_storage::DaRetentionPolicyConfig {
+            policies: vec![
+                detta_storage::DaRetentionPolicy {
+                    class: detta_storage::DaRetentionClass::Hot,
+                    retain_payloads: true,
+                    retain_all_shares: true,
+                    min_retention_blocks: 16,
+                    max_payload_bytes: Some(1024 * 1024),
+                },
+                detta_storage::DaRetentionPolicy {
+                    class: detta_storage::DaRetentionClass::Checkpoint,
+                    retain_payloads: true,
+                    retain_all_shares: true,
+                    min_retention_blocks: 128,
+                    max_payload_bytes: None,
+                },
+            ],
+        };
+        for validator in &validators {
+            validator
+                .storage
+                .commit_da_retention_policy(&retention_policy)
+                .unwrap();
+        }
+
+        let mut manifest_hashes = Vec::new();
+        for height in 1..=12_u64 {
+            validators[0]
+                .submit_transaction(tx_to(
+                    "TokenA",
+                    &format!("tx-da-retention-{height}"),
+                    "Alice",
+                    height,
+                    Method::Transfer,
+                    vec![Argument::Principal("Bob".into()), asset("USDC"), amount(1)],
+                ))
+                .unwrap();
+            let block = validators[0]
+                .produce_block_with_data_availability(height, height * 1_000, 64)
+                .unwrap();
+            let manifest_hash = block
+                .header
+                .data_availability
+                .as_ref()
+                .unwrap()
+                .manifest_hash
+                .clone();
+            let share_set = validators[0].load_da_share_set(&manifest_hash).unwrap();
+            for validator in validators.iter().skip(1) {
+                validator.storage.commit_da_share_set(&share_set).unwrap();
+            }
+            for (validator, key) in validators.iter().zip(keys.iter()) {
+                assert!(matches!(
+                    validator
+                        .sign_da_availability_vote(key, &share_set.manifest, &share_set.shares, 2)
+                        .unwrap(),
+                    NetworkMessage::SignedValidator(_)
+                ));
+            }
+            manifest_hashes.push(manifest_hash);
+        }
+
+        drop(validators);
+        let restarted = validator_ids
+            .iter()
+            .zip(dirs.iter())
+            .map(|(validator, dir)| PersistentValidatorNode::restart(*validator, dir).unwrap())
+            .collect::<Vec<_>>();
+        for node in &restarted {
+            assert_eq!(
+                node.storage.maybe_load_da_retention_policy().unwrap(),
+                Some(retention_policy.clone())
+            );
+            for manifest_hash in &manifest_hashes {
+                assert!(node.load_da_share_set(manifest_hash).is_ok());
+                assert!(
+                    node.da_status(manifest_hash)
+                        .unwrap()
+                        .payload_reconstructable
+                );
+            }
+            assert!(node
+                .storage
+                .maybe_load_consensus_signing_record(
+                    node.validator_id(),
+                    ValidatorSignatureDomain::DaAvailabilityVote,
+                    12,
+                )
+                .unwrap()
+                .is_some());
+        }
+        let conflicting_vote = DaAvailabilityVote {
+            chain_id: "detta-local".into(),
+            height: 12,
+            block_hash: "conflicting-block".into(),
+            manifest_hash: "conflicting-manifest".into(),
+            share_root: "conflicting-share-root".into(),
+            validator_id: "validator-1".into(),
+            custody_share_indices: Vec::new(),
+            sampled_share_indices: Vec::new(),
+        };
+        assert!(matches!(
+            restarted[0].sign_validator_message(
+                &keys[0],
+                NetworkMessage::DaAvailabilityVote(conflicting_vote),
+            ),
+            Err(NodeError::ConsensusSigningConflict { .. })
+        ));
+
+        for dir in dirs {
+            fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn da_retrieval_recovers_with_offline_validator_minority() {
+        let source_dir = temp_dir("da-offline-retrieval-source");
+        let mut source =
+            PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &source_dir).unwrap();
+        source.submit_transaction(transfer_tx()).unwrap();
+        source.produce_block(1, 1_000).unwrap();
+        let (_, share_set) = source.build_snapshot_da_share_set(64, 3, 2).unwrap();
+        let manifest_hash = share_set.manifest.manifest_hash().unwrap();
+
+        let offline_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let offline_addr = offline_listener.local_addr().unwrap();
+        drop(offline_listener);
+        let mut addrs = vec![offline_addr];
+        let mut handles = Vec::new();
+        for peer_index in 0..3 {
+            let peer_dir = temp_dir(&format!("da-offline-retrieval-peer-{peer_index}"));
+            let peer = PersistentValidatorNode::bootstrap(
+                format!("validator-{}", peer_index + 2),
+                seeded_state(),
+                &peer_dir,
+            )
+            .unwrap();
+            peer.storage.commit_da_share_set(&share_set).unwrap();
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            addrs.push(listener.local_addr().unwrap());
+            handles.push(thread::spawn(move || {
+                let (stream, _) = listener.accept().unwrap();
+                let mut tcp = TcpProtocolStream::from_stream(stream);
+                match tcp.receive().unwrap() {
+                    NetworkMessage::DaShareRequest(request) => {
+                        for response in peer.serve_da_share_request(&request).unwrap() {
+                            tcp.send(&response).unwrap();
+                        }
+                    }
+                    message => panic!("expected DA share request, got {message:?}"),
+                }
+                fs::remove_dir_all(peer_dir).unwrap();
+            }));
+        }
+
+        let (fetched, metrics) = fetch_da_share_set_from_tcp_peers(
+            |peer_index| TcpProtocolStream::connect(addrs[peer_index]),
+            addrs.len(),
+            manifest_hash,
+            1,
+        )
+        .unwrap();
+
+        assert_eq!(metrics.peer_attempts, 4);
+        assert_eq!(metrics.peer_failures, 1);
+        assert_eq!(metrics.shares_received, 3);
+        assert!(metrics.payload_reconstructable);
+        assert_eq!(
+            fetched.reconstruct_payload().unwrap(),
+            share_set.reconstruct_payload().unwrap()
+        );
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        fs::remove_dir_all(source_dir).unwrap();
+    }
+
+    #[test]
+    fn archive_node_reconstructs_historical_da_payloads_after_restart() {
+        let source_dir = temp_dir("da-archive-source");
+        let archive_dir = temp_dir("da-archive-node");
+        let mut source =
+            PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &source_dir).unwrap();
+        let mut archive =
+            PersistentValidatorNode::bootstrap("archive-1", seeded_state(), &archive_dir).unwrap();
+        let mut historical = Vec::new();
+
+        for height in 1..=5_u64 {
+            source
+                .submit_transaction(tx_to(
+                    "TokenA",
+                    &format!("tx-da-archive-{height}"),
+                    "Alice",
+                    height,
+                    Method::Transfer,
+                    vec![Argument::Principal("Bob".into()), asset("USDC"), amount(1)],
+                ))
+                .unwrap();
+            let block = source
+                .produce_block_with_data_availability(height, height * 1_000, 64)
+                .unwrap();
+            let manifest_hash = block
+                .header
+                .data_availability
+                .as_ref()
+                .unwrap()
+                .manifest_hash
+                .clone();
+            let share_set = source.load_da_share_set(&manifest_hash).unwrap();
+            let certificate = DaAvailabilityCertificate::from_manifest(
+                &share_set.manifest,
+                vec!["validator-1".into(), "archive-1".into()],
+            )
+            .unwrap();
+            archive.storage.commit_da_share_set(&share_set).unwrap();
+            archive.persist_da_certificate(&certificate).unwrap();
+            let payload = share_set.reconstruct_payload().unwrap();
+            let mut reconstructed_block = block_from_da_payload(&payload).unwrap();
+            reconstructed_block.header.data_availability = Some(DataAvailabilityCommitment {
+                payload_root: share_set.manifest.payload_hash.clone(),
+                manifest_hash: share_set.manifest.manifest_hash().unwrap(),
+                share_root: share_set.manifest.share_root.clone(),
+                certificate_hash: None,
+            });
+            archive.import_block(&reconstructed_block).unwrap();
+            assert_eq!(reconstructed_block.block_hash(), block.block_hash());
+            historical.push((height, manifest_hash, block));
+        }
+
+        drop(archive);
+        let archive = PersistentValidatorNode::restart("archive-1", &archive_dir).unwrap();
+        for (height, manifest_hash, expected_block) in historical {
+            let payload = archive.load_da_payload(&manifest_hash).unwrap();
+            assert_eq!(payload.height, height);
+            assert_eq!(
+                archive.load_block(height).unwrap().block_hash(),
+                expected_block.block_hash()
+            );
+            let tx_hashes = payload
+                .namespaces
+                .iter()
+                .flat_map(|section| section.records.iter())
+                .filter_map(|record| match record {
+                    DaRecord::SignedTransaction(transaction) => Some(transaction.tx_hash.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(tx_hashes, vec![format!("tx-da-archive-{height}")]);
+        }
+
+        fs::remove_dir_all(source_dir).unwrap();
+        fs::remove_dir_all(archive_dir).unwrap();
     }
 
     #[test]

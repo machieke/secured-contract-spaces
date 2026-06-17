@@ -870,13 +870,13 @@ Acceptance:
 
 ### Phase 12: Production Hardening
 
-- [ ] Load test DA gossip with large aspect deployments.
-- [ ] Load test sustained AMM/lending/staking traffic with DA certificates.
+- [x] Load test DA gossip with large aspect deployments.
+- [x] Load test sustained AMM/lending/staking traffic with DA certificates.
 - [x] Fuzz DA payload decoding and share reconstruction.
 - [x] Fuzz DA RPC request bounds.
-- [ ] Add long-running multi-validator retention simulation.
-- [ ] Add chaos tests for offline validators during retrieval.
-- [ ] Add archive-node reconstruction tests.
+- [x] Add long-running multi-validator retention simulation.
+- [x] Add chaos tests for offline validators during retrieval.
+- [x] Add archive-node reconstruction tests.
 
 Acceptance:
 
