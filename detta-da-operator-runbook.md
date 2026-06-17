@@ -1,8 +1,9 @@
 # DeTTa DA Operator Runbook
 
-This runbook covers the current experimental DeTTa data availability layer.
-Use it with `detta-data-availability-layer.md` and the implementation tracker
-in `detta-data-availability-layer-implementation-plan.md`.
+This runbook covers DeTTa's DA v1 production candidate on the
+`experimental/data-availability-layer` branch. Use it with
+`detta-data-availability-layer.md` and the implementation tracker in
+`detta-data-availability-layer-implementation-plan.md`.
 
 ## Retention Classes
 

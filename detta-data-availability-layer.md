@@ -1,8 +1,9 @@
 # DeTTa Data Availability Layer
 
-This document records the current experimental DA vocabulary, threat model, and
-versioned payload schema for DeTTa. The implementation plan remains in
-`detta-data-availability-layer-implementation-plan.md`.
+This document records the DA v1 vocabulary, threat model, and versioned payload
+schema for DeTTa's production DA candidate on the
+`experimental/data-availability-layer` branch. The implementation plan remains
+in `detta-data-availability-layer-implementation-plan.md`.
 
 ## Glossary
 

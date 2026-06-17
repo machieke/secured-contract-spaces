@@ -117,29 +117,37 @@ clients.
   pending repair lag, and DA challenge evidence failures.
 - [x] DA retention and repair operator runbook is documented.
 
-## 0. Current Baseline
+## 0. Current Implementation Baseline
 
 DeTTa already has strong data integrity mechanisms:
 
 - deterministic block execution and replay;
 - block headers with transaction, receipt, storage, registry, policy, event,
-  nonce, outbox, and global state roots;
+  nonce, outbox, global state, and DA commitment roots;
 - Merkle proofs for receipts, events, storage, registry, aspect modules, and
   cross-shard outbox messages;
-- durable validator storage for blocks, certificates, mempool records,
-  snapshots, validator metadata, audit records, and sync diagnostics;
-- chunked snapshot sync with manifest hashes, chunk hashes, snapshot hashes,
-  metadata-root checks, import audit records, and retry metrics;
-- finality certificates and signed validator protocol envelopes.
+- durable validator storage for blocks, finality certificates, DA manifests,
+  DA shares, DA certificates, payloads, challenges, repair records, mempool
+  records, snapshots, validator metadata, audit records, and sync diagnostics;
+- DA-certified finality mode that rejects production blocks without matching DA
+  commitments and quorum DA certificates;
+- Reed-Solomon share encoding, deterministic custody assignments, light-client
+  sample schedules, namespace proofs, and threshold reconstruction;
+- availability challenge/evidence records that can produce durable slashing
+  records under governed DA slashing policy;
+- DA-backed checkpoint state sync and DA-certified block replay after
+  checkpoint import;
+- production default retention policy, retention audit, dry-run prune-plan
+  reporting, storage stats, index roots, operator metrics, alerts, and
+  runbooks;
+- release gates, readiness bundles, TLC simulations, and proof artifact checks
+  that include DA-certified block production, reconstruction, and withheld-data
+  evidence.
 
-This is sufficient for authenticated replay and verified state sync when at
-least one honest reachable node retains and serves the data.
-
-It is not yet a production data availability system. Today, availability is an
-operational assumption: data is available if validators/full nodes keep it and
-serve it. There is no DA certificate gating block finality, no erasure-coded
-share custody, no random sampling protocol, no namespace retrieval proof, no
-availability slashing, and no retention or incentive protocol.
+The current implementation is a production DA v1 candidate on the
+`experimental/data-availability-layer` branch. Remaining hardening should focus
+on public-mainnet operations, economic incentives, and future commitment
+schemes such as KZG, not on replacing the correctness path listed above.
 
 ## 1. Target Guarantee
 
