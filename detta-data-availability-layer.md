@@ -137,6 +137,10 @@ The enforced production block-payload validator rejects unsupported namespaces,
 records in the wrong namespace, multiple block headers, receipts without
 transactions, and transaction/receipt count mismatches.
 
+Fresh and restarted persistent nodes commit `DaRetentionPolicyConfig::production_default()`
+when no DA retention policy is already present. Operator-provided policies are
+left intact.
+
 Persistent validator `get_node_health`, `get_operator_metrics`, and embedded
 operator alert metrics expose the active `da_production_profile`. Operators can
 compare that object with `DaProductionProfile::v1()` to confirm the node is

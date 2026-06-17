@@ -34,8 +34,9 @@ use detta_rpc::{
     SnapshotSyncClientMetricsReport, ValidatorSetMetadataUpdateStatus, DEFAULT_MAX_BLOCK_PAGE_SIZE,
 };
 use detta_storage::{
-    ConsensusSigningRecord, FileStorage, SnapshotImportAuditConfig, SnapshotImportAuditRecord,
-    StorageError, ValidatorSetMetadataAuditOutcome, ValidatorSetMetadataAuditRecord,
+    ConsensusSigningRecord, DaRetentionPolicyConfig, FileStorage, SnapshotImportAuditConfig,
+    SnapshotImportAuditRecord, StorageError, ValidatorSetMetadataAuditOutcome,
+    ValidatorSetMetadataAuditRecord,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{btree_map::Entry, BTreeMap, BTreeSet};
@@ -386,6 +387,19 @@ fn da_peer_score_mut(
         .expect("peer score was just inserted")
 }
 
+fn ensure_production_da_retention_policy(storage: &FileStorage) -> Result<(), NodeError> {
+    if storage
+        .maybe_load_da_retention_policy()
+        .map_err(NodeError::Storage)?
+        .is_none()
+    {
+        storage
+            .commit_da_retention_policy(&DaRetentionPolicyConfig::production_default())
+            .map_err(NodeError::Storage)?;
+    }
+    Ok(())
+}
+
 pub fn fetch_verified_snapshot_chunk_set_over_tcp_with_metrics(
     stream: &mut TcpProtocolStream,
     snapshot_root: impl Into<String>,
@@ -627,6 +641,7 @@ impl PersistentValidatorNode {
     ) -> Result<Self, NodeError> {
         let validator_id = validator_id.into();
         let storage = FileStorage::open(storage_root).map_err(NodeError::Storage)?;
+        ensure_production_da_retention_policy(&storage)?;
         let chain_id = state.chain_id().clone();
         storage
             .commit_snapshot(&state.snapshot())
@@ -678,6 +693,7 @@ impl PersistentValidatorNode {
     ) -> Result<Self, NodeError> {
         let validator_id = validator_id.into();
         let storage = FileStorage::open(storage_root).map_err(NodeError::Storage)?;
+        ensure_production_da_retention_policy(&storage)?;
         let snapshot = storage.load_snapshot().map_err(NodeError::Storage)?;
         let state = DeTTaState::from_snapshot(snapshot)
             .map_err(|error| NodeError::Storage(StorageError::InvalidSnapshot(error)))?;
@@ -5212,6 +5228,60 @@ mod tests {
         assert_eq!(
             health.storage_root,
             node.rpc().node().state().storage_root()
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn persistent_node_installs_production_da_retention_policy_by_default() {
+        let dir = temp_dir("node-da-retention-production-default");
+        let node = PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &dir).unwrap();
+        let production_policy = DaRetentionPolicyConfig::production_default();
+
+        assert_eq!(
+            node.storage.maybe_load_da_retention_policy().unwrap(),
+            Some(production_policy.clone())
+        );
+
+        drop(node);
+        let restarted = PersistentValidatorNode::restart("validator-1", &dir).unwrap();
+        assert_eq!(
+            restarted.storage.maybe_load_da_retention_policy().unwrap(),
+            Some(production_policy)
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn persistent_node_preserves_existing_da_retention_policy() {
+        let dir = temp_dir("node-da-retention-custom-policy");
+        let custom_policy = DaRetentionPolicyConfig {
+            policies: vec![detta_storage::DaRetentionPolicy {
+                class: detta_storage::DaRetentionClass::Hot,
+                retain_payloads: true,
+                retain_all_shares: true,
+                min_retention_blocks: 32,
+                max_payload_bytes: Some(1024 * 1024),
+            }],
+        };
+        FileStorage::open(&dir)
+            .unwrap()
+            .commit_da_retention_policy(&custom_policy)
+            .unwrap();
+
+        let node = PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &dir).unwrap();
+        assert_eq!(
+            node.storage.maybe_load_da_retention_policy().unwrap(),
+            Some(custom_policy.clone())
+        );
+
+        drop(node);
+        let restarted = PersistentValidatorNode::restart("validator-1", &dir).unwrap();
+        assert_eq!(
+            restarted.storage.maybe_load_da_retention_policy().unwrap(),
+            Some(custom_policy)
         );
 
         fs::remove_dir_all(dir).unwrap();

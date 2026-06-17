@@ -83,6 +83,8 @@ clients.
 - [x] DA-backed state sync is implemented.
 - [x] DA payloads, repair records, retention policy structures, and DA store
   roots are persisted in `detta-storage`.
+- [x] Persistent nodes install the production DA retention policy on bootstrap
+  or restart when no operator policy exists.
 - [x] DA share requests are bounded by a node-level maximum and oversized
   requests are rejected.
 - [x] DA storage counters and DA missing-share/repair alerts are exposed
@@ -925,6 +927,8 @@ DeTTa has a production-grade DA layer when all of these are true:
 - aspect module source/artifacts required for replay are DA-covered;
 - governance, bridge, oracle, and upgrade evidence is DA-covered;
 - DA shares are durably stored according to retention policy;
+- persistent nodes commit the production retention policy by default without
+  overwriting operator-provided policies;
 - RPC can retrieve manifests, certificates, shares, payloads, namespaces, and
   proofs;
 - light-client DA verification is implemented and tested;
