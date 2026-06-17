@@ -87,6 +87,8 @@ pub struct DaStorageStats {
     pub certificate_bytes: u64,
     pub challenge_bytes: u64,
     pub repair_record_bytes: u64,
+    pub index_file_count: u64,
+    pub index_bytes: u64,
     pub total_bytes: u64,
 }
 
@@ -122,6 +124,26 @@ pub struct DaRepairRecord {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaManifestIndexEntry {
+    pub manifest_hash: String,
+    pub chain_id: String,
+    pub height: u64,
+    pub block_hash: String,
+    pub payload_hash: String,
+    pub share_root: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaCertificateIndexEntry {
+    pub certificate_hash: String,
+    pub chain_id: String,
+    pub height: u64,
+    pub block_hash: String,
+    pub manifest_hash: String,
+    pub share_root: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DaStoreRoots {
     pub manifest_root: String,
     pub share_root: String,
@@ -129,6 +151,7 @@ pub struct DaStoreRoots {
     pub certificate_root: String,
     pub challenge_root: String,
     pub repair_root: String,
+    pub index_root: String,
     pub retention_policy_root: Option<String>,
     pub root: String,
 }
@@ -155,6 +178,32 @@ impl FileStorage {
         fs::create_dir_all(root.join("da").join("certificates")).map_err(io_error)?;
         fs::create_dir_all(root.join("da").join("challenges")).map_err(io_error)?;
         fs::create_dir_all(root.join("da").join("repairs")).map_err(io_error)?;
+        fs::create_dir_all(root.join("da").join("indexes").join("manifests_by_height"))
+            .map_err(io_error)?;
+        fs::create_dir_all(
+            root.join("da")
+                .join("indexes")
+                .join("manifests_by_block_hash"),
+        )
+        .map_err(io_error)?;
+        fs::create_dir_all(
+            root.join("da")
+                .join("indexes")
+                .join("certificates_by_manifest"),
+        )
+        .map_err(io_error)?;
+        fs::create_dir_all(
+            root.join("da")
+                .join("indexes")
+                .join("certificates_by_height"),
+        )
+        .map_err(io_error)?;
+        fs::create_dir_all(
+            root.join("da")
+                .join("indexes")
+                .join("certificates_by_block_hash"),
+        )
+        .map_err(io_error)?;
         Ok(Self { root })
     }
 
@@ -174,6 +223,7 @@ impl FileStorage {
         let certificates_dir = self.root.join("da").join("certificates");
         let challenges_dir = self.root.join("da").join("challenges");
         let repairs_dir = self.root.join("da").join("repairs");
+        let indexes_dir = self.root.join("da").join("indexes");
 
         for entry in fs::read_dir(&manifests_dir).map_err(io_error)? {
             let path = entry.map_err(io_error)?.path();
@@ -214,13 +264,17 @@ impl FileStorage {
         let repair_file_stats = directory_file_stats(&repairs_dir)?;
         stats.repair_record_count = repair_file_stats.file_count;
         stats.repair_record_bytes = repair_file_stats.total_bytes;
+        let index_file_stats = directory_file_stats(&indexes_dir)?;
+        stats.index_file_count = index_file_stats.file_count;
+        stats.index_bytes = index_file_stats.total_bytes;
         stats.total_bytes = stats
             .manifest_bytes
             .saturating_add(stats.share_bytes)
             .saturating_add(stats.payload_bytes)
             .saturating_add(stats.certificate_bytes)
             .saturating_add(stats.challenge_bytes)
-            .saturating_add(stats.repair_record_bytes);
+            .saturating_add(stats.repair_record_bytes)
+            .saturating_add(stats.index_bytes);
         Ok(stats)
     }
 
@@ -681,6 +735,7 @@ impl FileStorage {
         manifest.validate().map_err(da_error)?;
         let manifest_hash = manifest.manifest_hash().map_err(da_error)?;
         write_json_atomic(&self.da_manifest_path(&manifest_hash), manifest)?;
+        self.upsert_da_manifest_indexes(&manifest_hash, manifest)?;
         Ok(manifest_hash)
     }
 
@@ -707,6 +762,28 @@ impl FileStorage {
         Ok(manifest)
     }
 
+    pub fn load_da_manifest_index_by_height(
+        &self,
+        height: u64,
+    ) -> Result<Vec<DaManifestIndexEntry>, StorageError> {
+        self.load_da_manifest_index_entries(
+            &self.da_manifests_by_height_index_path(height),
+            Some(height),
+            None,
+        )
+    }
+
+    pub fn load_da_manifest_index_by_block_hash(
+        &self,
+        block_hash: &str,
+    ) -> Result<Vec<DaManifestIndexEntry>, StorageError> {
+        self.load_da_manifest_index_entries(
+            &self.da_manifests_by_block_hash_index_path(block_hash),
+            None,
+            Some(block_hash),
+        )
+    }
+
     pub fn commit_da_certificate(
         &self,
         certificate: &DaAvailabilityCertificate,
@@ -714,6 +791,7 @@ impl FileStorage {
         certificate.validate().map_err(da_error)?;
         let certificate_hash = certificate.certificate_hash().map_err(da_error)?;
         write_json_atomic(&self.da_certificate_path(&certificate_hash), certificate)?;
+        self.upsert_da_certificate_indexes(&certificate_hash, certificate)?;
         Ok(certificate_hash)
     }
 
@@ -742,6 +820,297 @@ impl FileStorage {
             )));
         }
         Ok(certificate)
+    }
+
+    pub fn load_da_certificate_index_by_manifest_hash(
+        &self,
+        manifest_hash: &str,
+    ) -> Result<Vec<DaCertificateIndexEntry>, StorageError> {
+        self.load_da_certificate_index_entries(
+            &self.da_certificates_by_manifest_index_path(manifest_hash),
+            Some(manifest_hash),
+            None,
+            None,
+        )
+    }
+
+    pub fn load_da_certificate_index_by_height(
+        &self,
+        height: u64,
+    ) -> Result<Vec<DaCertificateIndexEntry>, StorageError> {
+        self.load_da_certificate_index_entries(
+            &self.da_certificates_by_height_index_path(height),
+            None,
+            Some(height),
+            None,
+        )
+    }
+
+    pub fn load_da_certificate_index_by_block_hash(
+        &self,
+        block_hash: &str,
+    ) -> Result<Vec<DaCertificateIndexEntry>, StorageError> {
+        self.load_da_certificate_index_entries(
+            &self.da_certificates_by_block_hash_index_path(block_hash),
+            None,
+            None,
+            Some(block_hash),
+        )
+    }
+
+    pub fn rebuild_da_indexes(&self) -> Result<(), StorageError> {
+        let indexes_path = self.da_indexes_path();
+        if indexes_path.exists() {
+            fs::remove_dir_all(&indexes_path).map_err(io_error)?;
+        }
+        self.create_da_index_dirs()?;
+
+        for path in sorted_bin_paths(&self.root.join("da").join("manifests"))? {
+            let manifest: DaManifest = read_json(&path)?;
+            manifest.validate().map_err(da_error)?;
+            let manifest_hash = manifest.manifest_hash().map_err(da_error)?;
+            let expected_file_name = format!("{}.bin", file_safe_id(&manifest_hash));
+            if path.file_name().and_then(|name| name.to_str()) != Some(expected_file_name.as_str())
+            {
+                return Err(StorageError::CorruptData(
+                    "DA manifest filename does not match manifest hash".into(),
+                ));
+            }
+            self.upsert_da_manifest_indexes(&manifest_hash, &manifest)?;
+        }
+
+        for path in sorted_bin_paths(&self.root.join("da").join("certificates"))? {
+            let certificate: DaAvailabilityCertificate = read_json(&path)?;
+            certificate.validate().map_err(da_error)?;
+            let certificate_hash = certificate.certificate_hash().map_err(da_error)?;
+            let expected_file_name = format!("{}.bin", file_safe_id(&certificate_hash));
+            if path.file_name().and_then(|name| name.to_str()) != Some(expected_file_name.as_str())
+            {
+                return Err(StorageError::CorruptData(
+                    "DA certificate filename does not match certificate hash".into(),
+                ));
+            }
+            self.upsert_da_certificate_indexes(&certificate_hash, &certificate)?;
+        }
+        Ok(())
+    }
+
+    fn upsert_da_manifest_indexes(
+        &self,
+        manifest_hash: &str,
+        manifest: &DaManifest,
+    ) -> Result<(), StorageError> {
+        let entry = DaManifestIndexEntry {
+            manifest_hash: manifest_hash.into(),
+            chain_id: manifest.chain_id.clone(),
+            height: manifest.height,
+            block_hash: manifest.block_hash.clone(),
+            payload_hash: manifest.payload_hash.clone(),
+            share_root: manifest.share_root.clone(),
+        };
+        self.upsert_da_manifest_index_entry(
+            &self.da_manifests_by_height_index_path(manifest.height),
+            Some(manifest.height),
+            None,
+            &entry,
+        )?;
+        self.upsert_da_manifest_index_entry(
+            &self.da_manifests_by_block_hash_index_path(&manifest.block_hash),
+            None,
+            Some(&manifest.block_hash),
+            &entry,
+        )
+    }
+
+    fn upsert_da_manifest_index_entry(
+        &self,
+        path: &Path,
+        expected_height: Option<u64>,
+        expected_block_hash: Option<&str>,
+        entry: &DaManifestIndexEntry,
+    ) -> Result<(), StorageError> {
+        let mut entries =
+            self.load_da_manifest_index_entries(path, expected_height, expected_block_hash)?;
+        entries.retain(|existing| existing.manifest_hash != entry.manifest_hash);
+        entries.push(entry.clone());
+        entries.sort_by(|left, right| left.manifest_hash.cmp(&right.manifest_hash));
+        write_json_atomic(path, &entries)
+    }
+
+    fn load_da_manifest_index_entries(
+        &self,
+        path: &Path,
+        expected_height: Option<u64>,
+        expected_block_hash: Option<&str>,
+    ) -> Result<Vec<DaManifestIndexEntry>, StorageError> {
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let entries: Vec<DaManifestIndexEntry> = read_json(path)?;
+        let mut previous_manifest_hash: Option<&str> = None;
+        for entry in &entries {
+            if entry.manifest_hash.is_empty()
+                || entry.chain_id.is_empty()
+                || entry.block_hash.is_empty()
+                || entry.payload_hash.is_empty()
+                || entry.share_root.is_empty()
+            {
+                return Err(StorageError::CorruptData(
+                    "DA manifest index entry contains an empty required field".into(),
+                ));
+            }
+            if let Some(previous) = previous_manifest_hash {
+                if previous >= entry.manifest_hash.as_str() {
+                    return Err(StorageError::CorruptData(
+                        "DA manifest index entries must be sorted and unique".into(),
+                    ));
+                }
+            }
+            previous_manifest_hash = Some(entry.manifest_hash.as_str());
+            if expected_height.is_some_and(|height| entry.height != height) {
+                return Err(StorageError::CorruptData(
+                    "DA manifest index height does not match index path".into(),
+                ));
+            }
+            if expected_block_hash.is_some_and(|block_hash| entry.block_hash.as_str() != block_hash)
+            {
+                return Err(StorageError::CorruptData(
+                    "DA manifest index block hash does not match index path".into(),
+                ));
+            }
+            let manifest = self.load_da_manifest(&entry.manifest_hash)?;
+            if entry.chain_id.as_str() != manifest.chain_id.as_str()
+                || entry.height != manifest.height
+                || entry.block_hash.as_str() != manifest.block_hash.as_str()
+                || entry.payload_hash.as_str() != manifest.payload_hash.as_str()
+                || entry.share_root.as_str() != manifest.share_root.as_str()
+            {
+                return Err(StorageError::CorruptData(
+                    "DA manifest index entry does not match stored manifest".into(),
+                ));
+            }
+        }
+        Ok(entries)
+    }
+
+    fn upsert_da_certificate_indexes(
+        &self,
+        certificate_hash: &str,
+        certificate: &DaAvailabilityCertificate,
+    ) -> Result<(), StorageError> {
+        let entry = DaCertificateIndexEntry {
+            certificate_hash: certificate_hash.into(),
+            chain_id: certificate.chain_id.clone(),
+            height: certificate.height,
+            block_hash: certificate.block_hash.clone(),
+            manifest_hash: certificate.manifest_hash.clone(),
+            share_root: certificate.share_root.clone(),
+        };
+        self.upsert_da_certificate_index_entry(
+            &self.da_certificates_by_manifest_index_path(&certificate.manifest_hash),
+            Some(&certificate.manifest_hash),
+            None,
+            None,
+            &entry,
+        )?;
+        self.upsert_da_certificate_index_entry(
+            &self.da_certificates_by_height_index_path(certificate.height),
+            None,
+            Some(certificate.height),
+            None,
+            &entry,
+        )?;
+        self.upsert_da_certificate_index_entry(
+            &self.da_certificates_by_block_hash_index_path(&certificate.block_hash),
+            None,
+            None,
+            Some(&certificate.block_hash),
+            &entry,
+        )
+    }
+
+    fn upsert_da_certificate_index_entry(
+        &self,
+        path: &Path,
+        expected_manifest_hash: Option<&str>,
+        expected_height: Option<u64>,
+        expected_block_hash: Option<&str>,
+        entry: &DaCertificateIndexEntry,
+    ) -> Result<(), StorageError> {
+        let mut entries = self.load_da_certificate_index_entries(
+            path,
+            expected_manifest_hash,
+            expected_height,
+            expected_block_hash,
+        )?;
+        entries.retain(|existing| existing.certificate_hash != entry.certificate_hash);
+        entries.push(entry.clone());
+        entries.sort_by(|left, right| left.certificate_hash.cmp(&right.certificate_hash));
+        write_json_atomic(path, &entries)
+    }
+
+    fn load_da_certificate_index_entries(
+        &self,
+        path: &Path,
+        expected_manifest_hash: Option<&str>,
+        expected_height: Option<u64>,
+        expected_block_hash: Option<&str>,
+    ) -> Result<Vec<DaCertificateIndexEntry>, StorageError> {
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let entries: Vec<DaCertificateIndexEntry> = read_json(path)?;
+        let mut previous_certificate_hash: Option<&str> = None;
+        for entry in &entries {
+            if entry.certificate_hash.is_empty()
+                || entry.chain_id.is_empty()
+                || entry.block_hash.is_empty()
+                || entry.manifest_hash.is_empty()
+                || entry.share_root.is_empty()
+            {
+                return Err(StorageError::CorruptData(
+                    "DA certificate index entry contains an empty required field".into(),
+                ));
+            }
+            if let Some(previous) = previous_certificate_hash {
+                if previous >= entry.certificate_hash.as_str() {
+                    return Err(StorageError::CorruptData(
+                        "DA certificate index entries must be sorted and unique".into(),
+                    ));
+                }
+            }
+            previous_certificate_hash = Some(entry.certificate_hash.as_str());
+            if expected_manifest_hash
+                .is_some_and(|manifest_hash| entry.manifest_hash.as_str() != manifest_hash)
+            {
+                return Err(StorageError::CorruptData(
+                    "DA certificate index manifest hash does not match index path".into(),
+                ));
+            }
+            if expected_height.is_some_and(|height| entry.height != height) {
+                return Err(StorageError::CorruptData(
+                    "DA certificate index height does not match index path".into(),
+                ));
+            }
+            if expected_block_hash.is_some_and(|block_hash| entry.block_hash.as_str() != block_hash)
+            {
+                return Err(StorageError::CorruptData(
+                    "DA certificate index block hash does not match index path".into(),
+                ));
+            }
+            let certificate = self.load_da_certificate(&entry.certificate_hash)?;
+            if entry.chain_id.as_str() != certificate.chain_id.as_str()
+                || entry.height != certificate.height
+                || entry.block_hash.as_str() != certificate.block_hash.as_str()
+                || entry.manifest_hash.as_str() != certificate.manifest_hash.as_str()
+                || entry.share_root.as_str() != certificate.share_root.as_str()
+            {
+                return Err(StorageError::CorruptData(
+                    "DA certificate index entry does not match stored certificate".into(),
+                ));
+            }
+        }
+        Ok(entries)
     }
 
     pub fn commit_da_challenge_record(
@@ -1010,6 +1379,7 @@ impl FileStorage {
         let certificate_root = directory_content_root(&self.root.join("da").join("certificates"))?;
         let challenge_root = directory_content_root(&self.root.join("da").join("challenges"))?;
         let repair_root = directory_content_root(&self.root.join("da").join("repairs"))?;
+        let index_root = directory_content_root(&self.da_indexes_path())?;
         let retention_policy_root = self
             .maybe_load_da_retention_policy()?
             .map(|config| hash_canonical_json(&config))
@@ -1021,6 +1391,7 @@ impl FileStorage {
             &certificate_root,
             &challenge_root,
             &repair_root,
+            &index_root,
             &retention_policy_root,
         ))?;
         Ok(DaStoreRoots {
@@ -1030,6 +1401,7 @@ impl FileStorage {
             certificate_root,
             challenge_root,
             repair_root,
+            index_root,
             retention_policy_root,
             root,
         })
@@ -1185,6 +1557,52 @@ impl FileStorage {
             .join("shares")
             .join(file_safe_id(manifest_hash))
             .join(format!("{index}.bin"))
+    }
+
+    fn da_indexes_path(&self) -> PathBuf {
+        self.root.join("da").join("indexes")
+    }
+
+    fn create_da_index_dirs(&self) -> Result<(), StorageError> {
+        fs::create_dir_all(self.da_indexes_path().join("manifests_by_height")).map_err(io_error)?;
+        fs::create_dir_all(self.da_indexes_path().join("manifests_by_block_hash"))
+            .map_err(io_error)?;
+        fs::create_dir_all(self.da_indexes_path().join("certificates_by_manifest"))
+            .map_err(io_error)?;
+        fs::create_dir_all(self.da_indexes_path().join("certificates_by_height"))
+            .map_err(io_error)?;
+        fs::create_dir_all(self.da_indexes_path().join("certificates_by_block_hash"))
+            .map_err(io_error)
+    }
+
+    fn da_manifests_by_height_index_path(&self, height: u64) -> PathBuf {
+        self.da_indexes_path()
+            .join("manifests_by_height")
+            .join(format!("{height}.bin"))
+    }
+
+    fn da_manifests_by_block_hash_index_path(&self, block_hash: &str) -> PathBuf {
+        self.da_indexes_path()
+            .join("manifests_by_block_hash")
+            .join(format!("{}.bin", file_safe_id(block_hash)))
+    }
+
+    fn da_certificates_by_manifest_index_path(&self, manifest_hash: &str) -> PathBuf {
+        self.da_indexes_path()
+            .join("certificates_by_manifest")
+            .join(format!("{}.bin", file_safe_id(manifest_hash)))
+    }
+
+    fn da_certificates_by_height_index_path(&self, height: u64) -> PathBuf {
+        self.da_indexes_path()
+            .join("certificates_by_height")
+            .join(format!("{height}.bin"))
+    }
+
+    fn da_certificates_by_block_hash_index_path(&self, block_hash: &str) -> PathBuf {
+        self.da_indexes_path()
+            .join("certificates_by_block_hash")
+            .join(format!("{}.bin", file_safe_id(block_hash)))
     }
 }
 
@@ -1756,6 +2174,27 @@ mod tests {
             storage.load_da_payload(&manifest_hash).unwrap(),
             da_payload().canonicalized()
         );
+        assert_eq!(
+            storage.load_da_manifest_index_by_height(1).unwrap(),
+            vec![DaManifestIndexEntry {
+                manifest_hash: manifest_hash.clone(),
+                chain_id: share_set.manifest.chain_id.clone(),
+                height: share_set.manifest.height,
+                block_hash: share_set.manifest.block_hash.clone(),
+                payload_hash: share_set.manifest.payload_hash.clone(),
+                share_root: share_set.manifest.share_root.clone(),
+            }]
+        );
+        assert_eq!(
+            storage
+                .load_da_manifest_index_by_block_hash("block-1")
+                .unwrap(),
+            storage.load_da_manifest_index_by_height(1).unwrap()
+        );
+        assert!(storage
+            .load_da_manifest_index_by_block_hash("missing-block")
+            .unwrap()
+            .is_empty());
 
         let manifest = storage.backup_to(&backup_dir).unwrap();
         assert!(manifest.file_count > share_set.shares.len());
@@ -1763,6 +2202,10 @@ mod tests {
         assert_eq!(
             restored.load_da_share_set(&manifest_hash).unwrap().shares,
             share_set.shares
+        );
+        assert_eq!(
+            restored.load_da_manifest_index_by_height(1).unwrap(),
+            storage.load_da_manifest_index_by_height(1).unwrap()
         );
         assert_eq!(
             restored.load_da_payload(&manifest_hash).unwrap(),
@@ -1904,6 +2347,8 @@ mod tests {
         assert_eq!(stats.repair_record_count, 1);
         assert!(stats.payload_bytes > 0);
         assert!(stats.repair_record_bytes > 0);
+        assert!(stats.index_file_count > 0);
+        assert!(stats.index_bytes > 0);
 
         fs::remove_dir_all(dir).unwrap();
     }
@@ -1927,12 +2372,14 @@ mod tests {
         assert_eq!(stats.certificate_count, 0);
         assert_eq!(stats.challenge_count, 0);
         assert_eq!(stats.repair_record_count, 0);
+        assert_eq!(stats.index_file_count, 2);
         assert!(stats.manifest_bytes > 0);
         assert!(stats.share_bytes > 0);
         assert!(stats.payload_bytes > 0);
         assert_eq!(stats.certificate_bytes, 0);
         assert_eq!(stats.challenge_bytes, 0);
         assert_eq!(stats.repair_record_bytes, 0);
+        assert!(stats.index_bytes > 0);
         assert_eq!(
             stats.total_bytes,
             stats.manifest_bytes
@@ -1941,6 +2388,7 @@ mod tests {
                 + stats.certificate_bytes
                 + stats.challenge_bytes
                 + stats.repair_record_bytes
+                + stats.index_bytes
         );
 
         fs::remove_file(storage.da_share_path(&manifest_hash, 0)).unwrap();
@@ -1956,7 +2404,8 @@ mod tests {
         let dir = temp_dir("da-certificate");
         let storage = FileStorage::open(&dir).unwrap();
         let share_set = DaShareSet::from_payload(&da_payload(), "block-7", 64).unwrap();
-        storage.commit_da_share_set(&share_set).unwrap();
+        let manifest_hash = storage.commit_da_share_set(&share_set).unwrap();
+        let roots_before_certificate = storage.da_store_roots().unwrap();
         let certificate = DaAvailabilityCertificate::from_manifest(
             &share_set.manifest,
             vec!["validator-1".into(), "validator-2".into()],
@@ -1983,9 +2432,81 @@ mod tests {
             storage.load_da_certificate(&certificate_hash).unwrap(),
             certificate
         );
+        let certificate_index_entry = DaCertificateIndexEntry {
+            certificate_hash: certificate_hash.clone(),
+            chain_id: certificate.chain_id.clone(),
+            height: certificate.height,
+            block_hash: certificate.block_hash.clone(),
+            manifest_hash: certificate.manifest_hash.clone(),
+            share_root: certificate.share_root.clone(),
+        };
+        assert_eq!(
+            storage
+                .load_da_certificate_index_by_manifest_hash(&manifest_hash)
+                .unwrap(),
+            vec![certificate_index_entry.clone()]
+        );
+        assert_eq!(
+            storage.load_da_certificate_index_by_height(1).unwrap(),
+            vec![certificate_index_entry.clone()]
+        );
+        assert_eq!(
+            storage
+                .load_da_certificate_index_by_block_hash("block-7")
+                .unwrap(),
+            vec![certificate_index_entry]
+        );
+        let reopened = FileStorage::open(&dir).unwrap();
+        assert_eq!(
+            reopened
+                .load_da_certificate_index_by_manifest_hash(&manifest_hash)
+                .unwrap(),
+            storage
+                .load_da_certificate_index_by_manifest_hash(&manifest_hash)
+                .unwrap()
+        );
+        fs::remove_dir_all(storage.da_indexes_path()).unwrap();
+        storage.rebuild_da_indexes().unwrap();
+        assert_eq!(
+            storage
+                .load_da_certificate_index_by_manifest_hash(&manifest_hash)
+                .unwrap(),
+            reopened
+                .load_da_certificate_index_by_manifest_hash(&manifest_hash)
+                .unwrap()
+        );
         let stats = storage.da_storage_stats().unwrap();
         assert_eq!(stats.certificate_count, 1);
         assert!(stats.certificate_bytes > 0);
+        assert_eq!(stats.index_file_count, 5);
+        assert!(stats.index_bytes > 0);
+        let roots_after_certificate = storage.da_store_roots().unwrap();
+        assert_ne!(
+            roots_after_certificate.certificate_root,
+            roots_before_certificate.certificate_root
+        );
+        assert_ne!(
+            roots_after_certificate.index_root,
+            roots_before_certificate.index_root
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn rejects_corrupt_da_index_entries() {
+        let dir = temp_dir("da-corrupt-index");
+        let storage = FileStorage::open(&dir).unwrap();
+        let share_set = DaShareSet::from_payload(&da_payload(), "block-7", 64).unwrap();
+        storage.commit_da_share_set(&share_set).unwrap();
+        let mut entries = storage.load_da_manifest_index_by_height(1).unwrap();
+        entries[0].payload_hash = "wrong-payload-hash".into();
+        write_json_atomic(&storage.da_manifests_by_height_index_path(1), &entries).unwrap();
+
+        assert!(matches!(
+            storage.load_da_manifest_index_by_height(1),
+            Err(StorageError::CorruptData(_))
+        ));
 
         fs::remove_dir_all(dir).unwrap();
     }

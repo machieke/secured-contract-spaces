@@ -50,6 +50,8 @@ Before pruning:
    `operator.da_challenge_failure` alert is active.
 5. Reconstruct at least one recent DA payload with `get_da_payload`.
 6. Verify light-client samples with `get_da_sample_proofs`.
+7. Confirm DA index bytes are nonzero after finalized DA blocks and that
+   manifest/certificate lookups by block coordinates return expected entries.
 
 After pruning:
 
@@ -58,6 +60,8 @@ After pruning:
 3. Run state sync from a DA checkpoint when checkpoint shares were touched.
 4. Store the before/after stats and command output in the release or operator
    evidence bundle.
+5. Rebuild DA indexes from stored manifests and certificates if backup restore,
+   manual repair, or disk maintenance touched `da/indexes`.
 
 ## Repair Handling
 
@@ -80,6 +84,7 @@ For each release candidate or audit window, retain:
 
 - DA manifests for finalized blocks in scope;
 - DA certificates;
+- DA index roots or lookup evidence for representative finalized blocks;
 - challenge records and slashing evidence;
 - DA storage stats before and after pruning;
 - sample proof bundles for representative blocks;

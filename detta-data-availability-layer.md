@@ -24,6 +24,10 @@ versioned payload schema for DeTTa. The implementation plan remains in
   custody or sampled shares for a manifest.
 - **DA certificate**: a quorum aggregation of DA availability votes for one
   manifest.
+- **DA index**: durable lookup metadata under `da/indexes` that maps manifests
+  by height and block hash, and certificates by manifest hash, height, and block
+  hash. Index entries are checked against the stored manifest or certificate on
+  load.
 - **Custody assignment**: deterministic validator-to-share assignment used
   before signing DA availability votes.
 - **Sample schedule**: deterministic light-client sample indices derived from
@@ -97,3 +101,21 @@ Canonicalization rules:
 Compatibility rule: new payload fields or record semantics require a new
 payload version and schema name. Existing v1 payload bytes must remain stable so
 fixture roots, manifests, certificates, and replay evidence stay auditable.
+
+## Durable Storage Indexes
+
+The storage layer persists DA objects by content hash and also keeps coordinate
+indexes for operator and sync workflows:
+
+- manifests by block height;
+- manifests by execution block hash;
+- certificates by manifest hash;
+- certificates by block height;
+- certificates by execution block hash.
+
+Index lookups return lists, not singletons, so fork or equivocation evidence for
+the same height or block hash can remain discoverable. Each lookup reloads the
+referenced object and rejects stale, unsorted, duplicate, or mismatched index
+entries. `rebuild_da_indexes` reconstructs the indexes from stored manifests and
+certificates after restore or repair, and the DA store root includes the index
+root so index drift is externally visible.

@@ -110,9 +110,10 @@ The current implementation includes slices for:
 - experimental DA-committed block production, DA manifest/share/certificate
   protocol messages, signed DA availability votes, quorum DA certificate
   aggregation, deterministic custody share checks before DA vote signing,
-  Reed-Solomon threshold reconstruction, durable DA share sets, certificates,
-  and challenge records, DA gossip persistence, DA challenge/slashing evidence,
-  payload-aware DA-certified production finality mode, and DA retrieval RPCs on
+  Reed-Solomon threshold reconstruction, durable DA share sets, payloads,
+  certificates, repair records, challenge records, validated DA indexes, DA
+  gossip persistence, DA challenge/slashing evidence, payload-aware DA-certified
+  production finality mode, and DA retrieval RPCs on
   `experimental/data-availability-layer`.
 
 The production roadmap and progress tracker live in
@@ -225,7 +226,8 @@ Rust workspace crates:
 - `crates/detta-network`: validator transport, peer handshakes, retries, and
   TCP protocol streams.
 - `crates/detta-storage`: durable blocks, mempool records, snapshots, metadata,
-  audit records, DA manifests/shares/certificates, and sync diagnostics.
+  audit records, DA manifests/shares/payloads/certificates, DA coordinate
+  indexes, repair records, and sync diagnostics.
 - `crates/detta-node`: persistent validator orchestration, including
   experimental DA-committed block production and DA gossip persistence.
 - `crates/detta-node/src/bin/detta-client.rs`: packaged TCP RPC client for

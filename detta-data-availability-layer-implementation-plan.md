@@ -716,7 +716,7 @@ Acceptance:
 ### Phase 3: DA Store
 
 - [x] Add durable DA store paths to `detta-storage`.
-- [ ] Persist manifests, certificates, shares, payloads, challenges, repair
+- [x] Persist manifests, certificates, shares, payloads, challenges, repair
   records, and indexes.
 - [x] Persist manifests and deterministic shares.
 - [x] Persist reconstructed DA payloads keyed by manifest hash.
@@ -724,6 +724,9 @@ Acceptance:
 - [x] Persist DA challenge records and include challenge bytes in DA storage
   stats.
 - [x] Persist DA repair records.
+- [x] Persist manifest indexes by height and block hash.
+- [x] Persist certificate indexes by manifest hash, height, and block hash.
+- [x] Add DA index rebuild and corruption checks.
 - [x] Add DA store roots.
 - [x] Add DA storage metrics.
 - [x] Add retention policy structures.
