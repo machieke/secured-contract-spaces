@@ -60,6 +60,60 @@ fn run(args: Vec<String>) -> Result<(), String> {
             })?;
             print_json(&result)
         }
+        "da-manifest" => {
+            let result = client.ok(RpcRequest::GetDaManifest {
+                manifest_hash: options.required("manifest-hash")?,
+            })?;
+            print_json(&result)
+        }
+        "da-share" => {
+            let result = client.ok(RpcRequest::GetDaShare {
+                manifest_hash: options.required("manifest-hash")?,
+                index: parse_u32(&options.required("index")?, "index")?,
+            })?;
+            print_json(&result)
+        }
+        "da-certificate" => {
+            let result = client.ok(RpcRequest::GetDaCertificate {
+                certificate_hash: options.required("certificate-hash")?,
+            })?;
+            print_json(&result)
+        }
+        "da-challenge" => {
+            let result = client.ok(RpcRequest::GetDaChallengeRecord {
+                challenge_id: options.required("challenge-id")?,
+            })?;
+            print_json(&result)
+        }
+        "da-payload" => {
+            let result = client.ok(RpcRequest::GetDaPayload {
+                manifest_hash: options.required("manifest-hash")?,
+            })?;
+            print_json(&result)
+        }
+        "da-namespace" => {
+            let result = client.ok(RpcRequest::GetDaNamespace {
+                manifest_hash: options.required("manifest-hash")?,
+                namespace: options.required("namespace")?,
+            })?;
+            print_json(&result)
+        }
+        "da-status" => {
+            let result = client.ok(RpcRequest::GetDaStatus {
+                manifest_hash: options.required("manifest-hash")?,
+            })?;
+            print_json(&result)
+        }
+        "da-repair-status" => {
+            let result = client.ok(RpcRequest::GetDaRepairStatus {
+                manifest_hash: options.required("manifest-hash")?,
+            })?;
+            print_json(&result)
+        }
+        "da-stats" => {
+            let result = client.ok(RpcRequest::GetDaStorageStats)?;
+            print_json(&result)
+        }
         "state-root" => {
             let result = client.ok(RpcRequest::GetStateRoot)?;
             print_json(&result)
@@ -361,6 +415,12 @@ fn parse_u64(value: &str, label: &str) -> Result<u64, String> {
         .map_err(|error| format!("invalid --{label}: {error}"))
 }
 
+fn parse_u32(value: &str, label: &str) -> Result<u32, String> {
+    value
+        .parse()
+        .map_err(|error| format!("invalid --{label}: {error}"))
+}
+
 fn parse_u128(value: &str, label: &str) -> Result<u128, String> {
     value
         .parse()
@@ -383,6 +443,15 @@ fn usage() -> String {
   detta-client swap --pool <id> --input-asset <symbol> --amount-in <amount> --min-output <amount> --nonce <n> [--produce-height <h>]
   detta-client produce-block --height <h> [--timestamp <t>]
   detta-client receipt --tx-hash <hash>
+  detta-client da-manifest --manifest-hash <hash>
+  detta-client da-share --manifest-hash <hash> --index <i>
+  detta-client da-certificate --certificate-hash <hash>
+  detta-client da-challenge --challenge-id <hash>
+  detta-client da-payload --manifest-hash <hash>
+  detta-client da-namespace --manifest-hash <hash> --namespace <name>
+  detta-client da-status --manifest-hash <hash>
+  detta-client da-repair-status --manifest-hash <hash>
+  detta-client da-stats
   detta-client state-root
 
 Common options:

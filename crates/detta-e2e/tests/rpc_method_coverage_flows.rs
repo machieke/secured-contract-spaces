@@ -1,5 +1,9 @@
 use detta_consensus::{EquivocationEvidence, FinalityCertificate};
 use detta_core::{AspectModuleRecord, AspectModuleRoots, Block, GrantKey, Method, StateKey};
+use detta_da::{
+    DaAvailabilityCertificate, DaAvailabilityVote, DaChallengeEvidence, DaShareChallenge,
+    DaShareChallengeResponse,
+};
 use detta_e2e::client::TcpRpcClient;
 use detta_e2e::fixtures::{
     amount, asset, defi_genesis_state, principal, temp_dir, text, tx_to, ADMIN, BRIDGE_CONTRACT,
@@ -45,6 +49,49 @@ fn public_rpc_method_coverage_guard_calls_every_openapi_method() {
     .unwrap();
 
     let setup_block = seed_coverage_state(&mut node);
+    let da_block = seed_da_coverage_state(&mut node);
+    let da_manifest_hash = da_block
+        .header
+        .data_availability
+        .as_ref()
+        .unwrap()
+        .manifest_hash
+        .clone();
+    let da_share_set = node.load_da_share_set(&da_manifest_hash).unwrap();
+    let da_certificate = DaAvailabilityCertificate::from_manifest(
+        &da_share_set.manifest,
+        vec!["validator-1".into(), "validator-2".into()],
+    )
+    .unwrap();
+    let da_certificate_hash = node.persist_da_certificate(&da_certificate).unwrap();
+    let da_vote = DaAvailabilityVote::from_manifest_with_custody(
+        &da_share_set.manifest,
+        "validator-2",
+        [0],
+        [],
+    )
+    .unwrap();
+    let da_challenge =
+        DaShareChallenge::from_availability_vote(&da_vote, "validator-1", 0, 12).unwrap();
+    let da_challenge_id = node
+        .persist_da_share_challenge(da_challenge.clone())
+        .unwrap();
+    let mut invalid_da_share = da_share_set.shares[0].clone();
+    invalid_da_share.bytes[0] ^= 0x01;
+    let da_challenge_response =
+        DaShareChallengeResponse::from_share(&da_challenge, invalid_da_share).unwrap();
+    node.persist_da_share_challenge_response(da_challenge_response.clone())
+        .unwrap();
+    let da_challenge_evidence = DaChallengeEvidence::invalid_response(
+        &da_challenge,
+        &da_challenge_response,
+        &da_share_set.manifest,
+        "validator-1",
+        10,
+    )
+    .unwrap();
+    node.persist_da_challenge_evidence(da_challenge_evidence)
+        .unwrap();
     node.persist_finality_certificate(&FinalityCertificate {
         height: setup_block.header.height,
         block_hash: setup_block.block_hash(),
@@ -145,8 +192,8 @@ fn public_rpc_method_coverage_guard_calls_every_openapi_method() {
         &mut client,
         &mut covered,
         RpcRequest::ProduceBlock {
-            height: 2,
-            timestamp: 2_000,
+            height: 3,
+            timestamp: 3_000,
         },
     );
 
@@ -168,7 +215,7 @@ fn public_rpc_method_coverage_guard_calls_every_openapi_method() {
         &mut client,
         &mut covered,
         RpcRequest::GetReceiptProof {
-            height: 2,
+            height: 3,
             index: 0,
         },
     );
@@ -197,6 +244,65 @@ fn public_rpc_method_coverage_guard_calls_every_openapi_method() {
             validator_id: "validator-1".into(),
         },
     );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetDaManifest {
+            manifest_hash: da_manifest_hash.clone(),
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetDaShare {
+            manifest_hash: da_manifest_hash.clone(),
+            index: 0,
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetDaCertificate {
+            certificate_hash: da_certificate_hash,
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetDaChallengeRecord {
+            challenge_id: da_challenge_id,
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetDaPayload {
+            manifest_hash: da_manifest_hash.clone(),
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetDaNamespace {
+            manifest_hash: da_manifest_hash.clone(),
+            namespace: "detta.tx".into(),
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetDaStatus {
+            manifest_hash: da_manifest_hash.clone(),
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetDaRepairStatus {
+            manifest_hash: da_manifest_hash.clone(),
+        },
+    );
+    call_ok(&mut client, &mut covered, RpcRequest::GetDaStorageStats);
 
     call_ok(
         &mut client,
@@ -465,6 +571,20 @@ fn seed_coverage_state(node: &mut PersistentValidatorNode) -> Block {
     ))
     .unwrap();
     node.produce_block(1, 1_000).unwrap()
+}
+
+fn seed_da_coverage_state(node: &mut PersistentValidatorNode) -> Block {
+    node.submit_transaction(tx_to(
+        TOKEN_CONTRACT,
+        "coverage-da-transfer-1",
+        "Alice",
+        5,
+        Method::Transfer,
+        vec![principal("Bob"), asset(USDC), amount(1)],
+    ))
+    .unwrap();
+    node.produce_block_with_data_availability(2, 2_000, 128)
+        .unwrap()
 }
 
 fn aspect_module_record() -> AspectModuleRecord {

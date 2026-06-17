@@ -141,6 +141,27 @@ Persistent validator nodes additionally handle:
   height for light-client and audit verification.
 - `get_slashing_record`: fetch a persisted slashing record by validator ID for
   equivocation evidence audits.
+- `get_da_manifest`: fetch a persisted experimental DA manifest by manifest
+  hash.
+- `get_da_share`: fetch one persisted experimental DA share by manifest hash
+  and share index.
+- `get_da_certificate`: fetch a persisted experimental DA availability
+  certificate by certificate hash.
+- `get_da_challenge_record`: fetch a persisted DA share challenge record by
+  challenge hash, including response and slashing evidence when present.
+- `get_da_payload`: reconstruct and return the canonical experimental DA
+  payload from locally persisted shares.
+- `get_da_namespace`: reconstruct the canonical experimental DA payload and
+  return one namespace section, such as `detta.block`, `detta.tx`, or
+  `detta.receipt`.
+- `get_da_status`: report manifest availability, DA certificate availability,
+  expected and missing share indices, and payload reconstruction status for a
+  manifest hash.
+- `get_da_repair_status`: report whether a manifest currently needs repair,
+  which share indices are missing, and whether payload reconstruction succeeds.
+- `get_da_storage_stats`: report persisted experimental DA manifest count,
+  expected shares, stored shares, missing shares, challenge records, and DA byte
+  totals.
 - `propose_validator_set_metadata_update`: submit a signed validator-set update
   authorization.
 - `get_validator_set_metadata_update_status`: report pending authorization
@@ -161,9 +182,12 @@ Persistent validator nodes additionally handle:
 - `get_snapshot_import_audit_config`: return import audit retention limits.
 
 Persistent nodes serve `get_block`, `get_transaction`, `get_receipt`, and
-`get_receipt_proof` from durable block storage after restart. This lets wallets,
-indexers, and auditors recover finalized history even when the in-memory
-validator indexes are empty after process recovery.
+`get_receipt_proof` from durable block storage after restart. On
+`experimental/data-availability-layer`, persistent nodes also serve
+experimental DA manifests, shares, certificates, reconstructed payloads, and
+namespace sections from durable DA storage. This lets wallets, indexers, and
+auditors recover finalized history even when the in-memory validator indexes
+are empty after process recovery.
 
 ## Proof Methods
 

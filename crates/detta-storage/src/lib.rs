@@ -1,5 +1,6 @@
 use detta_consensus::{FinalityCertificate, SlashingRecord};
 use detta_core::{Block, DeTTaState, Receipt, SnapshotError, StateSnapshot, Transaction};
+use detta_da::{DaAvailabilityCertificate, DaChallengeRecord, DaManifest, DaShare, DaShareSet};
 use detta_protocol::{SignedValidatorMessage, ValidatorSetMetadata, ValidatorSignatureDomain};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -47,6 +48,10 @@ pub struct SnapshotImportAuditRecord {
     pub manifest_metadata_roots_count: usize,
     pub chunk_count: u32,
     pub metadata_roots_verified: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub da_manifest_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub da_certificate_hash: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -61,6 +66,21 @@ pub struct ConsensusSigningRecord {
     pub domain: ValidatorSignatureDomain,
     pub height: u64,
     pub block_hash: String,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaStorageStats {
+    pub manifest_count: u64,
+    pub expected_share_count: u64,
+    pub stored_share_count: u64,
+    pub missing_share_count: u64,
+    pub certificate_count: u64,
+    pub challenge_count: u64,
+    pub manifest_bytes: u64,
+    pub share_bytes: u64,
+    pub certificate_bytes: u64,
+    pub challenge_bytes: u64,
+    pub total_bytes: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -79,6 +99,10 @@ impl FileStorage {
         fs::create_dir_all(root.join("certificates")).map_err(io_error)?;
         fs::create_dir_all(root.join("slashings")).map_err(io_error)?;
         fs::create_dir_all(root.join("consensus_signing_records")).map_err(io_error)?;
+        fs::create_dir_all(root.join("da").join("manifests")).map_err(io_error)?;
+        fs::create_dir_all(root.join("da").join("shares")).map_err(io_error)?;
+        fs::create_dir_all(root.join("da").join("certificates")).map_err(io_error)?;
+        fs::create_dir_all(root.join("da").join("challenges")).map_err(io_error)?;
         Ok(Self { root })
     }
 
@@ -88,6 +112,54 @@ impl FileStorage {
 
     pub fn storage_bytes(&self) -> Result<u64, StorageError> {
         directory_size_bytes(&self.root)
+    }
+
+    pub fn da_storage_stats(&self) -> Result<DaStorageStats, StorageError> {
+        let mut stats = DaStorageStats::default();
+        let manifests_dir = self.root.join("da").join("manifests");
+        let shares_dir = self.root.join("da").join("shares");
+        let certificates_dir = self.root.join("da").join("certificates");
+        let challenges_dir = self.root.join("da").join("challenges");
+
+        for entry in fs::read_dir(&manifests_dir).map_err(io_error)? {
+            let path = entry.map_err(io_error)?.path();
+            if path.extension().and_then(|extension| extension.to_str()) != Some("bin") {
+                continue;
+            }
+            let metadata = fs::metadata(&path).map_err(io_error)?;
+            if !metadata.is_file() {
+                continue;
+            }
+            let manifest: DaManifest = read_json(&path)?;
+            manifest.validate().map_err(da_error)?;
+            let manifest_hash = manifest.manifest_hash().map_err(da_error)?;
+            stats.manifest_count += 1;
+            stats.expected_share_count = stats
+                .expected_share_count
+                .saturating_add(manifest.encoded_share_count as u64);
+            stats.manifest_bytes = stats.manifest_bytes.saturating_add(metadata.len());
+            for index in 0..manifest.encoded_share_count {
+                if !self.da_share_path(&manifest_hash, index).exists() {
+                    stats.missing_share_count += 1;
+                }
+            }
+        }
+
+        let share_file_stats = directory_file_stats(&shares_dir)?;
+        stats.stored_share_count = share_file_stats.file_count;
+        stats.share_bytes = share_file_stats.total_bytes;
+        let certificate_file_stats = directory_file_stats(&certificates_dir)?;
+        stats.certificate_count = certificate_file_stats.file_count;
+        stats.certificate_bytes = certificate_file_stats.total_bytes;
+        let challenge_file_stats = directory_file_stats(&challenges_dir)?;
+        stats.challenge_count = challenge_file_stats.file_count;
+        stats.challenge_bytes = challenge_file_stats.total_bytes;
+        stats.total_bytes = stats
+            .manifest_bytes
+            .saturating_add(stats.share_bytes)
+            .saturating_add(stats.certificate_bytes)
+            .saturating_add(stats.challenge_bytes);
+        Ok(stats)
     }
 
     pub fn backup_to(
@@ -543,6 +615,185 @@ impl FileStorage {
         read_json(&path)
     }
 
+    pub fn commit_da_manifest(&self, manifest: &DaManifest) -> Result<String, StorageError> {
+        manifest.validate().map_err(da_error)?;
+        let manifest_hash = manifest.manifest_hash().map_err(da_error)?;
+        write_json_atomic(&self.da_manifest_path(&manifest_hash), manifest)?;
+        Ok(manifest_hash)
+    }
+
+    pub fn maybe_load_da_manifest(
+        &self,
+        manifest_hash: &str,
+    ) -> Result<Option<DaManifest>, StorageError> {
+        let path = self.da_manifest_path(manifest_hash);
+        if !path.exists() {
+            return Ok(None);
+        }
+        self.load_da_manifest(manifest_hash).map(Some)
+    }
+
+    pub fn load_da_manifest(&self, manifest_hash: &str) -> Result<DaManifest, StorageError> {
+        let manifest: DaManifest = read_json(&self.da_manifest_path(manifest_hash))?;
+        manifest.validate().map_err(da_error)?;
+        let actual_hash = manifest.manifest_hash().map_err(da_error)?;
+        if actual_hash != manifest_hash {
+            return Err(StorageError::CorruptData(format!(
+                "DA manifest hash mismatch: expected {manifest_hash}, got {actual_hash}"
+            )));
+        }
+        Ok(manifest)
+    }
+
+    pub fn commit_da_certificate(
+        &self,
+        certificate: &DaAvailabilityCertificate,
+    ) -> Result<String, StorageError> {
+        certificate.validate().map_err(da_error)?;
+        let certificate_hash = certificate.certificate_hash().map_err(da_error)?;
+        write_json_atomic(&self.da_certificate_path(&certificate_hash), certificate)?;
+        Ok(certificate_hash)
+    }
+
+    pub fn maybe_load_da_certificate(
+        &self,
+        certificate_hash: &str,
+    ) -> Result<Option<DaAvailabilityCertificate>, StorageError> {
+        let path = self.da_certificate_path(certificate_hash);
+        if !path.exists() {
+            return Ok(None);
+        }
+        self.load_da_certificate(certificate_hash).map(Some)
+    }
+
+    pub fn load_da_certificate(
+        &self,
+        certificate_hash: &str,
+    ) -> Result<DaAvailabilityCertificate, StorageError> {
+        let certificate: DaAvailabilityCertificate =
+            read_json(&self.da_certificate_path(certificate_hash))?;
+        certificate.validate().map_err(da_error)?;
+        let actual_hash = certificate.certificate_hash().map_err(da_error)?;
+        if actual_hash != certificate_hash {
+            return Err(StorageError::CorruptData(format!(
+                "DA certificate hash mismatch: expected {certificate_hash}, got {actual_hash}"
+            )));
+        }
+        Ok(certificate)
+    }
+
+    pub fn commit_da_challenge_record(
+        &self,
+        record: &DaChallengeRecord,
+    ) -> Result<String, StorageError> {
+        record.validate().map_err(da_error)?;
+        let challenge_id = record.challenge_id().map_err(da_error)?;
+        write_json_atomic(&self.da_challenge_record_path(&challenge_id), record)?;
+        Ok(challenge_id)
+    }
+
+    pub fn maybe_load_da_challenge_record(
+        &self,
+        challenge_id: &str,
+    ) -> Result<Option<DaChallengeRecord>, StorageError> {
+        let path = self.da_challenge_record_path(challenge_id);
+        if !path.exists() {
+            return Ok(None);
+        }
+        self.load_da_challenge_record(challenge_id).map(Some)
+    }
+
+    pub fn load_da_challenge_record(
+        &self,
+        challenge_id: &str,
+    ) -> Result<DaChallengeRecord, StorageError> {
+        let record: DaChallengeRecord = read_json(&self.da_challenge_record_path(challenge_id))?;
+        record.validate().map_err(da_error)?;
+        let actual_id = record.challenge_id().map_err(da_error)?;
+        if actual_id != challenge_id {
+            return Err(StorageError::CorruptData(format!(
+                "DA challenge record hash mismatch: expected {challenge_id}, got {actual_id}"
+            )));
+        }
+        Ok(record)
+    }
+
+    pub fn commit_da_share(&self, share: &DaShare) -> Result<(), StorageError> {
+        let actual_hash = detta_da::hash_share_bytes(&share.bytes);
+        if actual_hash != share.share_hash {
+            return Err(StorageError::CorruptData(format!(
+                "DA share hash mismatch for index {}: expected {}, got {}",
+                share.index, share.share_hash, actual_hash
+            )));
+        }
+        write_json_atomic(
+            &self.da_share_path(&share.manifest_hash, share.index),
+            share,
+        )
+    }
+
+    pub fn load_da_share(&self, manifest_hash: &str, index: u32) -> Result<DaShare, StorageError> {
+        let share: DaShare = read_json(&self.da_share_path(manifest_hash, index))?;
+        if share.manifest_hash != manifest_hash {
+            return Err(StorageError::CorruptData(format!(
+                "DA share manifest hash mismatch for index {index}: expected {manifest_hash}, got {}",
+                share.manifest_hash
+            )));
+        }
+        if share.index != index {
+            return Err(StorageError::CorruptData(format!(
+                "DA share index mismatch: expected {index}, got {}",
+                share.index
+            )));
+        }
+        let actual_hash = detta_da::hash_share_bytes(&share.bytes);
+        if actual_hash != share.share_hash {
+            return Err(StorageError::CorruptData(format!(
+                "DA share hash mismatch for index {index}: expected {}, got {actual_hash}",
+                share.share_hash
+            )));
+        }
+        Ok(share)
+    }
+
+    pub fn maybe_load_da_share(
+        &self,
+        manifest_hash: &str,
+        index: u32,
+    ) -> Result<Option<DaShare>, StorageError> {
+        let path = self.da_share_path(manifest_hash, index);
+        if !path.exists() {
+            return Ok(None);
+        }
+        self.load_da_share(manifest_hash, index).map(Some)
+    }
+
+    pub fn commit_da_share_set(&self, share_set: &DaShareSet) -> Result<String, StorageError> {
+        share_set.verify().map_err(da_error)?;
+        let manifest_hash = self.commit_da_manifest(&share_set.manifest)?;
+        for share in &share_set.shares {
+            if share.manifest_hash != manifest_hash {
+                return Err(StorageError::CorruptData(format!(
+                    "DA share set manifest hash mismatch: expected {manifest_hash}, got {}",
+                    share.manifest_hash
+                )));
+            }
+            self.commit_da_share(share)?;
+        }
+        Ok(manifest_hash)
+    }
+
+    pub fn load_da_share_set(&self, manifest_hash: &str) -> Result<DaShareSet, StorageError> {
+        let manifest = self.load_da_manifest(manifest_hash)?;
+        let mut shares = Vec::new();
+        for index in 0..manifest.encoded_share_count {
+            shares.push(self.load_da_share(manifest_hash, index)?);
+        }
+        let share_set = DaShareSet { manifest, shares };
+        share_set.verify().map_err(da_error)?;
+        Ok(share_set)
+    }
+
     pub fn commit_consensus_signing_record_if_absent(
         &self,
         record: &ConsensusSigningRecord,
@@ -647,6 +898,35 @@ impl FileStorage {
             .join(file_safe_id(validator_id))
             .join(format!("{height}.bin"))
     }
+
+    fn da_manifest_path(&self, manifest_hash: &str) -> PathBuf {
+        self.root
+            .join("da")
+            .join("manifests")
+            .join(format!("{}.bin", file_safe_id(manifest_hash)))
+    }
+
+    fn da_certificate_path(&self, certificate_hash: &str) -> PathBuf {
+        self.root
+            .join("da")
+            .join("certificates")
+            .join(format!("{}.bin", file_safe_id(certificate_hash)))
+    }
+
+    fn da_challenge_record_path(&self, challenge_id: &str) -> PathBuf {
+        self.root
+            .join("da")
+            .join("challenges")
+            .join(format!("{}.bin", file_safe_id(challenge_id)))
+    }
+
+    fn da_share_path(&self, manifest_hash: &str, index: u32) -> PathBuf {
+        self.root
+            .join("da")
+            .join("shares")
+            .join(file_safe_id(manifest_hash))
+            .join(format!("{index}.bin"))
+    }
 }
 
 fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), StorageError> {
@@ -707,6 +987,10 @@ fn data_error(error: serde_json::Error) -> StorageError {
     StorageError::CorruptData(error.to_string())
 }
 
+fn da_error(error: detta_da::DaError) -> StorageError {
+    StorageError::CorruptData(format!("data availability error: {error:?}"))
+}
+
 fn encode_json<T: Serialize>(value: &T) -> Result<Vec<u8>, StorageError> {
     let bytes = serde_json::to_vec(value).map_err(data_error)?;
     if bytes.len() as u64 > MAX_ENCODED_BYTES {
@@ -750,7 +1034,12 @@ fn validator_signature_domain_path(domain: ValidatorSignatureDomain) -> &'static
     match domain {
         ValidatorSignatureDomain::BlockProposal => "block_proposal",
         ValidatorSignatureDomain::Vote => "vote",
+        ValidatorSignatureDomain::DaAvailabilityVote => "da_availability_vote",
+        ValidatorSignatureDomain::DaShareChallenge => "da_share_challenge",
+        ValidatorSignatureDomain::DaShareChallengeResponse => "da_share_challenge_response",
+        ValidatorSignatureDomain::DaChallengeEvidence => "da_challenge_evidence",
         ValidatorSignatureDomain::FinalityCertificate => "finality_certificate",
+        ValidatorSignatureDomain::DaAvailabilityCertificate => "da_availability_certificate",
         ValidatorSignatureDomain::ValidatorSetUpdate => "validator_set_update",
         ValidatorSignatureDomain::EquivocationEvidence => "equivocation_evidence",
         ValidatorSignatureDomain::ValidatorSetMetadataUpdate => "validator_set_metadata_update",
@@ -771,6 +1060,36 @@ fn directory_size_bytes(path: &Path) -> Result<u64, StorageError> {
         total = total.saturating_add(directory_size_bytes(&entry.map_err(io_error)?.path())?);
     }
     Ok(total)
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct DirectoryFileStats {
+    file_count: u64,
+    total_bytes: u64,
+}
+
+fn directory_file_stats(path: &Path) -> Result<DirectoryFileStats, StorageError> {
+    if !path.exists() {
+        return Ok(DirectoryFileStats::default());
+    }
+    let metadata = fs::metadata(path).map_err(io_error)?;
+    if metadata.is_file() {
+        return Ok(DirectoryFileStats {
+            file_count: 1,
+            total_bytes: metadata.len(),
+        });
+    }
+    if !metadata.is_dir() {
+        return Ok(DirectoryFileStats::default());
+    }
+
+    let mut stats = DirectoryFileStats::default();
+    for entry in fs::read_dir(path).map_err(io_error)? {
+        let child = directory_file_stats(&entry.map_err(io_error)?.path())?;
+        stats.file_count = stats.file_count.saturating_add(child.file_count);
+        stats.total_bytes = stats.total_bytes.saturating_add(child.total_bytes);
+    }
+    Ok(stats)
 }
 
 fn copy_directory_contents(
@@ -804,8 +1123,12 @@ fn copy_directory_contents(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use detta_consensus::EquivocationEvidence;
+    use detta_consensus::{EquivocationEvidence, SlashingEvidence};
     use detta_core::{Argument, Method, Transaction, ValidatorNode};
+    use detta_da::{
+        DaAvailabilityVote, DaChallengeEvidence, DaNamespace, DaNamespaceSection, DaPayload,
+        DaRecord, DaShareChallenge, DaShareChallengeResponse,
+    };
     use detta_protocol::{
         ProtocolMessage, ValidatorPublicKey, ValidatorSetMetadataUpdate, ValidatorSignatureDomain,
     };
@@ -848,6 +1171,20 @@ mod tests {
             signature_ok: true,
             budget: 1_000_000,
         }
+    }
+
+    fn da_payload() -> DaPayload {
+        DaPayload::new(
+            "detta-local",
+            1,
+            "previous-block",
+            vec![DaNamespaceSection::new(
+                DaNamespace::new("detta.tx").unwrap(),
+                vec![DaRecord::SignedTransaction(transfer_tx())],
+            )
+            .unwrap()],
+        )
+        .unwrap()
     }
 
     #[test]
@@ -1032,6 +1369,207 @@ mod tests {
     }
 
     #[test]
+    fn persists_and_loads_da_share_set() {
+        let dir = temp_dir("da-share-set");
+        let backup_dir = temp_dir("da-share-set-backup");
+        let restore_dir = temp_dir("da-share-set-restore");
+        let storage = FileStorage::open(&dir).unwrap();
+        let share_set = DaShareSet::from_payload(&da_payload(), "block-1", 64).unwrap();
+        let manifest_hash = share_set.manifest.manifest_hash().unwrap();
+
+        assert_eq!(
+            storage.maybe_load_da_manifest(&manifest_hash).unwrap(),
+            None
+        );
+        assert_eq!(
+            storage.commit_da_share_set(&share_set).unwrap(),
+            manifest_hash
+        );
+
+        let loaded_manifest = storage
+            .maybe_load_da_manifest(&manifest_hash)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded_manifest, share_set.manifest);
+        let loaded_share_set = storage.load_da_share_set(&manifest_hash).unwrap();
+        assert_eq!(loaded_share_set.manifest, share_set.manifest);
+        assert_eq!(loaded_share_set.shares, share_set.shares);
+        assert_eq!(
+            loaded_share_set.reconstruct_payload().unwrap(),
+            da_payload().canonicalized()
+        );
+
+        let manifest = storage.backup_to(&backup_dir).unwrap();
+        assert!(manifest.file_count > share_set.shares.len());
+        let restored = FileStorage::restore_from_backup(&backup_dir, &restore_dir).unwrap();
+        assert_eq!(
+            restored.load_da_share_set(&manifest_hash).unwrap().shares,
+            share_set.shares
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+        fs::remove_dir_all(backup_dir).unwrap();
+        fs::remove_dir_all(restore_dir).unwrap();
+    }
+
+    #[test]
+    fn persists_and_loads_da_challenge_record() {
+        let dir = temp_dir("da-challenge-record");
+        let storage = FileStorage::open(&dir).unwrap();
+        let share_set = DaShareSet::from_payload(&da_payload(), "block-1", 64).unwrap();
+        let vote = DaAvailabilityVote::from_manifest_with_custody(
+            &share_set.manifest,
+            "validator-1",
+            [0],
+            [],
+        )
+        .unwrap();
+        let challenge =
+            DaShareChallenge::from_availability_vote(&vote, "validator-2", 0, 9).unwrap();
+        let mut invalid_share = share_set.shares[0].clone();
+        invalid_share.bytes[0] ^= 0x01;
+        let response = DaShareChallengeResponse::from_share(&challenge, invalid_share).unwrap();
+        let evidence = DaChallengeEvidence::invalid_response(
+            &challenge,
+            &response,
+            &share_set.manifest,
+            "validator-2",
+            8,
+        )
+        .unwrap();
+        let record = DaChallengeRecord {
+            challenge,
+            response: Some(response),
+            evidence: Some(evidence),
+        };
+        let challenge_id = record.challenge_id().unwrap();
+
+        assert_eq!(
+            storage
+                .maybe_load_da_challenge_record(&challenge_id)
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            storage.commit_da_challenge_record(&record).unwrap(),
+            challenge_id
+        );
+        assert_eq!(
+            storage
+                .maybe_load_da_challenge_record(&challenge_id)
+                .unwrap(),
+            Some(record.clone())
+        );
+        assert_eq!(
+            storage.load_da_challenge_record(&challenge_id).unwrap(),
+            record
+        );
+        let stats = storage.da_storage_stats().unwrap();
+        assert_eq!(stats.challenge_count, 1);
+        assert!(stats.challenge_bytes > 0);
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn reports_da_storage_stats_and_missing_shares() {
+        let dir = temp_dir("da-storage-stats");
+        let storage = FileStorage::open(&dir).unwrap();
+        let share_set = DaShareSet::from_payload(&da_payload(), "block-7", 64).unwrap();
+        let manifest_hash = storage.commit_da_share_set(&share_set).unwrap();
+
+        let stats = storage.da_storage_stats().unwrap();
+        assert_eq!(stats.manifest_count, 1);
+        assert_eq!(
+            stats.expected_share_count,
+            share_set.manifest.encoded_share_count as u64
+        );
+        assert_eq!(stats.stored_share_count, share_set.shares.len() as u64);
+        assert_eq!(stats.missing_share_count, 0);
+        assert_eq!(stats.certificate_count, 0);
+        assert_eq!(stats.challenge_count, 0);
+        assert!(stats.manifest_bytes > 0);
+        assert!(stats.share_bytes > 0);
+        assert_eq!(stats.certificate_bytes, 0);
+        assert_eq!(stats.challenge_bytes, 0);
+        assert_eq!(
+            stats.total_bytes,
+            stats.manifest_bytes
+                + stats.share_bytes
+                + stats.certificate_bytes
+                + stats.challenge_bytes
+        );
+
+        fs::remove_file(storage.da_share_path(&manifest_hash, 0)).unwrap();
+        let stats = storage.da_storage_stats().unwrap();
+        assert_eq!(stats.stored_share_count, share_set.shares.len() as u64 - 1);
+        assert_eq!(stats.missing_share_count, 1);
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn persists_and_loads_da_certificate() {
+        let dir = temp_dir("da-certificate");
+        let storage = FileStorage::open(&dir).unwrap();
+        let share_set = DaShareSet::from_payload(&da_payload(), "block-7", 64).unwrap();
+        storage.commit_da_share_set(&share_set).unwrap();
+        let certificate = DaAvailabilityCertificate::from_manifest(
+            &share_set.manifest,
+            vec!["validator-1".into(), "validator-2".into()],
+        )
+        .unwrap();
+        let certificate_hash = certificate.certificate_hash().unwrap();
+
+        assert_eq!(
+            storage.maybe_load_da_certificate(&certificate_hash),
+            Ok(None)
+        );
+        assert_eq!(
+            storage.commit_da_certificate(&certificate).unwrap(),
+            certificate_hash
+        );
+        assert_eq!(
+            storage
+                .maybe_load_da_certificate(&certificate_hash)
+                .unwrap()
+                .unwrap(),
+            certificate
+        );
+        assert_eq!(
+            storage.load_da_certificate(&certificate_hash).unwrap(),
+            certificate
+        );
+        let stats = storage.da_storage_stats().unwrap();
+        assert_eq!(stats.certificate_count, 1);
+        assert!(stats.certificate_bytes > 0);
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn rejects_corrupt_da_share_on_load() {
+        let dir = temp_dir("da-corrupt-share");
+        let storage = FileStorage::open(&dir).unwrap();
+        let share_set = DaShareSet::from_payload(&da_payload(), "block-1", 64).unwrap();
+        let manifest_hash = storage.commit_da_share_set(&share_set).unwrap();
+        let mut corrupt = storage.load_da_share(&manifest_hash, 0).unwrap();
+        corrupt.bytes[0] ^= 0x01;
+        write_json_atomic(&storage.da_share_path(&manifest_hash, 0), &corrupt).unwrap();
+
+        assert!(matches!(
+            storage.load_da_share(&manifest_hash, 0),
+            Err(StorageError::CorruptData(_))
+        ));
+        assert!(matches!(
+            storage.load_da_share_set(&manifest_hash),
+            Err(StorageError::CorruptData(_))
+        ));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn indexes_transactions_and_receipts_from_durable_blocks() {
         let dir = temp_dir("block-history-index");
         let storage = FileStorage::open(&dir).unwrap();
@@ -1083,12 +1621,12 @@ mod tests {
         let record = SlashingRecord {
             validator_id: "validator/1".into(),
             slashed_at_height: 9,
-            evidence: EquivocationEvidence {
+            evidence: SlashingEvidence::Equivocation(EquivocationEvidence {
                 validator_id: "validator/1".into(),
                 height: 9,
                 first_block_hash: "block-a".into(),
                 second_block_hash: "block-b".into(),
-            },
+            }),
         };
 
         storage.commit_slashing_record(&record).unwrap();
@@ -1263,6 +1801,8 @@ mod tests {
             manifest_metadata_roots_count: 3,
             chunk_count: 4,
             metadata_roots_verified: true,
+            da_manifest_hash: None,
+            da_certificate_hash: None,
         };
         let second = SnapshotImportAuditRecord {
             snapshot_root: "snapshot-root-2".into(),
@@ -1272,6 +1812,8 @@ mod tests {
             manifest_metadata_roots_count: 2,
             chunk_count: 3,
             metadata_roots_verified: true,
+            da_manifest_hash: None,
+            da_certificate_hash: None,
         };
         let third = SnapshotImportAuditRecord {
             snapshot_root: "snapshot-root-3".into(),
@@ -1281,6 +1823,8 @@ mod tests {
             manifest_metadata_roots_count: 4,
             chunk_count: 5,
             metadata_roots_verified: true,
+            da_manifest_hash: Some("da-manifest-hash-3".into()),
+            da_certificate_hash: Some("da-certificate-hash-3".into()),
         };
 
         assert_eq!(

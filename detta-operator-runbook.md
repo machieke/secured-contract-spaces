@@ -97,7 +97,8 @@ Poll these RPCs on each validator and RPC node:
 - `get_mempool_status`: pending total, per-sender pressure, admission limits,
   and block resource limit.
 - `get_finality_certificate`: latest finalized height and signer set.
-- `get_slashing_record`: equivocation evidence when an alert names a validator.
+- `get_slashing_record`: equivocation or DA challenge evidence when an alert
+  names a validator.
 - `get_snapshot_sync_client_metrics`: retry attempts, stream failures, chunks
   received, manifests received, and metadata-root verification status.
 - `get_snapshot_import_audit_root` and `get_snapshot_import_audit_records`:
@@ -174,9 +175,11 @@ signers, duplicate keys, or insufficient quorum.
 
 ## Incident Response
 
-For suspected equivocation:
+For suspected equivocation or DA custody failure:
 
 - fetch slashing evidence with `get_slashing_record`;
+- fetch DA challenge details with `get_da_challenge_record` when the evidence
+  references a challenge hash;
 - compare finality certificate signers around the height;
 - quarantine the validator key and schedule a validator-set metadata update.
 

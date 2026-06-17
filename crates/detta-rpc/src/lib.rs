@@ -6,6 +6,10 @@ use detta_core::{
     ScheduledPolicyUpdate, ScheduledUpgrade, StateKey, StateSnapshot, StorageNonInclusionProof,
     StorageProof, Transaction, UpgradeRehearsalReport, ValidatorNode,
 };
+use detta_da::{
+    DaAvailabilityCertificate, DaChallengeRecord, DaManifest, DaNamespaceSection, DaPayload,
+    DaShare,
+};
 use detta_evaluator::{
     canonical_script_source, parse_restricted_script, restricted_evaluator_fixture_inventory,
     trace_root, EvaluatorError, EvaluatorFixtureInventory, ExecutionReport,
@@ -13,7 +17,8 @@ use detta_evaluator::{
 };
 use detta_protocol::SignedValidatorMessage;
 use detta_storage::{
-    SnapshotImportAuditConfig, SnapshotImportAuditRecord, ValidatorSetMetadataAuditRecord,
+    DaStorageStats, SnapshotImportAuditConfig, SnapshotImportAuditRecord,
+    ValidatorSetMetadataAuditRecord,
 };
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
@@ -40,6 +45,11 @@ pub enum RpcError {
     TransactionNotFound,
     ContractNotFound,
     AspectModuleNotFound,
+    DaManifestNotFound,
+    DaShareNotFound,
+    DaCertificateNotFound,
+    DaChallengeRecordNotFound,
+    DaNamespaceNotFound,
     ProofNotFound,
     SubscriptionNotFound,
     Execution(ExecutionError),
@@ -215,6 +225,33 @@ pub enum RpcRequest {
     GetSlashingRecord {
         validator_id: String,
     },
+    GetDaManifest {
+        manifest_hash: String,
+    },
+    GetDaShare {
+        manifest_hash: String,
+        index: u32,
+    },
+    GetDaCertificate {
+        certificate_hash: String,
+    },
+    GetDaChallengeRecord {
+        challenge_id: String,
+    },
+    GetDaPayload {
+        manifest_hash: String,
+    },
+    GetDaNamespace {
+        manifest_hash: String,
+        namespace: String,
+    },
+    GetDaStatus {
+        manifest_hash: String,
+    },
+    GetDaRepairStatus {
+        manifest_hash: String,
+    },
+    GetDaStorageStats,
     GetNodeHealth,
     GetOperatorMetrics,
     GetOperatorAlerts,
@@ -333,6 +370,31 @@ pub struct PersistentNodeSnapshotRoots {
     pub required_snapshot_metadata_roots: BTreeMap<String, String>,
     pub required_snapshot_metadata_roots_root: String,
     pub snapshot_sync_client_metrics: Option<SnapshotSyncClientMetricsReport>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaStatusReport {
+    pub manifest_hash: String,
+    pub manifest_available: bool,
+    pub certificate_hash: Option<String>,
+    pub certificate_available: bool,
+    pub expected_share_count: u32,
+    pub stored_share_count: u32,
+    pub missing_share_indices: Vec<u32>,
+    pub payload_reconstructable: bool,
+    pub payload_bytes: Option<u64>,
+    pub namespace_count: Option<usize>,
+    pub reconstruction_error: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaRepairStatusReport {
+    pub manifest_hash: String,
+    pub repair_needed: bool,
+    pub missing_share_indices: Vec<u32>,
+    pub pending_repair_count: usize,
+    pub payload_reconstructable: bool,
+    pub reconstruction_error: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -649,6 +711,15 @@ pub enum RpcResult {
     SnapshotImportAuditRoot(String),
     SnapshotImportAuditConfigRoot(Option<String>),
     SnapshotImportAuditConfig(SnapshotImportAuditConfig),
+    DaManifest(Box<DaManifest>),
+    DaShare(Box<DaShare>),
+    DaAvailabilityCertificate(Box<DaAvailabilityCertificate>),
+    DaChallengeRecord(Box<DaChallengeRecord>),
+    DaPayload(Box<DaPayload>),
+    DaNamespace(Box<DaNamespaceSection>),
+    DaStatus(Box<DaStatusReport>),
+    DaRepairStatus(Box<DaRepairStatusReport>),
+    DaStorageStats(DaStorageStats),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1404,6 +1475,15 @@ impl RpcService {
             RpcRequest::ProposeValidatorSetMetadataUpdate { .. }
             | RpcRequest::GetFinalityCertificate { .. }
             | RpcRequest::GetSlashingRecord { .. }
+            | RpcRequest::GetDaManifest { .. }
+            | RpcRequest::GetDaShare { .. }
+            | RpcRequest::GetDaCertificate { .. }
+            | RpcRequest::GetDaChallengeRecord { .. }
+            | RpcRequest::GetDaPayload { .. }
+            | RpcRequest::GetDaNamespace { .. }
+            | RpcRequest::GetDaStatus { .. }
+            | RpcRequest::GetDaRepairStatus { .. }
+            | RpcRequest::GetDaStorageStats
             | RpcRequest::GetValidatorSetMetadataUpdateStatus { .. }
             | RpcRequest::GetValidatorSetMetadataAuditRecords { .. }
             | RpcRequest::GetSnapshotImportAuditRecords { .. }
@@ -1738,6 +1818,11 @@ fn rpc_error_code(error: &RpcError) -> &'static str {
         RpcError::TransactionNotFound => "rpc.transaction_not_found",
         RpcError::ContractNotFound => "rpc.contract_not_found",
         RpcError::AspectModuleNotFound => "rpc.aspect_module_not_found",
+        RpcError::DaManifestNotFound => "rpc.da_manifest_not_found",
+        RpcError::DaShareNotFound => "rpc.da_share_not_found",
+        RpcError::DaCertificateNotFound => "rpc.da_certificate_not_found",
+        RpcError::DaChallengeRecordNotFound => "rpc.da_challenge_record_not_found",
+        RpcError::DaNamespaceNotFound => "rpc.da_namespace_not_found",
         RpcError::ProofNotFound => "rpc.proof_not_found",
         RpcError::SubscriptionNotFound => "rpc.subscription_not_found",
         RpcError::Execution(ExecutionError::UpgradeNotFound) => "execution.upgrade_not_found",
@@ -1818,6 +1903,11 @@ fn rpc_error_message(error: &RpcError) -> &'static str {
         RpcError::TransactionNotFound => "transaction was not found",
         RpcError::ContractNotFound => "contract was not found",
         RpcError::AspectModuleNotFound => "aspect module was not found",
+        RpcError::DaManifestNotFound => "DA manifest was not found",
+        RpcError::DaShareNotFound => "DA share was not found",
+        RpcError::DaCertificateNotFound => "DA certificate was not found",
+        RpcError::DaChallengeRecordNotFound => "DA challenge record was not found",
+        RpcError::DaNamespaceNotFound => "DA namespace was not found",
         RpcError::ProofNotFound => "proof was not found",
         RpcError::SubscriptionNotFound => "subscription was not found",
         RpcError::Execution(ExecutionError::UpgradeNotFound) => "upgrade was not found",
@@ -1845,7 +1935,7 @@ fn rpc_error_message(error: &RpcError) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use detta_consensus::EquivocationEvidence;
+    use detta_consensus::{EquivocationEvidence, SlashingEvidence};
     use detta_core::{
         Argument, AspectModuleRecord, AspectModuleRoots, ContractInvariant, DeTTaState,
         EventPayload, MerkleProof, Method, PolicyEffect, TxStatus, DEFAULT_BLOCK_RESOURCE_LIMIT,
@@ -1992,6 +2082,15 @@ mod tests {
             "get_blocks_page",
             "get_finality_certificate",
             "get_slashing_record",
+            "get_da_manifest",
+            "get_da_share",
+            "get_da_certificate",
+            "get_da_challenge_record",
+            "get_da_payload",
+            "get_da_namespace",
+            "get_da_status",
+            "get_da_repair_status",
+            "get_da_storage_stats",
             "get_node_health",
             "get_operator_metrics",
             "get_operator_alerts",
@@ -2735,18 +2834,18 @@ mod tests {
         let response = RpcResponse::Ok(RpcResult::SlashingRecord(Box::new(SlashingRecord {
             validator_id: "validator-1".into(),
             slashed_at_height: 11,
-            evidence: EquivocationEvidence {
+            evidence: SlashingEvidence::Equivocation(EquivocationEvidence {
                 validator_id: "validator-1".into(),
                 height: 11,
                 first_block_hash: "block-a".into(),
                 second_block_hash: "block-b".into(),
-            },
+            }),
         })));
         let response_fixture = concat!(
             r#"{"status":"ok","body":{"result":"slashing_record","data":{"#,
             r#""validator_id":"validator-1","slashed_at_height":11,"#,
-            r#""evidence":{"validator_id":"validator-1","height":11,"#,
-            r#""first_block_hash":"block-a","second_block_hash":"block-b"}}}}"#,
+            r#""evidence":{"type":"equivocation","data":{"validator_id":"validator-1","#,
+            r#""height":11,"first_block_hash":"block-a","second_block_hash":"block-b"}}}}}"#,
         );
         assert_eq!(serde_json::to_string(&response).unwrap(), response_fixture);
         assert_eq!(

@@ -107,6 +107,13 @@ The current implementation includes slices for:
   wrapping, rewarded staking, and bridge mint/burn adapters;
 - E2E client tests covering deployment, liquidity, buys and sells, proofs,
   RPC coverage, adversarial cases, state sync, networking, and operator APIs.
+- experimental DA-committed block production, DA manifest/share/certificate
+  protocol messages, signed DA availability votes, quorum DA certificate
+  aggregation, deterministic custody share checks before DA vote signing,
+  Reed-Solomon threshold reconstruction, durable DA share sets, certificates,
+  and challenge records, DA gossip persistence, DA challenge/slashing evidence,
+  payload-aware DA-certified production finality mode, and DA retrieval RPCs on
+  `experimental/data-availability-layer`.
 
 The production roadmap and progress tracker live in
 `detta-production-implementation-plan.md`.
@@ -137,6 +144,8 @@ SCS specification
 - `scs-formal.md`: formal verification companion for SCS.
 - `detta-production-implementation-plan.md`: production DeTTa implementation
   plan and progress tracker.
+- `detta-data-availability-layer-implementation-plan.md`: production-grade
+  data availability layer plan and branch progress tracker.
 - `detta-secure-metta-aspect-generalization-plan.md`: implementation plan for
   replacing hard-coded DeFi behavior with secure, restricted MeTTa aspect
   modules aligned with the token aspect taxonomy.
@@ -205,15 +214,20 @@ Rust workspace crates:
   proofs, and DeFi contract methods.
 - `crates/detta-consensus`: consensus, finality, validator-set, and slashing
   logic.
-- `crates/detta-protocol`: versioned protocol envelopes, signatures, and
-  snapshot sync wire types.
+- `crates/detta-protocol`: versioned protocol envelopes, signatures, DA
+  manifest/share/certificate/challenge messages, and snapshot sync wire types.
+- `crates/detta-da`: experimental data availability payloads, manifests,
+  deterministic and Reed-Solomon share commitments, reconstruction, custody
+  challenges, and tamper/withholding verification.
 - `crates/detta-network`: validator transport, peer handshakes, retries, and
   TCP protocol streams.
 - `crates/detta-storage`: durable blocks, mempool records, snapshots, metadata,
-  audit records, and sync diagnostics.
+  audit records, DA manifests/shares/certificates, and sync diagnostics.
+- `crates/detta-node`: persistent validator orchestration, including
+  experimental DA-committed block production and DA gossip persistence.
 - `crates/detta-node/src/bin/detta-client.rs`: packaged TCP RPC client for
   deploying tokens, creating pools, adding liquidity, swapping assets, reading
-  receipts, and querying roots.
+  receipts, querying roots, and inspecting experimental DA records.
 - `crates/detta-aspects`: parser, canonicalizer, verifier, IR lowering, and
   artifact tooling for secure taxonomy-aligned MeTTa aspect modules.
 - `crates/detta-aspect-runtime`: deterministic executable runtime for verified
@@ -225,6 +239,12 @@ Rust workspace crates:
 - `crates/detta-verify`: replay, differential, symbolic, and proof artifact
   tooling.
 - `crates/detta-e2e`: external client harness and integration tests.
+
+On the `experimental/data-availability-layer` branch, core block headers can
+also carry optional experimental DA commitments for legacy compatibility.
+Production-mode consensus uses `FinalityMode::DataAvailabilityRequired`, which
+rejects plain finality and requires a DA manifest, certificate, and
+payload-root check before validator replay.
 
 ## Verification And Test Commands
 

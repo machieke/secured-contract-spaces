@@ -1308,11 +1308,19 @@ fn method_policy<const E: usize, const I: usize>(
 
 pub const DEFAULT_BLOCK_RESOURCE_LIMIT: u64 = 10_000_000;
 
-fn transaction_resource_units(tx: &Transaction) -> u64 {
+pub fn transaction_resource_units(tx: &Transaction) -> u64 {
     let arg_units = (tx.args.len() as u64).saturating_mul(2);
     10u64
         .saturating_add(arg_units)
         .saturating_add(method_resource_units(&tx.method))
+}
+
+pub fn transaction_root(transactions: &[Transaction]) -> String {
+    merkle_root(transactions)
+}
+
+pub fn receipt_root(receipts: &[Receipt]) -> String {
+    merkle_root(receipts)
 }
 
 fn block_resource_units(transactions: &[Transaction]) -> u64 {
@@ -1923,6 +1931,17 @@ pub struct BlockHeader {
     pub timestamp: u64,
     pub proposer: String,
     pub consensus_certificate: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_availability: Option<DataAvailabilityCommitment>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DataAvailabilityCommitment {
+    pub payload_root: String,
+    pub manifest_hash: String,
+    pub share_root: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub certificate_hash: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -3430,6 +3449,7 @@ impl DeTTaState {
             timestamp,
             proposer: proposer.into(),
             consensus_certificate: consensus_certificate.into(),
+            data_availability: None,
         };
 
         let block = Block {
@@ -11915,6 +11935,51 @@ mod tests {
             validator_state.global_state_root(),
             expected_state.global_state_root()
         );
+    }
+
+    #[test]
+    fn legacy_block_header_omits_data_availability_commitment() {
+        let state = seeded_state();
+        let (block, _) = state.build_block(1, Vec::new(), 1_000, "validator-1", "cert-1");
+
+        assert_eq!(block.header.data_availability, None);
+        let header_json = serde_json::to_value(&block.header).unwrap();
+        assert!(header_json.get("data_availability").is_none());
+
+        let decoded: BlockHeader = serde_json::from_value(header_json).unwrap();
+        assert_eq!(decoded.data_availability, None);
+    }
+
+    #[test]
+    fn data_availability_commitment_is_bound_to_block_hash() {
+        let proposer_state = seeded_state();
+        let validator_initial_state = seeded_state();
+        let txs = vec![tx(
+            "tx1",
+            "Alice",
+            1,
+            Method::Transfer,
+            vec![principal("Bob"), asset("USDC"), amount(10)],
+        )];
+        let (mut block, expected_state) =
+            proposer_state.build_block(1, txs, 1_000, "validator-1", "cert-1");
+        let block_hash_without_da = block.block_hash();
+
+        block.header.data_availability = Some(DataAvailabilityCommitment {
+            payload_root: "da-payload-root".into(),
+            manifest_hash: "da-manifest-hash".into(),
+            share_root: "da-share-root".into(),
+            certificate_hash: Some("da-cert-hash".into()),
+        });
+
+        assert_ne!(block.block_hash(), block_hash_without_da);
+        let mut validator_state = validator_initial_state;
+        validator_state.apply_block(&block).unwrap();
+        assert_eq!(
+            validator_state.global_state_root(),
+            expected_state.global_state_root()
+        );
+        assert_eq!(validator_state.finalized_block_hash, block.block_hash());
     }
 
     #[test]

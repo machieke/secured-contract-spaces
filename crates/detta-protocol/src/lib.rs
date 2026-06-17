@@ -1,5 +1,9 @@
 use detta_consensus::{EquivocationEvidence, FinalityCertificate, ValidatorSetUpdate, Vote};
 use detta_core::{Block, DeTTaState, SnapshotError, StateSnapshot, Transaction};
+use detta_da::{
+    DaAvailabilityCertificate, DaAvailabilityVote, DaChallengeEvidence, DaManifest, DaShare,
+    DaShareChallenge, DaShareChallengeResponse,
+};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -23,7 +27,12 @@ pub const SNAPSHOT_METADATA_SNAPSHOT_IMPORT_AUDIT_CONFIG_ROOT: &str =
 pub enum ValidatorSignatureDomain {
     BlockProposal,
     Vote,
+    DaAvailabilityVote,
+    DaShareChallenge,
+    DaShareChallengeResponse,
+    DaChallengeEvidence,
     FinalityCertificate,
+    DaAvailabilityCertificate,
     ValidatorSetUpdate,
     EquivocationEvidence,
     ValidatorSetMetadataUpdate,
@@ -117,6 +126,13 @@ pub enum ProtocolMessage {
     SnapshotChunkRequest(SnapshotChunkRequest),
     SnapshotChunkManifest(SnapshotChunkManifest),
     SnapshotChunk(SnapshotChunk),
+    DaManifest(Box<DaManifest>),
+    DaShare(DaShare),
+    DaAvailabilityVote(DaAvailabilityVote),
+    DaShareChallenge(DaShareChallenge),
+    DaShareChallengeResponse(DaShareChallengeResponse),
+    DaChallengeEvidence(Box<DaChallengeEvidence>),
+    DaAvailabilityCertificate(Box<DaAvailabilityCertificate>),
     ValidatorSetMetadataUpdate(ValidatorSetMetadataUpdate),
 }
 
@@ -134,6 +150,13 @@ pub enum ProtocolMessageKind {
     SnapshotChunkRequest,
     SnapshotChunkManifest,
     SnapshotChunk,
+    DaManifest,
+    DaShare,
+    DaAvailabilityVote,
+    DaShareChallenge,
+    DaShareChallengeResponse,
+    DaChallengeEvidence,
+    DaAvailabilityCertificate,
     ValidatorSetMetadataUpdate,
 }
 
@@ -217,6 +240,17 @@ impl ProtocolMessage {
             ProtocolMessage::SnapshotChunkRequest(_) => ProtocolMessageKind::SnapshotChunkRequest,
             ProtocolMessage::SnapshotChunkManifest(_) => ProtocolMessageKind::SnapshotChunkManifest,
             ProtocolMessage::SnapshotChunk(_) => ProtocolMessageKind::SnapshotChunk,
+            ProtocolMessage::DaManifest(_) => ProtocolMessageKind::DaManifest,
+            ProtocolMessage::DaShare(_) => ProtocolMessageKind::DaShare,
+            ProtocolMessage::DaAvailabilityVote(_) => ProtocolMessageKind::DaAvailabilityVote,
+            ProtocolMessage::DaShareChallenge(_) => ProtocolMessageKind::DaShareChallenge,
+            ProtocolMessage::DaShareChallengeResponse(_) => {
+                ProtocolMessageKind::DaShareChallengeResponse
+            }
+            ProtocolMessage::DaChallengeEvidence(_) => ProtocolMessageKind::DaChallengeEvidence,
+            ProtocolMessage::DaAvailabilityCertificate(_) => {
+                ProtocolMessageKind::DaAvailabilityCertificate
+            }
         }
     }
 }
@@ -385,8 +419,19 @@ pub fn expected_signature_domain(
     match message {
         ProtocolMessage::Block(_) => Ok(ValidatorSignatureDomain::BlockProposal),
         ProtocolMessage::Vote(_) => Ok(ValidatorSignatureDomain::Vote),
+        ProtocolMessage::DaAvailabilityVote(_) => Ok(ValidatorSignatureDomain::DaAvailabilityVote),
+        ProtocolMessage::DaShareChallenge(_) => Ok(ValidatorSignatureDomain::DaShareChallenge),
+        ProtocolMessage::DaShareChallengeResponse(_) => {
+            Ok(ValidatorSignatureDomain::DaShareChallengeResponse)
+        }
+        ProtocolMessage::DaChallengeEvidence(_) => {
+            Ok(ValidatorSignatureDomain::DaChallengeEvidence)
+        }
         ProtocolMessage::FinalityCertificate(_) => {
             Ok(ValidatorSignatureDomain::FinalityCertificate)
+        }
+        ProtocolMessage::DaAvailabilityCertificate(_) => {
+            Ok(ValidatorSignatureDomain::DaAvailabilityCertificate)
         }
         ProtocolMessage::ValidatorSetUpdate(_) => Ok(ValidatorSignatureDomain::ValidatorSetUpdate),
         ProtocolMessage::ValidatorSetMetadataUpdate(_) => {
@@ -403,6 +448,10 @@ fn claimed_message_signer(message: &ProtocolMessage) -> Option<&str> {
     match message {
         ProtocolMessage::Block(block) => Some(&block.header.proposer),
         ProtocolMessage::Vote(vote) => Some(&vote.validator_id),
+        ProtocolMessage::DaAvailabilityVote(vote) => Some(&vote.validator_id),
+        ProtocolMessage::DaShareChallenge(challenge) => Some(&challenge.challenger_id),
+        ProtocolMessage::DaShareChallengeResponse(response) => Some(&response.validator_id),
+        ProtocolMessage::DaChallengeEvidence(evidence) => Some(&evidence.reporter_id),
         ProtocolMessage::FinalityCertificate(_)
         | ProtocolMessage::ValidatorSetUpdate(_)
         | ProtocolMessage::ValidatorSetMetadataUpdate(_)
@@ -413,7 +462,10 @@ fn claimed_message_signer(message: &ProtocolMessage) -> Option<&str> {
         | ProtocolMessage::SignedValidator(_)
         | ProtocolMessage::SnapshotChunkRequest(_)
         | ProtocolMessage::SnapshotChunkManifest(_)
-        | ProtocolMessage::SnapshotChunk(_) => None,
+        | ProtocolMessage::SnapshotChunk(_)
+        | ProtocolMessage::DaManifest(_)
+        | ProtocolMessage::DaShare(_)
+        | ProtocolMessage::DaAvailabilityCertificate(_) => None,
     }
 }
 
@@ -718,7 +770,12 @@ fn signature_domain_name(domain: ValidatorSignatureDomain) -> &'static str {
     match domain {
         ValidatorSignatureDomain::BlockProposal => "block_proposal",
         ValidatorSignatureDomain::Vote => "vote",
+        ValidatorSignatureDomain::DaAvailabilityVote => "da_availability_vote",
+        ValidatorSignatureDomain::DaShareChallenge => "da_share_challenge",
+        ValidatorSignatureDomain::DaShareChallengeResponse => "da_share_challenge_response",
+        ValidatorSignatureDomain::DaChallengeEvidence => "da_challenge_evidence",
         ValidatorSignatureDomain::FinalityCertificate => "finality_certificate",
+        ValidatorSignatureDomain::DaAvailabilityCertificate => "da_availability_certificate",
         ValidatorSignatureDomain::ValidatorSetUpdate => "validator_set_update",
         ValidatorSignatureDomain::ValidatorSetMetadataUpdate => "validator_set_metadata_update",
         ValidatorSignatureDomain::EquivocationEvidence => "equivocation_evidence",
@@ -822,6 +879,10 @@ fn decode_hex_nibble(value: u8) -> Result<u8, ()> {
 mod tests {
     use super::*;
     use detta_core::{Argument, DeTTaState, Method};
+    use detta_da::{
+        DaChallengeEvidence, DaNamespace, DaNamespaceSection, DaPayload, DaRecord,
+        DaShareChallenge, DaShareChallengeResponse, DaShareSet,
+    };
 
     const TX_ENVELOPE_HEX: &str = "445454410001000000f67b225472616e73616374696f6e223a7b22636861696e5f6964223a2264657474612d6c6f63616c222c2274785f68617368223a22747831222c2273656e646572223a22416c696365222c226e6f6e6365223a312c2276616c69645f756e74696c5f686569676874223a6e756c6c2c22746172676574223a22546f6b656e41222c226d6574686f64223a225472616e73666572222c2261726773223a5b7b225072696e636970616c223a22426f62227d2c7b224173736574223a2255534443227d2c7b22416d6f756e74223a31307d5d2c227369676e61747572655f6f6b223a747275652c22627564676574223a313030303030307d7d";
     const VOTE_ENVELOPE_HEX: &str =
@@ -856,6 +917,22 @@ mod tests {
             )
             .unwrap();
         state
+    }
+
+    fn da_share_set() -> DaShareSet {
+        let payload = DaPayload::new(
+            "detta-local",
+            1,
+            "genesis",
+            vec![DaNamespaceSection::new(
+                DaNamespace::new("detta.tx").unwrap(),
+                vec![DaRecord::SignedTransaction(transfer_tx())],
+            )
+            .unwrap()],
+        )
+        .unwrap();
+
+        DaShareSet::from_payload(&payload, "block-hash-1", 64).unwrap()
     }
 
     fn validator_key(validator_id: &str, seed_byte: u8) -> ValidatorSigningKey {
@@ -902,6 +979,31 @@ mod tests {
 
         for message in messages {
             let encoded = encode_message(&message).unwrap();
+            assert_eq!(decode_message(&encoded), Ok(message));
+        }
+    }
+
+    #[test]
+    fn da_manifest_and_share_messages_round_trip() {
+        let share_set = da_share_set();
+        let vote = DaAvailabilityVote::from_manifest(&share_set.manifest, "validator-1").unwrap();
+        let certificate = DaAvailabilityCertificate::from_manifest(
+            &share_set.manifest,
+            vec!["validator-1".into(), "validator-2".into()],
+        )
+        .unwrap();
+        let messages = [
+            ProtocolMessage::DaManifest(Box::new(share_set.manifest.clone())),
+            ProtocolMessage::DaShare(share_set.shares[0].clone()),
+            ProtocolMessage::DaAvailabilityVote(vote),
+            ProtocolMessage::DaAvailabilityCertificate(Box::new(certificate)),
+        ];
+
+        for message in messages {
+            let expected_kind = message.kind();
+            let encoded = encode_message(&message).unwrap();
+
+            assert_eq!(expected_kind, decode_message(&encoded).unwrap().kind());
             assert_eq!(decode_message(&encoded), Ok(message));
         }
     }
@@ -982,6 +1084,125 @@ mod tests {
         let envelope = ProtocolMessage::SignedValidator(Box::new(signed));
         let encoded = encode_message(&envelope).unwrap();
         assert_eq!(decode_message(&encoded), Ok(envelope));
+    }
+
+    #[test]
+    fn signed_da_availability_vote_uses_dedicated_domain() {
+        let key = validator_key("validator-1", 7);
+        let share_set = da_share_set();
+        let vote = ProtocolMessage::DaAvailabilityVote(
+            DaAvailabilityVote::from_manifest(&share_set.manifest, "validator-1").unwrap(),
+        );
+
+        let signed = key
+            .sign_message("detta-testnet", "detta-local", vote.clone())
+            .unwrap();
+
+        assert_eq!(signed.domain, ValidatorSignatureDomain::DaAvailabilityVote);
+        signed
+            .verify("detta-testnet", "detta-local", &key.public_key())
+            .unwrap();
+        assert_eq!(signed.clone().into_message(), vote);
+
+        let mismatched_claim = key
+            .sign_message(
+                "detta-testnet",
+                "detta-local",
+                ProtocolMessage::DaAvailabilityVote(
+                    DaAvailabilityVote::from_manifest(&share_set.manifest, "validator-2").unwrap(),
+                ),
+            )
+            .unwrap();
+        assert_eq!(
+            mismatched_claim.verify("detta-testnet", "detta-local", &key.public_key()),
+            Err(SignatureError::MessageSignerMismatch {
+                expected: "validator-2".into(),
+                actual: "validator-1".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn signed_da_challenge_messages_use_dedicated_domains_and_claimed_signers() {
+        let challenged_key = validator_key("validator-1", 7);
+        let challenger_key = validator_key("validator-2", 8);
+        let share_set = da_share_set();
+        let vote = DaAvailabilityVote::from_manifest_with_custody(
+            &share_set.manifest,
+            "validator-1",
+            [0],
+            [],
+        )
+        .unwrap();
+        let challenge =
+            DaShareChallenge::from_availability_vote(&vote, "validator-2", 0, 8).unwrap();
+        let response =
+            DaShareChallengeResponse::from_share(&challenge, share_set.shares[0].clone()).unwrap();
+        let evidence = DaChallengeEvidence::missing_response(&challenge, "validator-2", 9).unwrap();
+
+        let signed_challenge = challenger_key
+            .sign_message(
+                "detta-testnet",
+                "detta-local",
+                ProtocolMessage::DaShareChallenge(challenge.clone()),
+            )
+            .unwrap();
+        assert_eq!(
+            signed_challenge.domain,
+            ValidatorSignatureDomain::DaShareChallenge
+        );
+        signed_challenge
+            .verify("detta-testnet", "detta-local", &challenger_key.public_key())
+            .unwrap();
+
+        let signed_response = challenged_key
+            .sign_message(
+                "detta-testnet",
+                "detta-local",
+                ProtocolMessage::DaShareChallengeResponse(response),
+            )
+            .unwrap();
+        assert_eq!(
+            signed_response.domain,
+            ValidatorSignatureDomain::DaShareChallengeResponse
+        );
+        signed_response
+            .verify("detta-testnet", "detta-local", &challenged_key.public_key())
+            .unwrap();
+
+        let signed_evidence = challenger_key
+            .sign_message(
+                "detta-testnet",
+                "detta-local",
+                ProtocolMessage::DaChallengeEvidence(Box::new(evidence)),
+            )
+            .unwrap();
+        assert_eq!(
+            signed_evidence.domain,
+            ValidatorSignatureDomain::DaChallengeEvidence
+        );
+        signed_evidence
+            .verify("detta-testnet", "detta-local", &challenger_key.public_key())
+            .unwrap();
+
+        let wrong_challenge_signer = challenged_key
+            .sign_message(
+                "detta-testnet",
+                "detta-local",
+                ProtocolMessage::DaShareChallenge(challenge),
+            )
+            .unwrap();
+        assert_eq!(
+            wrong_challenge_signer.verify(
+                "detta-testnet",
+                "detta-local",
+                &challenged_key.public_key(),
+            ),
+            Err(SignatureError::MessageSignerMismatch {
+                expected: "validator-2".into(),
+                actual: "validator-1".into(),
+            })
+        );
     }
 
     #[test]

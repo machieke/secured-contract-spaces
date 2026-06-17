@@ -1,4 +1,11 @@
-use detta_core::{Block, BlockError, DeTTaState, Transaction, ValidatorNode};
+use detta_core::{
+    receipt_root, transaction_root, Block, BlockError, DeTTaState, Receipt, Transaction,
+    ValidatorNode,
+};
+use detta_da::{
+    DaAvailabilityCertificate, DaAvailabilityVote, DaChallengeEvidence, DaManifest, DaPayload,
+    DaRecord,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -16,6 +23,12 @@ pub struct FinalityCertificate {
     pub signers: Vec<String>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FinalityMode {
+    Legacy,
+    DataAvailabilityRequired,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct EquivocationEvidence {
     pub validator_id: String,
@@ -28,7 +41,14 @@ pub struct EquivocationEvidence {
 pub struct SlashingRecord {
     pub validator_id: String,
     pub slashed_at_height: u64,
-    pub evidence: EquivocationEvidence,
+    pub evidence: SlashingEvidence,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
+pub enum SlashingEvidence {
+    Equivocation(EquivocationEvidence),
+    DataAvailability(DaChallengeEvidence),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -59,6 +79,15 @@ pub enum ConsensusError {
         expected: String,
         actual: String,
     },
+    MissingDataAvailabilityCommitment,
+    MissingDataAvailabilityCertificate,
+    MissingDataAvailabilityCertificateHash,
+    DataAvailabilityInvalid(String),
+    DataAvailabilityMismatch {
+        field: &'static str,
+        expected: String,
+        actual: String,
+    },
     InvalidBlock {
         validator: String,
         error: BlockError,
@@ -70,10 +99,18 @@ pub struct ConsensusCluster {
     validators: BTreeMap<String, ValidatorNode>,
     slashing_records: BTreeMap<String, SlashingRecord>,
     applied_validator_set_updates: BTreeSet<String>,
+    finality_mode: FinalityMode,
 }
 
 impl ConsensusCluster {
     pub fn new(validators: Vec<(String, DeTTaState)>) -> Result<Self, ConsensusError> {
+        Self::new_with_finality_mode(validators, FinalityMode::Legacy)
+    }
+
+    pub fn new_with_finality_mode(
+        validators: Vec<(String, DeTTaState)>,
+        finality_mode: FinalityMode,
+    ) -> Result<Self, ConsensusError> {
         if validators.is_empty() {
             return Err(ConsensusError::EmptyValidatorSet);
         }
@@ -93,7 +130,12 @@ impl ConsensusCluster {
             validators: nodes,
             slashing_records: BTreeMap::new(),
             applied_validator_set_updates: BTreeSet::new(),
+            finality_mode,
         })
+    }
+
+    pub fn finality_mode(&self) -> FinalityMode {
+        self.finality_mode
     }
 
     pub fn validator_count(&self) -> usize {
@@ -154,6 +196,51 @@ impl ConsensusCluster {
         )
     }
 
+    pub fn verify_data_availability_certificate(
+        &self,
+        block: &Block,
+        manifest: &DaManifest,
+        certificate: &DaAvailabilityCertificate,
+    ) -> Result<(), ConsensusError> {
+        for signer in &certificate.signers {
+            if !self.validators.contains_key(signer) {
+                return Err(ConsensusError::UnknownValidator(signer.clone()));
+            }
+            if self.is_slashed(signer) {
+                return Err(ConsensusError::SlashedValidator(signer.clone()));
+            }
+        }
+
+        let active_validators = self
+            .validators
+            .keys()
+            .filter(|validator_id| !self.is_slashed(validator_id))
+            .cloned()
+            .collect();
+        verify_data_availability_certificate(
+            block,
+            manifest,
+            certificate,
+            &active_validators,
+            self.quorum(),
+        )
+    }
+
+    pub fn verify_finality_with_data_availability(
+        &self,
+        block: &Block,
+        finality_certificate: &FinalityCertificate,
+        da_manifest: &DaManifest,
+        da_certificate: &DaAvailabilityCertificate,
+    ) -> Result<(), ConsensusError> {
+        self.verify_finality_certificate(
+            finality_certificate,
+            block.header.height,
+            &block.block_hash(),
+        )?;
+        self.verify_data_availability_certificate(block, da_manifest, da_certificate)
+    }
+
     pub fn has_applied_validator_set_update(&self, update_id: &str) -> bool {
         self.applied_validator_set_updates.contains(update_id)
     }
@@ -171,7 +258,34 @@ impl ConsensusCluster {
             .or_insert_with(|| SlashingRecord {
                 validator_id: validator_id.clone(),
                 slashed_at_height: evidence.height,
-                evidence,
+                evidence: SlashingEvidence::Equivocation(evidence),
+            });
+        Ok(self
+            .slashing_records
+            .get(&validator_id)
+            .expect("record inserted above"))
+    }
+
+    pub fn record_data_availability_fault(
+        &mut self,
+        evidence: DaChallengeEvidence,
+    ) -> Result<&SlashingRecord, ConsensusError> {
+        validate_da_result(evidence.validate())?;
+        if !self
+            .validators
+            .contains_key(&evidence.challenged_validator_id)
+        {
+            return Err(ConsensusError::UnknownValidator(
+                evidence.challenged_validator_id,
+            ));
+        }
+        let validator_id = evidence.challenged_validator_id.clone();
+        self.slashing_records
+            .entry(validator_id.clone())
+            .or_insert_with(|| SlashingRecord {
+                validator_id: validator_id.clone(),
+                slashed_at_height: evidence.observed_at_height,
+                evidence: SlashingEvidence::DataAvailability(evidence),
             });
         Ok(self
             .slashing_records
@@ -197,6 +311,19 @@ impl ConsensusCluster {
     }
 
     pub fn finalize_block(&mut self, block: &Block) -> Result<FinalityCertificate, ConsensusError> {
+        if self.finality_mode == FinalityMode::DataAvailabilityRequired {
+            if block.header.data_availability.is_none() {
+                return Err(ConsensusError::MissingDataAvailabilityCommitment);
+            }
+            return Err(ConsensusError::MissingDataAvailabilityCertificate);
+        }
+        self.finalize_block_after_availability_checks(block)
+    }
+
+    fn finalize_block_after_availability_checks(
+        &mut self,
+        block: &Block,
+    ) -> Result<FinalityCertificate, ConsensusError> {
         if self.is_slashed(&block.header.proposer) {
             return Err(ConsensusError::SlashedValidator(
                 block.header.proposer.clone(),
@@ -228,6 +355,18 @@ impl ConsensusCluster {
         self.certificate_from_active_votes(block.header.height, &block_hash, votes)
     }
 
+    pub fn finalize_block_with_data_availability(
+        &mut self,
+        block: &Block,
+        payload: &DaPayload,
+        manifest: &DaManifest,
+        certificate: &DaAvailabilityCertificate,
+    ) -> Result<FinalityCertificate, ConsensusError> {
+        self.verify_data_availability_certificate(block, manifest, certificate)?;
+        verify_data_availability_payload(block, payload, manifest)?;
+        self.finalize_block_after_availability_checks(block)
+    }
+
     pub fn certificate_from_active_votes(
         &mut self,
         height: u64,
@@ -244,6 +383,27 @@ impl ConsensusCluster {
             .filter(|vote| !self.is_slashed(&vote.validator_id))
             .collect();
         Self::certificate_from_votes(height, block_hash, active_votes, self.quorum())
+    }
+
+    pub fn data_availability_certificate_from_active_votes(
+        &self,
+        manifest: &DaManifest,
+        votes: Vec<DaAvailabilityVote>,
+    ) -> Result<DaAvailabilityCertificate, ConsensusError> {
+        for vote in &votes {
+            if !self.validators.contains_key(&vote.validator_id) {
+                return Err(ConsensusError::UnknownValidator(vote.validator_id.clone()));
+            }
+            if self.is_slashed(&vote.validator_id) {
+                return Err(ConsensusError::SlashedValidator(vote.validator_id.clone()));
+            }
+        }
+
+        let active_votes: Vec<_> = votes
+            .into_iter()
+            .filter(|vote| !self.is_slashed(&vote.validator_id))
+            .collect();
+        Self::data_availability_certificate_from_votes(manifest, active_votes, self.quorum())
     }
 
     pub fn apply_validator_set_update(
@@ -359,6 +519,37 @@ impl ConsensusCluster {
         })
     }
 
+    pub fn data_availability_certificate_from_votes(
+        manifest: &DaManifest,
+        votes: Vec<DaAvailabilityVote>,
+        quorum: usize,
+    ) -> Result<DaAvailabilityCertificate, ConsensusError> {
+        validate_da_result(manifest.validate())?;
+        let manifest_hash = validate_da_result(manifest.manifest_hash())?;
+        let mut signers = BTreeSet::new();
+
+        for vote in votes {
+            validate_da_result(vote.validate())?;
+            if vote.chain_id == manifest.chain_id
+                && vote.height == manifest.height
+                && vote.block_hash == manifest.block_hash
+                && vote.manifest_hash == manifest_hash
+                && vote.share_root == manifest.share_root
+            {
+                signers.insert(vote.validator_id);
+            }
+        }
+
+        if signers.len() < quorum {
+            return Err(ConsensusError::QuorumNotReached {
+                accepted: signers.len(),
+                required: quorum,
+            });
+        }
+
+        validate_da_result(DaAvailabilityCertificate::from_manifest(manifest, signers))
+    }
+
     pub fn detect_equivocation(votes: &[Vote]) -> Option<EquivocationEvidence> {
         let mut seen = BTreeMap::<(&str, u64), &str>::new();
         for vote in votes {
@@ -439,10 +630,226 @@ pub fn verify_finality_certificate(
     Ok(())
 }
 
+pub fn verify_data_availability_certificate(
+    block: &Block,
+    manifest: &DaManifest,
+    certificate: &DaAvailabilityCertificate,
+    active_validators: &BTreeSet<String>,
+    quorum: usize,
+) -> Result<(), ConsensusError> {
+    if active_validators.is_empty() || quorum == 0 {
+        return Err(ConsensusError::EmptyValidatorSet);
+    }
+
+    let commitment = block
+        .header
+        .data_availability
+        .as_ref()
+        .ok_or(ConsensusError::MissingDataAvailabilityCommitment)?;
+    validate_da_result(manifest.validate())?;
+    validate_da_result(certificate.validate())?;
+
+    let manifest_hash = validate_da_result(manifest.manifest_hash())?;
+    let certificate_hash = validate_da_result(certificate.certificate_hash())?;
+    let committed_certificate_hash = commitment
+        .certificate_hash
+        .as_ref()
+        .ok_or(ConsensusError::MissingDataAvailabilityCertificateHash)?;
+
+    require_da_match("chain_id", &block.header.chain_id, &manifest.chain_id)?;
+    require_da_match(
+        "height",
+        &block.header.height.to_string(),
+        &manifest.height.to_string(),
+    )?;
+    require_da_match("manifest_hash", &commitment.manifest_hash, &manifest_hash)?;
+    require_da_match(
+        "payload_root",
+        &commitment.payload_root,
+        &manifest.payload_hash,
+    )?;
+    require_da_match("share_root", &commitment.share_root, &manifest.share_root)?;
+    require_da_match(
+        "certificate_hash",
+        committed_certificate_hash,
+        &certificate_hash,
+    )?;
+    require_da_match(
+        "execution_block_hash",
+        &execution_block_hash_for_da(block),
+        &manifest.block_hash,
+    )?;
+    require_da_match(
+        "certificate_chain_id",
+        &manifest.chain_id,
+        &certificate.chain_id,
+    )?;
+    require_da_match(
+        "certificate_height",
+        &manifest.height.to_string(),
+        &certificate.height.to_string(),
+    )?;
+    require_da_match(
+        "certificate_block_hash",
+        &manifest.block_hash,
+        &certificate.block_hash,
+    )?;
+    require_da_match(
+        "certificate_manifest_hash",
+        &manifest_hash,
+        &certificate.manifest_hash,
+    )?;
+    require_da_match(
+        "certificate_share_root",
+        &manifest.share_root,
+        &certificate.share_root,
+    )?;
+
+    let mut unique_signers = BTreeSet::new();
+    for signer in &certificate.signers {
+        if !active_validators.contains(signer) {
+            return Err(ConsensusError::UnknownValidator(signer.clone()));
+        }
+        unique_signers.insert(signer.clone());
+    }
+    if unique_signers.len() < quorum {
+        return Err(ConsensusError::QuorumNotReached {
+            accepted: unique_signers.len(),
+            required: quorum,
+        });
+    }
+
+    Ok(())
+}
+
+pub fn verify_data_availability_payload(
+    block: &Block,
+    payload: &DaPayload,
+    manifest: &DaManifest,
+) -> Result<(), ConsensusError> {
+    validate_da_result(manifest.validate())?;
+    validate_da_result(payload.validate())?;
+    let canonical_payload = payload.canonicalized();
+    let payload_hash = validate_da_result(canonical_payload.hash())?;
+    let namespace_root = validate_da_result(canonical_payload.namespace_root())?;
+
+    require_da_match(
+        "payload_chain_id",
+        &block.header.chain_id,
+        &canonical_payload.chain_id,
+    )?;
+    require_da_match(
+        "payload_height",
+        &block.header.height.to_string(),
+        &canonical_payload.height.to_string(),
+    )?;
+    require_da_match(
+        "payload_previous_block_hash",
+        &block.header.previous_block_hash,
+        &canonical_payload.previous_block_hash,
+    )?;
+    require_da_match("payload_hash", &manifest.payload_hash, &payload_hash)?;
+    require_da_match("namespace_root", &manifest.namespace_root, &namespace_root)?;
+
+    let payload_transactions = payload_transactions(&canonical_payload)?;
+    let payload_tx_root = transaction_root(&payload_transactions);
+    require_da_match("payload_tx_root", &block.header.tx_root, &payload_tx_root)?;
+    if payload_transactions != block.transactions {
+        return Err(ConsensusError::DataAvailabilityInvalid(
+            "payload transactions differ from block transactions".into(),
+        ));
+    }
+
+    let payload_receipts = payload_receipts(&canonical_payload)?;
+    let payload_receipt_root = receipt_root(&payload_receipts);
+    require_da_match(
+        "payload_receipt_root",
+        &block.header.receipt_root,
+        &payload_receipt_root,
+    )?;
+    if payload_receipts != block.receipts {
+        return Err(ConsensusError::DataAvailabilityInvalid(
+            "payload receipts differ from block receipts".into(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn payload_transactions(payload: &DaPayload) -> Result<Vec<Transaction>, ConsensusError> {
+    let mut transactions = Vec::new();
+    for section in &payload.namespaces {
+        if section.namespace.0 != "detta.tx" {
+            continue;
+        }
+        for record in &section.records {
+            match record {
+                DaRecord::SignedTransaction(tx) => transactions.push(tx.clone()),
+                other => {
+                    return Err(ConsensusError::DataAvailabilityInvalid(format!(
+                        "detta.tx contains non-transaction record {other:?}"
+                    )));
+                }
+            }
+        }
+    }
+    Ok(transactions)
+}
+
+fn payload_receipts(payload: &DaPayload) -> Result<Vec<Receipt>, ConsensusError> {
+    let mut receipts = Vec::new();
+    for section in &payload.namespaces {
+        if section.namespace.0 != "detta.receipt" {
+            continue;
+        }
+        for record in &section.records {
+            match record {
+                DaRecord::Receipt(receipt) => receipts.push(receipt.clone()),
+                other => {
+                    return Err(ConsensusError::DataAvailabilityInvalid(format!(
+                        "detta.receipt contains non-receipt record {other:?}"
+                    )));
+                }
+            }
+        }
+    }
+    Ok(receipts)
+}
+
+fn execution_block_hash_for_da(block: &Block) -> String {
+    let mut execution_block = block.clone();
+    execution_block.header.data_availability = None;
+    execution_block.block_hash()
+}
+
+fn require_da_match(
+    field: &'static str,
+    expected: &str,
+    actual: &str,
+) -> Result<(), ConsensusError> {
+    if expected != actual {
+        return Err(ConsensusError::DataAvailabilityMismatch {
+            field,
+            expected: expected.to_string(),
+            actual: actual.to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_da_result<T, E: std::fmt::Debug>(result: Result<T, E>) -> Result<T, ConsensusError> {
+    result.map_err(|error| ConsensusError::DataAvailabilityInvalid(format!("{error:?}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use detta_core::{Argument, DeTTaState, Method, Transaction};
+    use detta_core::{Argument, DataAvailabilityCommitment, DeTTaState, Method, Transaction};
+    use detta_da::{
+        DaAvailabilityCertificate, DaAvailabilityVote, DaChallengeEvidence, DaChallengeFault,
+        DaManifest, DaNamespace, DaNamespaceSection, DaPayload, DaRecord, DaShareSet,
+        DA_CHALLENGE_EVIDENCE_SCHEMA,
+    };
 
     fn seeded_state() -> DeTTaState {
         let mut state = DeTTaState::new("detta-local");
@@ -473,6 +880,75 @@ mod tests {
             signature_ok: true,
             budget: 1_000_000,
         }
+    }
+
+    fn da_certified_block(
+        signers: Vec<&str>,
+    ) -> (Block, DaPayload, DaManifest, DaAvailabilityCertificate) {
+        let (mut block, _) =
+            seeded_state().build_block(1, vec![transfer_tx()], 1_000, "v1", "sim-cert:v1:1");
+        let payload =
+            da_payload_for_test_block(&block, block.transactions.clone(), block.receipts.clone());
+        let (manifest, certificate) = attach_da_commitment(&mut block, &payload, signers);
+        (block, payload, manifest, certificate)
+    }
+
+    fn attach_da_commitment(
+        block: &mut Block,
+        payload: &DaPayload,
+        signers: Vec<&str>,
+    ) -> (DaManifest, DaAvailabilityCertificate) {
+        let mut execution_block = block.clone();
+        execution_block.header.data_availability = None;
+        let execution_block_hash = execution_block.block_hash();
+        let share_set = DaShareSet::from_payload(payload, &execution_block_hash, 128).unwrap();
+        let certificate = DaAvailabilityCertificate::from_manifest(
+            &share_set.manifest,
+            signers.into_iter().map(String::from),
+        )
+        .unwrap();
+        let manifest_hash = share_set.manifest.manifest_hash().unwrap();
+        let certificate_hash = certificate.certificate_hash().unwrap();
+        block.header.data_availability = Some(DataAvailabilityCommitment {
+            payload_root: share_set.manifest.payload_hash.clone(),
+            manifest_hash,
+            share_root: share_set.manifest.share_root.clone(),
+            certificate_hash: Some(certificate_hash),
+        });
+        (share_set.manifest, certificate)
+    }
+
+    fn da_payload_for_test_block(
+        block: &Block,
+        transactions: Vec<Transaction>,
+        receipts: Vec<Receipt>,
+    ) -> DaPayload {
+        DaPayload::new(
+            block.header.chain_id.clone(),
+            block.header.height,
+            block.header.previous_block_hash.clone(),
+            vec![
+                DaNamespaceSection::new(
+                    DaNamespace::new("detta.block").unwrap(),
+                    vec![DaRecord::BlockHeader(Box::new(block.header.clone()))],
+                )
+                .unwrap(),
+                DaNamespaceSection::new(
+                    DaNamespace::new("detta.tx").unwrap(),
+                    transactions
+                        .into_iter()
+                        .map(DaRecord::SignedTransaction)
+                        .collect(),
+                )
+                .unwrap(),
+                DaNamespaceSection::new(
+                    DaNamespace::new("detta.receipt").unwrap(),
+                    receipts.into_iter().map(DaRecord::Receipt).collect(),
+                )
+                .unwrap(),
+            ],
+        )
+        .unwrap()
     }
 
     #[test]
@@ -658,12 +1134,12 @@ mod tests {
             &SlashingRecord {
                 validator_id: "v1".into(),
                 slashed_at_height: 1,
-                evidence: EquivocationEvidence {
+                evidence: SlashingEvidence::Equivocation(EquivocationEvidence {
                     validator_id: "v1".into(),
                     height: 1,
                     first_block_hash: "hash-a".into(),
                     second_block_hash: "hash-b".into(),
-                },
+                }),
             }
         );
     }
@@ -809,6 +1285,331 @@ mod tests {
         assert_eq!(
             verify_finality_certificate(&duplicate, 7, "block-hash-7", &empty_active_validators, 0),
             Err(ConsensusError::EmptyValidatorSet)
+        );
+    }
+
+    #[test]
+    fn data_availability_certificate_verifier_accepts_header_bound_certificate() {
+        let (block, _, manifest, da_certificate) = da_certified_block(vec!["v1", "v2", "v3"]);
+        let cluster = ConsensusCluster::new(vec![
+            ("v1".into(), seeded_state()),
+            ("v2".into(), seeded_state()),
+            ("v3".into(), seeded_state()),
+        ])
+        .unwrap();
+        let finality_certificate = FinalityCertificate {
+            height: block.header.height,
+            block_hash: block.block_hash(),
+            signers: vec!["v1".into(), "v2".into(), "v3".into()],
+        };
+
+        assert_eq!(
+            cluster.verify_finality_with_data_availability(
+                &block,
+                &finality_certificate,
+                &manifest,
+                &da_certificate
+            ),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn production_da_finality_requires_valid_da_certificate_before_replay() {
+        let (block, payload, manifest, da_certificate) = da_certified_block(vec!["v1", "v2", "v3"]);
+        let mut cluster = ConsensusCluster::new_with_finality_mode(
+            vec![
+                ("v1".into(), seeded_state()),
+                ("v2".into(), seeded_state()),
+                ("v3".into(), seeded_state()),
+            ],
+            FinalityMode::DataAvailabilityRequired,
+        )
+        .unwrap();
+
+        let finality_certificate = cluster
+            .finalize_block_with_data_availability(&block, &payload, &manifest, &da_certificate)
+            .unwrap();
+
+        assert_eq!(finality_certificate.height, block.header.height);
+        assert_eq!(finality_certificate.block_hash, block.block_hash());
+        assert_eq!(finality_certificate.signers, vec!["v1", "v2", "v3"]);
+        assert_eq!(
+            cluster
+                .validator("v2")
+                .unwrap()
+                .state()
+                .balance("TokenA", "Bob", "USDC"),
+            60
+        );
+    }
+
+    #[test]
+    fn production_da_finality_mode_rejects_plain_finalization() {
+        let mut cluster = ConsensusCluster::new_with_finality_mode(
+            vec![
+                ("v1".into(), seeded_state()),
+                ("v2".into(), seeded_state()),
+                ("v3".into(), seeded_state()),
+            ],
+            FinalityMode::DataAvailabilityRequired,
+        )
+        .unwrap();
+        assert_eq!(
+            cluster.finality_mode(),
+            FinalityMode::DataAvailabilityRequired
+        );
+        let block = cluster
+            .propose_block("v1", 1, vec![transfer_tx()], 1_000)
+            .unwrap();
+
+        assert_eq!(
+            cluster.finalize_block(&block),
+            Err(ConsensusError::MissingDataAvailabilityCommitment)
+        );
+        assert_eq!(
+            cluster
+                .validator("v2")
+                .unwrap()
+                .state()
+                .balance("TokenA", "Bob", "USDC"),
+            50
+        );
+    }
+
+    #[test]
+    fn production_da_finality_rejects_bad_manifest_before_replay() {
+        let (mut block, payload, manifest, da_certificate) =
+            da_certified_block(vec!["v1", "v2", "v3"]);
+        block
+            .header
+            .data_availability
+            .as_mut()
+            .unwrap()
+            .manifest_hash = "bad-manifest".into();
+        let mut cluster = ConsensusCluster::new_with_finality_mode(
+            vec![
+                ("v1".into(), seeded_state()),
+                ("v2".into(), seeded_state()),
+                ("v3".into(), seeded_state()),
+            ],
+            FinalityMode::DataAvailabilityRequired,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            cluster.finalize_block_with_data_availability(
+                &block,
+                &payload,
+                &manifest,
+                &da_certificate
+            ),
+            Err(ConsensusError::DataAvailabilityMismatch {
+                field: "manifest_hash",
+                ..
+            })
+        ));
+        assert_eq!(
+            cluster
+                .validator("v2")
+                .unwrap()
+                .state()
+                .balance("TokenA", "Bob", "USDC"),
+            50
+        );
+    }
+
+    #[test]
+    fn production_da_finality_rejects_payload_transaction_root_mismatch() {
+        let (mut block, _, _, _) = da_certified_block(vec!["v1", "v2", "v3"]);
+        let mut execution_block = block.clone();
+        execution_block.header.data_availability = None;
+        let mut wrong_transaction = transfer_tx();
+        wrong_transaction.tx_hash = "tx-wrong".into();
+        wrong_transaction.args = vec![
+            Argument::Principal("Bob".into()),
+            Argument::Asset("USDC".into()),
+            Argument::Amount(11),
+        ];
+        let payload = da_payload_for_test_block(
+            &execution_block,
+            vec![wrong_transaction],
+            execution_block.receipts.clone(),
+        );
+        let (manifest, da_certificate) =
+            attach_da_commitment(&mut block, &payload, vec!["v1", "v2", "v3"]);
+        let mut cluster = ConsensusCluster::new_with_finality_mode(
+            vec![
+                ("v1".into(), seeded_state()),
+                ("v2".into(), seeded_state()),
+                ("v3".into(), seeded_state()),
+            ],
+            FinalityMode::DataAvailabilityRequired,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            cluster.finalize_block_with_data_availability(
+                &block,
+                &payload,
+                &manifest,
+                &da_certificate
+            ),
+            Err(ConsensusError::DataAvailabilityMismatch {
+                field: "payload_tx_root",
+                ..
+            })
+        ));
+        assert_eq!(
+            cluster
+                .validator("v2")
+                .unwrap()
+                .state()
+                .balance("TokenA", "Bob", "USDC"),
+            50
+        );
+    }
+
+    #[test]
+    fn data_availability_verifier_requires_committed_certificate_hash() {
+        let (mut block, _, manifest, da_certificate) = da_certified_block(vec!["v1", "v2", "v3"]);
+        block
+            .header
+            .data_availability
+            .as_mut()
+            .unwrap()
+            .certificate_hash = None;
+        let active_validators =
+            BTreeSet::from(["v1".to_string(), "v2".to_string(), "v3".to_string()]);
+
+        assert_eq!(
+            verify_data_availability_certificate(
+                &block,
+                &manifest,
+                &da_certificate,
+                &active_validators,
+                3
+            ),
+            Err(ConsensusError::MissingDataAvailabilityCertificateHash)
+        );
+    }
+
+    #[test]
+    fn data_availability_verifier_rejects_bad_manifest_commitment() {
+        let (mut block, _, manifest, da_certificate) = da_certified_block(vec!["v1", "v2", "v3"]);
+        block
+            .header
+            .data_availability
+            .as_mut()
+            .unwrap()
+            .manifest_hash = "bad-manifest".into();
+        let active_validators =
+            BTreeSet::from(["v1".to_string(), "v2".to_string(), "v3".to_string()]);
+
+        assert!(matches!(
+            verify_data_availability_certificate(
+                &block,
+                &manifest,
+                &da_certificate,
+                &active_validators,
+                3
+            ),
+            Err(ConsensusError::DataAvailabilityMismatch {
+                field: "manifest_hash",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn da_votes_aggregate_only_matching_manifest_commitments() {
+        let (_, _, manifest, _) = da_certified_block(vec!["v1", "v2", "v3"]);
+        let mut wrong_manifest_vote = DaAvailabilityVote::from_manifest(&manifest, "v3").unwrap();
+        wrong_manifest_vote.manifest_hash = "other-manifest".into();
+        let votes = vec![
+            DaAvailabilityVote::from_manifest(&manifest, "v1").unwrap(),
+            DaAvailabilityVote::from_manifest(&manifest, "v2").unwrap(),
+            wrong_manifest_vote,
+        ];
+
+        let certificate =
+            ConsensusCluster::data_availability_certificate_from_votes(&manifest, votes.clone(), 2)
+                .unwrap();
+        assert_eq!(certificate.signers, vec!["v1", "v2"]);
+
+        assert_eq!(
+            ConsensusCluster::data_availability_certificate_from_votes(&manifest, votes, 3),
+            Err(ConsensusError::QuorumNotReached {
+                accepted: 2,
+                required: 3,
+            })
+        );
+    }
+
+    #[test]
+    fn cluster_da_certificate_verifier_uses_active_unslashed_validator_set() {
+        let (block, _, manifest, da_certificate) = da_certified_block(vec!["v1", "v2", "v3"]);
+        let mut cluster = ConsensusCluster::new(vec![
+            ("v1".into(), seeded_state()),
+            ("v2".into(), seeded_state()),
+            ("v3".into(), seeded_state()),
+        ])
+        .unwrap();
+        cluster
+            .record_equivocation(EquivocationEvidence {
+                validator_id: "v1".into(),
+                height: 1,
+                first_block_hash: "hash-a".into(),
+                second_block_hash: "hash-b".into(),
+            })
+            .unwrap();
+
+        assert_eq!(
+            cluster.verify_data_availability_certificate(&block, &manifest, &da_certificate),
+            Err(ConsensusError::SlashedValidator("v1".into()))
+        );
+    }
+
+    #[test]
+    fn data_availability_challenge_fault_slashes_validator() {
+        let mut cluster = ConsensusCluster::new(vec![
+            ("v1".into(), seeded_state()),
+            ("v2".into(), seeded_state()),
+            ("v3".into(), seeded_state()),
+        ])
+        .unwrap();
+        let evidence = DaChallengeEvidence {
+            schema: DA_CHALLENGE_EVIDENCE_SCHEMA.into(),
+            schema_version: 1,
+            chain_id: "detta-local".into(),
+            height: 9,
+            block_hash: "block-9".into(),
+            manifest_hash: "manifest-9".into(),
+            share_root: "share-root-9".into(),
+            challenged_validator_id: "v1".into(),
+            reporter_id: "v2".into(),
+            share_index: 3,
+            challenge_hash: "challenge-9".into(),
+            response_hash: None,
+            observed_at_height: 13,
+            fault: DaChallengeFault::MissingResponse,
+        };
+
+        let record = cluster
+            .record_data_availability_fault(evidence.clone())
+            .unwrap()
+            .clone();
+
+        assert!(cluster.is_slashed("v1"));
+        assert_eq!(cluster.active_validator_count(), 2);
+        assert_eq!(cluster.quorum(), 2);
+        assert_eq!(
+            record,
+            SlashingRecord {
+                validator_id: "v1".into(),
+                slashed_at_height: 13,
+                evidence: SlashingEvidence::DataAvailability(evidence),
+            }
         );
     }
 

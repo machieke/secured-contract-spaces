@@ -1,26 +1,33 @@
 use detta_consensus::{
     quorum_for, ConsensusCluster, ConsensusError, EquivocationEvidence, FinalityCertificate,
-    SlashingRecord, Vote,
+    SlashingEvidence, SlashingRecord, Vote,
 };
 use detta_core::{
-    Block, BlockError, ChainId, DeTTaState, MempoolError, StateSnapshot, Transaction, TxStatus,
-    ValidatorNode,
+    transaction_resource_units, Block, BlockError, ChainId, DataAvailabilityCommitment, DeTTaState,
+    MempoolError, StateSnapshot, Transaction, TxStatus, ValidatorNode,
+};
+use detta_da::{
+    DaAvailabilityCertificate, DaAvailabilityVote, DaChallengeEvidence, DaChallengeRecord, DaError,
+    DaManifest, DaNamespace, DaNamespaceSection, DaPayload, DaRecord, DaShare, DaShareChallenge,
+    DaShareChallengeResponse, DaShareSet,
 };
 use detta_network::{Envelope, InMemoryTransport, NetworkError, NetworkMessage, TcpProtocolStream};
 use detta_protocol::{
     build_snapshot_chunks_with_metadata_roots, ProtocolMessageKind, SignatureError,
-    SignedValidatorMessage, SnapshotChunkManifest, SnapshotChunkRequest, SnapshotChunkSet,
-    SnapshotSyncError, ValidatorPublicKey, ValidatorSetMetadata, ValidatorSetMetadataUpdate,
-    ValidatorSignatureDomain, ValidatorSigningKey, SNAPSHOT_METADATA_REQUIRED_METADATA_ROOTS_ROOT,
+    SignedValidatorMessage, SnapshotChunk, SnapshotChunkManifest, SnapshotChunkRequest,
+    SnapshotChunkSet, SnapshotSyncError, ValidatorPublicKey, ValidatorSetMetadata,
+    ValidatorSetMetadataUpdate, ValidatorSignatureDomain, ValidatorSigningKey,
+    SNAPSHOT_METADATA_REQUIRED_METADATA_ROOTS_ROOT,
     SNAPSHOT_METADATA_SNAPSHOT_IMPORT_AUDIT_CONFIG_ROOT,
     SNAPSHOT_METADATA_SNAPSHOT_IMPORT_AUDIT_ROOT, SNAPSHOT_METADATA_STATE_SYNC_CLIENT_METRICS_ROOT,
     SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT,
 };
 use detta_rpc::{
-    json_rpc_response_for_request, BlockPage, JsonRpcHandler, NodeHealthReport, OperatorAlert,
-    OperatorAlertPolicy, OperatorAlertReport, OperatorAlertSeverity, OperatorMetricsReport,
-    PersistentNodeSnapshotRoots, RequiredSnapshotMetadataRootsReport, RpcError, RpcErrorBody,
-    RpcRequest, RpcResponse, RpcResult, RpcService, RpcTransportError, SnapshotMetadataRootStatus,
+    json_rpc_response_for_request, BlockPage, DaRepairStatusReport, DaStatusReport, JsonRpcHandler,
+    NodeHealthReport, OperatorAlert, OperatorAlertPolicy, OperatorAlertReport,
+    OperatorAlertSeverity, OperatorMetricsReport, PersistentNodeSnapshotRoots,
+    RequiredSnapshotMetadataRootsReport, RpcError, RpcErrorBody, RpcRequest, RpcResponse,
+    RpcResult, RpcService, RpcTransportError, SnapshotMetadataRootStatus,
     SnapshotSyncClientMetricsReport, ValidatorSetMetadataUpdateStatus, DEFAULT_MAX_BLOCK_PAGE_SIZE,
 };
 use detta_storage::{
@@ -51,6 +58,7 @@ pub enum NodeError {
     ValidatorKeyNotFound(String),
     Signature(SignatureError),
     SnapshotSync(SnapshotSyncError),
+    DataAvailability(DaError),
     SnapshotRootNotFound {
         requested: String,
         available: String,
@@ -117,6 +125,7 @@ pub enum NetworkIngestOutcome {
     EquivocationEvidencePersisted,
     ValidatorSetMetadataUpdated,
     ValidatorSetMetadataAuthorizationStored,
+    DataAvailabilityStored,
     IgnoredControlMessage,
 }
 
@@ -859,6 +868,70 @@ impl PersistentValidatorNode {
                     Err(error) => node_rpc_error_response(NodeError::Storage(error)),
                 }
             }
+            RpcRequest::GetDaManifest { manifest_hash } => {
+                match self.storage.maybe_load_da_manifest(&manifest_hash) {
+                    Ok(Some(manifest)) => {
+                        RpcResponse::Ok(RpcResult::DaManifest(Box::new(manifest)))
+                    }
+                    Ok(None) => Err(RpcError::DaManifestNotFound).into(),
+                    Err(error) => node_rpc_error_response(NodeError::Storage(error)),
+                }
+            }
+            RpcRequest::GetDaShare {
+                manifest_hash,
+                index,
+            } => match self.storage.maybe_load_da_share(&manifest_hash, index) {
+                Ok(Some(share)) => RpcResponse::Ok(RpcResult::DaShare(Box::new(share))),
+                Ok(None) => Err(RpcError::DaShareNotFound).into(),
+                Err(error) => node_rpc_error_response(NodeError::Storage(error)),
+            },
+            RpcRequest::GetDaCertificate { certificate_hash } => {
+                match self.storage.maybe_load_da_certificate(&certificate_hash) {
+                    Ok(Some(certificate)) => {
+                        RpcResponse::Ok(RpcResult::DaAvailabilityCertificate(Box::new(certificate)))
+                    }
+                    Ok(None) => Err(RpcError::DaCertificateNotFound).into(),
+                    Err(error) => node_rpc_error_response(NodeError::Storage(error)),
+                }
+            }
+            RpcRequest::GetDaChallengeRecord { challenge_id } => {
+                match self.storage.maybe_load_da_challenge_record(&challenge_id) {
+                    Ok(Some(record)) => {
+                        RpcResponse::Ok(RpcResult::DaChallengeRecord(Box::new(record)))
+                    }
+                    Ok(None) => Err(RpcError::DaChallengeRecordNotFound).into(),
+                    Err(error) => node_rpc_error_response(NodeError::Storage(error)),
+                }
+            }
+            RpcRequest::GetDaPayload { manifest_hash } => self
+                .load_da_payload(&manifest_hash)
+                .map(|payload| RpcResult::DaPayload(Box::new(payload)))
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(node_rpc_error_response),
+            RpcRequest::GetDaNamespace {
+                manifest_hash,
+                namespace,
+            } => match self.load_da_namespace(&manifest_hash, &namespace) {
+                Ok(Some(section)) => RpcResponse::Ok(RpcResult::DaNamespace(Box::new(section))),
+                Ok(None) => Err(RpcError::DaNamespaceNotFound).into(),
+                Err(error) => node_rpc_error_response(error),
+            },
+            RpcRequest::GetDaStatus { manifest_hash } => self
+                .da_status(&manifest_hash)
+                .map(|status| RpcResult::DaStatus(Box::new(status)))
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(node_rpc_error_response),
+            RpcRequest::GetDaRepairStatus { manifest_hash } => self
+                .da_repair_status(&manifest_hash)
+                .map(|status| RpcResult::DaRepairStatus(Box::new(status)))
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(node_rpc_error_response),
+            RpcRequest::GetDaStorageStats => self
+                .storage
+                .da_storage_stats()
+                .map(RpcResult::DaStorageStats)
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
             RpcRequest::GetNodeHealth => RpcResponse::Ok(RpcResult::NodeHealth(Box::new(
                 self.persistent_node_health(),
             ))),
@@ -1048,6 +1121,17 @@ impl PersistentValidatorNode {
 
     pub fn current_height(&self) -> u64 {
         self.rpc.node().state().height()
+    }
+
+    fn checkpoint_previous_block_hash(&self) -> Result<String, NodeError> {
+        let latest_block_hash = self
+            .storage
+            .load_blocks()
+            .map_err(NodeError::Storage)?
+            .into_iter()
+            .max_by_key(|block| block.header.height)
+            .map(|block| block.block_hash());
+        Ok(latest_block_hash.unwrap_or_else(|| self.rpc.snapshot().global_state_root))
     }
 
     pub fn set_operator_alert_policy(&mut self, policy: OperatorAlertPolicy) {
@@ -1546,6 +1630,56 @@ impl PersistentValidatorNode {
             .map_err(NodeError::Network)
     }
 
+    pub fn gossip_data_availability_for_block(
+        &self,
+        block: &Block,
+        transport: &mut InMemoryTransport,
+    ) -> Result<usize, NodeError> {
+        let commitment = block.header.data_availability.as_ref().ok_or_else(|| {
+            NodeError::DataAvailability(DaError::InvalidManifest(
+                "block has no data availability commitment".into(),
+            ))
+        })?;
+        let share_set = self.load_da_share_set(&commitment.manifest_hash)?;
+        let manifest_hash = share_set
+            .manifest
+            .manifest_hash()
+            .map_err(NodeError::DataAvailability)?;
+        if manifest_hash != commitment.manifest_hash {
+            return Err(NodeError::DataAvailability(DaError::ManifestHashMismatch {
+                expected: commitment.manifest_hash.clone(),
+                actual: manifest_hash,
+            }));
+        }
+        if share_set.manifest.payload_hash != commitment.payload_root {
+            return Err(NodeError::DataAvailability(DaError::PayloadHashMismatch {
+                expected: commitment.payload_root.clone(),
+                actual: share_set.manifest.payload_hash.clone(),
+            }));
+        }
+        if share_set.manifest.share_root != commitment.share_root {
+            return Err(NodeError::DataAvailability(DaError::ShareRootMismatch {
+                expected: commitment.share_root.clone(),
+                actual: share_set.manifest.share_root.clone(),
+            }));
+        }
+
+        let mut sent = transport
+            .broadcast(
+                self.validator_id.clone(),
+                NetworkMessage::DaManifest(Box::new(share_set.manifest.clone())),
+            )
+            .map_err(NodeError::Network)?;
+        for share in share_set.shares {
+            sent = sent.saturating_add(
+                transport
+                    .broadcast(self.validator_id.clone(), NetworkMessage::DaShare(share))
+                    .map_err(NodeError::Network)?,
+            );
+        }
+        Ok(sent)
+    }
+
     pub fn persist_finality_certificate(
         &mut self,
         certificate: &FinalityCertificate,
@@ -1586,7 +1720,64 @@ impl PersistentValidatorNode {
         let record = SlashingRecord {
             validator_id: evidence.validator_id.clone(),
             slashed_at_height: evidence.height,
-            evidence,
+            evidence: SlashingEvidence::Equivocation(evidence),
+        };
+        self.storage
+            .commit_slashing_record(&record)
+            .map_err(NodeError::Storage)?;
+        Ok(record)
+    }
+
+    pub fn persist_da_share_challenge(
+        &self,
+        challenge: DaShareChallenge,
+    ) -> Result<String, NodeError> {
+        let record = DaChallengeRecord {
+            challenge,
+            response: None,
+            evidence: None,
+        };
+        self.storage
+            .commit_da_challenge_record(&record)
+            .map_err(NodeError::Storage)
+    }
+
+    pub fn persist_da_share_challenge_response(
+        &self,
+        response: DaShareChallengeResponse,
+    ) -> Result<String, NodeError> {
+        let mut record = self
+            .storage
+            .load_da_challenge_record(&response.challenge_hash)
+            .map_err(NodeError::Storage)?;
+        response
+            .validate(&record.challenge)
+            .map_err(NodeError::DataAvailability)?;
+        record.response = Some(response);
+        self.storage
+            .commit_da_challenge_record(&record)
+            .map_err(NodeError::Storage)
+    }
+
+    pub fn persist_da_challenge_evidence(
+        &self,
+        evidence: DaChallengeEvidence,
+    ) -> Result<SlashingRecord, NodeError> {
+        evidence.validate().map_err(NodeError::DataAvailability)?;
+        if let Some(mut record) = self
+            .storage
+            .maybe_load_da_challenge_record(&evidence.challenge_hash)
+            .map_err(NodeError::Storage)?
+        {
+            record.evidence = Some(evidence.clone());
+            self.storage
+                .commit_da_challenge_record(&record)
+                .map_err(NodeError::Storage)?;
+        }
+        let record = SlashingRecord {
+            validator_id: evidence.challenged_validator_id.clone(),
+            slashed_at_height: evidence.observed_at_height,
+            evidence: SlashingEvidence::DataAvailability(evidence),
         };
         self.storage
             .commit_slashing_record(&record)
@@ -1597,6 +1788,15 @@ impl PersistentValidatorNode {
     pub fn load_slashing_record(&self, validator_id: &str) -> Result<SlashingRecord, NodeError> {
         self.storage
             .load_slashing_record(validator_id)
+            .map_err(NodeError::Storage)
+    }
+
+    pub fn load_da_challenge_record(
+        &self,
+        challenge_id: &str,
+    ) -> Result<DaChallengeRecord, NodeError> {
+        self.storage
+            .load_da_challenge_record(challenge_id)
             .map_err(NodeError::Storage)
     }
 
@@ -1725,6 +1925,23 @@ impl PersistentValidatorNode {
         Ok(NetworkMessage::SignedValidator(Box::new(signed)))
     }
 
+    pub fn sign_da_availability_vote(
+        &self,
+        signing_key: &ValidatorSigningKey,
+        manifest: &DaManifest,
+        shares: &[DaShare],
+        custody_share_count: u32,
+    ) -> Result<NetworkMessage, NodeError> {
+        let vote = DaAvailabilityVote::from_verified_custody(
+            manifest,
+            shares,
+            self.validator_id.clone(),
+            custody_share_count,
+        )
+        .map_err(NodeError::DataAvailability)?;
+        self.sign_validator_message(signing_key, NetworkMessage::DaAvailabilityVote(vote))
+    }
+
     pub fn gossip_signed_block_proposal(
         &self,
         block: Block,
@@ -1750,6 +1967,46 @@ impl PersistentValidatorNode {
             .rpc
             .produce_block(height, timestamp)
             .map_err(NodeError::Rpc)?;
+        self.last_block_execution_micros = Some(elapsed_micros(started));
+        self.persist_committed_block(&block)?;
+        Ok(block)
+    }
+
+    pub fn produce_block_with_data_availability(
+        &mut self,
+        height: u64,
+        timestamp: u64,
+        share_size_bytes: usize,
+    ) -> Result<Block, NodeError> {
+        let started = Instant::now();
+        let transactions = self.pending_transactions_for_next_block();
+        let consensus_certificate = format!("sim-cert:{}:{}", self.validator_id, height);
+        let (mut block, _) = self.rpc.node().state().build_block(
+            height,
+            transactions,
+            timestamp,
+            self.validator_id.clone(),
+            consensus_certificate,
+        );
+
+        let execution_block_hash = block.block_hash();
+        let payload = da_payload_for_block(&block)?;
+        let share_set = DaShareSet::from_payload(&payload, &execution_block_hash, share_size_bytes)
+            .map_err(NodeError::DataAvailability)?;
+        let manifest_hash = share_set
+            .manifest
+            .manifest_hash()
+            .map_err(NodeError::DataAvailability)?;
+        block.header.data_availability = Some(DataAvailabilityCommitment {
+            payload_root: share_set.manifest.payload_hash.clone(),
+            manifest_hash: manifest_hash.clone(),
+            share_root: share_set.manifest.share_root.clone(),
+            certificate_hash: None,
+        });
+        self.storage
+            .commit_da_share_set(&share_set)
+            .map_err(NodeError::Storage)?;
+        self.rpc.import_block(&block).map_err(NodeError::Rpc)?;
         self.last_block_execution_micros = Some(elapsed_micros(started));
         self.persist_committed_block(&block)?;
         Ok(block)
@@ -1786,6 +2043,36 @@ impl PersistentValidatorNode {
                 self.persist_equivocation_evidence(evidence.clone())?;
                 Ok(NetworkIngestOutcome::EquivocationEvidencePersisted)
             }
+            NetworkMessage::DaManifest(manifest) => {
+                self.storage
+                    .commit_da_manifest(manifest)
+                    .map_err(NodeError::Storage)?;
+                Ok(NetworkIngestOutcome::DataAvailabilityStored)
+            }
+            NetworkMessage::DaShare(share) => {
+                self.storage
+                    .commit_da_share(share)
+                    .map_err(NodeError::Storage)?;
+                Ok(NetworkIngestOutcome::DataAvailabilityStored)
+            }
+            NetworkMessage::DaAvailabilityCertificate(certificate) => {
+                self.storage
+                    .commit_da_certificate(certificate)
+                    .map_err(NodeError::Storage)?;
+                Ok(NetworkIngestOutcome::DataAvailabilityStored)
+            }
+            NetworkMessage::DaShareChallenge(challenge) => {
+                self.persist_da_share_challenge(challenge.clone())?;
+                Ok(NetworkIngestOutcome::DataAvailabilityStored)
+            }
+            NetworkMessage::DaShareChallengeResponse(response) => {
+                self.persist_da_share_challenge_response(response.clone())?;
+                Ok(NetworkIngestOutcome::DataAvailabilityStored)
+            }
+            NetworkMessage::DaChallengeEvidence(evidence) => {
+                self.persist_da_challenge_evidence((**evidence).clone())?;
+                Ok(NetworkIngestOutcome::DataAvailabilityStored)
+            }
             NetworkMessage::ValidatorSetMetadataUpdate(_) => {
                 Err(NodeError::UnsignedValidatorSetMetadataUpdate)
             }
@@ -1815,12 +2102,279 @@ impl PersistentValidatorNode {
             | NetworkMessage::PeerHello(_)
             | NetworkMessage::SnapshotChunkRequest(_)
             | NetworkMessage::SnapshotChunkManifest(_)
-            | NetworkMessage::SnapshotChunk(_) => Ok(NetworkIngestOutcome::IgnoredControlMessage),
+            | NetworkMessage::SnapshotChunk(_)
+            | NetworkMessage::DaAvailabilityVote(_) => {
+                Ok(NetworkIngestOutcome::IgnoredControlMessage)
+            }
         }
     }
 
     pub fn load_block(&self, height: u64) -> Result<Block, NodeError> {
         self.storage.load_block(height).map_err(NodeError::Storage)
+    }
+
+    pub fn load_da_manifest(&self, manifest_hash: &str) -> Result<DaManifest, NodeError> {
+        self.storage
+            .load_da_manifest(manifest_hash)
+            .map_err(NodeError::Storage)
+    }
+
+    pub fn load_da_share(&self, manifest_hash: &str, index: u32) -> Result<DaShare, NodeError> {
+        self.storage
+            .load_da_share(manifest_hash, index)
+            .map_err(NodeError::Storage)
+    }
+
+    pub fn persist_da_certificate(
+        &self,
+        certificate: &DaAvailabilityCertificate,
+    ) -> Result<String, NodeError> {
+        self.storage
+            .commit_da_certificate(certificate)
+            .map_err(NodeError::Storage)
+    }
+
+    pub fn load_da_certificate(
+        &self,
+        certificate_hash: &str,
+    ) -> Result<DaAvailabilityCertificate, NodeError> {
+        self.storage
+            .load_da_certificate(certificate_hash)
+            .map_err(NodeError::Storage)
+    }
+
+    pub fn load_da_share_set(&self, manifest_hash: &str) -> Result<DaShareSet, NodeError> {
+        self.storage
+            .load_da_share_set(manifest_hash)
+            .map_err(NodeError::Storage)
+    }
+
+    pub fn load_da_payload(&self, manifest_hash: &str) -> Result<DaPayload, NodeError> {
+        self.load_da_share_set(manifest_hash)?
+            .reconstruct_payload()
+            .map_err(NodeError::DataAvailability)
+    }
+
+    pub fn build_snapshot_da_share_set(
+        &self,
+        max_snapshot_chunk_bytes: usize,
+        data_share_count: u32,
+        parity_share_count: u32,
+    ) -> Result<(SnapshotChunkSet, DaShareSet), NodeError> {
+        let snapshot = self.storage.load_snapshot().map_err(NodeError::Storage)?;
+        let metadata_roots = self.effective_snapshot_metadata_roots()?;
+        let chunk_set = build_snapshot_chunks_with_metadata_roots(
+            &snapshot,
+            max_snapshot_chunk_bytes,
+            metadata_roots,
+        )
+        .map_err(NodeError::SnapshotSync)?;
+        let payload = da_payload_for_snapshot_chunk_set(
+            self.chain_id.clone(),
+            self.current_height(),
+            self.checkpoint_previous_block_hash()?,
+            &chunk_set,
+        )?;
+        let checkpoint_hash = snapshot_checkpoint_block_hash(&chunk_set)?;
+        let share_set = DaShareSet::from_payload_reed_solomon(
+            &payload,
+            checkpoint_hash,
+            data_share_count,
+            parity_share_count,
+        )
+        .map_err(NodeError::DataAvailability)?;
+        Ok((chunk_set, share_set))
+    }
+
+    pub fn persist_snapshot_da_share_set(
+        &self,
+        max_snapshot_chunk_bytes: usize,
+        data_share_count: u32,
+        parity_share_count: u32,
+    ) -> Result<(SnapshotChunkSet, String), NodeError> {
+        let (chunk_set, share_set) = self.build_snapshot_da_share_set(
+            max_snapshot_chunk_bytes,
+            data_share_count,
+            parity_share_count,
+        )?;
+        let manifest_hash = self
+            .storage
+            .commit_da_share_set(&share_set)
+            .map_err(NodeError::Storage)?;
+        Ok((chunk_set, manifest_hash))
+    }
+
+    pub fn import_snapshot_from_da_share_set(
+        &self,
+        share_set: &DaShareSet,
+        required_metadata_roots: &BTreeMap<String, String>,
+    ) -> Result<StateSnapshot, NodeError> {
+        self.import_snapshot_from_da_share_set_with_certificate(
+            share_set,
+            None,
+            required_metadata_roots,
+        )
+    }
+
+    pub fn import_snapshot_from_da_share_set_with_certificate(
+        &self,
+        share_set: &DaShareSet,
+        certificate: Option<&DaAvailabilityCertificate>,
+        required_metadata_roots: &BTreeMap<String, String>,
+    ) -> Result<StateSnapshot, NodeError> {
+        let da_manifest_hash = share_set
+            .manifest
+            .manifest_hash()
+            .map_err(NodeError::DataAvailability)?;
+        let da_certificate_hash = match certificate {
+            Some(certificate) => {
+                validate_da_certificate_for_share_set(certificate, share_set)?;
+                Some(
+                    certificate
+                        .certificate_hash()
+                        .map_err(NodeError::DataAvailability)?,
+                )
+            }
+            None => None,
+        };
+        let payload = share_set
+            .reconstruct_payload()
+            .map_err(NodeError::DataAvailability)?;
+        let chunk_set = snapshot_chunk_set_from_da_payload(&payload)?;
+        self.import_snapshot_chunk_set_with_da_audit(
+            &chunk_set,
+            required_metadata_roots,
+            Some(da_manifest_hash),
+            da_certificate_hash,
+        )
+    }
+
+    pub fn load_da_namespace(
+        &self,
+        manifest_hash: &str,
+        namespace: &str,
+    ) -> Result<Option<DaNamespaceSection>, NodeError> {
+        let namespace = DaNamespace::new(namespace).map_err(NodeError::DataAvailability)?;
+        let payload = self.load_da_payload(manifest_hash)?;
+        Ok(payload
+            .namespaces
+            .into_iter()
+            .find(|section| section.namespace == namespace))
+    }
+
+    pub fn da_status(&self, manifest_hash: &str) -> Result<DaStatusReport, NodeError> {
+        let certificate_hash = self.da_certificate_hash_for_manifest(manifest_hash)?;
+        let certificate_available = match &certificate_hash {
+            Some(hash) => self
+                .storage
+                .maybe_load_da_certificate(hash)
+                .map_err(NodeError::Storage)?
+                .is_some(),
+            None => false,
+        };
+
+        let Some(manifest) = self
+            .storage
+            .maybe_load_da_manifest(manifest_hash)
+            .map_err(NodeError::Storage)?
+        else {
+            return Ok(DaStatusReport {
+                manifest_hash: manifest_hash.into(),
+                manifest_available: false,
+                certificate_hash,
+                certificate_available,
+                expected_share_count: 0,
+                stored_share_count: 0,
+                missing_share_indices: Vec::new(),
+                payload_reconstructable: false,
+                payload_bytes: None,
+                namespace_count: None,
+                reconstruction_error: Some("manifest not found".into()),
+            });
+        };
+
+        let mut stored_share_count = 0_u32;
+        let mut missing_share_indices = Vec::new();
+        for index in 0..manifest.encoded_share_count {
+            match self
+                .storage
+                .maybe_load_da_share(manifest_hash, index)
+                .map_err(NodeError::Storage)?
+            {
+                Some(_) => stored_share_count = stored_share_count.saturating_add(1),
+                None => missing_share_indices.push(index),
+            }
+        }
+
+        let reconstruction = self.load_da_payload(manifest_hash);
+        Ok(DaStatusReport {
+            manifest_hash: manifest_hash.into(),
+            manifest_available: true,
+            certificate_hash,
+            certificate_available,
+            expected_share_count: manifest.encoded_share_count,
+            stored_share_count,
+            missing_share_indices,
+            payload_reconstructable: reconstruction.is_ok(),
+            payload_bytes: Some(manifest.payload_bytes),
+            namespace_count: Some(manifest.namespace_ranges.len()),
+            reconstruction_error: reconstruction.err().map(|error| format!("{error:?}")),
+        })
+    }
+
+    pub fn da_repair_status(&self, manifest_hash: &str) -> Result<DaRepairStatusReport, NodeError> {
+        let status = self.da_status(manifest_hash)?;
+        Ok(DaRepairStatusReport {
+            manifest_hash: status.manifest_hash,
+            repair_needed: !status.missing_share_indices.is_empty()
+                || !status.payload_reconstructable,
+            pending_repair_count: status.missing_share_indices.len(),
+            missing_share_indices: status.missing_share_indices,
+            payload_reconstructable: status.payload_reconstructable,
+            reconstruction_error: status.reconstruction_error,
+        })
+    }
+
+    fn da_certificate_hash_for_manifest(
+        &self,
+        manifest_hash: &str,
+    ) -> Result<Option<String>, NodeError> {
+        Ok(self
+            .storage
+            .load_blocks()
+            .map_err(NodeError::Storage)?
+            .into_iter()
+            .find_map(|block| {
+                let commitment = block.header.data_availability?;
+                if commitment.manifest_hash == manifest_hash {
+                    commitment.certificate_hash
+                } else {
+                    None
+                }
+            }))
+    }
+
+    fn pending_transactions_for_next_block(&self) -> Vec<Transaction> {
+        let mut transactions = self.rpc.node().pending_transactions().to_vec();
+        transactions.sort_by(|left, right| {
+            (left.sender.as_str(), left.nonce, left.tx_hash.as_str()).cmp(&(
+                right.sender.as_str(),
+                right.nonce,
+                right.tx_hash.as_str(),
+            ))
+        });
+
+        let mut selected = Vec::new();
+        let mut used_units = 0_u64;
+        for tx in transactions {
+            let tx_units = transaction_resource_units(&tx);
+            let next_units = used_units.saturating_add(tx_units);
+            if next_units <= self.rpc.node().block_resource_limit() {
+                used_units = next_units;
+                selected.push(tx);
+            }
+        }
+        selected
     }
 
     pub fn serve_snapshot_chunk_request(
@@ -1861,6 +2415,16 @@ impl PersistentValidatorNode {
         chunk_set: &SnapshotChunkSet,
         required_metadata_roots: &BTreeMap<String, String>,
     ) -> Result<StateSnapshot, NodeError> {
+        self.import_snapshot_chunk_set_with_da_audit(chunk_set, required_metadata_roots, None, None)
+    }
+
+    fn import_snapshot_chunk_set_with_da_audit(
+        &self,
+        chunk_set: &SnapshotChunkSet,
+        required_metadata_roots: &BTreeMap<String, String>,
+        da_manifest_hash: Option<String>,
+        da_certificate_hash: Option<String>,
+    ) -> Result<StateSnapshot, NodeError> {
         let snapshot = chunk_set
             .reconstruct_snapshot_with_metadata_roots(required_metadata_roots)
             .map_err(NodeError::SnapshotSync)?;
@@ -1889,6 +2453,8 @@ impl PersistentValidatorNode {
                     manifest_metadata_roots_count: chunk_set.manifest.metadata_roots.len(),
                     chunk_count: chunk_set.manifest.chunk_count,
                     metadata_roots_verified: true,
+                    da_manifest_hash,
+                    da_certificate_hash,
                 },
                 self.max_snapshot_import_audit_records,
             )
@@ -1912,6 +2478,25 @@ impl PersistentValidatorNode {
         }
     }
 
+    pub fn verified_da_availability_vote(
+        &self,
+        message: &NetworkMessage,
+    ) -> Result<DaAvailabilityVote, NodeError> {
+        let NetworkMessage::SignedValidator(signed) = message else {
+            return Err(NodeError::UnexpectedSignedMessage {
+                expected: ProtocolMessageKind::DaAvailabilityVote,
+                actual: message.kind(),
+            });
+        };
+        match self.verified_signed_validator_message(signed)? {
+            NetworkMessage::DaAvailabilityVote(vote) => Ok(vote),
+            other => Err(NodeError::UnexpectedSignedMessage {
+                expected: ProtocolMessageKind::DaAvailabilityVote,
+                actual: other.kind(),
+            }),
+        }
+    }
+
     pub fn collect_finality_certificate(
         &self,
         height: u64,
@@ -1924,6 +2509,20 @@ impl PersistentValidatorNode {
             .map(|message| self.verified_consensus_vote(message))
             .collect::<Result<Vec<_>, _>>()?;
         ConsensusCluster::certificate_from_votes(height, block_hash, votes, quorum)
+            .map_err(NodeError::Consensus)
+    }
+
+    pub fn collect_da_availability_certificate(
+        &self,
+        manifest: &DaManifest,
+        messages: &[NetworkMessage],
+        quorum: usize,
+    ) -> Result<DaAvailabilityCertificate, NodeError> {
+        let votes = messages
+            .iter()
+            .map(|message| self.verified_da_availability_vote(message))
+            .collect::<Result<Vec<_>, _>>()?;
+        ConsensusCluster::data_availability_certificate_from_votes(manifest, votes, quorum)
             .map_err(NodeError::Consensus)
     }
 
@@ -2101,13 +2700,247 @@ fn consensus_signing_commitment(
                 block_hash: vote.block_hash.clone(),
             }))
         }
+        NetworkMessage::DaAvailabilityVote(vote) => {
+            if vote.validator_id != validator_id {
+                return Err(NodeError::ConsensusMessageSignerMismatch {
+                    expected: validator_id.to_string(),
+                    actual: vote.validator_id.clone(),
+                });
+            }
+            Ok(Some(ConsensusSigningCommitment {
+                domain: ValidatorSignatureDomain::DaAvailabilityVote,
+                height: vote.height,
+                block_hash: da_vote_signing_commitment(vote),
+            }))
+        }
         NetworkMessage::FinalityCertificate(certificate) => Ok(Some(ConsensusSigningCommitment {
             domain: ValidatorSignatureDomain::FinalityCertificate,
             height: certificate.height,
             block_hash: certificate.block_hash.clone(),
         })),
+        NetworkMessage::DaAvailabilityCertificate(certificate) => {
+            Ok(Some(ConsensusSigningCommitment {
+                domain: ValidatorSignatureDomain::DaAvailabilityCertificate,
+                height: certificate.height,
+                block_hash: format!("{}:{}", certificate.block_hash, certificate.manifest_hash),
+            }))
+        }
         _ => Ok(None),
     }
+}
+
+fn da_vote_signing_commitment(vote: &DaAvailabilityVote) -> String {
+    format!("{}:{}", vote.block_hash, vote.manifest_hash)
+}
+
+fn da_payload_for_block(block: &Block) -> Result<DaPayload, NodeError> {
+    let mut sections = vec![DaNamespaceSection::new(
+        DaNamespace::new("detta.block").map_err(NodeError::DataAvailability)?,
+        vec![DaRecord::BlockHeader(Box::new(block.header.clone()))],
+    )
+    .map_err(NodeError::DataAvailability)?];
+
+    if !block.transactions.is_empty() {
+        sections.push(
+            DaNamespaceSection::new(
+                DaNamespace::new("detta.tx").map_err(NodeError::DataAvailability)?,
+                block
+                    .transactions
+                    .iter()
+                    .cloned()
+                    .map(DaRecord::SignedTransaction)
+                    .collect(),
+            )
+            .map_err(NodeError::DataAvailability)?,
+        );
+    }
+    if !block.receipts.is_empty() {
+        sections.push(
+            DaNamespaceSection::new(
+                DaNamespace::new("detta.receipt").map_err(NodeError::DataAvailability)?,
+                block
+                    .receipts
+                    .iter()
+                    .cloned()
+                    .map(DaRecord::Receipt)
+                    .collect(),
+            )
+            .map_err(NodeError::DataAvailability)?,
+        );
+    }
+
+    DaPayload::new(
+        block.header.chain_id.clone(),
+        block.header.height,
+        block.header.previous_block_hash.clone(),
+        sections,
+    )
+    .map_err(NodeError::DataAvailability)
+}
+
+fn da_payload_for_snapshot_chunk_set(
+    chain_id: impl Into<ChainId>,
+    height: u64,
+    previous_block_hash: impl Into<String>,
+    chunk_set: &SnapshotChunkSet,
+) -> Result<DaPayload, NodeError> {
+    chunk_set.verify().map_err(NodeError::SnapshotSync)?;
+    let manifest_hash = chunk_set
+        .manifest
+        .manifest_hash()
+        .map_err(NodeError::SnapshotSync)?;
+    let mut records = vec![DaRecord::SnapshotChunkManifest {
+        snapshot_root: chunk_set.manifest.snapshot_root.clone(),
+        snapshot_hash: chunk_set.manifest.snapshot_hash.clone(),
+        metadata_roots: chunk_set.manifest.metadata_roots.clone(),
+        chunk_size: chunk_set.manifest.chunk_size,
+        total_bytes: chunk_set.manifest.total_bytes,
+        chunk_count: chunk_set.manifest.chunk_count,
+        chunk_hashes: chunk_set.manifest.chunk_hashes.clone(),
+        chunk_root: chunk_set.manifest.chunk_root.clone(),
+    }];
+    records.extend(
+        chunk_set
+            .chunks
+            .iter()
+            .map(|chunk| DaRecord::SnapshotChunk {
+                snapshot_root: chunk_set.manifest.snapshot_root.clone(),
+                manifest_hash: manifest_hash.clone(),
+                chunk_index: chunk.index,
+                chunk_hash: chunk.chunk_hash.clone(),
+                bytes: chunk.bytes.clone(),
+            }),
+    );
+
+    DaPayload::new(
+        chain_id,
+        height,
+        previous_block_hash,
+        vec![DaNamespaceSection::new(
+            DaNamespace::new("detta.snapshot").map_err(NodeError::DataAvailability)?,
+            records,
+        )
+        .map_err(NodeError::DataAvailability)?],
+    )
+    .map_err(NodeError::DataAvailability)
+}
+
+fn snapshot_chunk_set_from_da_payload(payload: &DaPayload) -> Result<SnapshotChunkSet, NodeError> {
+    payload.validate().map_err(NodeError::DataAvailability)?;
+    let snapshot_namespace =
+        DaNamespace::new("detta.snapshot").map_err(NodeError::DataAvailability)?;
+    let mut manifest = None;
+    let mut chunks = Vec::new();
+    let mut chunk_snapshot_roots = BTreeMap::new();
+
+    for section in &payload.namespaces {
+        if section.namespace != snapshot_namespace {
+            continue;
+        }
+        for record in &section.records {
+            match record {
+                DaRecord::SnapshotChunkManifest {
+                    snapshot_root,
+                    snapshot_hash,
+                    metadata_roots,
+                    chunk_size,
+                    total_bytes,
+                    chunk_count,
+                    chunk_hashes,
+                    chunk_root,
+                } => {
+                    if manifest.is_some() {
+                        return Err(NodeError::DataAvailability(DaError::InvalidPayload(
+                            "DA snapshot payload contains multiple manifests".into(),
+                        )));
+                    }
+                    manifest = Some(SnapshotChunkManifest {
+                        snapshot_root: snapshot_root.clone(),
+                        snapshot_hash: snapshot_hash.clone(),
+                        metadata_roots: metadata_roots.clone(),
+                        chunk_size: *chunk_size,
+                        total_bytes: *total_bytes,
+                        chunk_count: *chunk_count,
+                        chunk_hashes: chunk_hashes.clone(),
+                        chunk_root: chunk_root.clone(),
+                    });
+                }
+                DaRecord::SnapshotChunk {
+                    snapshot_root,
+                    manifest_hash,
+                    chunk_index,
+                    chunk_hash,
+                    bytes,
+                } => {
+                    chunk_snapshot_roots.insert(*chunk_index, snapshot_root.clone());
+                    chunks.push(SnapshotChunk {
+                        manifest_hash: manifest_hash.clone(),
+                        index: *chunk_index,
+                        bytes: bytes.clone(),
+                        chunk_hash: chunk_hash.clone(),
+                    });
+                }
+                _ => {
+                    return Err(NodeError::DataAvailability(DaError::InvalidPayload(
+                        "DA snapshot namespace contains a non-snapshot record".into(),
+                    )));
+                }
+            }
+        }
+    }
+
+    let manifest = manifest.ok_or_else(|| {
+        NodeError::DataAvailability(DaError::InvalidPayload(
+            "DA snapshot payload has no manifest".into(),
+        ))
+    })?;
+    for (chunk_index, snapshot_root) in chunk_snapshot_roots {
+        if snapshot_root != manifest.snapshot_root {
+            return Err(NodeError::DataAvailability(DaError::InvalidPayload(
+                format!("DA snapshot chunk {chunk_index} root does not match manifest root"),
+            )));
+        }
+    }
+
+    let chunk_set = SnapshotChunkSet { manifest, chunks };
+    chunk_set.verify().map_err(NodeError::SnapshotSync)?;
+    Ok(chunk_set)
+}
+
+fn snapshot_checkpoint_block_hash(chunk_set: &SnapshotChunkSet) -> Result<String, NodeError> {
+    Ok(format!(
+        "snapshot-checkpoint:{}",
+        chunk_set
+            .manifest
+            .manifest_hash()
+            .map_err(NodeError::SnapshotSync)?
+    ))
+}
+
+fn validate_da_certificate_for_share_set(
+    certificate: &DaAvailabilityCertificate,
+    share_set: &DaShareSet,
+) -> Result<(), NodeError> {
+    certificate
+        .validate()
+        .map_err(NodeError::DataAvailability)?;
+    let manifest_hash = share_set
+        .manifest
+        .manifest_hash()
+        .map_err(NodeError::DataAvailability)?;
+    if certificate.chain_id != share_set.manifest.chain_id
+        || certificate.height != share_set.manifest.height
+        || certificate.block_hash != share_set.manifest.block_hash
+        || certificate.manifest_hash != manifest_hash
+        || certificate.share_root != share_set.manifest.share_root
+    {
+        return Err(NodeError::DataAvailability(
+            DaError::InvalidAvailabilityCertificate(
+                "certificate does not match DA share set".into(),
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn records_proof_latency(request: &RpcRequest) -> bool {
@@ -2262,6 +3095,7 @@ fn node_rpc_error_code(error: &NodeError) -> &'static str {
         NodeError::Consensus(ConsensusError::QuorumNotReached { .. }) => {
             "node.validator_quorum_not_reached"
         }
+        NodeError::DataAvailability(_) => "node.data_availability_error",
         NodeError::Mempool(MempoolError::ChainMismatch) => "mempool.chain_mismatch",
         NodeError::Mempool(MempoolError::InvalidSignature) => "mempool.invalid_signature",
         NodeError::Mempool(MempoolError::UnauthorizedSigner { .. }) => {
@@ -2483,6 +3317,330 @@ mod tests {
             RpcResponse::Ok(RpcResult::EventProof(Box::new(expected_event_proof)))
         );
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn persistent_validator_produces_da_committed_block_and_survives_restart() {
+        let dir = temp_dir("da-restart");
+        let mut node =
+            PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &dir).unwrap();
+        node.submit_transaction(transfer_tx()).unwrap();
+
+        let block = node
+            .produce_block_with_data_availability(1, 1_000, 64)
+            .unwrap();
+        let commitment = block.header.data_availability.clone().unwrap();
+        let share_set = node.load_da_share_set(&commitment.manifest_hash).unwrap();
+        let certificate = DaAvailabilityCertificate::from_manifest(
+            &share_set.manifest,
+            vec!["validator-1".into(), "validator-2".into()],
+        )
+        .unwrap();
+        let certificate_hash = node.persist_da_certificate(&certificate).unwrap();
+        let payload = share_set.reconstruct_payload().unwrap();
+        let namespaces = payload
+            .namespaces
+            .iter()
+            .map(|section| section.namespace.0.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(share_set.manifest.payload_hash, commitment.payload_root);
+        assert_eq!(share_set.manifest.share_root, commitment.share_root);
+        assert_eq!(share_set.manifest.height, 1);
+        assert_eq!(share_set.manifest.chain_id, "detta-local");
+        assert_eq!(share_set.manifest.block_hash, {
+            let mut execution_block = block.clone();
+            execution_block.header.data_availability = None;
+            execution_block.block_hash()
+        });
+        assert_eq!(
+            payload.previous_block_hash,
+            block.header.previous_block_hash
+        );
+        assert_eq!(namespaces, vec!["detta.block", "detta.receipt", "detta.tx"]);
+        assert!(matches!(
+            &payload.namespaces[0].records[0],
+            DaRecord::BlockHeader(_)
+        ));
+        assert_eq!(node.pending_len(), 0);
+        assert_eq!(
+            node.load_block(1).unwrap().header.data_availability,
+            Some(commitment.clone())
+        );
+        assert_eq!(
+            node.handle_rpc_request(RpcRequest::GetDaManifest {
+                manifest_hash: commitment.manifest_hash.clone(),
+            }),
+            RpcResponse::Ok(RpcResult::DaManifest(Box::new(share_set.manifest.clone())))
+        );
+        assert_eq!(
+            node.handle_rpc_request(RpcRequest::GetDaShare {
+                manifest_hash: commitment.manifest_hash.clone(),
+                index: 0,
+            }),
+            RpcResponse::Ok(RpcResult::DaShare(Box::new(share_set.shares[0].clone())))
+        );
+        assert_eq!(
+            node.handle_rpc_request(RpcRequest::GetDaCertificate {
+                certificate_hash: certificate_hash.clone(),
+            }),
+            RpcResponse::Ok(RpcResult::DaAvailabilityCertificate(Box::new(
+                certificate.clone()
+            )))
+        );
+        assert_eq!(
+            node.handle_rpc_request(RpcRequest::GetDaPayload {
+                manifest_hash: commitment.manifest_hash.clone(),
+            }),
+            RpcResponse::Ok(RpcResult::DaPayload(Box::new(payload.clone())))
+        );
+        assert_eq!(
+            node.handle_rpc_request(RpcRequest::GetDaNamespace {
+                manifest_hash: commitment.manifest_hash.clone(),
+                namespace: "detta.tx".into(),
+            }),
+            RpcResponse::Ok(RpcResult::DaNamespace(Box::new(
+                payload.namespaces[2].clone()
+            )))
+        );
+        assert_eq!(
+            node.handle_rpc_request(RpcRequest::GetDaNamespace {
+                manifest_hash: commitment.manifest_hash.clone(),
+                namespace: "detta.oracle".into(),
+            }),
+            RpcResponse::Error(RpcErrorBody {
+                code: "rpc.da_namespace_not_found".into(),
+                message: "DA namespace was not found".into(),
+            })
+        );
+        let stats_response = node.handle_rpc_request(RpcRequest::GetDaStorageStats);
+        let RpcResponse::Ok(RpcResult::DaStorageStats(stats)) = stats_response else {
+            panic!("expected DA storage stats, got {stats_response:?}");
+        };
+        assert_eq!(stats.manifest_count, 1);
+        assert_eq!(
+            stats.expected_share_count,
+            share_set.manifest.encoded_share_count as u64
+        );
+        assert_eq!(stats.stored_share_count, share_set.shares.len() as u64);
+        assert_eq!(stats.missing_share_count, 0);
+        assert_eq!(stats.certificate_count, 1);
+        let status_response = node.handle_rpc_request(RpcRequest::GetDaStatus {
+            manifest_hash: commitment.manifest_hash.clone(),
+        });
+        let RpcResponse::Ok(RpcResult::DaStatus(status)) = status_response else {
+            panic!("expected DA status, got {status_response:?}");
+        };
+        assert!(status.manifest_available);
+        assert_eq!(
+            status.expected_share_count,
+            share_set.manifest.encoded_share_count
+        );
+        assert_eq!(status.stored_share_count, share_set.shares.len() as u32);
+        assert!(status.missing_share_indices.is_empty());
+        assert!(status.payload_reconstructable);
+        let repair_response = node.handle_rpc_request(RpcRequest::GetDaRepairStatus {
+            manifest_hash: commitment.manifest_hash.clone(),
+        });
+        let RpcResponse::Ok(RpcResult::DaRepairStatus(repair_status)) = repair_response else {
+            panic!("expected DA repair status, got {repair_response:?}");
+        };
+        assert!(!repair_status.repair_needed);
+        assert_eq!(repair_status.pending_repair_count, 0);
+        assert!(repair_status.missing_share_indices.is_empty());
+
+        let restarted = PersistentValidatorNode::restart("validator-1", &dir).unwrap();
+        assert_eq!(
+            restarted.load_block(1).unwrap().header.data_availability,
+            Some(commitment.clone())
+        );
+        assert_eq!(
+            restarted
+                .load_da_share_set(&commitment.manifest_hash)
+                .unwrap()
+                .reconstruct_payload()
+                .unwrap(),
+            payload
+        );
+        assert_eq!(
+            restarted.load_da_certificate(&certificate_hash).unwrap(),
+            certificate
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn persistent_node_imports_snapshot_from_da_reed_solomon_checkpoint() {
+        let source_dir = temp_dir("da-snapshot-source");
+        let sink_dir = temp_dir("da-snapshot-sink");
+        let mut source =
+            PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &source_dir).unwrap();
+        let sink = PersistentValidatorNode::bootstrap(
+            "validator-2",
+            DeTTaState::new("detta-local"),
+            &sink_dir,
+        )
+        .unwrap();
+        source.submit_transaction(transfer_tx()).unwrap();
+        source.produce_block(1, 1_000).unwrap();
+
+        let (chunk_set, share_set) = source.build_snapshot_da_share_set(64, 3, 2).unwrap();
+        let da_manifest_hash = share_set.manifest.manifest_hash().unwrap();
+        let certificate = DaAvailabilityCertificate::from_manifest(
+            &share_set.manifest,
+            vec!["validator-1".into(), "validator-2".into()],
+        )
+        .unwrap();
+        let da_certificate_hash = certificate.certificate_hash().unwrap();
+        let required_metadata_roots = chunk_set.manifest.metadata_roots.clone();
+        let threshold_share_indices = [0_u32, 2, 4];
+        let threshold_share_set = DaShareSet {
+            manifest: share_set.manifest.clone(),
+            shares: threshold_share_indices
+                .into_iter()
+                .map(|index| {
+                    share_set
+                        .shares
+                        .iter()
+                        .find(|share| share.index == index)
+                        .unwrap()
+                        .clone()
+                })
+                .collect(),
+        };
+
+        assert_eq!(
+            threshold_share_set.shares.len() as u32,
+            threshold_share_set.manifest.reconstruction_threshold
+        );
+        threshold_share_set.verify().unwrap();
+
+        let mut tampered_share_set = threshold_share_set.clone();
+        tampered_share_set.shares[0].bytes[0] ^= 0xff;
+        assert!(matches!(
+            sink.import_snapshot_from_da_share_set(&tampered_share_set, &required_metadata_roots,),
+            Err(NodeError::DataAvailability(
+                DaError::ShareHashMismatch { .. }
+            ))
+        ));
+
+        let mut wrong_certificate = certificate.clone();
+        wrong_certificate.share_root = "wrong-share-root".into();
+        assert!(matches!(
+            sink.import_snapshot_from_da_share_set_with_certificate(
+                &threshold_share_set,
+                Some(&wrong_certificate),
+                &required_metadata_roots,
+            ),
+            Err(NodeError::DataAvailability(
+                DaError::InvalidAvailabilityCertificate(_)
+            ))
+        ));
+
+        let imported = sink
+            .import_snapshot_from_da_share_set_with_certificate(
+                &threshold_share_set,
+                Some(&certificate),
+                &required_metadata_roots,
+            )
+            .unwrap();
+        assert_eq!(
+            imported.global_state_root,
+            chunk_set.manifest.snapshot_root.clone()
+        );
+        assert_eq!(
+            sink.load_required_snapshot_metadata_roots().unwrap(),
+            required_metadata_roots
+        );
+        assert_eq!(
+            sink.load_snapshot_import_audit_records().unwrap(),
+            vec![SnapshotImportAuditRecord {
+                snapshot_root: chunk_set.manifest.snapshot_root.clone(),
+                manifest_hash: chunk_set.manifest.manifest_hash().unwrap(),
+                required_metadata_roots_root:
+                    FileStorage::required_snapshot_metadata_roots_root_for(
+                        &chunk_set.manifest.metadata_roots,
+                    )
+                    .unwrap(),
+                required_metadata_roots_count: chunk_set.manifest.metadata_roots.len(),
+                manifest_metadata_roots_count: chunk_set.manifest.metadata_roots.len(),
+                chunk_count: chunk_set.manifest.chunk_count,
+                metadata_roots_verified: true,
+                da_manifest_hash: Some(da_manifest_hash),
+                da_certificate_hash: Some(da_certificate_hash),
+            }]
+        );
+
+        fs::remove_dir_all(source_dir).unwrap();
+        fs::remove_dir_all(sink_dir).unwrap();
+    }
+
+    #[test]
+    fn persistent_node_stores_da_manifest_and_share_gossip() {
+        let source_dir = temp_dir("da-gossip-source");
+        let sink_dir = temp_dir("da-gossip-sink");
+        let mut source =
+            PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &source_dir).unwrap();
+        let mut sink =
+            PersistentValidatorNode::bootstrap("validator-2", seeded_state(), &sink_dir).unwrap();
+        source.submit_transaction(transfer_tx()).unwrap();
+        let block = source
+            .produce_block_with_data_availability(1, 1_000, 64)
+            .unwrap();
+        let commitment = block.header.data_availability.as_ref().unwrap();
+        let share_set = source.load_da_share_set(&commitment.manifest_hash).unwrap();
+        let certificate = DaAvailabilityCertificate::from_manifest(
+            &share_set.manifest,
+            vec!["validator-1".into(), "validator-2".into()],
+        )
+        .unwrap();
+        let certificate_hash = certificate.certificate_hash().unwrap();
+        let mut transport =
+            InMemoryTransport::new(["validator-1".into(), "validator-2".into()]).unwrap();
+
+        assert_eq!(
+            source
+                .gossip_data_availability_for_block(&block, &mut transport)
+                .unwrap(),
+            share_set.shares.len() + 1
+        );
+        let da_envelopes = transport.drain_peer("validator-2").unwrap();
+        assert_eq!(da_envelopes.len(), share_set.shares.len() + 1);
+        assert!(matches!(
+            da_envelopes[0].message,
+            NetworkMessage::DaManifest(_)
+        ));
+        for envelope in da_envelopes {
+            assert_eq!(
+                sink.ingest_network_envelope(&envelope).unwrap(),
+                NetworkIngestOutcome::DataAvailabilityStored
+            );
+        }
+        assert_eq!(
+            sink.ingest_network_envelope(&Envelope {
+                from: "validator-1".into(),
+                to: "validator-2".into(),
+                message: NetworkMessage::DaAvailabilityCertificate(Box::new(certificate.clone())),
+            })
+            .unwrap(),
+            NetworkIngestOutcome::DataAvailabilityStored
+        );
+
+        assert_eq!(
+            sink.load_da_share_set(&commitment.manifest_hash)
+                .unwrap()
+                .reconstruct_payload()
+                .unwrap(),
+            share_set.reconstruct_payload().unwrap()
+        );
+        assert_eq!(
+            sink.load_da_certificate(&certificate_hash).unwrap(),
+            certificate
+        );
+
+        fs::remove_dir_all(source_dir).unwrap();
+        fs::remove_dir_all(sink_dir).unwrap();
     }
 
     #[test]
@@ -3002,6 +4160,124 @@ mod tests {
     }
 
     #[test]
+    fn persistent_node_collects_signed_da_availability_certificate() {
+        let proposer_dir = temp_dir("signed-da-vote-proposer");
+        let peer_dir = temp_dir("signed-da-vote-peer");
+        let proposer_key = validator_key("validator-1", 7);
+        let peer_key = validator_key("validator-2", 8);
+        let mut proposer = PersistentValidatorNode::bootstrap_with_validator_set(
+            "validator-1",
+            seeded_state(),
+            &proposer_dir,
+            "detta-testnet",
+            vec![proposer_key.public_key(), peer_key.public_key()],
+        )
+        .unwrap();
+        let peer = PersistentValidatorNode::bootstrap_with_validator_set(
+            "validator-2",
+            seeded_state(),
+            &peer_dir,
+            "detta-testnet",
+            vec![proposer_key.public_key(), peer_key.public_key()],
+        )
+        .unwrap();
+        let block = proposer
+            .produce_block_with_data_availability(1, 1_000, 64)
+            .unwrap();
+        let manifest_hash = block
+            .header
+            .data_availability
+            .as_ref()
+            .unwrap()
+            .manifest_hash
+            .clone();
+        let manifest = proposer.load_da_manifest(&manifest_hash).unwrap();
+        let share_set = proposer.load_da_share_set(&manifest_hash).unwrap();
+        let signed_votes = vec![
+            proposer
+                .sign_da_availability_vote(&proposer_key, &manifest, &share_set.shares, 2)
+                .unwrap(),
+            peer.sign_da_availability_vote(&peer_key, &manifest, &share_set.shares, 2)
+                .unwrap(),
+        ];
+
+        let certificate = proposer
+            .collect_da_availability_certificate(&manifest, &signed_votes, 2)
+            .unwrap();
+
+        assert_eq!(certificate.signers, vec!["validator-1", "validator-2"]);
+        assert_eq!(certificate.manifest_hash, manifest_hash);
+        assert!(matches!(
+            peer.sign_da_availability_vote(&peer_key, &manifest, &[], 2),
+            Err(NodeError::DataAvailability(DaError::MissingShare { .. }))
+        ));
+
+        fs::remove_dir_all(proposer_dir).unwrap();
+        fs::remove_dir_all(peer_dir).unwrap();
+    }
+
+    #[test]
+    fn persistent_validator_refuses_conflicting_da_vote_after_restart() {
+        let dir = temp_dir("da-signing-vote-lock");
+        let key = validator_key("validator-1", 7);
+        let node = PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &dir).unwrap();
+        let vote_a = DaAvailabilityVote {
+            chain_id: "detta-local".into(),
+            height: 7,
+            block_hash: "block-a".into(),
+            manifest_hash: "manifest-a".into(),
+            share_root: "share-root-a".into(),
+            validator_id: "validator-1".into(),
+            custody_share_indices: Vec::new(),
+            sampled_share_indices: Vec::new(),
+        };
+        let vote_b = DaAvailabilityVote {
+            manifest_hash: "manifest-b".into(),
+            ..vote_a.clone()
+        };
+
+        assert!(matches!(
+            node.sign_validator_message(&key, NetworkMessage::DaAvailabilityVote(vote_a.clone()))
+                .unwrap(),
+            NetworkMessage::SignedValidator(_)
+        ));
+        assert_eq!(
+            node.storage
+                .maybe_load_consensus_signing_record(
+                    "validator-1",
+                    ValidatorSignatureDomain::DaAvailabilityVote,
+                    7,
+                )
+                .unwrap()
+                .unwrap()
+                .block_hash,
+            "block-a:manifest-a"
+        );
+
+        let restarted = PersistentValidatorNode::restart("validator-1", &dir).unwrap();
+        assert!(matches!(
+            restarted
+                .sign_validator_message(&key, NetworkMessage::DaAvailabilityVote(vote_a))
+                .unwrap(),
+            NetworkMessage::SignedValidator(_)
+        ));
+        assert_eq!(
+            restarted
+                .sign_validator_message(&key, NetworkMessage::DaAvailabilityVote(vote_b))
+                .unwrap_err(),
+            NodeError::ConsensusSigningConflict {
+                validator_id: "validator-1".into(),
+                domain: ValidatorSignatureDomain::DaAvailabilityVote,
+                height: 7,
+                existing_block_hash: "block-a:manifest-a".into(),
+                attempted_block_hash: "block-a:manifest-b".into(),
+            }
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn persistent_validator_refuses_conflicting_block_proposal_after_partition_restart() {
         let dir = temp_dir("consensus-signing-block-lock");
         let key = validator_key("validator-1", 7);
@@ -3468,7 +4744,7 @@ mod tests {
                 .load_slashing_record("validator-1")
                 .unwrap()
                 .evidence,
-            evidence
+            SlashingEvidence::Equivocation(evidence.clone())
         );
 
         let envelope = transport.drain_peer("validator-3").unwrap().pop().unwrap();
@@ -3481,12 +4757,12 @@ mod tests {
             SlashingRecord {
                 validator_id: "validator-1".into(),
                 slashed_at_height: 11,
-                evidence: EquivocationEvidence {
+                evidence: SlashingEvidence::Equivocation(EquivocationEvidence {
                     validator_id: "validator-1".into(),
                     height: 11,
                     first_block_hash: "block-a".into(),
                     second_block_hash: "block-b".into(),
-                },
+                }),
             }
         );
 
@@ -3505,12 +4781,12 @@ mod tests {
             RpcResponse::Ok(RpcResult::SlashingRecord(Box::new(SlashingRecord {
                 validator_id: "validator-1".into(),
                 slashed_at_height: 11,
-                evidence: EquivocationEvidence {
+                evidence: SlashingEvidence::Equivocation(EquivocationEvidence {
                     validator_id: "validator-1".into(),
                     height: 11,
                     first_block_hash: "block-a".into(),
                     second_block_hash: "block-b".into(),
-                },
+                }),
             })))
         );
         assert_eq!(
@@ -3524,6 +4800,135 @@ mod tests {
         );
 
         fs::remove_dir_all(reporter_dir).unwrap();
+        fs::remove_dir_all(peer_dir).unwrap();
+    }
+
+    #[test]
+    fn node_ingests_signed_da_challenge_flow_and_persists_slashing_evidence() {
+        let peer_dir = temp_dir("signed-da-challenge-peer");
+        let challenged_key = validator_key("validator-1", 7);
+        let reporter_key = validator_key("validator-2", 8);
+        let mut peer =
+            PersistentValidatorNode::bootstrap("validator-3", seeded_state(), &peer_dir).unwrap();
+        peer.set_network_id("detta-testnet");
+        peer.trust_validator_key(challenged_key.public_key());
+        peer.trust_validator_key(reporter_key.public_key());
+
+        let payload = DaPayload::new(
+            "detta-local",
+            7,
+            "prev-block",
+            vec![DaNamespaceSection::new(
+                DaNamespace::new("detta.tx").unwrap(),
+                vec![DaRecord::SignedTransaction(transfer_tx())],
+            )
+            .unwrap()],
+        )
+        .unwrap();
+        let share_set = DaShareSet::from_payload(&payload, "block-7", 64).unwrap();
+        let vote = DaAvailabilityVote::from_manifest_with_custody(
+            &share_set.manifest,
+            "validator-1",
+            [0],
+            [],
+        )
+        .unwrap();
+        let challenge =
+            DaShareChallenge::from_availability_vote(&vote, "validator-2", 0, 11).unwrap();
+        let challenge_id = challenge.challenge_hash().unwrap();
+        let mut invalid_share = share_set.shares[0].clone();
+        invalid_share.bytes[0] ^= 0x01;
+        let response = DaShareChallengeResponse::from_share(&challenge, invalid_share).unwrap();
+        let evidence = DaChallengeEvidence::invalid_response(
+            &challenge,
+            &response,
+            &share_set.manifest,
+            "validator-2",
+            10,
+        )
+        .unwrap();
+
+        let signed_challenge = reporter_key
+            .sign_message(
+                "detta-testnet",
+                "detta-local",
+                NetworkMessage::DaShareChallenge(challenge.clone()),
+            )
+            .unwrap();
+        assert_eq!(
+            peer.ingest_network_envelope(&Envelope {
+                from: "validator-2".into(),
+                to: "validator-3".into(),
+                message: NetworkMessage::SignedValidator(Box::new(signed_challenge)),
+            })
+            .unwrap(),
+            NetworkIngestOutcome::DataAvailabilityStored
+        );
+
+        let signed_response = challenged_key
+            .sign_message(
+                "detta-testnet",
+                "detta-local",
+                NetworkMessage::DaShareChallengeResponse(response.clone()),
+            )
+            .unwrap();
+        assert_eq!(
+            peer.ingest_network_envelope(&Envelope {
+                from: "validator-1".into(),
+                to: "validator-3".into(),
+                message: NetworkMessage::SignedValidator(Box::new(signed_response)),
+            })
+            .unwrap(),
+            NetworkIngestOutcome::DataAvailabilityStored
+        );
+
+        let signed_evidence = reporter_key
+            .sign_message(
+                "detta-testnet",
+                "detta-local",
+                NetworkMessage::DaChallengeEvidence(Box::new(evidence.clone())),
+            )
+            .unwrap();
+        assert_eq!(
+            peer.ingest_network_envelope(&Envelope {
+                from: "validator-2".into(),
+                to: "validator-3".into(),
+                message: NetworkMessage::SignedValidator(Box::new(signed_evidence)),
+            })
+            .unwrap(),
+            NetworkIngestOutcome::DataAvailabilityStored
+        );
+
+        let record = peer.load_da_challenge_record(&challenge_id).unwrap();
+        assert_eq!(record.challenge, challenge);
+        assert_eq!(record.response, Some(response));
+        assert_eq!(record.evidence, Some(evidence.clone()));
+        assert_eq!(
+            peer.load_slashing_record("validator-1").unwrap(),
+            SlashingRecord {
+                validator_id: "validator-1".into(),
+                slashed_at_height: 10,
+                evidence: SlashingEvidence::DataAvailability(evidence.clone()),
+            }
+        );
+
+        let mut restarted = PersistentValidatorNode::restart("validator-3", &peer_dir).unwrap();
+        assert_eq!(
+            restarted.handle_rpc_request(RpcRequest::GetDaChallengeRecord {
+                challenge_id: challenge_id.clone(),
+            }),
+            RpcResponse::Ok(RpcResult::DaChallengeRecord(Box::new(record)))
+        );
+        assert_eq!(
+            restarted.handle_rpc_request(RpcRequest::GetDaChallengeRecord {
+                challenge_id: "missing-challenge".into(),
+            }),
+            RpcResponse::Error(RpcErrorBody {
+                code: "rpc.da_challenge_record_not_found".into(),
+                message: "DA challenge record was not found".into(),
+            })
+        );
+
         fs::remove_dir_all(peer_dir).unwrap();
     }
 
@@ -4455,6 +5860,8 @@ mod tests {
             manifest_metadata_roots_count: expected_required_metadata_roots.len() + 1,
             chunk_count: 4,
             metadata_roots_verified: true,
+            da_manifest_hash: None,
+            da_certificate_hash: None,
         };
         let expected_snapshot_import_audit_records = vec![snapshot_import_audit_record.clone()];
         let expected_snapshot_import_audit_root =
@@ -4971,12 +6378,12 @@ mod tests {
         let record = SlashingRecord {
             validator_id: "validator-1".into(),
             slashed_at_height: 11,
-            evidence: EquivocationEvidence {
+            evidence: SlashingEvidence::Equivocation(EquivocationEvidence {
                 validator_id: "validator-1".into(),
                 height: 11,
                 first_block_hash: "block-a".into(),
                 second_block_hash: "block-b".into(),
-            },
+            }),
         };
         node.storage.commit_slashing_record(&record).unwrap();
         let restarted = PersistentValidatorNode::restart("validator-1", &dir).unwrap();
@@ -5545,6 +6952,8 @@ mod tests {
             manifest_metadata_roots_count: chunk_set.manifest.metadata_roots.len(),
             chunk_count: chunk_set.manifest.chunk_count,
             metadata_roots_verified: true,
+            da_manifest_hash: None,
+            da_certificate_hash: None,
         };
         assert_eq!(
             sink.load_snapshot_import_audit_records().unwrap(),
