@@ -1,6 +1,7 @@
 use detta_core::{
-    receipt_root, transaction_root, Block, BlockError, DaSlashingPolicy, DeTTaState, Receipt,
-    Transaction, ValidatorNode,
+    receipt_root, transaction_root, Argument, AspectModuleRecord, AspectModuleRoots, Block,
+    BlockError, DaSlashingPolicy, DeTTaState, Method, Receipt, Transaction, TxStatus,
+    ValidatorNode,
 };
 use detta_da::{
     validate_production_block_payload, DaAvailabilityCertificate, DaAvailabilityVote,
@@ -794,6 +795,7 @@ pub fn verify_data_availability_payload(
             "payload receipts differ from block receipts".into(),
         ));
     }
+    verify_specialized_da_evidence(block, &canonical_payload)?;
 
     Ok(())
 }
@@ -836,6 +838,169 @@ fn payload_receipts(payload: &DaPayload) -> Result<Vec<Receipt>, ConsensusError>
         }
     }
     Ok(receipts)
+}
+
+fn verify_specialized_da_evidence(
+    block: &Block,
+    payload: &DaPayload,
+) -> Result<(), ConsensusError> {
+    let expected = expected_specialized_da_records(block)?;
+    for (namespace, expected_records) in expected {
+        let actual_records = payload_records_for_namespace(payload, namespace);
+        if actual_records != expected_records {
+            return Err(ConsensusError::DataAvailabilityInvalid(format!(
+                "{namespace} DA records do not match committed transactions"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn expected_specialized_da_records(
+    block: &Block,
+) -> Result<BTreeMap<&'static str, Vec<DaRecord>>, ConsensusError> {
+    let mut records = BTreeMap::from([
+        ("detta.aspect", Vec::new()),
+        ("detta.bridge", Vec::new()),
+        ("detta.governance", Vec::new()),
+        ("detta.oracle", Vec::new()),
+    ]);
+
+    for transaction in committed_da_transactions(block) {
+        match transaction.method {
+            Method::SubmitAspectModule => records
+                .get_mut("detta.aspect")
+                .expect("specialized DA namespace initialized")
+                .push(aspect_da_record_for_transaction(transaction)?),
+            Method::QueueBridgeMessage | Method::RedeemBridgeMessage => {
+                let payload = canonical_transaction_payload(transaction)?;
+                records
+                    .get_mut("detta.bridge")
+                    .expect("specialized DA namespace initialized")
+                    .push(DaRecord::BridgeProof {
+                        message_id: text_arg(transaction, 2)
+                            .or_else(|| text_arg(transaction, 0))
+                            .unwrap_or(transaction.tx_hash.as_str())
+                            .to_string(),
+                        proof: payload,
+                    });
+            }
+            Method::PauseContract
+            | Method::UnpauseContract
+            | Method::ScheduleUpgrade
+            | Method::ExecuteUpgrade
+            | Method::SchedulePolicyUpdate
+            | Method::ExecutePolicyUpdate
+            | Method::ScheduleDaSlashingPolicyUpdate
+            | Method::ExecuteDaSlashingPolicyUpdate => {
+                let payload = canonical_transaction_payload(transaction)?;
+                records
+                    .get_mut("detta.governance")
+                    .expect("specialized DA namespace initialized")
+                    .push(DaRecord::GovernancePayload {
+                        proposal_id: text_arg(transaction, 0)
+                            .unwrap_or(transaction.tx_hash.as_str())
+                            .to_string(),
+                        payload,
+                    });
+            }
+            Method::SubmitPrice => {
+                let payload = canonical_transaction_payload(transaction)?;
+                records
+                    .get_mut("detta.oracle")
+                    .expect("specialized DA namespace initialized")
+                    .push(DaRecord::OracleEvidence {
+                        asset: asset_arg(transaction, 0)
+                            .unwrap_or(transaction.target.as_str())
+                            .to_string(),
+                        evidence: payload,
+                    });
+            }
+            _ => {}
+        }
+    }
+
+    Ok(records)
+}
+
+fn committed_da_transactions(block: &Block) -> impl Iterator<Item = &Transaction> {
+    block
+        .transactions
+        .iter()
+        .zip(block.receipts.iter())
+        .filter_map(|(transaction, receipt)| {
+            if receipt.tx_hash == transaction.tx_hash && receipt.status == TxStatus::Committed {
+                Some(transaction)
+            } else {
+                None
+            }
+        })
+}
+
+fn aspect_da_record_for_transaction(transaction: &Transaction) -> Result<DaRecord, ConsensusError> {
+    let module = match transaction.args.as_slice() {
+        [Argument::Text(module_id), Argument::Text(source)] => {
+            AspectModuleRecord::from_verified_source(module_id.clone(), source).map_err(
+                |error| {
+                    ConsensusError::DataAvailabilityInvalid(format!(
+                        "failed to reconstruct DA aspect artifact from source: {error:?}"
+                    ))
+                },
+            )?
+        }
+        [Argument::Text(module_id), Argument::Text(taxonomy_version), Argument::Text(source_root), Argument::Text(ir_root), Argument::Text(abi_root), Argument::Text(policy_root), Argument::Text(storage_schema_root), Argument::Text(registry_schema_root), Argument::Text(invariant_root)] => {
+            AspectModuleRecord::new(
+                module_id.clone(),
+                taxonomy_version.clone(),
+                AspectModuleRoots {
+                    source_root: source_root.clone(),
+                    ir_root: ir_root.clone(),
+                    abi_root: abi_root.clone(),
+                    policy_root: policy_root.clone(),
+                    storage_schema_root: storage_schema_root.clone(),
+                    registry_schema_root: registry_schema_root.clone(),
+                    invariant_root: invariant_root.clone(),
+                },
+            )
+        }
+        _ => {
+            return Err(ConsensusError::DataAvailabilityInvalid(
+                "committed SubmitAspectModule transaction has unsupported DA argument shape".into(),
+            ));
+        }
+    };
+    Ok(DaRecord::AspectArtifact(Box::new(module)))
+}
+
+fn canonical_transaction_payload(transaction: &Transaction) -> Result<String, ConsensusError> {
+    serde_json::to_string(transaction).map_err(|error| {
+        ConsensusError::DataAvailabilityInvalid(format!(
+            "failed to encode DA transaction evidence: {error}"
+        ))
+    })
+}
+
+fn text_arg(transaction: &Transaction, index: usize) -> Option<&str> {
+    match transaction.args.get(index) {
+        Some(Argument::Text(value)) => Some(value),
+        _ => None,
+    }
+}
+
+fn asset_arg(transaction: &Transaction, index: usize) -> Option<&str> {
+    match transaction.args.get(index) {
+        Some(Argument::Asset(value)) => Some(value),
+        _ => None,
+    }
+}
+
+fn payload_records_for_namespace(payload: &DaPayload, namespace: &str) -> Vec<DaRecord> {
+    payload
+        .namespaces
+        .iter()
+        .find(|section| section.namespace.0 == namespace)
+        .map(|section| section.records.clone())
+        .unwrap_or_default()
 }
 
 fn execution_block_hash_for_da(block: &Block) -> String {
@@ -939,6 +1104,9 @@ mod tests {
         }
     }
 
+    const MINIMAL_TRANSFER_TOKEN_FIXTURE: &str =
+        include_str!("../../../models/aspects/stdlib/minimal-transfer-token.metta");
+
     fn da_certified_block(
         signers: Vec<&str>,
     ) -> (Block, DaPayload, DaManifest, DaAvailabilityCertificate) {
@@ -1004,6 +1172,166 @@ mod tests {
                 )
                 .unwrap(),
             ],
+        )
+        .unwrap()
+    }
+
+    fn tx_to(
+        target: &str,
+        tx_hash: &str,
+        sender: &str,
+        nonce: u64,
+        method: Method,
+        args: Vec<Argument>,
+    ) -> Transaction {
+        Transaction {
+            chain_id: "detta-local".into(),
+            tx_hash: tx_hash.into(),
+            sender: sender.into(),
+            nonce,
+            valid_until_height: None,
+            target: target.into(),
+            method,
+            args,
+            signature_ok: true,
+            budget: 1_000_000,
+        }
+    }
+
+    fn specialized_evidence_state() -> DeTTaState {
+        let mut state = seeded_state();
+        state.deploy_factory("Factory").unwrap();
+        state
+            .deploy_oracle("OracleA", "ATOM", "OracleBot", 10)
+            .unwrap();
+        state.deploy_bridge("BridgeA", "ShardA").unwrap();
+        state
+            .deploy_governance_with_timelock("GovA", "TokenA", "Admin", 1)
+            .unwrap();
+        state
+    }
+
+    fn specialized_evidence_block() -> Block {
+        let state = specialized_evidence_state();
+        let (block, _) = state.build_block(
+            1,
+            vec![
+                tx_to(
+                    "Factory",
+                    "tx-da-aspect-source",
+                    "Issuer",
+                    1,
+                    Method::SubmitAspectModule,
+                    vec![
+                        Argument::Text("MinimalTransferToken".into()),
+                        Argument::Text(MINIMAL_TRANSFER_TOKEN_FIXTURE.into()),
+                    ],
+                ),
+                tx_to(
+                    "BridgeA",
+                    "tx-da-bridge",
+                    "Alice",
+                    1,
+                    Method::QueueBridgeMessage,
+                    vec![
+                        Argument::Text("ShardB".into()),
+                        Argument::Text("BridgeB".into()),
+                        Argument::Text("bridge-msg-da".into()),
+                        Argument::Principal("Bob".into()),
+                        Argument::Asset("USDC".into()),
+                        Argument::Amount(1),
+                    ],
+                ),
+                tx_to(
+                    "GovA",
+                    "tx-da-governance",
+                    "Admin",
+                    1,
+                    Method::ScheduleUpgrade,
+                    vec![
+                        Argument::Text("upgrade-da".into()),
+                        Argument::Text("code-root-da".into()),
+                    ],
+                ),
+                tx_to(
+                    "OracleA",
+                    "tx-da-oracle",
+                    "OracleBot",
+                    1,
+                    Method::SubmitPrice,
+                    vec![
+                        Argument::Asset("ATOM".into()),
+                        Argument::Amount(12),
+                        Argument::Amount(1),
+                    ],
+                ),
+            ],
+            1_000,
+            "v1",
+            "sim-cert:v1:1",
+        );
+        assert!(block
+            .receipts
+            .iter()
+            .all(|receipt| receipt.status == TxStatus::Committed));
+        block
+    }
+
+    fn da_payload_for_test_block_with_specialized_evidence(block: &Block) -> DaPayload {
+        let mut sections = vec![
+            DaNamespaceSection::new(
+                DaNamespace::new("detta.block").unwrap(),
+                vec![DaRecord::BlockHeader(Box::new(block.header.clone()))],
+            )
+            .unwrap(),
+            DaNamespaceSection::new(
+                DaNamespace::new("detta.tx").unwrap(),
+                block
+                    .transactions
+                    .iter()
+                    .cloned()
+                    .map(DaRecord::SignedTransaction)
+                    .collect(),
+            )
+            .unwrap(),
+            DaNamespaceSection::new(
+                DaNamespace::new("detta.receipt").unwrap(),
+                block
+                    .receipts
+                    .iter()
+                    .cloned()
+                    .map(DaRecord::Receipt)
+                    .collect(),
+            )
+            .unwrap(),
+        ];
+        for (namespace, records) in expected_specialized_da_records(block).unwrap() {
+            if !records.is_empty() {
+                sections.push(
+                    DaNamespaceSection::new(DaNamespace::new(namespace).unwrap(), records).unwrap(),
+                );
+            }
+        }
+        DaPayload::new(
+            block.header.chain_id.clone(),
+            block.header.height,
+            block.header.previous_block_hash.clone(),
+            sections,
+        )
+        .unwrap()
+    }
+
+    fn da_payload_without_namespace(payload: &DaPayload, namespace: &str) -> DaPayload {
+        DaPayload::new(
+            payload.chain_id.clone(),
+            payload.height,
+            payload.previous_block_hash.clone(),
+            payload
+                .namespaces
+                .iter()
+                .filter(|section| section.namespace.0 != namespace)
+                .cloned()
+                .collect(),
         )
         .unwrap()
     }
@@ -1399,6 +1727,58 @@ mod tests {
                 .balance("TokenA", "Bob", "USDC"),
             60
         );
+    }
+
+    #[test]
+    fn production_da_payload_verifier_accepts_specialized_defi_evidence() {
+        let mut block = specialized_evidence_block();
+        let payload = da_payload_for_test_block_with_specialized_evidence(&block);
+        let (manifest, _) = attach_da_commitment(&mut block, &payload, vec!["v1", "v2", "v3"]);
+
+        verify_data_availability_payload(&block, &payload, &manifest).unwrap();
+    }
+
+    #[test]
+    fn production_da_payload_verifier_rejects_missing_specialized_defi_evidence() {
+        let mut block = specialized_evidence_block();
+        let payload = da_payload_for_test_block_with_specialized_evidence(&block);
+        let payload = da_payload_without_namespace(&payload, "detta.aspect");
+        let (manifest, _) = attach_da_commitment(&mut block, &payload, vec!["v1", "v2", "v3"]);
+
+        assert!(matches!(
+            verify_data_availability_payload(&block, &payload, &manifest),
+            Err(ConsensusError::DataAvailabilityInvalid(message))
+                if message.contains("detta.aspect DA records do not match committed transactions")
+        ));
+    }
+
+    #[test]
+    fn production_da_payload_verifier_rejects_spoofed_specialized_defi_evidence() {
+        let mut block = specialized_evidence_block();
+        let payload = da_payload_for_test_block_with_specialized_evidence(&block);
+        let mut namespaces = payload.namespaces.clone();
+        let governance = namespaces
+            .iter_mut()
+            .find(|section| section.namespace.0 == "detta.governance")
+            .expect("test payload includes governance evidence");
+        let DaRecord::GovernancePayload { proposal_id, .. } = &mut governance.records[0] else {
+            panic!("expected governance DA record");
+        };
+        *proposal_id = "spoofed-upgrade".into();
+        let payload = DaPayload::new(
+            payload.chain_id.clone(),
+            payload.height,
+            payload.previous_block_hash.clone(),
+            namespaces,
+        )
+        .unwrap();
+        let (manifest, _) = attach_da_commitment(&mut block, &payload, vec!["v1", "v2", "v3"]);
+
+        assert!(matches!(
+            verify_data_availability_payload(&block, &payload, &manifest),
+            Err(ConsensusError::DataAvailabilityInvalid(message))
+                if message.contains("detta.governance DA records do not match committed transactions")
+        ));
     }
 
     #[test]

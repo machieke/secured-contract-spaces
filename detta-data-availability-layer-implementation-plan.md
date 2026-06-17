@@ -50,6 +50,9 @@ clients.
   `detta.governance`, `detta.bridge`, and `detta.oracle` records for committed
   aspect module submissions, governance actions, bridge messages, and oracle
   price updates.
+- [x] Production DA payload finality verification derives expected typed
+  aspect/governance/bridge/oracle evidence records from committed block
+  transactions and rejects missing or spoofed specialized DA evidence.
 - [x] Persistent nodes can gossip a block's committed DA manifest and shares
   from durable storage.
 - [x] Persistent nodes store DA manifest/share gossip messages.
@@ -69,6 +72,8 @@ clients.
   signer quorum, and pre-DA execution block hash.
 - [x] Production-mode DA finality verifies reconstructed payload transaction
   and receipt roots against the block before validator replay.
+- [x] Production-mode DA finality verifies typed aspect/governance/bridge/oracle
+  DA evidence records match the committed transactions before validator replay.
 - [x] Production-mode block finality requires block-header DA commitments and
   DA certificates through `FinalityMode::DataAvailabilityRequired`.
 - [x] Persistent nodes store experimental DA certificates through node
@@ -142,6 +147,9 @@ DeTTa already has strong data integrity mechanisms:
   records, snapshots, validator metadata, audit records, and sync diagnostics;
 - DA-certified finality mode that rejects production blocks without matching DA
   commitments and quorum DA certificates;
+- DA payload finality checks that bind typed aspect/governance/bridge/oracle
+  evidence records back to committed transactions, rejecting omitted or spoofed
+  specialized evidence;
 - Reed-Solomon share encoding, deterministic custody assignments, light-client
   sample schedules, namespace proofs, and threshold reconstruction;
 - availability challenge/evidence records that can produce durable slashing

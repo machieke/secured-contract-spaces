@@ -115,7 +115,8 @@ The current implementation includes slices for:
   certificates, repair records, challenge records, validated DA indexes, DA
   gossip persistence, DA challenge/slashing evidence, governed DA slashing
   policy parameters, explicit DA namespaces for aspect/governance/bridge/oracle
-  evidence, payload-aware DA-certified production finality mode, and DA
+  evidence with finality-time transaction binding, payload-aware DA-certified
+  production finality mode, and DA
   retrieval/production RPCs on
   `experimental/data-availability-layer`.
 

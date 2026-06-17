@@ -122,6 +122,7 @@ dependencies = [
  "detta-core",
  "detta-da",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
