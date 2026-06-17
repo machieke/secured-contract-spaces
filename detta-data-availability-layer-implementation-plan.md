@@ -856,10 +856,10 @@ Acceptance:
 - [x] Add DA alerts for custody-share assignment failures, repair lag, and
   challenge failures.
 - [x] Add DA retention runbook.
-- [ ] Add DA incident-response drill.
-- [ ] Add DA stability drill.
-- [ ] Add DA evidence to audit-readiness and release-candidate bundles.
-- [ ] Add DA proof artifacts to readiness status v2 or later.
+- [x] Add DA incident-response drill.
+- [x] Add DA stability drill.
+- [x] Add DA evidence to audit-readiness and release-candidate bundles.
+- [x] Add DA proof artifacts to readiness status v2 or later.
 
 Acceptance:
 

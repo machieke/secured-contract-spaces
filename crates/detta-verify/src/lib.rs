@@ -261,7 +261,7 @@ pub const REQUIRED_ASPECT_PROOF_OBLIGATION_IDS: [&str; 10] = [
     "APO-001", "APO-002", "APO-003", "APO-004", "APO-005", "APO-006", "APO-007", "APO-008",
     "APO-009", "APO-010",
 ];
-pub const REQUIRED_MAINNET_CANDIDATE_GATES: [&str; 10] = [
+pub const REQUIRED_MAINNET_CANDIDATE_GATES: [&str; 12] = [
     "production_acceptance",
     "public_testnet",
     "external_audit",
@@ -272,6 +272,8 @@ pub const REQUIRED_MAINNET_CANDIDATE_GATES: [&str; 10] = [
     "validator_onboarding",
     "governance_bootstrap",
     "incident_response_drill",
+    "da_incident_response_drill",
+    "da_stability_drill",
 ];
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

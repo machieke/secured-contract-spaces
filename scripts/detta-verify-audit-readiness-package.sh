@@ -295,6 +295,8 @@ for required in \
   security/detta-audit-findings.json \
   scripts/detta-release-gate.sh \
   scripts/detta-source-state-report.sh \
+  scripts/detta-da-incident-response-drill.sh \
+  scripts/detta-da-stability-drill.sh \
   scripts/detta-verify-readiness-manifests.sh \
   scripts/detta-readiness-status-report.sh \
   scripts/detta-verify-readiness-status-report.sh \

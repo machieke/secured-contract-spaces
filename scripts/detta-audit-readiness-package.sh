@@ -207,6 +207,7 @@ jq -n -e \
       "deterministic_executor_and_state_roots",
       "consensus_networking_state_sync_and_rpc",
       "defi_token_amm_oracle_lending_staking_bridge_governance_flows",
+      "data_availability_storage_retrieval_challenge_and_slashing_flows",
       "operator_release_drills_and_readiness_manifests"
     ],
     status: $status

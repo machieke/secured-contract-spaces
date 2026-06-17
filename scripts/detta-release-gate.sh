@@ -40,6 +40,9 @@ run_packaged_operator_gate() {
   DETTA_RELEASE_VERSION=release-gate-incident \
     DETTA_RELEASE_OUT="$tmp_operator_artifacts" \
     scripts/detta-incident-response-drill.sh
+  DETTA_RELEASE_VERSION=release-gate-da-incident \
+    DETTA_RELEASE_OUT="$tmp_operator_artifacts" \
+    scripts/detta-da-incident-response-drill.sh
   DETTA_RELEASE_VERSION=release-gate-governance \
     DETTA_RELEASE_OUT="$tmp_operator_artifacts" \
     scripts/detta-governance-bootstrap-drill.sh
@@ -52,6 +55,9 @@ run_packaged_operator_gate() {
   DETTA_RELEASE_VERSION=release-gate-stability \
     DETTA_RELEASE_OUT="$tmp_operator_artifacts" \
     scripts/detta-public-testnet-stability-drill.sh
+  DETTA_RELEASE_VERSION=release-gate-da-stability \
+    DETTA_RELEASE_OUT="$tmp_operator_artifacts" \
+    scripts/detta-da-stability-drill.sh
   DETTA_RELEASE_VERSION=release-gate-audit-readiness \
     DETTA_RELEASE_OUT="$tmp_operator_artifacts" \
     scripts/detta-audit-readiness-package.sh

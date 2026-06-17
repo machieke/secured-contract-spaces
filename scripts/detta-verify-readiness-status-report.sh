@@ -55,6 +55,16 @@ if ! jq -e '
       and (.formal_proof_artifacts.manifest.model_artifact_count | type == "number")
       and (.formal_proof_artifacts.manifest.runtime_artifact_count | type == "number")
       and (.formal_proof_artifacts.manifest.theorem_count | type == "number")
+      and .data_availability_evidence.layer_document.path == "detta-data-availability-layer.md"
+      and .data_availability_evidence.implementation_plan.path == "detta-data-availability-layer-implementation-plan.md"
+      and .data_availability_evidence.protocol_source.path == "crates/detta-da/src/lib.rs"
+      and .data_availability_evidence.incident_drill_script.path == "scripts/detta-da-incident-response-drill.sh"
+      and .data_availability_evidence.stability_drill_script.path == "scripts/detta-da-stability-drill.sh"
+      and (.data_availability_evidence.layer_document.sha256 | type == "string" and test("^[0-9a-f]{64}$"))
+      and (.data_availability_evidence.implementation_plan.sha256 | type == "string" and test("^[0-9a-f]{64}$"))
+      and (.data_availability_evidence.protocol_source.sha256 | type == "string" and test("^[0-9a-f]{64}$"))
+      and (.data_availability_evidence.incident_drill_script.sha256 | type == "string" and test("^[0-9a-f]{64}$"))
+      and (.data_availability_evidence.stability_drill_script.sha256 | type == "string" and test("^[0-9a-f]{64}$"))
     else true end)
   and (.evidence_inventory.count | type == "number")
   and (.evidence_inventory.sha256 | type == "string" and test("^[0-9a-f]{64}$"))
@@ -112,6 +122,11 @@ verify_bound_file '.manifests.mainnet_candidate.path' '.manifests.mainnet_candid
 verify_bound_file '.manifests.audit_findings.path' '.manifests.audit_findings.sha256'
 if [ "$(jq -r '.schema_version' "$report_path")" = "2" ]; then
   verify_bound_file '.formal_proof_artifacts.manifest.path' '.formal_proof_artifacts.manifest.sha256'
+  verify_bound_file '.data_availability_evidence.layer_document.path' '.data_availability_evidence.layer_document.sha256'
+  verify_bound_file '.data_availability_evidence.implementation_plan.path' '.data_availability_evidence.implementation_plan.sha256'
+  verify_bound_file '.data_availability_evidence.protocol_source.path' '.data_availability_evidence.protocol_source.sha256'
+  verify_bound_file '.data_availability_evidence.incident_drill_script.path' '.data_availability_evidence.incident_drill_script.sha256'
+  verify_bound_file '.data_availability_evidence.stability_drill_script.path' '.data_availability_evidence.stability_drill_script.sha256'
 fi
 
 tmpdir="$(mktemp -d)"
@@ -195,6 +210,11 @@ if [ "$(jq -r '.schema_version' "$report_path")" = "2" ]; then
 
   require_inventory_path "models/detta-proof-artifact-manifest.json"
   require_inventory_path "models/detta-proof-artifact-manifest.sha256"
+  require_inventory_path "detta-data-availability-layer.md"
+  require_inventory_path "detta-data-availability-layer-implementation-plan.md"
+  require_inventory_path "crates/detta-da/src/lib.rs"
+  require_inventory_path "scripts/detta-da-incident-response-drill.sh"
+  require_inventory_path "scripts/detta-da-stability-drill.sh"
 
   if ! jq -e --slurpfile proof "$proof_manifest_path" '
     .formal_proof_artifacts.manifest.schema == $proof[0].schema

@@ -11,14 +11,16 @@
     "rpc",
     "governance",
     "bridge",
-    "defi"
+    "defi",
+    "data_availability"
   ],
   "validated_workflows": [
     "state_sync",
     "rpc",
     "governance",
     "bridge",
-    "defi"
+    "defi",
+    "data_availability"
   ],
   "evidence": [
     "crates/detta-e2e/tests/state_sync_client_flows.rs",
@@ -28,6 +30,11 @@
     "crates/detta-e2e/tests/four_validator_convergence_flows.rs",
     "crates/detta-node/src/bin/detta-node.rs",
     "crates/detta-node/src/bin/detta-client.rs",
+    "crates/detta-da/src/lib.rs",
+    "crates/detta-storage/src/lib.rs",
+    "crates/detta-consensus/src/lib.rs",
+    "detta-data-availability-layer.md",
+    "detta-data-availability-layer-implementation-plan.md",
     "scripts/detta-release-gate.sh",
     "scripts/detta-verify-readiness-manifests.sh",
     "scripts/detta-readiness-status-report.sh",
@@ -41,10 +48,12 @@
     "scripts/detta-genesis-finalization-drill.sh",
     "scripts/detta-operator-launch-rehearsal.sh",
     "scripts/detta-incident-response-drill.sh",
+    "scripts/detta-da-incident-response-drill.sh",
     "scripts/detta-governance-bootstrap-drill.sh",
     "scripts/detta-validator-onboarding-drill.sh",
     "scripts/detta-packaged-client-flow-drill.sh",
     "scripts/detta-public-testnet-stability-drill.sh",
+    "scripts/detta-da-stability-drill.sh",
     "scripts/detta-audit-readiness-package.sh",
     "scripts/detta-verify-audit-readiness-package.sh",
     "security/detta-audit-findings.json"

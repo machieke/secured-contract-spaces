@@ -34,6 +34,16 @@ public_sha="$(sha256sum "$public_manifest" | awk '{print $1}')"
 mainnet_sha="$(sha256sum "$mainnet_manifest" | awk '{print $1}')"
 audit_sha="$(sha256sum "$audit_manifest" | awk '{print $1}')"
 proof_sha="$(sha256sum "$proof_manifest" | awk '{print $1}')"
+da_layer_doc="detta-data-availability-layer.md"
+da_plan_doc="detta-data-availability-layer-implementation-plan.md"
+da_source="crates/detta-da/src/lib.rs"
+da_incident_drill="scripts/detta-da-incident-response-drill.sh"
+da_stability_drill="scripts/detta-da-stability-drill.sh"
+da_layer_sha="$(sha256sum "$da_layer_doc" | awk '{print $1}')"
+da_plan_sha="$(sha256sum "$da_plan_doc" | awk '{print $1}')"
+da_source_sha="$(sha256sum "$da_source" | awk '{print $1}')"
+da_incident_drill_sha="$(sha256sum "$da_incident_drill" | awk '{print $1}')"
+da_stability_drill_sha="$(sha256sum "$da_stability_drill" | awk '{print $1}')"
 
 tmpdir="$(mktemp -d)"
 cleanup() {
@@ -54,6 +64,11 @@ evidence_inventory="$tmpdir/readiness-evidence-inventory.jsonl"
     "$audit_manifest" \
     "$proof_manifest" \
     "$proof_manifest_sha256_path" \
+    "detta-data-availability-layer.md" \
+    "detta-data-availability-layer-implementation-plan.md" \
+    "crates/detta-da/src/lib.rs" \
+    "scripts/detta-da-incident-response-drill.sh" \
+    "scripts/detta-da-stability-drill.sh" \
     "scripts/detta-verify-readiness-manifests.sh" \
     "scripts/detta-readiness-status-report.sh"
 } | sort -u >"$evidence_paths"
@@ -99,10 +114,20 @@ render_report() {
     --arg audit_manifest "$audit_manifest" \
     --arg proof_manifest "$proof_manifest" \
     --arg proof_manifest_sha256_path "$proof_manifest_sha256_path" \
+    --arg da_layer_doc "$da_layer_doc" \
+    --arg da_plan_doc "$da_plan_doc" \
+    --arg da_source "$da_source" \
+    --arg da_incident_drill "$da_incident_drill" \
+    --arg da_stability_drill "$da_stability_drill" \
     --arg public_sha "$public_sha" \
     --arg mainnet_sha "$mainnet_sha" \
     --arg audit_sha "$audit_sha" \
     --arg proof_sha "$proof_sha" \
+    --arg da_layer_sha "$da_layer_sha" \
+    --arg da_plan_sha "$da_plan_sha" \
+    --arg da_source_sha "$da_source_sha" \
+    --arg da_incident_drill_sha "$da_incident_drill_sha" \
+    --arg da_stability_drill_sha "$da_stability_drill_sha" \
     --arg evidence_inventory_sha "$evidence_inventory_sha" \
     --argjson source_date_epoch "$source_date_epoch" \
     --argjson source_state "$source_state_json" \
@@ -152,6 +177,28 @@ render_report() {
           model_artifact_count: ($proof[0].model_artifacts | length),
           runtime_artifact_count: ($proof[0].runtime_artifacts | length),
           theorem_count: $proof[0].theorem_count
+        }
+      },
+      data_availability_evidence: {
+        layer_document: {
+          path: $da_layer_doc,
+          sha256: $da_layer_sha
+        },
+        implementation_plan: {
+          path: $da_plan_doc,
+          sha256: $da_plan_sha
+        },
+        protocol_source: {
+          path: $da_source,
+          sha256: $da_source_sha
+        },
+        incident_drill_script: {
+          path: $da_incident_drill,
+          sha256: $da_incident_drill_sha
+        },
+        stability_drill_script: {
+          path: $da_stability_drill,
+          sha256: $da_stability_drill_sha
         }
       },
       evidence_inventory: {

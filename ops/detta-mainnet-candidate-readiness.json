@@ -16,7 +16,9 @@
     "finalized_genesis",
     "validator_onboarding",
     "governance_bootstrap",
-    "incident_response_drill"
+    "incident_response_drill",
+    "da_incident_response_drill",
+    "da_stability_drill"
   ],
   "satisfied_gates": [
     "production_acceptance",
@@ -36,12 +38,19 @@
     "scripts/detta-release-signing-drill.sh",
     "scripts/detta-genesis-finalization-drill.sh",
     "crates/detta-node/src/bin/detta-client.rs",
+    "crates/detta-da/src/lib.rs",
+    "crates/detta-storage/src/lib.rs",
+    "crates/detta-consensus/src/lib.rs",
+    "detta-data-availability-layer.md",
+    "detta-data-availability-layer-implementation-plan.md",
     "scripts/detta-operator-launch-rehearsal.sh",
     "scripts/detta-incident-response-drill.sh",
+    "scripts/detta-da-incident-response-drill.sh",
     "scripts/detta-governance-bootstrap-drill.sh",
     "scripts/detta-validator-onboarding-drill.sh",
     "scripts/detta-packaged-client-flow-drill.sh",
     "scripts/detta-public-testnet-stability-drill.sh",
+    "scripts/detta-da-stability-drill.sh",
     "scripts/detta-audit-readiness-package.sh",
     "scripts/detta-verify-audit-readiness-package.sh",
     "ops/detta-public-testnet-readiness.json",
@@ -51,6 +60,6 @@
   "blockers": [
     "Public testnet readiness is not achieved.",
     "External audit is not complete.",
-    "Finalized genesis, validator onboarding, governance bootstrap, incident response drill, and release signing artifacts are not complete."
+    "Finalized genesis, validator onboarding, governance bootstrap, incident response drills, DA stability drill, and release signing artifacts are not complete."
   ]
 }

@@ -284,9 +284,10 @@ The release gate checks formatting, clippy, workspace tests, selected or full
 E2E client flows, dependency advisory and supply-chain policy through
 `deny.toml`, verification crate tests, release builds, packaged-node launch,
 incident-response, governance-bootstrap, validator-onboarding,
-packaged-client-flow, local-stability, audit-readiness, and release-signing
-drills from a temporary release directory, the standalone readiness-manifest
-verifier, readiness status report generation, TLA+ model checking through
+packaged-client-flow, local-stability, DA incident-response, DA stability,
+audit-readiness, and release-signing drills from a temporary release directory,
+the standalone readiness-manifest verifier, readiness status report generation,
+TLA+ model checking through
 `scripts/detta-model-check.sh`, and proof artifact hash manifests.
 
 Local dependency audits are run by `scripts/detta-dependency-audit.sh`. If
@@ -440,6 +441,14 @@ The drill unpacks the release, boots packaged `detta-node`, runs packaged
 blocks, health, metrics, mempool drain, root consistency, and alert status, and
 writes `dist/detta-public-testnet-stability-drill-<version>.json`. This does
 not replace the required 168-hour public testnet window.
+
+DA-specific release drills are available for challenge/slashing response and
+DA-certified replay/state-sync stability:
+
+```sh
+DETTA_RELEASE_VERSION=rc-1 scripts/detta-da-incident-response-drill.sh
+DETTA_RELEASE_VERSION=rc-1 scripts/detta-da-stability-drill.sh
+```
 
 Build an audit-readiness package for external review:
 

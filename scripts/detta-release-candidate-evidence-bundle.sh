@@ -33,10 +33,12 @@ run_release_drill() {
 run_release_drill launch scripts/detta-operator-launch-rehearsal.sh
 run_release_drill genesis-finalization scripts/detta-genesis-finalization-drill.sh
 run_release_drill incident-response scripts/detta-incident-response-drill.sh
+run_release_drill da-incident-response scripts/detta-da-incident-response-drill.sh
 run_release_drill governance-bootstrap scripts/detta-governance-bootstrap-drill.sh
 run_release_drill validator-onboarding scripts/detta-validator-onboarding-drill.sh
 run_release_drill packaged-client-flow scripts/detta-packaged-client-flow-drill.sh
 run_release_drill public-testnet-stability scripts/detta-public-testnet-stability-drill.sh
+run_release_drill da-stability scripts/detta-da-stability-drill.sh
 run_release_drill audit-readiness scripts/detta-audit-readiness-package.sh
 run_release_drill release-signing scripts/detta-release-signing-drill.sh
 
@@ -184,10 +186,12 @@ for drill_report in \
   "detta-launch-rehearsal-${safe_version}.json" \
   "detta-genesis-finalization-${safe_version}.json" \
   "detta-incident-response-drill-${safe_version}.json" \
+  "detta-da-incident-response-drill-${safe_version}.json" \
   "detta-governance-bootstrap-drill-${safe_version}.json" \
   "detta-validator-onboarding-drill-${safe_version}.json" \
   "detta-packaged-client-flow-drill-${safe_version}.json" \
   "detta-public-testnet-stability-drill-${safe_version}.json" \
+  "detta-da-stability-drill-${safe_version}.json" \
   "detta-release-signing-drill-${safe_version}.json"; do
   add_evidence_file retained_drill_report "$out_dir/$drill_report" reports yes
   add_evidence_file retained_drill_report_checksum "$out_dir/$drill_report.sha256" reports no
@@ -263,10 +267,12 @@ jq -n -e \
       "operator_launch_rehearsal",
       "genesis_finalization",
       "incident_response",
+      "da_incident_response",
       "governance_bootstrap",
       "validator_onboarding",
       "packaged_client_flow",
       "public_testnet_stability",
+      "da_stability",
       "audit_readiness",
       "release_signing"
     ],
