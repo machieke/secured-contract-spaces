@@ -93,6 +93,8 @@ scripts/detta-model-check.sh
   sha256sum -c detta-restricted-evaluator-fixture-inventory.sha256
   sha256sum DeTTaBlockExecution.tla
   sha256sum DeTTaBlockExecution.cfg
+  sha256sum DeTTaDataAvailability.tla
+  sha256sum DeTTaDataAvailability.cfg
   sha256sum detta-restricted-evaluator-proof-trace-root.sha256
 )
 

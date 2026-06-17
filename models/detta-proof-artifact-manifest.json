@@ -11,6 +11,14 @@
     {
       "path": "models/DeTTaBlockExecution.cfg",
       "sha256": "03631e789e1f1141d390f0b12277a612f103493305e34c14f9f264765bdadeef"
+    },
+    {
+      "path": "models/DeTTaDataAvailability.tla",
+      "sha256": "1b282b8b236b8e4855b0b6ea032d976c29c26095b7bd77bf87f89a4bc4b4b73f"
+    },
+    {
+      "path": "models/DeTTaDataAvailability.cfg",
+      "sha256": "cf33d78fa4cc1a89e46f2cab0594d1fb1a14fb672f3b26f30bef68c98074aaf0"
     }
   ],
   "runtime_artifacts": [
@@ -59,7 +67,7 @@
       "sha256": "40660cbc15f9d9b4a5b3081a0f9aa2c2a390b2043c26fef041333701b0da1a66"
     }
   ],
-  "theorem_count": 16,
+  "theorem_count": 18,
   "coverage": [
     {
       "id": "THM-001",
@@ -286,6 +294,58 @@
         {
           "kind": "Model",
           "reference": "models/DeTTaBlockExecution.tla::ProgrammableModuleSoundness"
+        }
+      ]
+    },
+    {
+      "id": "THM-017",
+      "name": "DA Certificate Finality Soundness",
+      "evidence": [
+        {
+          "kind": "RuntimeTest",
+          "reference": "detta_consensus::tests::production_da_finality_requires_valid_da_certificate_before_replay"
+        },
+        {
+          "kind": "RuntimeTest",
+          "reference": "detta_consensus::tests::production_da_finality_rejects_bad_manifest_before_replay"
+        },
+        {
+          "kind": "Model",
+          "reference": "models/DeTTaDataAvailability.tla::DASignatureCustodySoundness"
+        },
+        {
+          "kind": "Model",
+          "reference": "models/DeTTaDataAvailability.tla::DAQuorumCertificateSoundness"
+        },
+        {
+          "kind": "Model",
+          "reference": "models/DeTTaDataAvailability.tla::DAFinalityRequiresCertificate"
+        }
+      ]
+    },
+    {
+      "id": "THM-018",
+      "name": "DA Reconstruction Replay Soundness",
+      "evidence": [
+        {
+          "kind": "RuntimeTest",
+          "reference": "detta_da::tests::reed_solomon_share_set_reconstructs_from_threshold_subset"
+        },
+        {
+          "kind": "RuntimeTest",
+          "reference": "detta_consensus::tests::production_da_finality_rejects_payload_transaction_root_mismatch"
+        },
+        {
+          "kind": "RuntimeTest",
+          "reference": "detta_node::tests::persistent_node_replays_da_certified_block_after_checkpoint_import"
+        },
+        {
+          "kind": "Model",
+          "reference": "models/DeTTaDataAvailability.tla::DAReconstructionSoundness"
+        },
+        {
+          "kind": "Model",
+          "reference": "models/DeTTaDataAvailability.tla::FinalizedPayloadReplaySoundness"
         }
       ]
     }

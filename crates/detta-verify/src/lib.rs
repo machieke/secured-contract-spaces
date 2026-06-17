@@ -224,7 +224,7 @@ pub const PROOF_ARTIFACT_MANIFEST_SCHEMA_VERSION: u32 = 2;
 pub const PROOF_ARTIFACT_MANIFEST_PROJECT: &str = "DeTTa";
 pub const PROOF_ARTIFACT_MANIFEST_SCOPE: &str =
     "Secured Contract Spaces runtime safety obligations";
-pub const PROOF_MODEL_ARTIFACT_COUNT: usize = 2;
+pub const PROOF_MODEL_ARTIFACT_COUNT: usize = 4;
 pub const PROOF_RUNTIME_ARTIFACT_COUNT: usize = 11;
 pub const PROOF_RELEASE_ATTESTATION_COUNT: usize = 7;
 pub const PROOF_RELEASE_JSON_TARGET_COUNT: usize = 6;
@@ -1263,6 +1263,18 @@ pub fn proof_model_artifacts() -> Vec<ModelArtifactRoot> {
                 "../../../models/DeTTaBlockExecution.cfg"
             )),
         },
+        ModelArtifactRoot {
+            path: "models/DeTTaDataAvailability.tla",
+            sha256: proof_artifact_manifest_root_bytes(include_bytes!(
+                "../../../models/DeTTaDataAvailability.tla"
+            )),
+        },
+        ModelArtifactRoot {
+            path: "models/DeTTaDataAvailability.cfg",
+            sha256: proof_artifact_manifest_root_bytes(include_bytes!(
+                "../../../models/DeTTaDataAvailability.cfg"
+            )),
+        },
     ]
 }
 
@@ -1568,6 +1580,63 @@ pub fn scs_theorem_coverage() -> Vec<SafetyTheoremCoverage> {
                 TheoremEvidence {
                     kind: Model,
                     reference: "models/DeTTaBlockExecution.tla::ProgrammableModuleSoundness",
+                },
+            ],
+        },
+        SafetyTheoremCoverage {
+            id: "THM-017",
+            name: "DA Certificate Finality Soundness",
+            evidence: vec![
+                TheoremEvidence {
+                    kind: RuntimeTest,
+                    reference:
+                        "detta_consensus::tests::production_da_finality_requires_valid_da_certificate_before_replay",
+                },
+                TheoremEvidence {
+                    kind: RuntimeTest,
+                    reference:
+                        "detta_consensus::tests::production_da_finality_rejects_bad_manifest_before_replay",
+                },
+                TheoremEvidence {
+                    kind: Model,
+                    reference: "models/DeTTaDataAvailability.tla::DASignatureCustodySoundness",
+                },
+                TheoremEvidence {
+                    kind: Model,
+                    reference: "models/DeTTaDataAvailability.tla::DAQuorumCertificateSoundness",
+                },
+                TheoremEvidence {
+                    kind: Model,
+                    reference: "models/DeTTaDataAvailability.tla::DAFinalityRequiresCertificate",
+                },
+            ],
+        },
+        SafetyTheoremCoverage {
+            id: "THM-018",
+            name: "DA Reconstruction Replay Soundness",
+            evidence: vec![
+                TheoremEvidence {
+                    kind: RuntimeTest,
+                    reference:
+                        "detta_da::tests::reed_solomon_share_set_reconstructs_from_threshold_subset",
+                },
+                TheoremEvidence {
+                    kind: RuntimeTest,
+                    reference:
+                        "detta_consensus::tests::production_da_finality_rejects_payload_transaction_root_mismatch",
+                },
+                TheoremEvidence {
+                    kind: RuntimeTest,
+                    reference:
+                        "detta_node::tests::persistent_node_replays_da_certified_block_after_checkpoint_import",
+                },
+                TheoremEvidence {
+                    kind: Model,
+                    reference: "models/DeTTaDataAvailability.tla::DAReconstructionSoundness",
+                },
+                TheoremEvidence {
+                    kind: Model,
+                    reference: "models/DeTTaDataAvailability.tla::FinalizedPayloadReplaySoundness",
                 },
             ],
         },
@@ -1969,9 +2038,9 @@ mod tests {
         let coverage = scs_theorem_coverage();
         let ids: BTreeSet<_> = coverage.iter().map(|entry| entry.id).collect();
 
-        assert_eq!(coverage.len(), 16);
-        assert_eq!(ids.len(), 16);
-        for index in 1..=16 {
+        assert_eq!(coverage.len(), 18);
+        assert_eq!(ids.len(), 18);
+        for index in 1..=18 {
             let id = format!("THM-{index:03}");
             assert!(ids.contains(id.as_str()), "{id} has no coverage entry");
         }
@@ -2316,7 +2385,7 @@ mod tests {
             vec![
                 "THM-001", "THM-002", "THM-003", "THM-004", "THM-005", "THM-006", "THM-007",
                 "THM-008", "THM-009", "THM-010", "THM-011", "THM-012", "THM-013", "THM-014",
-                "THM-015", "THM-016",
+                "THM-015", "THM-016", "THM-017", "THM-018",
             ]
         );
     }
@@ -2366,6 +2435,8 @@ mod tests {
                 ("THM-014", "Schema Safety"),
                 ("THM-015", "Raw Primitive Exclusion"),
                 ("THM-016", "Programmable Module Soundness"),
+                ("THM-017", "DA Certificate Finality Soundness"),
+                ("THM-018", "DA Reconstruction Replay Soundness"),
             ])
         );
     }
@@ -2576,6 +2647,56 @@ mod tests {
                         ),
                     ],
                 ),
+                (
+                    "THM-017",
+                    vec![
+                        (
+                            RuntimeTest,
+                            "detta_consensus::tests::production_da_finality_requires_valid_da_certificate_before_replay",
+                        ),
+                        (
+                            RuntimeTest,
+                            "detta_consensus::tests::production_da_finality_rejects_bad_manifest_before_replay",
+                        ),
+                        (
+                            Model,
+                            "models/DeTTaDataAvailability.tla::DASignatureCustodySoundness",
+                        ),
+                        (
+                            Model,
+                            "models/DeTTaDataAvailability.tla::DAQuorumCertificateSoundness",
+                        ),
+                        (
+                            Model,
+                            "models/DeTTaDataAvailability.tla::DAFinalityRequiresCertificate",
+                        ),
+                    ],
+                ),
+                (
+                    "THM-018",
+                    vec![
+                        (
+                            RuntimeTest,
+                            "detta_da::tests::reed_solomon_share_set_reconstructs_from_threshold_subset",
+                        ),
+                        (
+                            RuntimeTest,
+                            "detta_consensus::tests::production_da_finality_rejects_payload_transaction_root_mismatch",
+                        ),
+                        (
+                            RuntimeTest,
+                            "detta_node::tests::persistent_node_replays_da_certified_block_after_checkpoint_import",
+                        ),
+                        (
+                            Model,
+                            "models/DeTTaDataAvailability.tla::DAReconstructionSoundness",
+                        ),
+                        (
+                            Model,
+                            "models/DeTTaDataAvailability.tla::FinalizedPayloadReplaySoundness",
+                        ),
+                    ],
+                ),
             ])
         );
     }
@@ -2636,9 +2757,12 @@ mod tests {
     #[test]
     fn theorem_runtime_test_evidence_uses_expected_namespaces() {
         let allowed_prefixes = [
+            "detta_consensus::tests::",
             "detta_core::tests::",
+            "detta_da::tests::",
             "detta_e2e::tests::",
             "detta_evaluator::tests::",
+            "detta_node::tests::",
             "detta_verify::tests::",
         ];
 
@@ -2671,7 +2795,15 @@ mod tests {
 
         assert_eq!(
             runtime_test_crates,
-            BTreeSet::from(["detta_core", "detta_e2e", "detta_evaluator", "detta_verify"])
+            BTreeSet::from([
+                "detta_consensus",
+                "detta_core",
+                "detta_da",
+                "detta_e2e",
+                "detta_evaluator",
+                "detta_node",
+                "detta_verify",
+            ])
         );
     }
 
@@ -2725,7 +2857,10 @@ mod tests {
                 assert!(
                     evidence
                         .reference
-                        .starts_with("models/DeTTaBlockExecution.tla::"),
+                        .starts_with("models/DeTTaBlockExecution.tla::")
+                        || evidence
+                            .reference
+                            .starts_with("models/DeTTaDataAvailability.tla::"),
                     "{} model evidence uses an unexpected namespace: {}",
                     entry.id,
                     evidence.reference
@@ -3426,6 +3561,16 @@ mod tests {
                     sha256: "03631e789e1f1141d390f0b12277a612f103493305e34c14f9f264765bdadeef"
                         .into(),
                 },
+                ModelArtifactRoot {
+                    path: "models/DeTTaDataAvailability.tla",
+                    sha256: "1b282b8b236b8e4855b0b6ea032d976c29c26095b7bd77bf87f89a4bc4b4b73f"
+                        .into(),
+                },
+                ModelArtifactRoot {
+                    path: "models/DeTTaDataAvailability.cfg",
+                    sha256: "cf33d78fa4cc1a89e46f2cab0594d1fb1a14fb672f3b26f30bef68c98074aaf0"
+                        .into(),
+                },
             ]
         );
     }
@@ -3442,6 +3587,8 @@ mod tests {
             vec![
                 "models/DeTTaBlockExecution.tla",
                 "models/DeTTaBlockExecution.cfg",
+                "models/DeTTaDataAvailability.tla",
+                "models/DeTTaDataAvailability.cfg",
             ]
         );
     }
@@ -4391,14 +4538,26 @@ mod tests {
 
     #[test]
     fn theorem_model_evidence_references_existing_tla_operators() {
-        let operators = tla_operator_names(include_str!("../../../models/DeTTaBlockExecution.tla"));
+        let operators_by_prefix = BTreeMap::from([
+            (
+                "models/DeTTaBlockExecution.tla::",
+                tla_operator_names(include_str!("../../../models/DeTTaBlockExecution.tla")),
+            ),
+            (
+                "models/DeTTaDataAvailability.tla::",
+                tla_operator_names(include_str!("../../../models/DeTTaDataAvailability.tla")),
+            ),
+        ]);
 
         for theorem in scs_theorem_coverage() {
             for evidence in theorem.evidence {
-                if let Some(operator) = evidence
-                    .reference
-                    .strip_prefix("models/DeTTaBlockExecution.tla::")
-                {
+                if evidence.kind == TheoremEvidenceKind::Model {
+                    let (prefix, operators) = operators_by_prefix
+                        .iter()
+                        .find(|(prefix, _)| evidence.reference.starts_with(*prefix))
+                        .expect("model evidence prefix must be registered");
+                    let operator = evidence.reference.strip_prefix(*prefix).unwrap();
+
                     assert!(
                         operators.contains(operator),
                         "{} references missing TLA operator {operator}",
@@ -4414,22 +4573,24 @@ mod tests {
         let evidence_operators: BTreeSet<_> = scs_theorem_coverage()
             .into_iter()
             .flat_map(|theorem| theorem.evidence)
-            .filter_map(|evidence| {
-                evidence
-                    .reference
-                    .strip_prefix("models/DeTTaBlockExecution.tla::")
-            })
+            .filter(|evidence| evidence.kind == TheoremEvidenceKind::Model)
+            .map(|evidence| evidence.reference)
             .collect();
 
         assert_eq!(
             evidence_operators,
             BTreeSet::from([
-                "DispatcherOnlyMutation",
-                "AtomicRevert",
-                "ReplaySafety",
-                "WriteScopeSafety",
-                "ProgrammableModuleSoundness",
-                "TypeOK",
+                "models/DeTTaBlockExecution.tla::DispatcherOnlyMutation",
+                "models/DeTTaBlockExecution.tla::AtomicRevert",
+                "models/DeTTaBlockExecution.tla::ReplaySafety",
+                "models/DeTTaBlockExecution.tla::WriteScopeSafety",
+                "models/DeTTaBlockExecution.tla::ProgrammableModuleSoundness",
+                "models/DeTTaBlockExecution.tla::TypeOK",
+                "models/DeTTaDataAvailability.tla::DASignatureCustodySoundness",
+                "models/DeTTaDataAvailability.tla::DAQuorumCertificateSoundness",
+                "models/DeTTaDataAvailability.tla::DAFinalityRequiresCertificate",
+                "models/DeTTaDataAvailability.tla::DAReconstructionSoundness",
+                "models/DeTTaDataAvailability.tla::FinalizedPayloadReplaySoundness",
             ])
         );
     }

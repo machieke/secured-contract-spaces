@@ -25,3 +25,12 @@ java -cp "$tla_tools_jar" tlc2.TLC \
   -workers auto \
   -config "$repo_root/models/DeTTaBlockExecution.cfg" \
   "$repo_root/models/DeTTaBlockExecution.tla"
+
+java -cp "$tla_tools_jar" tlc2.TLC \
+  -deadlock \
+  -simulate num=32 \
+  -depth 20 \
+  -seed 1 \
+  -workers auto \
+  -config "$repo_root/models/DeTTaDataAvailability.cfg" \
+  "$repo_root/models/DeTTaDataAvailability.tla"

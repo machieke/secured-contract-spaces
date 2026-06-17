@@ -9,6 +9,12 @@ This directory contains formal-model artifacts for the DeTTa runtime.
   deterministic replay obligations.
 - `DeTTaBlockExecution.cfg` is a bounded TLC configuration for the abstract
   block-execution model.
+- `DeTTaDataAvailability.tla` models the abstract DA finality boundary:
+  custody-share validation before DA voting, quorum DA certificates for the
+  committed manifest, threshold-valid payload reconstruction, and replay-root
+  agreement before block finality.
+- `DeTTaDataAvailability.cfg` is a bounded TLC configuration for the abstract
+  data-availability model.
 - `detta-proof-artifact-manifest.json` is the stable proof-artifact manifest
   exported by `detta_verify::proof_artifact_manifest()`. It includes theorem
   coverage, formal model artifact roots, and restricted evaluator runtime
@@ -77,5 +83,9 @@ Primary theorem mapping:
 - `ProgrammableModuleSoundness` corresponds to the programmable aspect module
   proof obligations in
   `aspects/stdlib/minimal-transfer-token.proof-obligations.json`.
+- `DASignatureCustodySoundness`, `DAQuorumCertificateSoundness`, and
+  `DAFinalityRequiresCertificate` correspond to `THM-017`.
+- `DAReconstructionSoundness` and `FinalizedPayloadReplaySoundness` correspond
+  to `THM-018`.
 - Deterministic replay is represented as a trace-comparison obligation and is
   exercised by the `detta-verify` differential replay harness.

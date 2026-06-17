@@ -32,7 +32,8 @@ scripts/detta-model-check.sh
   `models/detta-proof-artifact-manifest.json`;
 - the checked-in manifest root matches
   `models/detta-proof-artifact-manifest.sha256`;
-- the manifest includes the current `models/DeTTaBlockExecution.tla` SHA-256.
+- the manifest includes the current `models/DeTTaBlockExecution.tla` and
+  `models/DeTTaDataAvailability.tla` SHA-256 roots.
 - the manifest binds every checked-in restricted evaluator fixture JSON and
   evaluator fixture attestation file, including the fixture inventory.
 - each evaluator fixture inventory entry matches the corresponding manifest
@@ -46,7 +47,7 @@ scripts/detta-model-check.sh
 - every model and runtime artifact path uses an allowed proof artifact suffix:
   `.tla`, `.cfg`, `.json`, or `.sha256`.
 - model artifact paths are unique.
-- model artifact order is stable: TLA+ module, then TLC config.
+- model artifact order is stable: each TLA+ module, then its TLC config.
 - model and runtime artifact path sets are disjoint.
 - runtime artifact order is stable: evaluator proof trace, its attestations,
   forbidden primitive, resource exhaustion, arithmetic overflow, then fixture
@@ -85,16 +86,18 @@ scripts/detta-model-check.sh
 - evaluator fixture inventory roots are lowercase SHA-256 hex.
 - the evaluator fixture inventory trace root matches the proof-trace fixture,
   compact trace bytes, and trace-root attestation.
-- theorem coverage order is stable from `THM-001` through `THM-015`.
+- theorem coverage order is stable from `THM-001` through `THM-018`.
 - theorem evidence order is stable for each theorem ID.
 - theorem evidence uses all expected evidence kinds and every theorem retains
   at least one runtime test anchor.
-- theorem runtime-test evidence references use expected `detta_core`,
-  `detta_evaluator`, or `detta_verify` test namespaces.
+- theorem runtime-test evidence references use expected `detta_consensus`,
+  `detta_core`, `detta_da`, `detta_e2e`, `detta_evaluator`, `detta_node`, or
+  `detta_verify` test namespaces.
 - theorem verifier evidence references use the expected
   `detta_verify::verify_*` namespace.
 - theorem model evidence references use the expected
-  `models/DeTTaBlockExecution.tla::*` namespace.
+  `models/DeTTaBlockExecution.tla::*` or
+  `models/DeTTaDataAvailability.tla::*` namespaces.
 - theorem fixture evidence references use the restricted evaluator JSON
   fixture namespace.
 - theorem fixture evidence references are listed by the evaluator fixture
@@ -103,10 +106,12 @@ scripts/detta-model-check.sh
   exhaustion, and arithmetic overflow fixture schemas.
 - theorem fixture evidence covers all evaluator fixture inventory entry names.
 - theorem model evidence covers the expected TLA operator set.
-- theorem runtime-test evidence covers `detta_core`, `detta_evaluator`, and
+- theorem runtime-test evidence covers `detta_consensus`, `detta_core`,
+  `detta_da`, `detta_e2e`, `detta_evaluator`, `detta_node`, and
   `detta_verify` test crates.
-- theorem verifier evidence covers `verify_kernel_trace` and
-  `verify_differential_replay`.
+- theorem verifier evidence covers `verify_kernel_trace`,
+  `verify_differential_replay`, `validate_aspect_stdlib_artifact`, and
+  `validate_aspect_proof_obligations`.
 - theorem evidence entries are unique within each theorem.
 - theorem IDs map to the expected theorem names.
 - theorem names are unique.
@@ -194,7 +199,7 @@ Before accepting a release proof bundle, verify:
   `runtime_artifacts`;
 - every `runtime_artifacts` path is unique;
 - every `model_artifacts` path is unique;
-- model artifact order is stable: TLA+ module, then TLC config;
+- model artifact order is stable: each TLA+ module, then its TLC config;
 - runtime artifact order is stable: evaluator proof trace, its attestations,
   forbidden primitive, resource exhaustion, arithmetic overflow, then fixture
   inventory artifacts;
@@ -244,16 +249,18 @@ Before accepting a release proof bundle, verify:
   checked-in inventory JSON;
 - every fixture evidence reference with `kind: "Fixture"` resolves to a
   `runtime_artifacts` path;
-- theorem coverage order is stable from `THM-001` through `THM-015`;
+- theorem coverage order is stable from `THM-001` through `THM-018`;
 - theorem evidence order is stable for each theorem ID;
 - theorem evidence uses all expected evidence kinds and every theorem retains
   at least one runtime test anchor;
-- theorem runtime-test evidence references use expected `detta_core`,
-  `detta_evaluator`, or `detta_verify` test namespaces;
+- theorem runtime-test evidence references use expected `detta_consensus`,
+  `detta_core`, `detta_da`, `detta_e2e`, `detta_evaluator`, `detta_node`, or
+  `detta_verify` test namespaces;
 - theorem verifier evidence references use the expected
   `detta_verify::verify_*` namespace;
 - theorem model evidence references use the expected
-  `models/DeTTaBlockExecution.tla::*` namespace;
+  `models/DeTTaBlockExecution.tla::*` or
+  `models/DeTTaDataAvailability.tla::*` namespaces;
 - theorem fixture evidence references use the restricted evaluator JSON
   fixture namespace;
 - theorem fixture evidence references are listed by the evaluator fixture
@@ -262,10 +269,12 @@ Before accepting a release proof bundle, verify:
   exhaustion, and arithmetic overflow fixture schemas;
 - theorem fixture evidence covers all evaluator fixture inventory entry names;
 - theorem model evidence covers the expected TLA operator set;
-- theorem runtime-test evidence covers `detta_core`, `detta_evaluator`, and
+- theorem runtime-test evidence covers `detta_consensus`, `detta_core`,
+  `detta_da`, `detta_e2e`, `detta_evaluator`, `detta_node`, and
   `detta_verify` test crates;
-- theorem verifier evidence covers `verify_kernel_trace` and
-  `verify_differential_replay`;
+- theorem verifier evidence covers `verify_kernel_trace`,
+  `verify_differential_replay`, `validate_aspect_stdlib_artifact`, and
+  `validate_aspect_proof_obligations`;
 - theorem evidence entries are unique within each theorem;
 - theorem IDs map to the expected theorem names;
 - theorem names are unique;
@@ -309,7 +318,7 @@ Before accepting a release proof bundle, verify:
 - `models/detta-proof-artifact-manifest.sha256` verifies after all fixture,
   theorem, or runtime artifact changes.
 
-## Current TLA Artifact
+## Current TLA Artifacts
 
 `models/DeTTaBlockExecution.tla` is an abstract SCS block-execution model. The
 operators currently intended for model-checking or theorem mapping are:
@@ -320,6 +329,18 @@ operators currently intended for model-checking or theorem mapping are:
 - `WriteScopeSafety`
 - `AtomicRevert`
 - `ReplaySafety`
+- `ProgrammableModuleSoundness`
+
+`models/DeTTaDataAvailability.tla` is an abstract data-availability model. The
+operators currently intended for model-checking or theorem mapping are:
+
+- `Spec`
+- `TypeOK`
+- `DASignatureCustodySoundness`
+- `DAQuorumCertificateSoundness`
+- `DAFinalityRequiresCertificate`
+- `DAReconstructionSoundness`
+- `FinalizedPayloadReplaySoundness`
 
 The model intentionally abstracts over concrete cryptographic hashing,
 signatures, networking, and storage encodings. Rust tests cover those concrete
@@ -327,16 +348,18 @@ implementation obligations.
 
 ## TLC/Apalache Use
 
-`models/DeTTaBlockExecution.cfg` is the checked-in bounded TLC config for the
-abstract block-execution model. The release gate runs a pinned, deterministic
-TLC bounded simulation job through `scripts/detta-model-check.sh`. To use a
-preinstalled TLA+ tools JAR instead of the cached download, set
+`models/DeTTaBlockExecution.cfg` and `models/DeTTaDataAvailability.cfg` are the
+checked-in bounded TLC configs for the abstract models. The release gate runs
+pinned, deterministic TLC bounded simulation jobs through
+`scripts/detta-model-check.sh`. To use a preinstalled TLA+ tools JAR instead of
+the cached download, set
 `TLA2TOOLS_JAR=/path/to/tla2tools.jar`.
 
 The script runs:
 
 ```sh
 java -cp "$TLA2TOOLS_JAR" tlc2.TLC -deadlock -simulate num=32 -depth 20 -seed 1 -workers auto -config models/DeTTaBlockExecution.cfg models/DeTTaBlockExecution.tla
+java -cp "$TLA2TOOLS_JAR" tlc2.TLC -deadlock -simulate num=32 -depth 20 -seed 1 -workers auto -config models/DeTTaDataAvailability.cfg models/DeTTaDataAvailability.tla
 ```
 
 When adding a new bounded config file, give finite values for:
