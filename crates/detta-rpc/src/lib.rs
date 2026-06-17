@@ -17,9 +17,9 @@ use detta_evaluator::{
 };
 use detta_protocol::SignedValidatorMessage;
 use detta_storage::{
-    DaManifestIndexEntry, DaRetentionAuditReport, DaRetentionClass, DaRetentionPrunePlanReport,
-    DaStorageStats, SnapshotImportAuditConfig, SnapshotImportAuditRecord,
-    ValidatorSetMetadataAuditRecord,
+    DaCertificateIndexEntry, DaManifestIndexEntry, DaRetentionAuditReport, DaRetentionClass,
+    DaRetentionPrunePlanReport, DaStorageStats, SnapshotImportAuditConfig,
+    SnapshotImportAuditRecord, ValidatorSetMetadataAuditRecord,
 };
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
@@ -267,11 +267,26 @@ pub enum RpcRequest {
     GetDaStorageStats,
     GetDaRetentionAudit,
     GetDaRetentionPrunePlan,
+    GetDaManifestIndexByHeight {
+        height: u64,
+    },
+    GetDaManifestIndexByBlockHash {
+        block_hash: String,
+    },
     GetDaManifestIndexByNamespace {
         namespace: String,
     },
     GetDaManifestIndexByRetentionClass {
         class: DaRetentionClass,
+    },
+    GetDaCertificateIndexByManifest {
+        manifest_hash: String,
+    },
+    GetDaCertificateIndexByHeight {
+        height: u64,
+    },
+    GetDaCertificateIndexByBlockHash {
+        block_hash: String,
     },
     GetNodeHealth,
     GetOperatorMetrics,
@@ -386,6 +401,13 @@ impl RpcRequest {
             }
             RpcRequest::GetDaManifestIndexByNamespace { namespace } => {
                 validate_da_rpc_namespace(namespace)
+            }
+            RpcRequest::GetDaManifestIndexByBlockHash { block_hash }
+            | RpcRequest::GetDaCertificateIndexByBlockHash { block_hash } => {
+                validate_da_rpc_id(block_hash)
+            }
+            RpcRequest::GetDaCertificateIndexByManifest { manifest_hash } => {
+                validate_da_rpc_id(manifest_hash)
             }
             RpcRequest::GetDaSampleProofs {
                 manifest_hash,
@@ -818,6 +840,7 @@ pub enum RpcResult {
     DaRetentionAudit(Box<DaRetentionAuditReport>),
     DaRetentionPrunePlan(Box<DaRetentionPrunePlanReport>),
     DaManifestIndex(Vec<DaManifestIndexEntry>),
+    DaCertificateIndex(Vec<DaCertificateIndexEntry>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1590,8 +1613,13 @@ impl RpcService {
             | RpcRequest::GetDaStorageStats
             | RpcRequest::GetDaRetentionAudit
             | RpcRequest::GetDaRetentionPrunePlan
+            | RpcRequest::GetDaManifestIndexByHeight { .. }
+            | RpcRequest::GetDaManifestIndexByBlockHash { .. }
             | RpcRequest::GetDaManifestIndexByNamespace { .. }
             | RpcRequest::GetDaManifestIndexByRetentionClass { .. }
+            | RpcRequest::GetDaCertificateIndexByManifest { .. }
+            | RpcRequest::GetDaCertificateIndexByHeight { .. }
+            | RpcRequest::GetDaCertificateIndexByBlockHash { .. }
             | RpcRequest::GetValidatorSetMetadataUpdateStatus { .. }
             | RpcRequest::GetValidatorSetMetadataAuditRecords { .. }
             | RpcRequest::GetSnapshotImportAuditRecords { .. }
@@ -2226,8 +2254,13 @@ mod tests {
             "get_da_storage_stats",
             "get_da_retention_audit",
             "get_da_retention_prune_plan",
+            "get_da_manifest_index_by_height",
+            "get_da_manifest_index_by_block_hash",
             "get_da_manifest_index_by_namespace",
             "get_da_manifest_index_by_retention_class",
+            "get_da_certificate_index_by_manifest",
+            "get_da_certificate_index_by_height",
+            "get_da_certificate_index_by_block_hash",
             "get_node_health",
             "get_operator_metrics",
             "get_operator_alerts",

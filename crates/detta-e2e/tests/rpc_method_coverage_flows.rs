@@ -264,7 +264,7 @@ fn public_rpc_method_coverage_guard_calls_every_openapi_method() {
         &mut client,
         &mut covered,
         RpcRequest::GetDaCertificate {
-            certificate_hash: da_certificate_hash,
+            certificate_hash: da_certificate_hash.clone(),
         },
     );
     call_ok(
@@ -323,6 +323,20 @@ fn public_rpc_method_coverage_guard_calls_every_openapi_method() {
     call_ok(
         &mut client,
         &mut covered,
+        RpcRequest::GetDaManifestIndexByHeight {
+            height: da_share_set.manifest.height,
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetDaManifestIndexByBlockHash {
+            block_hash: da_share_set.manifest.block_hash.clone(),
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
         RpcRequest::GetDaManifestIndexByNamespace {
             namespace: "detta.tx".into(),
         },
@@ -332,6 +346,27 @@ fn public_rpc_method_coverage_guard_calls_every_openapi_method() {
         &mut covered,
         RpcRequest::GetDaManifestIndexByRetentionClass {
             class: DaRetentionClass::Hot,
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetDaCertificateIndexByManifest {
+            manifest_hash: da_manifest_hash.clone(),
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetDaCertificateIndexByHeight {
+            height: da_share_set.manifest.height,
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetDaCertificateIndexByBlockHash {
+            block_hash: da_share_set.manifest.block_hash.clone(),
         },
     );
 

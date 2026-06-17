@@ -176,8 +176,10 @@ referenced object and rejects stale, unsorted, duplicate, or mismatched index
 entries, including namespace and retention-class mismatches. `rebuild_da_indexes`
 reconstructs the indexes from stored manifests and certificates after restore or
 repair, and the DA store root includes the index root so index drift is
-externally visible. Persistent-node RPC exposes namespace and retention-class
-manifest index lookups for operator and indexer evidence collection.
+externally visible. Persistent-node RPC exposes manifest index lookups by height,
+block hash, namespace, and retention class, plus certificate index lookups by
+manifest hash, height, and block hash for operator and indexer evidence
+collection.
 
 ## Governed Slashing Policy
 

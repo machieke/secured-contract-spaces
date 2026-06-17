@@ -175,10 +175,20 @@ Persistent validator nodes additionally handle:
   totals that are no longer required by the active DA retention policy. This is
   non-destructive and does not remove manifests, certificates, indexes, or audit
   evidence.
+- `get_da_manifest_index_by_height`: return DA manifest index entries for a
+  block height.
+- `get_da_manifest_index_by_block_hash`: return DA manifest index entries for an
+  execution block hash.
 - `get_da_manifest_index_by_namespace`: return DA manifest index entries for
   manifests that contain the requested DA namespace.
 - `get_da_manifest_index_by_retention_class`: return DA manifest index entries
   for manifests assigned to the requested retention class.
+- `get_da_certificate_index_by_manifest`: return DA certificate index entries
+  for a manifest hash.
+- `get_da_certificate_index_by_height`: return DA certificate index entries for
+  a block height.
+- `get_da_certificate_index_by_block_hash`: return DA certificate index entries
+  for an execution block hash.
 - `propose_validator_set_metadata_update`: submit a signed validator-set update
   authorization.
 - `get_validator_set_metadata_update_status`: report pending authorization

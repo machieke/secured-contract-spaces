@@ -93,6 +93,8 @@ clients.
   candidates without deleting manifests, certificates, indexes, or audit
   evidence.
 - [x] DA manifest index RPC exposes namespace and retention-class lookups.
+- [x] DA manifest and certificate index RPC exposes height and block-hash
+  lookups for operator/indexer evidence.
 - [x] DA share requests are bounded by a node-level maximum and oversized
   requests are rejected.
 - [x] DA storage counters and DA missing-share/repair alerts are exposed
@@ -816,6 +818,7 @@ Acceptance:
 - [x] Add broader DA node status APIs.
 - [x] Add repair status APIs.
 - [x] Add retention prune-plan APIs.
+- [x] Add manifest and certificate index APIs by height and block hash.
 - [x] Update OpenAPI and RPC docs.
 - [x] Extend `detta-client` with DA inspection commands.
 
@@ -952,6 +955,8 @@ DeTTa has a production-grade DA layer when all of these are true:
   without removing authenticated evidence;
 - DA manifest indexes are queryable by namespace and retention class over
   persistent-node RPC;
+- DA manifest and certificate indexes are queryable by height and block hash
+  over persistent-node RPC;
 - RPC can retrieve manifests, certificates, shares, payloads, namespaces, and
   proofs;
 - light-client DA verification is implemented and tested;

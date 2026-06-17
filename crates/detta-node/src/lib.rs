@@ -1244,6 +1244,18 @@ impl PersistentValidatorNode {
                 .map(|report| RpcResult::DaRetentionPrunePlan(Box::new(report)))
                 .map(RpcResponse::Ok)
                 .unwrap_or_else(node_rpc_error_response),
+            RpcRequest::GetDaManifestIndexByHeight { height } => self
+                .storage
+                .load_da_manifest_index_by_height(height)
+                .map(RpcResult::DaManifestIndex)
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
+            RpcRequest::GetDaManifestIndexByBlockHash { block_hash } => self
+                .storage
+                .load_da_manifest_index_by_block_hash(&block_hash)
+                .map(RpcResult::DaManifestIndex)
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
             RpcRequest::GetDaManifestIndexByNamespace { namespace } => self
                 .storage
                 .load_da_manifest_index_by_namespace(&namespace)
@@ -1254,6 +1266,24 @@ impl PersistentValidatorNode {
                 .storage
                 .load_da_manifest_index_by_retention_class(class)
                 .map(RpcResult::DaManifestIndex)
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
+            RpcRequest::GetDaCertificateIndexByManifest { manifest_hash } => self
+                .storage
+                .load_da_certificate_index_by_manifest_hash(&manifest_hash)
+                .map(RpcResult::DaCertificateIndex)
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
+            RpcRequest::GetDaCertificateIndexByHeight { height } => self
+                .storage
+                .load_da_certificate_index_by_height(height)
+                .map(RpcResult::DaCertificateIndex)
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
+            RpcRequest::GetDaCertificateIndexByBlockHash { block_hash } => self
+                .storage
+                .load_da_certificate_index_by_block_hash(&block_hash)
+                .map(RpcResult::DaCertificateIndex)
                 .map(RpcResponse::Ok)
                 .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
             RpcRequest::GetNodeHealth => RpcResponse::Ok(RpcResult::NodeHealth(Box::new(
@@ -4272,6 +4302,25 @@ mod tests {
             Some(DaRetentionPolicyConfig::production_default())
         );
         assert!(prune_plan.entries.is_empty());
+        let height_index_response =
+            node.handle_rpc_request(RpcRequest::GetDaManifestIndexByHeight { height: 1 });
+        let RpcResponse::Ok(RpcResult::DaManifestIndex(height_index)) = height_index_response
+        else {
+            panic!("expected DA height index, got {height_index_response:?}");
+        };
+        assert_eq!(height_index.len(), 1);
+        assert_eq!(height_index[0].manifest_hash, commitment.manifest_hash);
+        let block_hash_index_response =
+            node.handle_rpc_request(RpcRequest::GetDaManifestIndexByBlockHash {
+                block_hash: share_set.manifest.block_hash.clone(),
+            });
+        let RpcResponse::Ok(RpcResult::DaManifestIndex(block_hash_index)) =
+            block_hash_index_response
+        else {
+            panic!("expected DA block-hash index, got {block_hash_index_response:?}");
+        };
+        assert_eq!(block_hash_index.len(), 1);
+        assert_eq!(block_hash_index[0].manifest_hash, commitment.manifest_hash);
         let namespace_index_response =
             node.handle_rpc_request(RpcRequest::GetDaManifestIndexByNamespace {
                 namespace: "detta.tx".into(),
@@ -4292,6 +4341,52 @@ mod tests {
         };
         assert_eq!(retention_index.len(), 1);
         assert_eq!(retention_index[0].manifest_hash, commitment.manifest_hash);
+        let certificate_manifest_index_response =
+            node.handle_rpc_request(RpcRequest::GetDaCertificateIndexByManifest {
+                manifest_hash: commitment.manifest_hash.clone(),
+            });
+        let RpcResponse::Ok(RpcResult::DaCertificateIndex(certificate_manifest_index)) =
+            certificate_manifest_index_response
+        else {
+            panic!(
+                "expected DA certificate manifest index, got {certificate_manifest_index_response:?}"
+            );
+        };
+        assert_eq!(certificate_manifest_index.len(), 1);
+        assert_eq!(
+            certificate_manifest_index[0].certificate_hash,
+            certificate_hash
+        );
+        let certificate_height_index_response =
+            node.handle_rpc_request(RpcRequest::GetDaCertificateIndexByHeight { height: 1 });
+        let RpcResponse::Ok(RpcResult::DaCertificateIndex(certificate_height_index)) =
+            certificate_height_index_response
+        else {
+            panic!(
+                "expected DA certificate height index, got {certificate_height_index_response:?}"
+            );
+        };
+        assert_eq!(certificate_height_index.len(), 1);
+        assert_eq!(
+            certificate_height_index[0].certificate_hash,
+            certificate_hash
+        );
+        let certificate_block_hash_index_response =
+            node.handle_rpc_request(RpcRequest::GetDaCertificateIndexByBlockHash {
+                block_hash: share_set.manifest.block_hash.clone(),
+            });
+        let RpcResponse::Ok(RpcResult::DaCertificateIndex(certificate_block_hash_index)) =
+            certificate_block_hash_index_response
+        else {
+            panic!(
+                "expected DA certificate block-hash index, got {certificate_block_hash_index_response:?}"
+            );
+        };
+        assert_eq!(certificate_block_hash_index.len(), 1);
+        assert_eq!(
+            certificate_block_hash_index[0].certificate_hash,
+            certificate_hash
+        );
         let status_response = node.handle_rpc_request(RpcRequest::GetDaStatus {
             manifest_hash: commitment.manifest_hash.clone(),
         });
