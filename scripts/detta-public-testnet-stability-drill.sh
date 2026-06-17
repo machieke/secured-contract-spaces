@@ -255,6 +255,7 @@ health="$(rpc health '{"method":"get_node_health"}')"
 metrics="$(rpc metrics '{"method":"get_operator_metrics"}')"
 alerts="$(rpc alerts '{"method":"get_operator_alerts"}')"
 mempool="$(rpc mempool '{"method":"get_mempool_status"}')"
+da_stats="$(rpc da_stats '{"method":"get_da_storage_stats"}')"
 
 if ! jq -e --argjson height "$block_count" '
   .body.data.height == $height
@@ -303,6 +304,18 @@ if ! jq -e '.body.data.pending_transactions == 0' "$mempool" >/dev/null; then
   exit 1
 fi
 
+if ! jq -e '
+  .body.data.retention_policy.schema? == null
+  and .body.data.retention_policy_root != null
+  and .body.data.retention_policy_bytes > 0
+  and ([.body.data.retention_policy.policies[].class] | index("Hot") != null)
+  and ([.body.data.retention_policy.policies[].class] | index("Checkpoint") != null)
+' "$da_stats" >/dev/null; then
+  echo "DA storage stats did not expose the expected retention policy" >&2
+  cat "$da_stats" >&2
+  exit 1
+fi
+
 jq -n -e \
   --arg schema "detta.public-testnet-stability-drill.v1" \
   --arg project "DeTTa" \
@@ -322,6 +335,7 @@ jq -n -e \
   --slurpfile metrics "$metrics" \
   --slurpfile alerts "$alerts" \
   --slurpfile mempool "$mempool" \
+  --slurpfile da_stats "$da_stats" \
   '{
     schema: $schema,
     schema_version: 1,
@@ -344,7 +358,8 @@ jq -n -e \
       root_mismatch: $alerts[0].body.data.root_mismatch,
       slashing_record_count: $alerts[0].body.data.slashing_record_count,
       latest_block_failure_count: $alerts[0].body.data.latest_block_failure_count,
-      mempool: $mempool[0].body.data
+      mempool: $mempool[0].body.data,
+      da_storage_stats: $da_stats[0].body.data
     },
     accepted_single_node_alerts: ["operator.peer_isolation", "operator.stalled_consensus"],
     status: $status

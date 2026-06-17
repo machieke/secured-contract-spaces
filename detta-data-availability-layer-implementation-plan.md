@@ -85,6 +85,8 @@ clients.
   roots are persisted in `detta-storage`.
 - [x] Persistent nodes install the production DA retention policy on bootstrap
   or restart when no operator policy exists.
+- [x] DA storage stats RPC exposes the active retention policy, content root,
+  and encoded policy size.
 - [x] DA share requests are bounded by a node-level maximum and oversized
   requests are rejected.
 - [x] DA storage counters and DA missing-share/repair alerts are exposed
@@ -929,6 +931,7 @@ DeTTa has a production-grade DA layer when all of these are true:
 - DA shares are durably stored according to retention policy;
 - persistent nodes commit the production retention policy by default without
   overwriting operator-provided policies;
+- DA storage stats expose the active retention policy and root;
 - RPC can retrieve manifests, certificates, shares, payloads, namespaces, and
   proofs;
 - light-client DA verification is implemented and tested;

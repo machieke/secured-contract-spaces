@@ -4191,6 +4191,12 @@ mod tests {
         assert_eq!(stats.stored_share_count, share_set.shares.len() as u64);
         assert_eq!(stats.missing_share_count, 0);
         assert_eq!(stats.certificate_count, 1);
+        assert_eq!(
+            stats.retention_policy,
+            Some(DaRetentionPolicyConfig::production_default())
+        );
+        assert!(stats.retention_policy_root.is_some());
+        assert!(stats.retention_policy_bytes > 0);
         let status_response = node.handle_rpc_request(RpcRequest::GetDaStatus {
             manifest_hash: commitment.manifest_hash.clone(),
         });
@@ -5351,7 +5357,11 @@ mod tests {
         assert_eq!(metrics.da_repair_record_count, 0);
         assert_eq!(metrics.da_pending_repair_record_count, 0);
         assert_eq!(metrics.da_oldest_pending_repair_age_blocks, None);
-        assert_eq!(metrics.da_total_bytes, 0);
+        assert_eq!(
+            metrics.da_total_bytes,
+            node.storage.da_storage_stats().unwrap().total_bytes
+        );
+        assert!(metrics.da_total_bytes > 0);
 
         fs::remove_dir_all(dir).unwrap();
     }

@@ -89,6 +89,9 @@ pub struct DaStorageStats {
     pub repair_record_bytes: u64,
     pub index_file_count: u64,
     pub index_bytes: u64,
+    pub retention_policy_root: Option<String>,
+    pub retention_policy_bytes: u64,
+    pub retention_policy: Option<DaRetentionPolicyConfig>,
     pub total_bytes: u64,
 }
 
@@ -308,6 +311,15 @@ impl FileStorage {
         let index_file_stats = directory_file_stats(&indexes_dir)?;
         stats.index_file_count = index_file_stats.file_count;
         stats.index_bytes = index_file_stats.total_bytes;
+        if let Some(retention_policy) = self.maybe_load_da_retention_policy()? {
+            let retention_policy_path = self.da_retention_policy_path();
+            let metadata = fs::metadata(&retention_policy_path).map_err(io_error)?;
+            if metadata.is_file() {
+                stats.retention_policy_bytes = metadata.len();
+            }
+            stats.retention_policy_root = Some(hash_canonical_json(&retention_policy)?);
+            stats.retention_policy = Some(retention_policy);
+        }
         stats.total_bytes = stats
             .manifest_bytes
             .saturating_add(stats.share_bytes)
@@ -315,7 +327,8 @@ impl FileStorage {
             .saturating_add(stats.certificate_bytes)
             .saturating_add(stats.challenge_bytes)
             .saturating_add(stats.repair_record_bytes)
-            .saturating_add(stats.index_bytes);
+            .saturating_add(stats.index_bytes)
+            .saturating_add(stats.retention_policy_bytes);
         Ok(stats)
     }
 
@@ -2393,9 +2406,12 @@ mod tests {
 
         let roots = storage.da_store_roots().unwrap();
         assert_ne!(roots.root, empty_roots.root);
-        assert_eq!(roots.retention_policy_root, Some(retention_root));
+        assert_eq!(roots.retention_policy_root, Some(retention_root.clone()));
         assert_ne!(roots.repair_root, empty_roots.repair_root);
         let stats = storage.da_storage_stats().unwrap();
+        assert_eq!(stats.retention_policy_root, Some(retention_root));
+        assert_eq!(stats.retention_policy, Some(retention_policy));
+        assert!(stats.retention_policy_bytes > 0);
         assert_eq!(stats.payload_count, 1);
         assert_eq!(stats.repair_record_count, 1);
         assert!(stats.payload_bytes > 0);
@@ -2506,6 +2522,9 @@ mod tests {
         assert_eq!(stats.challenge_bytes, 0);
         assert_eq!(stats.repair_record_bytes, 0);
         assert!(stats.index_bytes > 0);
+        assert_eq!(stats.retention_policy_root, None);
+        assert_eq!(stats.retention_policy_bytes, 0);
+        assert_eq!(stats.retention_policy, None);
         assert_eq!(
             stats.total_bytes,
             stats.manifest_bytes
@@ -2515,6 +2534,7 @@ mod tests {
                 + stats.challenge_bytes
                 + stats.repair_record_bytes
                 + stats.index_bytes
+                + stats.retention_policy_bytes
         );
 
         fs::remove_file(storage.da_share_path(&manifest_hash, 0)).unwrap();
