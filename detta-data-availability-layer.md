@@ -137,6 +137,12 @@ The enforced production block-payload validator rejects unsupported namespaces,
 records in the wrong namespace, multiple block headers, receipts without
 transactions, and transaction/receipt count mismatches.
 
+Persistent validator `get_node_health`, `get_operator_metrics`, and embedded
+operator alert metrics expose the active `da_production_profile`. Operators can
+compare that object with `DaProductionProfile::v1()` to confirm the node is
+running the expected DA commitment, custody, retention, slashing, archive, and
+data-gas policy.
+
 ## Durable Storage Indexes
 
 The storage layer persists DA objects by content hash and also keeps coordinate

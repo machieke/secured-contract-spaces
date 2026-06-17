@@ -259,6 +259,10 @@ mempool="$(rpc mempool '{"method":"get_mempool_status"}')"
 if ! jq -e --argjson height "$block_count" '
   .body.data.height == $height
   and .body.data.pending_mempool_transactions == 0
+  and .body.data.da_production_profile.schema == "detta.da-production-profile.v1"
+  and .body.data.da_production_profile.schema_version == 1
+  and .body.data.da_production_profile.full_payload_required_for_rpc == true
+  and .body.data.da_production_profile.receipts_are_payload_records == true
 ' "$health" >/dev/null; then
   echo "node health did not match stability expectations" >&2
   cat "$health" >&2
@@ -269,6 +273,10 @@ if ! jq -e --argjson height "$block_count" '
   .body.data.consensus_height == $height
   and .body.data.mempool_size == 0
   and .body.data.rpc_error_count == 0
+  and .body.data.da_production_profile.schema == "detta.da-production-profile.v1"
+  and .body.data.da_production_profile.schema_version == 1
+  and .body.data.da_production_profile.min_custody_share_count >= 2
+  and .body.data.da_production_profile.min_light_client_sample_count >= 3
   and (.body.data.finality_lag == null or .body.data.finality_lag <= 2)
 ' "$metrics" >/dev/null; then
   echo "operator metrics did not match stability expectations" >&2
@@ -280,6 +288,8 @@ if ! jq -e '
   .body.data.root_mismatch == false
   and .body.data.slashing_record_count == 0
   and .body.data.latest_block_failure_count == 0
+  and .body.data.metrics.da_production_profile.schema == "detta.da-production-profile.v1"
+  and .body.data.metrics.da_production_profile.schema_version == 1
   and (([.body.data.alerts[].code] - ["operator.peer_isolation", "operator.stalled_consensus"]) | length == 0)
 ' "$alerts" >/dev/null; then
   echo "operator alerts did not match stability expectations" >&2

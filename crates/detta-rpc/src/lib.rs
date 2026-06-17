@@ -8,7 +8,7 @@ use detta_core::{
 };
 use detta_da::{
     DaAvailabilityCertificate, DaChallengeRecord, DaManifest, DaNamespaceSection, DaPayload,
-    DaSampleProofBundle, DaShare,
+    DaProductionProfile, DaSampleProofBundle, DaShare,
 };
 use detta_evaluator::{
     canonical_script_source, parse_restricted_script, restricted_evaluator_fixture_inventory,
@@ -575,6 +575,7 @@ pub struct NodeHealthReport {
     pub chain_id: String,
     pub network_id: Option<String>,
     pub validator_id: Option<String>,
+    pub da_production_profile: Option<DaProductionProfile>,
     pub height: u64,
     pub pending_mempool_transactions: usize,
     pub trusted_validator_keys: Option<usize>,
@@ -593,6 +594,7 @@ pub struct OperatorMetricsReport {
     pub network_id: Option<String>,
     pub validator_id: Option<String>,
     pub peer_count: Option<usize>,
+    pub da_production_profile: Option<DaProductionProfile>,
     pub mempool_size: usize,
     pub consensus_height: u64,
     pub highest_finalized_height: Option<u64>,
@@ -1201,6 +1203,7 @@ impl RpcService {
             chain_id: state.chain_id().clone(),
             network_id: None,
             validator_id: None,
+            da_production_profile: None,
             height: state.height(),
             pending_mempool_transactions: self.node.pending_len(),
             trusted_validator_keys: None,
@@ -2037,6 +2040,25 @@ mod tests {
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::{Shutdown, TcpStream};
 
+    fn da_production_profile_fixture_json() -> &'static str {
+        concat!(
+            r#"{"schema":"detta.da-production-profile.v1","schema_version":1,"#,
+            r#""commitment_scheme":"MerkleSha256V1","#,
+            r#""erasure_scheme":"ReedSolomonV1","#,
+            r#""custody_mode":"DeterministicCustodyWithLightClientSampling","#,
+            r#""min_custody_share_count":2,"min_light_client_sample_count":3,"#,
+            r#""full_payload_required_for_rpc":true,"receipts_are_payload_records":true,"#,
+            r#""event_availability_mode":"RegeneratedFromExecutionRoots","#,
+            r#""validator_min_retention_blocks":65536,"#,
+            r#""archive_min_retention_blocks":1048576,"#,
+            r#""data_gas_bytes_per_unit":1024,"#,
+            r#""slashing_governance_mode":"TimelockedValidatorSetGovernance","#,
+            r#""archive_incentive_mode":"GovernanceRegisteredStorageProviders","#,
+            r#""mandatory_da_namespaces":["detta.aspect","detta.block","detta.bridge","#,
+            r#""detta.governance","detta.oracle","detta.receipt","detta.tx"]}"#,
+        )
+    }
+
     fn seeded_rpc() -> RpcService {
         let mut state = DeTTaState::new("detta-local");
         state
@@ -2395,6 +2417,7 @@ mod tests {
             chain_id: "detta-local".into(),
             network_id: Some("detta-localnet".into()),
             validator_id: Some("validator-1".into()),
+            da_production_profile: Some(DaProductionProfile::v1()),
             height: 7,
             pending_mempool_transactions: 2,
             trusted_validator_keys: Some(4),
@@ -2407,21 +2430,24 @@ mod tests {
             outbox_root: "outbox-root".into(),
             global_state_root: "global-root".into(),
         })));
-        let fixture = concat!(
+        let fixture = [
             r#"{"status":"ok","body":{"result":"node_health","data":{"#,
             r#""chain_id":"detta-local","network_id":"detta-localnet","#,
-            r#""validator_id":"validator-1","height":7,"#,
+            r#""validator_id":"validator-1","da_production_profile":"#,
+            da_production_profile_fixture_json(),
+            r#","height":7,"#,
             r#""pending_mempool_transactions":2,"trusted_validator_keys":4,"#,
             r#""pending_validator_set_metadata_updates":1,"#,
             r#""storage_root":"storage-root","registry_root":"registry-root","#,
             r#""policy_root":"policy-root","event_root":"event-root","#,
             r#""nonce_root":"nonce-root","outbox_root":"outbox-root","#,
             r#""global_state_root":"global-root"}}}"#,
-        );
+        ]
+        .concat();
 
         assert_eq!(serde_json::to_string(&response).unwrap(), fixture);
         assert_eq!(
-            serde_json::from_str::<RpcResponse>(fixture).unwrap(),
+            serde_json::from_str::<RpcResponse>(&fixture).unwrap(),
             response
         );
     }
@@ -2433,6 +2459,7 @@ mod tests {
                 network_id: Some("detta-localnet".into()),
                 validator_id: Some("validator-1".into()),
                 peer_count: Some(3),
+                da_production_profile: Some(DaProductionProfile::v1()),
                 mempool_size: 5,
                 consensus_height: 11,
                 highest_finalized_height: Some(10),
@@ -2453,10 +2480,12 @@ mod tests {
                 da_total_bytes: 512,
             },
         )));
-        let fixture = concat!(
+        let fixture = [
             r#"{"status":"ok","body":{"result":"operator_metrics","data":{"#,
             r#""network_id":"detta-localnet","validator_id":"validator-1","#,
-            r#""peer_count":3,"mempool_size":5,"consensus_height":11,"#,
+            r#""peer_count":3,"da_production_profile":"#,
+            da_production_profile_fixture_json(),
+            r#","mempool_size":5,"consensus_height":11,"#,
             r#""highest_finalized_height":10,"finality_lag":1,"#,
             r#""last_block_execution_micros":120,"last_proof_serving_micros":40,"#,
             r#""storage_bytes":4096,"rpc_error_count":2,"#,
@@ -2466,11 +2495,12 @@ mod tests {
             r#""da_repair_record_count":0,"da_pending_repair_record_count":0,"#,
             r#""da_oldest_pending_repair_age_blocks":null,"#,
             r#""da_total_bytes":512}}}"#,
-        );
+        ]
+        .concat();
 
         assert_eq!(serde_json::to_string(&response).unwrap(), fixture);
         assert_eq!(
-            serde_json::from_str::<RpcResponse>(fixture).unwrap(),
+            serde_json::from_str::<RpcResponse>(&fixture).unwrap(),
             response
         );
     }
@@ -2490,6 +2520,7 @@ mod tests {
             network_id: Some("detta-localnet".into()),
             validator_id: Some("validator-1".into()),
             peer_count: Some(0),
+            da_production_profile: Some(DaProductionProfile::v1()),
             mempool_size: 12,
             consensus_height: 11,
             highest_finalized_height: Some(8),
@@ -2529,14 +2560,16 @@ mod tests {
             latest_block_failure_count: 1,
             latest_block_receipt_count: 2,
         })));
-        let fixture = concat!(
+        let fixture = [
             r#"{"status":"ok","body":{"result":"operator_alerts","data":{"#,
             r#""policy":{"min_peer_count":1,"max_finality_lag":2,"#,
             r#""max_storage_bytes":4096,"max_rpc_error_count":3,"#,
             r#""max_mempool_size":10,"max_latest_block_failure_ratio_per_mille":500,"#,
             r#""max_da_repair_lag_blocks":8},"#,
             r#""metrics":{"network_id":"detta-localnet","validator_id":"validator-1","#,
-            r#""peer_count":0,"mempool_size":12,"consensus_height":11,"#,
+            r#""peer_count":0,"da_production_profile":"#,
+            da_production_profile_fixture_json(),
+            r#","mempool_size":12,"consensus_height":11,"#,
             r#""highest_finalized_height":8,"finality_lag":3,"#,
             r#""last_block_execution_micros":120,"last_proof_serving_micros":40,"#,
             r#""storage_bytes":8192,"rpc_error_count":4,"#,
@@ -2552,11 +2585,12 @@ mod tests {
             r#""message":"RPC error count exceeds policy threshold"}],"#,
             r#""root_mismatch":false,"slashing_record_count":0,"#,
             r#""latest_block_failure_count":1,"latest_block_receipt_count":2}}}"#,
-        );
+        ]
+        .concat();
 
         assert_eq!(serde_json::to_string(&response).unwrap(), fixture);
         assert_eq!(
-            serde_json::from_str::<RpcResponse>(fixture).unwrap(),
+            serde_json::from_str::<RpcResponse>(&fixture).unwrap(),
             response
         );
     }

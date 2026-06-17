@@ -1,4 +1,5 @@
 use detta_core::{Method, TxStatus};
+use detta_da::DaProductionProfile;
 use detta_e2e::client::TcpRpcClient;
 use detta_e2e::fixtures::{
     amount, asset, defi_genesis_state, principal, temp_dir, tx_to, TOKEN_CONTRACT, USDC,
@@ -65,6 +66,10 @@ fn client_observes_operator_metrics_and_induced_alerts() {
         result => panic!("expected operator metrics, got {result:?}"),
     };
     assert_eq!(metrics.validator_id.as_deref(), Some("validator-1"));
+    assert_eq!(
+        metrics.da_production_profile,
+        Some(DaProductionProfile::v1())
+    );
     assert_eq!(metrics.peer_count, Some(0));
     assert_eq!(metrics.consensus_height, 1);
     assert_eq!(metrics.highest_finalized_height, None);

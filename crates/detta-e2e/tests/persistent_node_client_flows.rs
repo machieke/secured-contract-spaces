@@ -1,5 +1,6 @@
 use detta_consensus::FinalityCertificate;
 use detta_core::{GrantKey, Method, StateKey, StateValue, TxStatus};
+use detta_da::DaProductionProfile;
 use detta_e2e::client::TcpRpcClient;
 use detta_e2e::fixtures::{
     amount, asset, defi_genesis_state, principal, temp_dir, tx_to, TOKEN_CONTRACT, USDC,
@@ -56,6 +57,10 @@ fn client_observes_persistent_node_restart_finality_and_backup_restore() {
         result => panic!("expected operator metrics, got {result:?}"),
     };
     assert_eq!(metrics.validator_id.as_deref(), Some(VALIDATOR_ID));
+    assert_eq!(
+        metrics.da_production_profile,
+        Some(DaProductionProfile::v1())
+    );
     assert_eq!(metrics.consensus_height, 1);
     assert_eq!(metrics.mempool_size, 0);
     assert!(metrics.last_block_execution_micros.is_some());
@@ -175,6 +180,10 @@ fn client_observes_persistent_node_restart_finality_and_backup_restore() {
         result => panic!("expected restored operator metrics, got {result:?}"),
     };
     assert_eq!(restored_metrics.highest_finalized_height, Some(1));
+    assert_eq!(
+        restored_metrics.da_production_profile,
+        Some(DaProductionProfile::v1())
+    );
     assert_eq!(restored_metrics.finality_lag, Some(0));
 
     let alerts = match restored_client.ok(RpcRequest::GetOperatorAlerts).unwrap() {

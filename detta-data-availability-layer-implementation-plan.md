@@ -87,6 +87,8 @@ clients.
   requests are rejected.
 - [x] DA storage counters and DA missing-share/repair alerts are exposed
   through operator metrics and alerts.
+- [x] Persistent node health, operator metrics, and embedded alert metrics
+  expose the active production DA profile.
 - [x] Light-client DA sampling proof bundles are available over persistent-node
   RPC, with deterministic sample schedules, share-root inclusion proofs,
   namespace proofs, and local verification helpers.
@@ -928,7 +930,8 @@ DeTTa has a production-grade DA layer when all of these are true:
 - light-client DA verification is implemented and tested;
 - state sync can reconstruct checkpoints or blocks from DA shares;
 - unavailable signed custody is challengeable and produces slashing evidence;
-- operator metrics and alerts expose DA health;
+- operator health, metrics, and alerts expose DA health and the active
+  production DA profile;
 - release gates include DA-certified block production and withheld-data tests;
 - audit/readiness bundles include DA evidence and verifier checks;
 - formal/proof artifacts cover DA certificate and reconstruction invariants.

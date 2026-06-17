@@ -1305,6 +1305,7 @@ impl PersistentValidatorNode {
         let mut health = self.rpc.node_health();
         health.network_id = Some(self.network_id.clone());
         health.validator_id = Some(self.validator_id.clone());
+        health.da_production_profile = Some(DaProductionProfile::v1());
         health.trusted_validator_keys = Some(self.validator_keys.len());
         health.pending_validator_set_metadata_updates =
             Some(self.pending_validator_set_metadata_authorizations.len());
@@ -1343,6 +1344,7 @@ impl PersistentValidatorNode {
             network_id: Some(self.network_id.clone()),
             validator_id: Some(self.validator_id.clone()),
             peer_count: Some(self.observed_peer_ids.len()),
+            da_production_profile: Some(DaProductionProfile::v1()),
             mempool_size: self.pending_len(),
             consensus_height: height,
             highest_finalized_height,
@@ -5196,6 +5198,10 @@ mod tests {
         assert_eq!(health.validator_id.as_deref(), Some("validator-1"));
         assert_eq!(health.chain_id, "detta-local");
         assert_eq!(health.height, 0);
+        assert_eq!(
+            health.da_production_profile,
+            Some(DaProductionProfile::v1())
+        );
         assert_eq!(health.pending_mempool_transactions, 1);
         assert_eq!(health.trusted_validator_keys, Some(1));
         assert_eq!(health.pending_validator_set_metadata_updates, Some(0));
@@ -5254,6 +5260,10 @@ mod tests {
         assert_eq!(metrics.network_id.as_deref(), Some(DEFAULT_NODE_NETWORK_ID));
         assert_eq!(metrics.validator_id.as_deref(), Some("validator-1"));
         assert_eq!(metrics.peer_count, Some(1));
+        assert_eq!(
+            metrics.da_production_profile,
+            Some(DaProductionProfile::v1())
+        );
         assert_eq!(metrics.mempool_size, 0);
         assert_eq!(metrics.consensus_height, 1);
         assert_eq!(metrics.highest_finalized_height, Some(1));
