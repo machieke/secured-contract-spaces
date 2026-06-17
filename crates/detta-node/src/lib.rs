@@ -3,8 +3,9 @@ use detta_consensus::{
     EquivocationEvidence, FinalityCertificate, SlashingEvidence, SlashingRecord, Vote,
 };
 use detta_core::{
-    transaction_resource_units, Block, BlockError, ChainId, DataAvailabilityCommitment, DeTTaState,
-    MempoolError, StateSnapshot, Transaction, TxStatus, ValidatorNode,
+    transaction_resource_units, Argument, AspectModuleRecord, AspectModuleRoots, Block, BlockError,
+    ChainId, DataAvailabilityCommitment, DeTTaState, MempoolError, Method, StateSnapshot,
+    Transaction, TxStatus, ValidatorNode,
 };
 use detta_da::{
     derive_sample_schedule, prove_namespace, prove_share_inclusion,
@@ -3333,6 +3334,67 @@ fn da_payload_for_block(block: &Block) -> Result<DaPayload, NodeError> {
             .map_err(NodeError::DataAvailability)?,
         );
     }
+    push_da_section(
+        &mut sections,
+        "detta.aspect",
+        aspect_da_records_for_block(block)?,
+    )?;
+    push_da_section(
+        &mut sections,
+        "detta.bridge",
+        method_payload_da_records_for_block(
+            block,
+            |method| {
+                matches!(
+                    method,
+                    Method::QueueBridgeMessage | Method::RedeemBridgeMessage
+                )
+            },
+            |tx, payload| DaRecord::BridgeProof {
+                message_id: text_arg(tx, 2)
+                    .or_else(|| text_arg(tx, 0))
+                    .unwrap_or(tx.tx_hash.as_str())
+                    .to_string(),
+                proof: payload,
+            },
+        )?,
+    )?;
+    push_da_section(
+        &mut sections,
+        "detta.governance",
+        method_payload_da_records_for_block(
+            block,
+            |method| {
+                matches!(
+                    method,
+                    Method::PauseContract
+                        | Method::UnpauseContract
+                        | Method::ScheduleUpgrade
+                        | Method::ExecuteUpgrade
+                        | Method::SchedulePolicyUpdate
+                        | Method::ExecutePolicyUpdate
+                        | Method::ScheduleDaSlashingPolicyUpdate
+                        | Method::ExecuteDaSlashingPolicyUpdate
+                )
+            },
+            |tx, payload| DaRecord::GovernancePayload {
+                proposal_id: text_arg(tx, 0).unwrap_or(tx.tx_hash.as_str()).to_string(),
+                payload,
+            },
+        )?,
+    )?;
+    push_da_section(
+        &mut sections,
+        "detta.oracle",
+        method_payload_da_records_for_block(
+            block,
+            |method| matches!(method, Method::SubmitPrice),
+            |tx, payload| DaRecord::OracleEvidence {
+                asset: asset_arg(tx, 0).unwrap_or(tx.target.as_str()).to_string(),
+                evidence: payload,
+            },
+        )?,
+    )?;
 
     let payload = DaPayload::new(
         block.header.chain_id.clone(),
@@ -3344,6 +3406,116 @@ fn da_payload_for_block(block: &Block) -> Result<DaPayload, NodeError> {
     validate_production_block_payload(&payload, &DaProductionProfile::v1())
         .map_err(NodeError::DataAvailability)?;
     Ok(payload)
+}
+
+fn push_da_section(
+    sections: &mut Vec<DaNamespaceSection>,
+    namespace: &str,
+    records: Vec<DaRecord>,
+) -> Result<(), NodeError> {
+    if records.is_empty() {
+        return Ok(());
+    }
+    sections.push(
+        DaNamespaceSection::new(
+            DaNamespace::new(namespace).map_err(NodeError::DataAvailability)?,
+            records,
+        )
+        .map_err(NodeError::DataAvailability)?,
+    );
+    Ok(())
+}
+
+fn committed_da_transactions(block: &Block) -> impl Iterator<Item = &Transaction> {
+    block
+        .transactions
+        .iter()
+        .zip(block.receipts.iter())
+        .filter_map(|(transaction, receipt)| {
+            if receipt.tx_hash == transaction.tx_hash && receipt.status == TxStatus::Committed {
+                Some(transaction)
+            } else {
+                None
+            }
+        })
+}
+
+fn aspect_da_records_for_block(block: &Block) -> Result<Vec<DaRecord>, NodeError> {
+    committed_da_transactions(block)
+        .filter(|transaction| transaction.method == Method::SubmitAspectModule)
+        .map(aspect_da_record_for_transaction)
+        .collect()
+}
+
+fn aspect_da_record_for_transaction(transaction: &Transaction) -> Result<DaRecord, NodeError> {
+    let module = match transaction.args.as_slice() {
+        [Argument::Text(module_id), Argument::Text(source)] => {
+            AspectModuleRecord::from_verified_source(module_id.clone(), source).map_err(
+                |error| {
+                    NodeError::DataAvailability(DaError::InvalidPayload(format!(
+                        "failed to reconstruct DA aspect artifact from source: {error:?}"
+                    )))
+                },
+            )?
+        }
+        [Argument::Text(module_id), Argument::Text(taxonomy_version), Argument::Text(source_root), Argument::Text(ir_root), Argument::Text(abi_root), Argument::Text(policy_root), Argument::Text(storage_schema_root), Argument::Text(registry_schema_root), Argument::Text(invariant_root)] => {
+            AspectModuleRecord::new(
+                module_id.clone(),
+                taxonomy_version.clone(),
+                AspectModuleRoots {
+                    source_root: source_root.clone(),
+                    ir_root: ir_root.clone(),
+                    abi_root: abi_root.clone(),
+                    policy_root: policy_root.clone(),
+                    storage_schema_root: storage_schema_root.clone(),
+                    registry_schema_root: registry_schema_root.clone(),
+                    invariant_root: invariant_root.clone(),
+                },
+            )
+        }
+        _ => {
+            return Err(NodeError::DataAvailability(DaError::InvalidPayload(
+                "committed SubmitAspectModule transaction has unsupported DA argument shape".into(),
+            )));
+        }
+    };
+    Ok(DaRecord::AspectArtifact(Box::new(module)))
+}
+
+fn method_payload_da_records_for_block(
+    block: &Block,
+    include_method: impl Fn(&Method) -> bool,
+    build_record: impl Fn(&Transaction, String) -> DaRecord,
+) -> Result<Vec<DaRecord>, NodeError> {
+    committed_da_transactions(block)
+        .filter(|transaction| include_method(&transaction.method))
+        .map(|transaction| {
+            canonical_transaction_payload(transaction)
+                .map(|payload| build_record(transaction, payload))
+        })
+        .collect()
+}
+
+fn canonical_transaction_payload(transaction: &Transaction) -> Result<String, NodeError> {
+    serde_json::to_string(transaction).map_err(|error| {
+        NodeError::DataAvailability(DaError::InvalidPayload(format!(
+            "failed to encode DA transaction evidence: {error}"
+        )))
+    })
+}
+
+fn text_arg(transaction: &Transaction, index: usize) -> Option<&str> {
+    match transaction.args.get(index) {
+        Some(Argument::Text(value)) => Some(value),
+        _ => None,
+    }
+}
+
+fn asset_arg(transaction: &Transaction, index: usize) -> Option<&str> {
+    match transaction.args.get(index) {
+        Some(Argument::Asset(value)) => Some(value),
+        _ => None,
+    }
 }
 
 fn da_payload_for_snapshot_chunk_set(
@@ -4439,6 +4611,149 @@ mod tests {
         );
 
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn da_payload_includes_specialized_defi_evidence_namespaces() {
+        fn records<'a>(payload: &'a DaPayload, namespace: &str) -> &'a [DaRecord] {
+            payload
+                .namespaces
+                .iter()
+                .find(|section| section.namespace.0 == namespace)
+                .unwrap_or_else(|| panic!("missing DA namespace {namespace}"))
+                .records
+                .as_slice()
+        }
+
+        let mut state = seeded_state();
+        state.deploy_factory("Factory").unwrap();
+        state
+            .deploy_oracle("OracleA", "ATOM", "OracleBot", 10)
+            .unwrap();
+        state.deploy_bridge("BridgeA", "ShardA").unwrap();
+        state
+            .deploy_governance_with_timelock("GovA", "TokenA", "Admin", 1)
+            .unwrap();
+
+        let (block, _) = state.build_block(
+            1,
+            vec![
+                tx_to(
+                    "Factory",
+                    "tx-da-aspect",
+                    "Issuer",
+                    1,
+                    Method::SubmitAspectModule,
+                    vec![
+                        Argument::Text("AspectDA".into()),
+                        Argument::Text("NormalizedBalanceFirst.v1".into()),
+                        Argument::Text("source-root-da".into()),
+                        Argument::Text("ir-root-da".into()),
+                        Argument::Text("abi-root-da".into()),
+                        Argument::Text("policy-root-da".into()),
+                        Argument::Text("storage-schema-root-da".into()),
+                        Argument::Text("registry-schema-root-da".into()),
+                        Argument::Text("invariant-root-da".into()),
+                    ],
+                ),
+                tx_to(
+                    "BridgeA",
+                    "tx-da-bridge",
+                    "Alice",
+                    1,
+                    Method::QueueBridgeMessage,
+                    vec![
+                        Argument::Text("ShardB".into()),
+                        Argument::Text("BridgeB".into()),
+                        Argument::Text("bridge-msg-da".into()),
+                        Argument::Principal("Bob".into()),
+                        Argument::Asset("USDC".into()),
+                        Argument::Amount(1),
+                    ],
+                ),
+                tx_to(
+                    "GovA",
+                    "tx-da-governance",
+                    "Admin",
+                    1,
+                    Method::ScheduleUpgrade,
+                    vec![
+                        Argument::Text("upgrade-da".into()),
+                        Argument::Text("code-root-da".into()),
+                    ],
+                ),
+                tx_to(
+                    "OracleA",
+                    "tx-da-oracle",
+                    "OracleBot",
+                    1,
+                    Method::SubmitPrice,
+                    vec![
+                        Argument::Asset("ATOM".into()),
+                        Argument::Amount(12),
+                        Argument::Amount(1),
+                    ],
+                ),
+            ],
+            1_000,
+            "validator-1",
+            "cert-1",
+        );
+        assert!(block
+            .receipts
+            .iter()
+            .all(|receipt| receipt.status == TxStatus::Committed));
+
+        let payload = da_payload_for_block(&block).unwrap();
+        let namespaces = payload
+            .namespaces
+            .iter()
+            .map(|section| section.namespace.0.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            namespaces,
+            vec![
+                "detta.aspect",
+                "detta.block",
+                "detta.bridge",
+                "detta.governance",
+                "detta.oracle",
+                "detta.receipt",
+                "detta.tx",
+            ]
+        );
+
+        match &records(&payload, "detta.aspect")[0] {
+            DaRecord::AspectArtifact(module) => {
+                assert_eq!(module.module_id, "AspectDA");
+                assert_eq!(module.source_root, "source-root-da");
+            }
+            record => panic!("expected aspect artifact DA record, got {record:?}"),
+        }
+        match &records(&payload, "detta.bridge")[0] {
+            DaRecord::BridgeProof { message_id, proof } => {
+                assert_eq!(message_id, "bridge-msg-da");
+                assert!(proof.contains("QueueBridgeMessage"));
+            }
+            record => panic!("expected bridge proof DA record, got {record:?}"),
+        }
+        match &records(&payload, "detta.governance")[0] {
+            DaRecord::GovernancePayload {
+                proposal_id,
+                payload,
+            } => {
+                assert_eq!(proposal_id, "upgrade-da");
+                assert!(payload.contains("ScheduleUpgrade"));
+            }
+            record => panic!("expected governance DA record, got {record:?}"),
+        }
+        match &records(&payload, "detta.oracle")[0] {
+            DaRecord::OracleEvidence { asset, evidence } => {
+                assert_eq!(asset, "ATOM");
+                assert!(evidence.contains("SubmitPrice"));
+            }
+            record => panic!("expected oracle evidence DA record, got {record:?}"),
+        }
     }
 
     #[test]

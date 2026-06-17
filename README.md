@@ -114,7 +114,8 @@ The current implementation includes slices for:
   Reed-Solomon threshold reconstruction, durable DA share sets, payloads,
   certificates, repair records, challenge records, validated DA indexes, DA
   gossip persistence, DA challenge/slashing evidence, governed DA slashing
-  policy parameters, payload-aware DA-certified production finality mode, and DA
+  policy parameters, explicit DA namespaces for aspect/governance/bridge/oracle
+  evidence, payload-aware DA-certified production finality mode, and DA
   retrieval/production RPCs on
   `experimental/data-availability-layer`.
 

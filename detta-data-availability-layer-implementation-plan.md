@@ -46,6 +46,10 @@ clients.
 - [x] Persistent node RPC and packaged `detta-client` expose
   `produce_da_block` / `produce-da-block` for operator-driven DA-committed
   block production with bounded share-size inputs.
+- [x] Production block DA payloads emit explicit `detta.aspect`,
+  `detta.governance`, `detta.bridge`, and `detta.oracle` records for committed
+  aspect module submissions, governance actions, bridge messages, and oracle
+  price updates.
 - [x] Persistent nodes can gossip a block's committed DA manifest and shares
   from durable storage.
 - [x] Persistent nodes store DA manifest/share gossip messages.
@@ -796,6 +800,8 @@ Acceptance:
 
 - [x] Build experimental DA payload from block candidate header, transactions,
   and receipts.
+- [x] Add typed production DA payload sections for aspect artifacts,
+  governance payloads, bridge proofs, and oracle evidence.
 - [x] Build DA manifest and deterministic chunk shares.
 - [x] Gossip manifest and shares with proposal.
 - [x] Assign deterministic validator custody/share sampling.
@@ -1005,10 +1011,11 @@ DeTTa has a production-grade DA layer when all of these are true:
 - Mandatory DA record namespaces for production coverage are `detta.aspect`,
   `detta.block`, `detta.bridge`, `detta.governance`, `detta.oracle`,
   `detta.receipt`, and `detta.tx`.
-- Production block DA payloads carry transactions and receipts as payload
-  records. Raw events are optional records; event integrity is otherwise
-  replay-deterministic through the committed block `event_root` and receipt
-  `event_root_after` values.
+- Production block DA payloads carry transactions, receipts, and explicit
+  aspect/governance/bridge/oracle evidence records as payload records. Raw
+  events are optional records; event integrity is otherwise replay-deterministic
+  through the committed block `event_root` and receipt `event_root_after`
+  values.
 - DA data gas is priced in 1024-byte units by `DaProductionProfile::v1()`.
 - DA slashing is governed by the timelocked validator-set governance path
   already used by `DaSlashingPolicy`.
