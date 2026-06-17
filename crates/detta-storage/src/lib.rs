@@ -95,6 +95,45 @@ pub struct DaStorageStats {
     pub total_bytes: u64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaRetentionAuditEntry {
+    pub manifest_hash: String,
+    pub chain_id: String,
+    pub height: u64,
+    pub block_hash: String,
+    pub class: DaRetentionClass,
+    pub age_blocks: u64,
+    pub retention_expires_at_height: Option<u64>,
+    pub expired: bool,
+    pub policy_present: bool,
+    pub retain_payloads: bool,
+    pub retain_all_shares: bool,
+    pub min_retention_blocks: Option<u64>,
+    pub max_payload_bytes: Option<u64>,
+    pub payload_bytes: u64,
+    pub payload_within_policy_limit: bool,
+    pub payload_present: bool,
+    pub expected_share_count: u32,
+    pub stored_share_count: u32,
+    pub missing_share_count: u32,
+    pub payload_retention_satisfied: bool,
+    pub share_retention_satisfied: bool,
+    pub retention_satisfied: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaRetentionAuditReport {
+    pub current_height: u64,
+    pub policy_root: Option<String>,
+    pub policy: Option<DaRetentionPolicyConfig>,
+    pub manifest_count: u64,
+    pub expired_manifest_count: u64,
+    pub active_manifest_count: u64,
+    pub missing_policy_class_count: u64,
+    pub unsatisfied_manifest_count: u64,
+    pub entries: Vec<DaRetentionAuditEntry>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub enum DaRetentionClass {
     Hot,
@@ -155,6 +194,10 @@ impl DaRetentionPolicyConfig {
 
     pub fn validate(&self) -> Result<(), StorageError> {
         validate_da_retention_policy(self)
+    }
+
+    pub fn policy_for_class(&self, class: DaRetentionClass) -> Option<&DaRetentionPolicy> {
+        self.policies.iter().find(|policy| policy.class == class)
     }
 }
 
@@ -330,6 +373,114 @@ impl FileStorage {
             .saturating_add(stats.index_bytes)
             .saturating_add(stats.retention_policy_bytes);
         Ok(stats)
+    }
+
+    pub fn da_retention_audit(
+        &self,
+        current_height: u64,
+    ) -> Result<DaRetentionAuditReport, StorageError> {
+        let policy = self.maybe_load_da_retention_policy()?;
+        let policy_root = policy.as_ref().map(hash_canonical_json).transpose()?;
+        let mut entries = Vec::new();
+
+        for path in sorted_bin_paths(&self.root.join("da").join("manifests"))? {
+            let manifest: DaManifest = read_json(&path)?;
+            manifest.validate().map_err(da_error)?;
+            let manifest_hash = manifest.manifest_hash().map_err(da_error)?;
+            let expected_file_name = format!("{}.bin", file_safe_id(&manifest_hash));
+            if path.file_name().and_then(|name| name.to_str()) != Some(expected_file_name.as_str())
+            {
+                return Err(StorageError::CorruptData(
+                    "DA manifest filename does not match manifest hash".into(),
+                ));
+            }
+
+            let class = da_manifest_retention_class(&manifest);
+            let class_policy = policy
+                .as_ref()
+                .and_then(|config| config.policy_for_class(class));
+            let age_blocks = current_height.saturating_sub(manifest.height);
+            let retention_expires_at_height = class_policy
+                .map(|policy| manifest.height.saturating_add(policy.min_retention_blocks));
+            let expired =
+                retention_expires_at_height.is_some_and(|height| current_height >= height);
+            let retain_payloads = class_policy.is_some_and(|policy| policy.retain_payloads);
+            let retain_all_shares = class_policy.is_some_and(|policy| policy.retain_all_shares);
+            let max_payload_bytes = class_policy.and_then(|policy| policy.max_payload_bytes);
+            let payload_within_policy_limit =
+                max_payload_bytes.is_none_or(|max_bytes| manifest.payload_bytes <= max_bytes);
+            let payload_present = self.da_payload_path(&manifest_hash).exists();
+            let mut stored_share_count = 0_u32;
+            for index in 0..manifest.encoded_share_count {
+                if self.da_share_path(&manifest_hash, index).exists() {
+                    stored_share_count = stored_share_count.saturating_add(1);
+                }
+            }
+            let missing_share_count = manifest
+                .encoded_share_count
+                .saturating_sub(stored_share_count);
+            let payload_retention_required = retain_payloads && !expired;
+            let share_retention_required = retain_all_shares && !expired;
+            let payload_retention_satisfied =
+                !payload_retention_required || (payload_present && payload_within_policy_limit);
+            let share_retention_satisfied = !share_retention_required || missing_share_count == 0;
+            let retention_satisfied = class_policy.is_some()
+                && payload_within_policy_limit
+                && payload_retention_satisfied
+                && share_retention_satisfied;
+
+            entries.push(DaRetentionAuditEntry {
+                manifest_hash,
+                chain_id: manifest.chain_id,
+                height: manifest.height,
+                block_hash: manifest.block_hash,
+                class,
+                age_blocks,
+                retention_expires_at_height,
+                expired,
+                policy_present: class_policy.is_some(),
+                retain_payloads,
+                retain_all_shares,
+                min_retention_blocks: class_policy.map(|policy| policy.min_retention_blocks),
+                max_payload_bytes,
+                payload_bytes: manifest.payload_bytes,
+                payload_within_policy_limit,
+                payload_present,
+                expected_share_count: manifest.encoded_share_count,
+                stored_share_count,
+                missing_share_count,
+                payload_retention_satisfied,
+                share_retention_satisfied,
+                retention_satisfied,
+            });
+        }
+
+        entries.sort_by(|left, right| {
+            left.height
+                .cmp(&right.height)
+                .then_with(|| left.manifest_hash.cmp(&right.manifest_hash))
+        });
+
+        let manifest_count = entries.len() as u64;
+        let expired_manifest_count = entries.iter().filter(|entry| entry.expired).count() as u64;
+        let missing_policy_class_count =
+            entries.iter().filter(|entry| !entry.policy_present).count() as u64;
+        let unsatisfied_manifest_count = entries
+            .iter()
+            .filter(|entry| !entry.retention_satisfied)
+            .count() as u64;
+
+        Ok(DaRetentionAuditReport {
+            current_height,
+            policy_root,
+            policy,
+            manifest_count,
+            expired_manifest_count,
+            active_manifest_count: manifest_count.saturating_sub(expired_manifest_count),
+            missing_policy_class_count,
+            unsatisfied_manifest_count,
+            entries,
+        })
     }
 
     pub fn backup_to(
@@ -1696,6 +1847,18 @@ fn validate_da_retention_policy(config: &DaRetentionPolicyConfig) -> Result<(), 
     Ok(())
 }
 
+fn da_manifest_retention_class(manifest: &DaManifest) -> DaRetentionClass {
+    if manifest
+        .namespace_ranges
+        .iter()
+        .any(|range| range.namespace.0 == "detta.snapshot")
+    {
+        DaRetentionClass::Checkpoint
+    } else {
+        DaRetentionClass::Hot
+    }
+}
+
 fn ensure_sorted_unique_u32(values: &[u32], field: &str) -> Result<(), StorageError> {
     if !values.windows(2).all(|window| window[0] < window[1]) {
         return Err(StorageError::CorruptData(format!(
@@ -2015,6 +2178,29 @@ mod tests {
             vec![DaNamespaceSection::new(
                 DaNamespace::new("detta.tx").unwrap(),
                 vec![DaRecord::SignedTransaction(transfer_tx())],
+            )
+            .unwrap()],
+        )
+        .unwrap()
+    }
+
+    fn snapshot_da_payload() -> DaPayload {
+        DaPayload::new(
+            "detta-local",
+            2,
+            "previous-snapshot-block",
+            vec![DaNamespaceSection::new(
+                DaNamespace::new("detta.snapshot").unwrap(),
+                vec![DaRecord::SnapshotChunkManifest {
+                    snapshot_root: "snapshot-root".into(),
+                    snapshot_hash: "snapshot-hash".into(),
+                    metadata_roots: BTreeMap::new(),
+                    chunk_size: 64,
+                    total_bytes: 64,
+                    chunk_count: 1,
+                    chunk_hashes: vec!["chunk-hash".into()],
+                    chunk_root: "chunk-root".into(),
+                }],
             )
             .unwrap()],
         )
@@ -2460,6 +2646,87 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn da_retention_audit_reports_active_expired_and_unsatisfied_manifests() {
+        let dir = temp_dir("da-retention-audit");
+        let storage = FileStorage::open(&dir).unwrap();
+        let hot_policy = DaRetentionPolicy {
+            class: DaRetentionClass::Hot,
+            retain_payloads: true,
+            retain_all_shares: true,
+            min_retention_blocks: 10,
+            max_payload_bytes: Some(1024 * 1024),
+        };
+        let checkpoint_policy = DaRetentionPolicy {
+            class: DaRetentionClass::Checkpoint,
+            retain_payloads: true,
+            retain_all_shares: true,
+            min_retention_blocks: 2,
+            max_payload_bytes: None,
+        };
+        let policy = DaRetentionPolicyConfig {
+            policies: vec![hot_policy.clone(), checkpoint_policy.clone()],
+        };
+        let policy_root = storage.commit_da_retention_policy(&policy).unwrap();
+
+        let hot_share_set = DaShareSet::from_payload(&da_payload(), "block-hot", 64).unwrap();
+        let hot_manifest_hash = storage.commit_da_manifest(&hot_share_set.manifest).unwrap();
+        storage
+            .commit_da_payload(&hot_manifest_hash, &da_payload())
+            .unwrap();
+
+        let checkpoint_share_set =
+            DaShareSet::from_payload(&snapshot_da_payload(), "block-checkpoint", 64).unwrap();
+        let checkpoint_manifest_hash = storage.commit_da_share_set(&checkpoint_share_set).unwrap();
+
+        let report = storage.da_retention_audit(5).unwrap();
+
+        assert_eq!(report.current_height, 5);
+        assert_eq!(report.policy_root, Some(policy_root));
+        assert_eq!(report.policy, Some(policy));
+        assert_eq!(report.manifest_count, 2);
+        assert_eq!(report.active_manifest_count, 1);
+        assert_eq!(report.expired_manifest_count, 1);
+        assert_eq!(report.missing_policy_class_count, 0);
+        assert_eq!(report.unsatisfied_manifest_count, 1);
+
+        let hot_entry = report
+            .entries
+            .iter()
+            .find(|entry| entry.manifest_hash == hot_manifest_hash)
+            .unwrap();
+        assert_eq!(hot_entry.class, DaRetentionClass::Hot);
+        assert_eq!(hot_entry.min_retention_blocks, Some(10));
+        assert_eq!(hot_entry.retention_expires_at_height, Some(11));
+        assert!(!hot_entry.expired);
+        assert!(hot_entry.payload_present);
+        assert_eq!(hot_entry.stored_share_count, 0);
+        assert_eq!(
+            hot_entry.missing_share_count,
+            hot_entry.expected_share_count
+        );
+        assert!(hot_entry.payload_retention_satisfied);
+        assert!(!hot_entry.share_retention_satisfied);
+        assert!(!hot_entry.retention_satisfied);
+
+        let checkpoint_entry = report
+            .entries
+            .iter()
+            .find(|entry| entry.manifest_hash == checkpoint_manifest_hash)
+            .unwrap();
+        assert_eq!(checkpoint_entry.class, DaRetentionClass::Checkpoint);
+        assert_eq!(checkpoint_entry.min_retention_blocks, Some(2));
+        assert_eq!(checkpoint_entry.retention_expires_at_height, Some(4));
+        assert!(checkpoint_entry.expired);
+        assert_eq!(
+            checkpoint_entry.stored_share_count,
+            checkpoint_entry.expected_share_count
+        );
+        assert!(checkpoint_entry.retention_satisfied);
+
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

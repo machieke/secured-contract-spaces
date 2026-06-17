@@ -168,6 +168,9 @@ Persistent validator nodes additionally handle:
 - `get_da_storage_stats`: report persisted experimental DA manifest count,
   expected shares, stored shares, missing shares, reconstructed payloads,
   challenge and repair records, validated index files, and DA byte totals.
+- `get_da_retention_audit`: report manifest retention class, active/expired
+  window, payload/share presence, missing policy classes, and unsatisfied local
+  retention obligations under the active DA retention policy.
 - `propose_validator_set_metadata_update`: submit a signed validator-set update
   authorization.
 - `get_validator_set_metadata_update_status`: report pending authorization

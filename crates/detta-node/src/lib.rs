@@ -34,9 +34,9 @@ use detta_rpc::{
     SnapshotSyncClientMetricsReport, ValidatorSetMetadataUpdateStatus, DEFAULT_MAX_BLOCK_PAGE_SIZE,
 };
 use detta_storage::{
-    ConsensusSigningRecord, DaRetentionPolicyConfig, FileStorage, SnapshotImportAuditConfig,
-    SnapshotImportAuditRecord, StorageError, ValidatorSetMetadataAuditOutcome,
-    ValidatorSetMetadataAuditRecord,
+    ConsensusSigningRecord, DaRetentionAuditReport, DaRetentionPolicyConfig, FileStorage,
+    SnapshotImportAuditConfig, SnapshotImportAuditRecord, StorageError,
+    ValidatorSetMetadataAuditOutcome, ValidatorSetMetadataAuditRecord,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{btree_map::Entry, BTreeMap, BTreeSet};
@@ -1234,6 +1234,11 @@ impl PersistentValidatorNode {
                 .map(RpcResult::DaStorageStats)
                 .map(RpcResponse::Ok)
                 .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
+            RpcRequest::GetDaRetentionAudit => self
+                .da_retention_audit()
+                .map(|report| RpcResult::DaRetentionAudit(Box::new(report)))
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(node_rpc_error_response),
             RpcRequest::GetNodeHealth => RpcResponse::Ok(RpcResult::NodeHealth(Box::new(
                 self.persistent_node_health(),
             ))),
@@ -2827,6 +2832,12 @@ impl PersistentValidatorNode {
         })
     }
 
+    pub fn da_retention_audit(&self) -> Result<DaRetentionAuditReport, NodeError> {
+        self.storage
+            .da_retention_audit(self.current_height())
+            .map_err(NodeError::Storage)
+    }
+
     fn da_certificate_hash_for_manifest(
         &self,
         manifest_hash: &str,
@@ -4197,6 +4208,32 @@ mod tests {
         );
         assert!(stats.retention_policy_root.is_some());
         assert!(stats.retention_policy_bytes > 0);
+        let retention_audit_response = node.handle_rpc_request(RpcRequest::GetDaRetentionAudit);
+        let RpcResponse::Ok(RpcResult::DaRetentionAudit(retention_audit)) =
+            retention_audit_response
+        else {
+            panic!("expected DA retention audit, got {retention_audit_response:?}");
+        };
+        assert_eq!(retention_audit.current_height, 1);
+        assert_eq!(retention_audit.manifest_count, 1);
+        assert_eq!(retention_audit.active_manifest_count, 1);
+        assert_eq!(retention_audit.expired_manifest_count, 0);
+        assert_eq!(retention_audit.missing_policy_class_count, 0);
+        assert_eq!(retention_audit.unsatisfied_manifest_count, 0);
+        assert_eq!(
+            retention_audit.policy,
+            Some(DaRetentionPolicyConfig::production_default())
+        );
+        assert_eq!(retention_audit.entries.len(), 1);
+        let retention_entry = &retention_audit.entries[0];
+        assert_eq!(retention_entry.manifest_hash, commitment.manifest_hash);
+        assert_eq!(retention_entry.class, detta_storage::DaRetentionClass::Hot);
+        assert!(retention_entry.payload_present);
+        assert_eq!(
+            retention_entry.stored_share_count,
+            retention_entry.expected_share_count
+        );
+        assert!(retention_entry.retention_satisfied);
         let status_response = node.handle_rpc_request(RpcRequest::GetDaStatus {
             manifest_hash: commitment.manifest_hash.clone(),
         });

@@ -256,6 +256,7 @@ metrics="$(rpc metrics '{"method":"get_operator_metrics"}')"
 alerts="$(rpc alerts '{"method":"get_operator_alerts"}')"
 mempool="$(rpc mempool '{"method":"get_mempool_status"}')"
 da_stats="$(rpc da_stats '{"method":"get_da_storage_stats"}')"
+da_retention_audit="$(rpc da_retention_audit '{"method":"get_da_retention_audit"}')"
 
 if ! jq -e --argjson height "$block_count" '
   .body.data.height == $height
@@ -316,6 +317,20 @@ if ! jq -e '
   exit 1
 fi
 
+if ! jq -e --argjson height "$block_count" '
+  .body.data.current_height == $height
+  and .body.data.policy_root != null
+  and .body.data.policy != null
+  and ((.body.data.active_manifest_count + .body.data.expired_manifest_count) == .body.data.manifest_count)
+  and .body.data.missing_policy_class_count == 0
+  and .body.data.unsatisfied_manifest_count == 0
+  and ([.body.data.entries[].retention_satisfied] | all(. == true))
+' "$da_retention_audit" >/dev/null; then
+  echo "DA retention audit did not match stability expectations" >&2
+  cat "$da_retention_audit" >&2
+  exit 1
+fi
+
 jq -n -e \
   --arg schema "detta.public-testnet-stability-drill.v1" \
   --arg project "DeTTa" \
@@ -336,6 +351,7 @@ jq -n -e \
   --slurpfile alerts "$alerts" \
   --slurpfile mempool "$mempool" \
   --slurpfile da_stats "$da_stats" \
+  --slurpfile da_retention_audit "$da_retention_audit" \
   '{
     schema: $schema,
     schema_version: 1,
@@ -359,7 +375,8 @@ jq -n -e \
       slashing_record_count: $alerts[0].body.data.slashing_record_count,
       latest_block_failure_count: $alerts[0].body.data.latest_block_failure_count,
       mempool: $mempool[0].body.data,
-      da_storage_stats: $da_stats[0].body.data
+      da_storage_stats: $da_stats[0].body.data,
+      da_retention_audit: $da_retention_audit[0].body.data
     },
     accepted_single_node_alerts: ["operator.peer_isolation", "operator.stalled_consensus"],
     status: $status

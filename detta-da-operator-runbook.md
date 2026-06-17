@@ -47,27 +47,30 @@ invalid-response slashability, or observed-delay windows.
 Before pruning:
 
 1. Query `get_da_storage_stats`.
-2. Verify `missing_share_count == 0` for manifests still inside the hot
-   retention window.
-3. Query `get_operator_alerts`.
-4. Confirm no `operator.da_missing_shares`, `operator.da_repair_pending`,
+2. Query `get_da_retention_audit`.
+3. Verify `unsatisfied_manifest_count == 0` and inspect any active manifest
+   whose `retention_satisfied` field is false.
+4. Query `get_operator_alerts`.
+5. Confirm no `operator.da_missing_shares`, `operator.da_repair_pending`,
    `operator.da_repair_lag`, `operator.da_custody_failure`, or
    `operator.da_challenge_failure` alert is active.
-5. Reconstruct at least one recent DA payload with `get_da_payload`.
-6. Verify light-client samples with `get_da_sample_proofs`.
-7. Confirm DA index bytes are nonzero after finalized DA blocks and that
+6. Reconstruct at least one recent DA payload with `get_da_payload`.
+7. Verify light-client samples with `get_da_sample_proofs`.
+8. Confirm DA index bytes are nonzero after finalized DA blocks and that
    manifest/certificate lookups by block coordinates return expected entries.
-8. Confirm the active DA slashing policy matches the current governance
+9. Confirm the active DA slashing policy matches the current governance
    decision before processing challenge evidence.
 
 After pruning:
 
 1. Query `get_da_storage_stats` again and record the byte delta.
-2. Re-run payload reconstruction for retained hot/checkpoint manifests.
-3. Run state sync from a DA checkpoint when checkpoint shares were touched.
-4. Store the before/after stats and command output in the release or operator
+2. Query `get_da_retention_audit` again and confirm active manifests remain
+   satisfied.
+3. Re-run payload reconstruction for retained hot/checkpoint manifests.
+4. Run state sync from a DA checkpoint when checkpoint shares were touched.
+5. Store the before/after stats and command output in the release or operator
    evidence bundle.
-5. Rebuild DA indexes from stored manifests and certificates if backup restore,
+6. Rebuild DA indexes from stored manifests and certificates if backup restore,
    manual repair, or disk maintenance touched `da/indexes`.
 
 ## Repair Handling
@@ -95,6 +98,7 @@ For each release candidate or audit window, retain:
 - DA slashing policy schedule/execute receipts when policy changed;
 - challenge records and slashing evidence;
 - DA storage stats before and after pruning;
+- DA retention audit reports before and after pruning;
 - sample proof bundles for representative blocks;
 - repair records and repair completion notes;
 - checkpoint DA manifests and import audit records.

@@ -87,6 +87,8 @@ clients.
   or restart when no operator policy exists.
 - [x] DA storage stats RPC exposes the active retention policy, content root,
   and encoded policy size.
+- [x] DA retention audit RPC reports active/expired manifest windows, missing
+  policy classes, and unsatisfied local payload/share obligations.
 - [x] DA share requests are bounded by a node-level maximum and oversized
   requests are rejected.
 - [x] DA storage counters and DA missing-share/repair alerts are exposed
@@ -736,6 +738,7 @@ Acceptance:
 - [x] Add DA store roots.
 - [x] Add DA storage metrics.
 - [x] Add retention policy structures.
+- [x] Add non-destructive retention audit reporting for stored manifests.
 - [x] Add backup/restore coverage for DA data.
 
 Acceptance:
@@ -862,6 +865,7 @@ Acceptance:
 - [x] Add DA alerts for custody-share assignment failures, repair lag, and
   challenge failures.
 - [x] Add DA retention runbook.
+- [x] Add DA retention audit checks to the public testnet stability drill.
 - [x] Add DA incident-response drill.
 - [x] Add DA stability drill.
 - [x] Add DA evidence to audit-readiness and release-candidate bundles.
@@ -932,6 +936,8 @@ DeTTa has a production-grade DA layer when all of these are true:
 - persistent nodes commit the production retention policy by default without
   overwriting operator-provided policies;
 - DA storage stats expose the active retention policy and root;
+- DA retention audit reports active/expired manifests and unsatisfied local
+  retention obligations;
 - RPC can retrieve manifests, certificates, shares, payloads, namespaces, and
   proofs;
 - light-client DA verification is implemented and tested;

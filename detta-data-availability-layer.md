@@ -140,7 +140,12 @@ transactions, and transaction/receipt count mismatches.
 Fresh and restarted persistent nodes commit `DaRetentionPolicyConfig::production_default()`
 when no DA retention policy is already present. Operator-provided policies are
 left intact. `get_da_storage_stats` reports the active retention policy, its
-content root, and its encoded byte size.
+content root, and its encoded byte size. `get_da_retention_audit` classifies
+stored manifests against the active policy using the node's current height and
+reports active versus expired manifests, missing policy classes, and any local
+payload/share retention obligations that are not satisfied. The current v1
+classification is derived from manifest namespaces: checkpoint payloads use
+`Checkpoint`, and ordinary block DA payloads use `Hot`.
 
 Persistent validator `get_node_health`, `get_operator_metrics`, and embedded
 operator alert metrics expose the active `da_production_profile`. Operators can

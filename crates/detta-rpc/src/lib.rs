@@ -17,7 +17,7 @@ use detta_evaluator::{
 };
 use detta_protocol::SignedValidatorMessage;
 use detta_storage::{
-    DaStorageStats, SnapshotImportAuditConfig, SnapshotImportAuditRecord,
+    DaRetentionAuditReport, DaStorageStats, SnapshotImportAuditConfig, SnapshotImportAuditRecord,
     ValidatorSetMetadataAuditRecord,
 };
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
@@ -264,6 +264,7 @@ pub enum RpcRequest {
         manifest_hash: String,
     },
     GetDaStorageStats,
+    GetDaRetentionAudit,
     GetNodeHealth,
     GetOperatorMetrics,
     GetOperatorAlerts,
@@ -803,6 +804,7 @@ pub enum RpcResult {
     DaStatus(Box<DaStatusReport>),
     DaRepairStatus(Box<DaRepairStatusReport>),
     DaStorageStats(DaStorageStats),
+    DaRetentionAudit(Box<DaRetentionAuditReport>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1573,6 +1575,7 @@ impl RpcService {
             | RpcRequest::GetDaStatus { .. }
             | RpcRequest::GetDaRepairStatus { .. }
             | RpcRequest::GetDaStorageStats
+            | RpcRequest::GetDaRetentionAudit
             | RpcRequest::GetValidatorSetMetadataUpdateStatus { .. }
             | RpcRequest::GetValidatorSetMetadataAuditRecords { .. }
             | RpcRequest::GetSnapshotImportAuditRecords { .. }
@@ -2205,6 +2208,7 @@ mod tests {
             "get_da_status",
             "get_da_repair_status",
             "get_da_storage_stats",
+            "get_da_retention_audit",
             "get_node_health",
             "get_operator_metrics",
             "get_operator_alerts",
