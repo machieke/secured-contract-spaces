@@ -17,8 +17,9 @@ use detta_evaluator::{
 };
 use detta_protocol::SignedValidatorMessage;
 use detta_storage::{
-    DaManifestIndexEntry, DaRetentionAuditReport, DaRetentionClass, DaStorageStats,
-    SnapshotImportAuditConfig, SnapshotImportAuditRecord, ValidatorSetMetadataAuditRecord,
+    DaManifestIndexEntry, DaRetentionAuditReport, DaRetentionClass, DaRetentionPrunePlanReport,
+    DaStorageStats, SnapshotImportAuditConfig, SnapshotImportAuditRecord,
+    ValidatorSetMetadataAuditRecord,
 };
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
@@ -265,6 +266,7 @@ pub enum RpcRequest {
     },
     GetDaStorageStats,
     GetDaRetentionAudit,
+    GetDaRetentionPrunePlan,
     GetDaManifestIndexByNamespace {
         namespace: String,
     },
@@ -814,6 +816,7 @@ pub enum RpcResult {
     DaRepairStatus(Box<DaRepairStatusReport>),
     DaStorageStats(DaStorageStats),
     DaRetentionAudit(Box<DaRetentionAuditReport>),
+    DaRetentionPrunePlan(Box<DaRetentionPrunePlanReport>),
     DaManifestIndex(Vec<DaManifestIndexEntry>),
 }
 
@@ -1586,6 +1589,7 @@ impl RpcService {
             | RpcRequest::GetDaRepairStatus { .. }
             | RpcRequest::GetDaStorageStats
             | RpcRequest::GetDaRetentionAudit
+            | RpcRequest::GetDaRetentionPrunePlan
             | RpcRequest::GetDaManifestIndexByNamespace { .. }
             | RpcRequest::GetDaManifestIndexByRetentionClass { .. }
             | RpcRequest::GetValidatorSetMetadataUpdateStatus { .. }
@@ -2221,6 +2225,7 @@ mod tests {
             "get_da_repair_status",
             "get_da_storage_stats",
             "get_da_retention_audit",
+            "get_da_retention_prune_plan",
             "get_da_manifest_index_by_namespace",
             "get_da_manifest_index_by_retention_class",
             "get_node_health",

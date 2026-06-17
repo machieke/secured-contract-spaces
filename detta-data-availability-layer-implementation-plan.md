@@ -89,6 +89,9 @@ clients.
   and encoded policy size.
 - [x] DA retention audit RPC reports active/expired manifest windows, missing
   policy classes, and unsatisfied local payload/share obligations.
+- [x] DA retention prune-plan RPC reports expired local payload/share file
+  candidates without deleting manifests, certificates, indexes, or audit
+  evidence.
 - [x] DA manifest index RPC exposes namespace and retention-class lookups.
 - [x] DA share requests are bounded by a node-level maximum and oversized
   requests are rejected.
@@ -741,6 +744,8 @@ Acceptance:
 - [x] Add DA storage metrics.
 - [x] Add retention policy structures.
 - [x] Add non-destructive retention audit reporting for stored manifests.
+- [x] Add non-destructive retention prune-plan reporting for expired local
+  payload/share files.
 - [x] Add backup/restore coverage for DA data.
 
 Acceptance:
@@ -810,6 +815,7 @@ Acceptance:
 - [x] Add DA storage metrics APIs.
 - [x] Add broader DA node status APIs.
 - [x] Add repair status APIs.
+- [x] Add retention prune-plan APIs.
 - [x] Update OpenAPI and RPC docs.
 - [x] Extend `detta-client` with DA inspection commands.
 
@@ -942,6 +948,8 @@ DeTTa has a production-grade DA layer when all of these are true:
 - DA storage stats expose the active retention policy and root;
 - DA retention audit reports active/expired manifests and unsatisfied local
   retention obligations;
+- DA retention prune-plan reports identify expired payload/share candidates
+  without removing authenticated evidence;
 - DA manifest indexes are queryable by namespace and retention class over
   persistent-node RPC;
 - RPC can retrieve manifests, certificates, shares, payloads, namespaces, and

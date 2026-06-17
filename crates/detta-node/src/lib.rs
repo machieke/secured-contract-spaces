@@ -34,9 +34,9 @@ use detta_rpc::{
     SnapshotSyncClientMetricsReport, ValidatorSetMetadataUpdateStatus, DEFAULT_MAX_BLOCK_PAGE_SIZE,
 };
 use detta_storage::{
-    ConsensusSigningRecord, DaRetentionAuditReport, DaRetentionPolicyConfig, FileStorage,
-    SnapshotImportAuditConfig, SnapshotImportAuditRecord, StorageError,
-    ValidatorSetMetadataAuditOutcome, ValidatorSetMetadataAuditRecord,
+    ConsensusSigningRecord, DaRetentionAuditReport, DaRetentionPolicyConfig,
+    DaRetentionPrunePlanReport, FileStorage, SnapshotImportAuditConfig, SnapshotImportAuditRecord,
+    StorageError, ValidatorSetMetadataAuditOutcome, ValidatorSetMetadataAuditRecord,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{btree_map::Entry, BTreeMap, BTreeSet};
@@ -1237,6 +1237,11 @@ impl PersistentValidatorNode {
             RpcRequest::GetDaRetentionAudit => self
                 .da_retention_audit()
                 .map(|report| RpcResult::DaRetentionAudit(Box::new(report)))
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(node_rpc_error_response),
+            RpcRequest::GetDaRetentionPrunePlan => self
+                .da_retention_prune_plan()
+                .map(|report| RpcResult::DaRetentionPrunePlan(Box::new(report)))
                 .map(RpcResponse::Ok)
                 .unwrap_or_else(node_rpc_error_response),
             RpcRequest::GetDaManifestIndexByNamespace { namespace } => self
@@ -2850,6 +2855,12 @@ impl PersistentValidatorNode {
             .map_err(NodeError::Storage)
     }
 
+    pub fn da_retention_prune_plan(&self) -> Result<DaRetentionPrunePlanReport, NodeError> {
+        self.storage
+            .da_retention_prune_plan(self.current_height())
+            .map_err(NodeError::Storage)
+    }
+
     fn da_certificate_hash_for_manifest(
         &self,
         manifest_hash: &str,
@@ -4246,6 +4257,21 @@ mod tests {
             retention_entry.expected_share_count
         );
         assert!(retention_entry.retention_satisfied);
+        let prune_plan_response = node.handle_rpc_request(RpcRequest::GetDaRetentionPrunePlan);
+        let RpcResponse::Ok(RpcResult::DaRetentionPrunePlan(prune_plan)) = prune_plan_response
+        else {
+            panic!("expected DA retention prune plan, got {prune_plan_response:?}");
+        };
+        assert_eq!(prune_plan.current_height, 1);
+        assert_eq!(prune_plan.manifest_count, 1);
+        assert_eq!(prune_plan.candidate_manifest_count, 0);
+        assert_eq!(prune_plan.prunable_payload_count, 0);
+        assert_eq!(prune_plan.prunable_share_count, 0);
+        assert_eq!(
+            prune_plan.policy,
+            Some(DaRetentionPolicyConfig::production_default())
+        );
+        assert!(prune_plan.entries.is_empty());
         let namespace_index_response =
             node.handle_rpc_request(RpcRequest::GetDaManifestIndexByNamespace {
                 namespace: "detta.tx".into(),

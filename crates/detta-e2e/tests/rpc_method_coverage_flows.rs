@@ -318,6 +318,11 @@ fn public_rpc_method_coverage_guard_calls_every_openapi_method() {
     call_ok(
         &mut client,
         &mut covered,
+        RpcRequest::GetDaRetentionPrunePlan,
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
         RpcRequest::GetDaManifestIndexByNamespace {
             namespace: "detta.tx".into(),
         },

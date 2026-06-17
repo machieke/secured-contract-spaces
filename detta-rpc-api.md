@@ -171,6 +171,10 @@ Persistent validator nodes additionally handle:
 - `get_da_retention_audit`: report manifest retention class, active/expired
   window, payload/share presence, missing policy classes, and unsatisfied local
   retention obligations under the active DA retention policy.
+- `get_da_retention_prune_plan`: report expired payload/share files and byte
+  totals that are no longer required by the active DA retention policy. This is
+  non-destructive and does not remove manifests, certificates, indexes, or audit
+  evidence.
 - `get_da_manifest_index_by_namespace`: return DA manifest index entries for
   manifests that contain the requested DA namespace.
 - `get_da_manifest_index_by_retention_class`: return DA manifest index entries

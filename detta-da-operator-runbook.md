@@ -50,16 +50,21 @@ Before pruning:
 2. Query `get_da_retention_audit`.
 3. Verify `unsatisfied_manifest_count == 0` and inspect any active manifest
    whose `retention_satisfied` field is false.
-4. Query `get_operator_alerts`.
-5. Confirm no `operator.da_missing_shares`, `operator.da_repair_pending`,
+4. Query `get_da_retention_prune_plan` and confirm every candidate manifest is
+   expired or contains shares no longer required by the active policy while a
+   retained payload is present.
+5. Keep manifests, DA certificates, indexes, challenge records, and audit
+   records out of pruning scope.
+6. Query `get_operator_alerts`.
+7. Confirm no `operator.da_missing_shares`, `operator.da_repair_pending`,
    `operator.da_repair_lag`, `operator.da_custody_failure`, or
    `operator.da_challenge_failure` alert is active.
-6. Reconstruct at least one recent DA payload with `get_da_payload`.
-7. Verify light-client samples with `get_da_sample_proofs`.
-8. Confirm DA index bytes are nonzero after finalized DA blocks and that
+8. Reconstruct at least one recent DA payload with `get_da_payload`.
+9. Verify light-client samples with `get_da_sample_proofs`.
+10. Confirm DA index bytes are nonzero after finalized DA blocks and that
    manifest/certificate lookups by block coordinates, namespace, and retention
    class return expected entries.
-9. Confirm the active DA slashing policy matches the current governance
+11. Confirm the active DA slashing policy matches the current governance
    decision before processing challenge evidence.
 
 After pruning:
@@ -100,6 +105,8 @@ For each release candidate or audit window, retain:
 - challenge records and slashing evidence;
 - DA storage stats before and after pruning;
 - DA retention audit reports before and after pruning;
+- DA retention prune-plan reports used to justify removed local payload/share
+  files;
 - sample proof bundles for representative blocks;
 - repair records and repair completion notes;
 - checkpoint DA manifests and import audit records.

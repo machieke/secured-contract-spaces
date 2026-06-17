@@ -134,6 +134,36 @@ pub struct DaRetentionAuditReport {
     pub entries: Vec<DaRetentionAuditEntry>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaRetentionPrunePlanEntry {
+    pub manifest_hash: String,
+    pub chain_id: String,
+    pub height: u64,
+    pub block_hash: String,
+    pub class: DaRetentionClass,
+    pub expired: bool,
+    pub retention_expires_at_height: Option<u64>,
+    pub payload_prunable: bool,
+    pub prunable_payload_bytes: u64,
+    pub prunable_share_indices: Vec<u32>,
+    pub prunable_share_count: u32,
+    pub prunable_share_bytes: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaRetentionPrunePlanReport {
+    pub current_height: u64,
+    pub policy_root: Option<String>,
+    pub policy: Option<DaRetentionPolicyConfig>,
+    pub manifest_count: u64,
+    pub candidate_manifest_count: u64,
+    pub prunable_payload_count: u64,
+    pub prunable_share_count: u64,
+    pub prunable_payload_bytes: u64,
+    pub prunable_share_bytes: u64,
+    pub entries: Vec<DaRetentionPrunePlanEntry>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub enum DaRetentionClass {
     Hot,
@@ -491,6 +521,90 @@ impl FileStorage {
             active_manifest_count: manifest_count.saturating_sub(expired_manifest_count),
             missing_policy_class_count,
             unsatisfied_manifest_count,
+            entries,
+        })
+    }
+
+    pub fn da_retention_prune_plan(
+        &self,
+        current_height: u64,
+    ) -> Result<DaRetentionPrunePlanReport, StorageError> {
+        let audit = self.da_retention_audit(current_height)?;
+        let mut entries = Vec::new();
+        let mut prunable_payload_count = 0_u64;
+        let mut prunable_share_count = 0_u64;
+        let mut prunable_payload_bytes = 0_u64;
+        let mut prunable_share_bytes = 0_u64;
+
+        for audit_entry in &audit.entries {
+            if !audit_entry.policy_present {
+                continue;
+            }
+
+            let manifest = self.load_da_manifest(&audit_entry.manifest_hash)?;
+            let payload_path = self.da_payload_path(&audit_entry.manifest_hash);
+            let payload_prunable = audit_entry.expired && payload_path.exists();
+            let entry_payload_bytes = if payload_prunable {
+                file_size_if_exists(&payload_path)?
+            } else {
+                0
+            };
+
+            let active_payload_retained =
+                audit_entry.payload_present && audit_entry.payload_within_policy_limit;
+            let shares_no_longer_required =
+                audit_entry.expired || (!audit_entry.retain_all_shares && active_payload_retained);
+            let mut prunable_share_indices = Vec::new();
+            let mut entry_share_bytes = 0_u64;
+            if shares_no_longer_required {
+                for index in 0..manifest.encoded_share_count {
+                    let share_path = self.da_share_path(&audit_entry.manifest_hash, index);
+                    if share_path.exists() {
+                        prunable_share_indices.push(index);
+                        entry_share_bytes =
+                            entry_share_bytes.saturating_add(file_size_if_exists(&share_path)?);
+                    }
+                }
+            }
+
+            if !payload_prunable && prunable_share_indices.is_empty() {
+                continue;
+            }
+
+            if payload_prunable {
+                prunable_payload_count = prunable_payload_count.saturating_add(1);
+                prunable_payload_bytes = prunable_payload_bytes.saturating_add(entry_payload_bytes);
+            }
+            prunable_share_count =
+                prunable_share_count.saturating_add(prunable_share_indices.len() as u64);
+            prunable_share_bytes = prunable_share_bytes.saturating_add(entry_share_bytes);
+
+            entries.push(DaRetentionPrunePlanEntry {
+                manifest_hash: audit_entry.manifest_hash.clone(),
+                chain_id: audit_entry.chain_id.clone(),
+                height: audit_entry.height,
+                block_hash: audit_entry.block_hash.clone(),
+                class: audit_entry.class,
+                expired: audit_entry.expired,
+                retention_expires_at_height: audit_entry.retention_expires_at_height,
+                payload_prunable,
+                prunable_payload_bytes: entry_payload_bytes,
+                prunable_share_count: prunable_share_indices.len() as u32,
+                prunable_share_indices,
+                prunable_share_bytes: entry_share_bytes,
+            });
+        }
+
+        Ok(DaRetentionPrunePlanReport {
+            current_height: audit.current_height,
+            policy_root: audit.policy_root,
+            policy: audit.policy,
+            manifest_count: audit.manifest_count,
+            candidate_manifest_count: entries.len() as u64,
+            prunable_payload_count,
+            prunable_share_count,
+            prunable_payload_bytes,
+            prunable_share_bytes,
             entries,
         })
     }
@@ -2159,6 +2273,18 @@ fn directory_file_stats(path: &Path) -> Result<DirectoryFileStats, StorageError>
     Ok(stats)
 }
 
+fn file_size_if_exists(path: &Path) -> Result<u64, StorageError> {
+    if !path.exists() {
+        return Ok(0);
+    }
+    let metadata = fs::metadata(path).map_err(io_error)?;
+    if metadata.is_file() {
+        Ok(metadata.len())
+    } else {
+        Ok(0)
+    }
+}
+
 fn directory_content_root(path: &Path) -> Result<String, StorageError> {
     let mut entries = Vec::new();
     collect_directory_content_roots(path, path, &mut entries)?;
@@ -2877,6 +3003,34 @@ mod tests {
             checkpoint_entry.expected_share_count
         );
         assert!(checkpoint_entry.retention_satisfied);
+
+        let prune_plan = storage.da_retention_prune_plan(5).unwrap();
+        assert_eq!(prune_plan.current_height, 5);
+        assert_eq!(prune_plan.policy_root, report.policy_root);
+        assert_eq!(prune_plan.policy, report.policy);
+        assert_eq!(prune_plan.manifest_count, 2);
+        assert_eq!(prune_plan.candidate_manifest_count, 1);
+        assert_eq!(prune_plan.prunable_payload_count, 1);
+        assert_eq!(
+            prune_plan.prunable_share_count,
+            checkpoint_share_set.manifest.encoded_share_count as u64
+        );
+        assert!(prune_plan.prunable_payload_bytes > 0);
+        assert!(prune_plan.prunable_share_bytes > 0);
+        assert_eq!(prune_plan.entries.len(), 1);
+        let prune_entry = &prune_plan.entries[0];
+        assert_eq!(prune_entry.manifest_hash, checkpoint_manifest_hash);
+        assert_eq!(prune_entry.class, DaRetentionClass::Checkpoint);
+        assert!(prune_entry.expired);
+        assert!(prune_entry.payload_prunable);
+        assert_eq!(
+            prune_entry.prunable_share_count,
+            checkpoint_share_set.manifest.encoded_share_count
+        );
+        assert_eq!(
+            prune_entry.prunable_share_indices,
+            (0..checkpoint_share_set.manifest.encoded_share_count).collect::<Vec<_>>()
+        );
 
         fs::remove_dir_all(dir).unwrap();
     }
