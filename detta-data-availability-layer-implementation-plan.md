@@ -41,7 +41,7 @@ clients.
   verify against the manifest.
 - [x] Signed DA availability votes can be verified and aggregated into a
   canonical DA certificate when quorum votes bind the same manifest.
-- [x] Persistent nodes can produce an experimental DA-committed block, persist
+- [x] Persistent nodes can produce a DA v1-committed block, persist
   the matching share set, and reload it after restart.
 - [x] Persistent nodes can gossip a block's committed DA manifest and shares
   from durable storage.
