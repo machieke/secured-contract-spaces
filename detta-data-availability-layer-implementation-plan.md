@@ -89,6 +89,7 @@ clients.
   and encoded policy size.
 - [x] DA retention audit RPC reports active/expired manifest windows, missing
   policy classes, and unsatisfied local payload/share obligations.
+- [x] DA manifest index RPC exposes namespace and retention-class lookups.
 - [x] DA share requests are bounded by a node-level maximum and oversized
   requests are rejected.
 - [x] DA storage counters and DA missing-share/repair alerts are exposed
@@ -941,6 +942,8 @@ DeTTa has a production-grade DA layer when all of these are true:
 - DA storage stats expose the active retention policy and root;
 - DA retention audit reports active/expired manifests and unsatisfied local
   retention obligations;
+- DA manifest indexes are queryable by namespace and retention class over
+  persistent-node RPC;
 - RPC can retrieve manifests, certificates, shares, payloads, namespaces, and
   proofs;
 - light-client DA verification is implemented and tested;

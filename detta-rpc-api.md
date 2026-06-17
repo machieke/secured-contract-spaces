@@ -171,6 +171,10 @@ Persistent validator nodes additionally handle:
 - `get_da_retention_audit`: report manifest retention class, active/expired
   window, payload/share presence, missing policy classes, and unsatisfied local
   retention obligations under the active DA retention policy.
+- `get_da_manifest_index_by_namespace`: return DA manifest index entries for
+  manifests that contain the requested DA namespace.
+- `get_da_manifest_index_by_retention_class`: return DA manifest index entries
+  for manifests assigned to the requested retention class.
 - `propose_validator_set_metadata_update`: submit a signed validator-set update
   authorization.
 - `get_validator_set_metadata_update_status`: report pending authorization

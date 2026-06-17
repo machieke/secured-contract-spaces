@@ -13,6 +13,7 @@ use detta_e2e::network::{spawn_tcp_persistent_node, spawn_tcp_rpc_server};
 use detta_node::PersistentValidatorNode;
 use detta_protocol::{ProtocolMessage, ValidatorSetMetadataUpdate, ValidatorSigningKey};
 use detta_rpc::{RpcRequest, RpcResponse, RpcResult, SignedClientTransaction, SubscriptionTopic};
+use detta_storage::DaRetentionClass;
 use std::collections::BTreeSet;
 
 #[test]
@@ -314,6 +315,20 @@ fn public_rpc_method_coverage_guard_calls_every_openapi_method() {
     );
     call_ok(&mut client, &mut covered, RpcRequest::GetDaStorageStats);
     call_ok(&mut client, &mut covered, RpcRequest::GetDaRetentionAudit);
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetDaManifestIndexByNamespace {
+            namespace: "detta.tx".into(),
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetDaManifestIndexByRetentionClass {
+            class: DaRetentionClass::Hot,
+        },
+    );
 
     call_ok(
         &mut client,

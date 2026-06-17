@@ -17,8 +17,8 @@ use detta_evaluator::{
 };
 use detta_protocol::SignedValidatorMessage;
 use detta_storage::{
-    DaRetentionAuditReport, DaStorageStats, SnapshotImportAuditConfig, SnapshotImportAuditRecord,
-    ValidatorSetMetadataAuditRecord,
+    DaManifestIndexEntry, DaRetentionAuditReport, DaRetentionClass, DaStorageStats,
+    SnapshotImportAuditConfig, SnapshotImportAuditRecord, ValidatorSetMetadataAuditRecord,
 };
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
@@ -265,6 +265,12 @@ pub enum RpcRequest {
     },
     GetDaStorageStats,
     GetDaRetentionAudit,
+    GetDaManifestIndexByNamespace {
+        namespace: String,
+    },
+    GetDaManifestIndexByRetentionClass {
+        class: DaRetentionClass,
+    },
     GetNodeHealth,
     GetOperatorMetrics,
     GetOperatorAlerts,
@@ -374,6 +380,9 @@ impl RpcRequest {
                 namespace,
             } => {
                 validate_da_rpc_id(manifest_hash)?;
+                validate_da_rpc_namespace(namespace)
+            }
+            RpcRequest::GetDaManifestIndexByNamespace { namespace } => {
                 validate_da_rpc_namespace(namespace)
             }
             RpcRequest::GetDaSampleProofs {
@@ -805,6 +814,7 @@ pub enum RpcResult {
     DaRepairStatus(Box<DaRepairStatusReport>),
     DaStorageStats(DaStorageStats),
     DaRetentionAudit(Box<DaRetentionAuditReport>),
+    DaManifestIndex(Vec<DaManifestIndexEntry>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1576,6 +1586,8 @@ impl RpcService {
             | RpcRequest::GetDaRepairStatus { .. }
             | RpcRequest::GetDaStorageStats
             | RpcRequest::GetDaRetentionAudit
+            | RpcRequest::GetDaManifestIndexByNamespace { .. }
+            | RpcRequest::GetDaManifestIndexByRetentionClass { .. }
             | RpcRequest::GetValidatorSetMetadataUpdateStatus { .. }
             | RpcRequest::GetValidatorSetMetadataAuditRecords { .. }
             | RpcRequest::GetSnapshotImportAuditRecords { .. }
@@ -2209,6 +2221,8 @@ mod tests {
             "get_da_repair_status",
             "get_da_storage_stats",
             "get_da_retention_audit",
+            "get_da_manifest_index_by_namespace",
+            "get_da_manifest_index_by_retention_class",
             "get_node_health",
             "get_operator_metrics",
             "get_operator_alerts",

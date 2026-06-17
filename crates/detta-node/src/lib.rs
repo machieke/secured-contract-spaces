@@ -1239,6 +1239,18 @@ impl PersistentValidatorNode {
                 .map(|report| RpcResult::DaRetentionAudit(Box::new(report)))
                 .map(RpcResponse::Ok)
                 .unwrap_or_else(node_rpc_error_response),
+            RpcRequest::GetDaManifestIndexByNamespace { namespace } => self
+                .storage
+                .load_da_manifest_index_by_namespace(&namespace)
+                .map(RpcResult::DaManifestIndex)
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
+            RpcRequest::GetDaManifestIndexByRetentionClass { class } => self
+                .storage
+                .load_da_manifest_index_by_retention_class(class)
+                .map(RpcResult::DaManifestIndex)
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
             RpcRequest::GetNodeHealth => RpcResponse::Ok(RpcResult::NodeHealth(Box::new(
                 self.persistent_node_health(),
             ))),
@@ -4234,6 +4246,26 @@ mod tests {
             retention_entry.expected_share_count
         );
         assert!(retention_entry.retention_satisfied);
+        let namespace_index_response =
+            node.handle_rpc_request(RpcRequest::GetDaManifestIndexByNamespace {
+                namespace: "detta.tx".into(),
+            });
+        let RpcResponse::Ok(RpcResult::DaManifestIndex(namespace_index)) = namespace_index_response
+        else {
+            panic!("expected DA namespace index, got {namespace_index_response:?}");
+        };
+        assert_eq!(namespace_index.len(), 1);
+        assert_eq!(namespace_index[0].manifest_hash, commitment.manifest_hash);
+        let retention_index_response =
+            node.handle_rpc_request(RpcRequest::GetDaManifestIndexByRetentionClass {
+                class: detta_storage::DaRetentionClass::Hot,
+            });
+        let RpcResponse::Ok(RpcResult::DaManifestIndex(retention_index)) = retention_index_response
+        else {
+            panic!("expected DA retention-class index, got {retention_index_response:?}");
+        };
+        assert_eq!(retention_index.len(), 1);
+        assert_eq!(retention_index[0].manifest_hash, commitment.manifest_hash);
         let status_response = node.handle_rpc_request(RpcRequest::GetDaStatus {
             manifest_hash: commitment.manifest_hash.clone(),
         });
