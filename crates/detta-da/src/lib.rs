@@ -1545,6 +1545,60 @@ pub fn build_reed_solomon_share_set_with_target_share_size(
     build_reed_solomon_share_set(&payload, block_hash, data_share_count, data_share_count)
 }
 
+/// Verify that a manifest's share commitment is a faithful erasure encoding of
+/// the given payload.
+///
+/// `DaManifest::validate` only proves a manifest is *internally* consistent
+/// (its `share_root` matches its `share_hashes`); it cannot, on its own, prove
+/// that those shares actually reconstruct the committed payload. Without this
+/// binding a malicious proposer can commit a manifest whose `payload_hash` and
+/// `namespace_root` match the real payload while its `share_hashes` are not a
+/// valid codeword for it, so the data is certified-available yet unrecoverable.
+///
+/// This recomputes the canonical share set deterministically from the payload
+/// using the parameters recorded in the manifest (erasure scheme, share counts,
+/// share size, block hash) and requires the rebuilt manifest to be identical.
+/// Because every honest builder derives those parameters deterministically from
+/// the payload, an honest manifest always round-trips, while any tampering with
+/// `share_root`, `share_hashes`, `share_size_bytes`, or the share counts is
+/// rejected.
+pub fn verify_manifest_commits_payload(
+    manifest: &DaManifest,
+    payload: &DaPayload,
+) -> Result<(), DaError> {
+    manifest.validate()?;
+    let canonical = payload.canonicalized();
+    canonical.validate()?;
+
+    let rebuilt = match manifest.erasure_scheme {
+        ErasureScheme::DeterministicChunks => build_da_share_set(
+            &canonical,
+            manifest.block_hash.clone(),
+            usize::try_from(manifest.share_size_bytes).map_err(|_| DaError::InvalidChunkSize)?,
+        )?,
+        ErasureScheme::ReedSolomonV1 => {
+            let parity_share_count = manifest
+                .encoded_share_count
+                .checked_sub(manifest.original_share_count)
+                .ok_or(DaError::ShareCountOverflow)?;
+            build_reed_solomon_share_set(
+                &canonical,
+                manifest.block_hash.clone(),
+                manifest.original_share_count,
+                parity_share_count,
+            )?
+        }
+    };
+
+    if &rebuilt.manifest != manifest {
+        return Err(DaError::ManifestPayloadMismatch {
+            expected: rebuilt.manifest.manifest_hash()?,
+            actual: manifest.manifest_hash()?,
+        });
+    }
+    Ok(())
+}
+
 pub fn payload_hash(payload: &DaPayload) -> Result<String, DaError> {
     payload.hash()
 }
@@ -2182,6 +2236,7 @@ pub enum DaError {
     MissingShare { index: u32 },
     TotalBytesMismatch { expected: u64, actual: u64 },
     PayloadHashMismatch { expected: String, actual: String },
+    ManifestPayloadMismatch { expected: String, actual: String },
     NamespaceRootMismatch { expected: String, actual: String },
     PayloadNotCanonical,
     ShareCountOverflow,
@@ -2647,6 +2702,42 @@ mod tests {
                     ));
                 }
             }
+        }
+    }
+
+    #[test]
+    fn verify_manifest_commits_payload_accepts_honest_and_rejects_forged_commitments() {
+        let payload = payload_with_tx_count(5);
+
+        for share_set in [
+            DaShareSet::from_payload(&payload, "block-7", 48).unwrap(),
+            DaShareSet::from_payload_reed_solomon(&payload, "block-7", 4, 2).unwrap(),
+        ] {
+            // Honest manifests round-trip against their payload.
+            verify_manifest_commits_payload(&share_set.manifest, &payload).unwrap();
+
+            // A manifest whose payload_hash/namespace_root match the real payload
+            // but whose share commitment encodes something else is rejected, even
+            // though the manifest is internally consistent.
+            let other_payload = payload_with_tx_count(6);
+            let forged_shares =
+                DaShareSet::from_payload_reed_solomon(&other_payload, "block-7", 4, 2)
+                    .unwrap()
+                    .manifest;
+            let mut forged = share_set.manifest.clone();
+            forged.share_size_bytes = forged_shares.share_size_bytes;
+            forged.original_share_count = forged_shares.original_share_count;
+            forged.encoded_share_count = forged_shares.encoded_share_count;
+            forged.reconstruction_threshold = forged_shares.reconstruction_threshold;
+            forged.erasure_scheme = forged_shares.erasure_scheme.clone();
+            forged.share_hashes = forged_shares.share_hashes.clone();
+            forged.share_root = forged_shares.share_root.clone();
+            // Internally consistent forgery, but does not commit `payload`.
+            forged.validate().unwrap();
+            assert!(matches!(
+                verify_manifest_commits_payload(&forged, &payload),
+                Err(DaError::ManifestPayloadMismatch { .. })
+            ));
         }
     }
 

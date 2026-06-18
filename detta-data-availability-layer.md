@@ -45,6 +45,12 @@ The DA layer is designed to detect or survive:
 
 - a proposer that commits a header while withholding the payload;
 - a proposer that equivocates between manifests for the same height or block;
+- a proposer that commits a manifest whose `payload_hash` and `namespace_root`
+  match the real payload but whose `share_root`/`share_hashes` are not a valid
+  erasure encoding of it. Full-payload verification rebuilds the share set
+  deterministically from the manifest parameters and rejects any manifest that
+  does not commit the payload (`verify_manifest_commits_payload`, enforced in
+  `verify_data_availability_payload`);
 - validators signing availability without verifying assigned shares;
 - peers serving shares from the wrong manifest;
 - peers serving corrupted shares;
@@ -115,7 +121,14 @@ Production v1 decisions:
 
 - Share commitments use Merkle SHA-256 roots over encoded share hashes.
 - Erasure coding uses Reed-Solomon v1; KZG commitments are deferred to a future
-  payload/manifest version.
+  payload/manifest version. Until then, coding-correctness is enforced by
+  rebinding: any node that verifies the full payload re-derives the share set
+  and rejects a manifest whose commitment does not encode the payload. A
+  custody-only voter that holds a subset of shares without the full payload
+  still cannot independently detect a coding-inconsistent manifest, so v1 relies
+  on full-payload verifiers (proposers, finalizers, archive/full nodes) to
+  enforce the binding before a certificate is treated as final. A polynomial
+  commitment (KZG) or a coding-fraud challenge would remove that reliance.
 - DA block production derives equal data/parity Reed-Solomon share counts from
   the operator-provided target share size while respecting the v1 max-share
   bound.
