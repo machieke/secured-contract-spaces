@@ -4906,6 +4906,65 @@ mod tests {
     }
 
     #[test]
+    fn da_coding_fraud_proof_rpc_detects_inconsistent_manifest() {
+        let dir = temp_dir("da-coding-fraud");
+        let mut node =
+            PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &dir).unwrap();
+        node.submit_transaction(transfer_tx()).unwrap();
+        let block = node
+            .produce_block_with_data_availability(1, 1_000, 64)
+            .unwrap();
+        let commitment = block.header.data_availability.clone().unwrap();
+        let honest = node.load_da_share_set(&commitment.manifest_hash).unwrap();
+
+        // Honest manifest: the RPC reports no coding fault and yields no proof.
+        let honest_response = node.handle_rpc_request(RpcRequest::GetDaCodingFraudProof {
+            manifest_hash: commitment.manifest_hash.clone(),
+        });
+        let RpcResponse::Ok(RpcResult::DaCodingFraud(honest_report)) = honest_response else {
+            panic!("expected DA coding fraud report, got {honest_response:?}");
+        };
+        assert!(honest_report.manifest_available);
+        assert!(!honest_report.fault_detected);
+        assert!(honest_report.proof.is_none());
+
+        // Forge a payload-hash-inconsistent manifest. The share commitment stays
+        // internally consistent (share_root is over share_hashes only), so it
+        // persists, but its data shares no longer decode to the committed payload.
+        let mut forged = honest.manifest.clone();
+        forged.payload_hash = "11".repeat(32);
+        let forged_hash = node.storage.commit_da_manifest(&forged).unwrap();
+        for share in honest
+            .shares
+            .iter()
+            .filter(|share| share.index < forged.original_share_count)
+        {
+            let mut rebound = share.clone();
+            rebound.manifest_hash = forged_hash.clone();
+            node.storage.commit_da_share(&rebound).unwrap();
+        }
+
+        let response = node.handle_rpc_request(RpcRequest::GetDaCodingFraudProof {
+            manifest_hash: forged_hash.clone(),
+        });
+        let RpcResponse::Ok(RpcResult::DaCodingFraud(report)) = response else {
+            panic!("expected DA coding fraud report, got {response:?}");
+        };
+        assert!(report.manifest_available);
+        assert_eq!(
+            report.available_data_share_count,
+            forged.original_share_count
+        );
+        assert!(report.fault_detected);
+        assert!(matches!(
+            report.fault,
+            Some(detta_da::DaCodingFault::PayloadHashMismatch { .. })
+        ));
+        let proof = report.proof.expect("coding fraud proof present");
+        proof.validate(&forged).unwrap();
+    }
+
+    #[test]
     fn persistent_node_imports_snapshot_from_da_reed_solomon_checkpoint() {
         let source_dir = temp_dir("da-snapshot-source");
         let sink_dir = temp_dir("da-snapshot-sink");
