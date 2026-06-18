@@ -1,0 +1,9 @@
+# Keep the build context small and reproducible. The Dockerfile only needs
+# Cargo.toml, Cargo.lock, and crates/ to build detta-node and detta-client.
+target/
+dist/
+.git/
+.github/
+**/*.bin
+**/*.log
+.DS_Store

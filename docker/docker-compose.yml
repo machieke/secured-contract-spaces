@@ -1,0 +1,135 @@
+# DeTTa local network.
+#
+# Spins up a fleet of DeTTa nodes that share one genesis: four validators and
+# one RPC/full node, each serving the TCP JSON-RPC on its own port. A one-shot
+# genesis-init service writes the shared genesis snapshot before the nodes boot.
+#
+#   docker compose -f docker/docker-compose.yml up --build -d
+#   docker compose -f docker/docker-compose.yml ps
+#
+# Drive a node (build the network state) and inspect it with the bundled client
+# via the `tools` profile, e.g.:
+#   docker compose -f docker/docker-compose.yml run --rm client produce-da-block --height 1 --rpc validator-1:8080
+#   docker compose -f docker/docker-compose.yml run --rm client da-stats --rpc validator-1:8080
+#
+# NOTE: the shipped `detta-node serve` daemon is RPC-driven and does NOT gossip
+# with peers. Each node is an independent replica of the same genesis; blocks are
+# produced on whichever node you send produce-block / produce-da-block to. This
+# compose stands up the node fleet, shared genesis, health checks, and a client
+# driver — it is a local development/demo network, not live multi-validator
+# consensus.
+
+name: detta-network
+
+x-detta-node: &detta-node
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile
+  image: detta-node:local
+  restart: unless-stopped
+  depends_on:
+    genesis-init:
+      condition: service_completed_successfully
+  healthcheck:
+    test: ["CMD", "detta-client", "state-root", "--rpc", "127.0.0.1:8080"]
+    interval: 10s
+    timeout: 5s
+    retries: 5
+    start_period: 10s
+
+services:
+  # One-shot: writes the shared genesis snapshot if it does not already exist.
+  genesis-init:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: detta-node:local
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        [ -f /genesis/genesis.json ] ||
+        detta-node write-genesis
+        --output /genesis/genesis.json
+        --chain-id detta-local
+        --preset defi-demo
+    volumes:
+      - genesis:/genesis
+
+  validator-1:
+    <<: *detta-node
+    container_name: detta-validator-1
+    environment:
+      DETTA_VALIDATOR_ID: validator-1
+    volumes:
+      - genesis:/genesis:ro
+      - validator-1-data:/data
+    ports:
+      - "8081:8080"
+
+  validator-2:
+    <<: *detta-node
+    container_name: detta-validator-2
+    environment:
+      DETTA_VALIDATOR_ID: validator-2
+    volumes:
+      - genesis:/genesis:ro
+      - validator-2-data:/data
+    ports:
+      - "8082:8080"
+
+  validator-3:
+    <<: *detta-node
+    container_name: detta-validator-3
+    environment:
+      DETTA_VALIDATOR_ID: validator-3
+    volumes:
+      - genesis:/genesis:ro
+      - validator-3-data:/data
+    ports:
+      - "8083:8080"
+
+  validator-4:
+    <<: *detta-node
+    container_name: detta-validator-4
+    environment:
+      DETTA_VALIDATOR_ID: validator-4
+    volumes:
+      - genesis:/genesis:ro
+      - validator-4-data:/data
+    ports:
+      - "8084:8080"
+
+  # Non-validating full node for public RPC / client access.
+  rpc:
+    <<: *detta-node
+    container_name: detta-rpc
+    environment:
+      DETTA_VALIDATOR_ID: rpc-1
+    volumes:
+      - genesis:/genesis:ro
+      - rpc-data:/data
+    ports:
+      - "8080:8080"
+
+  # Client driver. Not started by default; use `docker compose run`:
+  #   docker compose -f docker/docker-compose.yml run --rm client <subcommand> --rpc <service>:8080
+  client:
+    image: detta-node:local
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    profiles: ["tools"]
+    depends_on:
+      genesis-init:
+        condition: service_completed_successfully
+    entrypoint: ["detta-client"]
+    command: ["state-root", "--rpc", "rpc:8080"]
+
+volumes:
+  genesis:
+  validator-1-data:
+  validator-2-data:
+  validator-3-data:
+  validator-4-data:
+  rpc-data:
