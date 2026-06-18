@@ -284,7 +284,8 @@ Also query:
 - `get_da_retention_audit`.
 
 6. Compare state root, latest height, DA profile, and metadata roots against
-   at least two existing healthy nodes.
+   at least two existing healthy nodes using the root-comparison procedure in
+   §11.2. All seven roots must match the majority at equal height.
 7. Add the node to load balancers only after roots and RPC checks match.
 
 ### 4.2 Add A Validator
@@ -425,9 +426,9 @@ After backup:
 1. Restore to an isolated test directory.
 2. Start a node from the restored storage.
 3. Verify latest block, finality certificate, state root, snapshot roots, and
-   DA store roots.
+   DA store roots — compare all roots against a healthy peer per §11.2.
 4. Run DA payload reconstruction for representative hot and checkpoint
-   manifests.
+   manifests per §11.3 (`payload_reconstructable == true`).
 5. Record backup manifest, root checks, and restore result.
 
 ### 6.3 DA Retention And Pruning
@@ -459,15 +460,23 @@ After pruning:
 
 ### 6.4 Repairs
 
-When DA repair alerts fire:
+When DA repair alerts fire, follow the step-by-step share-repair procedure in
+§11.4. In summary:
 
-1. Identify the manifest with `get_da_repair_status`.
-2. Fetch missing shares from independent peers.
-3. Verify each share against the manifest share root.
-4. Reconstruct the payload once threshold shares are present.
-5. Persist repaired shares and payload.
-6. Verify `get_da_status` reports `payload_reconstructable == true`.
-7. Record invalid peer responses for possible isolation or challenge.
+1. Identify the manifest and exact missing indices with
+   `da-repair-status --manifest-hash <hash>` (`missing_share_indices`,
+   `repair_needed`).
+2. Fetch each missing share from at least two independent peers with
+   `da-share --manifest-hash <hash> --index <i>`.
+3. Shares are hash-verified against the committed `share_hash`/`share_root` on
+   ingest; non-matching shares are rejected — confirm via `da-status` that the
+   index left `missing_share_indices`.
+4. Once `stored_share_count` reaches the threshold
+   (`expected_share_count / 2` for v1), the payload reconstructs and persists.
+5. Verify `da-status` reports `payload_reconstructable == true` and
+   `reconstruction_error == null`, then re-check retention (§11.5).
+6. Record any peer that served a non-matching share for possible isolation or
+   challenge (§11.8).
 
 ### 6.5 Upgrades
 
@@ -531,23 +540,35 @@ scripts/detta-verify-release-candidate-evidence-bundle.sh <bundle>
 4. Rebuild DA indexes if needed.
 5. Start the node from restored storage.
 6. Verify state root, block height, finality certificates, snapshot metadata
-   roots, DA store roots, DA reconstruction, and retention audit.
-7. Rejoin only after roots match healthy peers.
+   roots, and DA store roots (compare all roots per §11.2), then verify DA
+   reconstruction for a representative recent and checkpoint manifest (§11.3)
+   and retention obligations (§11.5).
+7. Rejoin only after roots match healthy peers (§11.2).
 
 If no trustworthy backup exists, bootstrap from a verified snapshot or
 DA-backed checkpoint instead of trying to repair state manually.
 
 ### 7.3 Lost DA Shares Or Payloads
 
-1. Query `get_da_repair_status` for affected manifests.
-2. Fetch shares from multiple independent peers.
-3. Reject invalid shares and record peer evidence.
-4. Reconstruct payload from threshold-valid shares.
-5. Persist repaired payload and shares.
-6. Verify namespace indexes and certificate indexes.
-7. Re-run light-client sample proof checks.
-8. If signed custody cannot be served, follow DA challenge and slashing
-   incident procedures.
+Run the detailed share-repair procedure in §11.4 for each affected manifest. In
+summary:
+
+1. Query `da-repair-status --manifest-hash <hash>` for affected manifests and
+   read `missing_share_indices`.
+2. Fetch shares from multiple independent peers (§11.4 step 2); invalid shares
+   are rejected on ingest — record the serving peer as evidence.
+3. Reconstruct from threshold-valid shares and confirm
+   `payload_reconstructable == true` (§11.3).
+4. Re-verify namespace and certificate indexes:
+
+   ```sh
+   target/release/detta-client da-manifest-index-by-block --block-hash <hash> --rpc <node-rpc>
+   target/release/detta-client da-certificate-index-by-manifest --manifest-hash <hash> --rpc <node-rpc>
+   ```
+
+5. Re-run a light-client sample-proof check (§11.6).
+6. If signed custody cannot be served, follow the DA challenge/evidence path
+   (§11.8) and the DA operator runbook.
 
 ### 7.4 Validator Key Compromise
 
@@ -569,7 +590,8 @@ DA-backed checkpoint instead of trying to repair state manually.
    certificate across validators.
 3. Identify whether the halt is caused by missing quorum, bad DA manifest,
    missing DA certificate, unavailable custody shares, network partition, or
-   invalid block execution.
+   invalid block execution — use the operator-metrics decision tree in §11.8 and
+   the certificate-binding check in §11.7.
 4. Preserve all conflicting proposals, votes, DA manifests, and certificates.
 5. Remove or quarantine faulty validators through governed metadata updates.
 6. Resume only after a quorum agrees on roots and DA availability.
@@ -707,3 +729,248 @@ Escalate to the validator operator group immediately when:
 The default response is to preserve evidence first, stop unsafe signing or
 serving second, and restore service only after roots, certificates, and DA
 availability are independently verified.
+
+## 11. Detailed Verification And Repair Procedures
+
+This section gives concrete, copy-pasteable steps for the verification and fix
+actions referenced throughout the manual. Field names below are the exact
+JSON keys returned by the node. Replace `<node-rpc>` with a node's RPC address
+(for example `127.0.0.1:8080`) and `<operator-token>` with the operator bearer
+token where a method is privileged.
+
+### 11.1 Invoking RPC Methods
+
+HTTP-transport nodes accept bounded JSON `POST` requests on `/` or `/rpc`:
+
+```sh
+curl -s -X POST http://<node-rpc>/rpc \
+  -H 'content-type: application/json' \
+  -d '{"method":"get_node_health"}' | jq .
+```
+
+Privileged operator methods take a bearer-token wrapper when the node enforces
+operator authentication:
+
+```sh
+curl -s -X POST http://<node-rpc>/rpc \
+  -H 'content-type: application/json' \
+  -d '{"bearer_token":"<operator-token>","request":{"method":"get_da_retention_audit"}}' | jq .
+```
+
+TCP-transport nodes (driven by the packaged client) expose the same data through
+`target/release/detta-client <subcommand> --rpc <node-rpc>`. `jq` is optional but
+used below to extract fields.
+
+### 11.2 Verify State And Metadata Roots Match Across Nodes
+
+Use this wherever the manual says "compare roots" or "verify roots against
+healthy peers". A node is consistent only when **every** root below is identical
+to the validator majority at the **same height**.
+
+1. Capture the health report from the node under test and from two known-healthy
+   peers:
+
+   ```sh
+   for n in <node-rpc> <peer1-rpc> <peer2-rpc>; do
+     echo "== $n =="
+     curl -s -X POST http://$n/rpc -H 'content-type: application/json' \
+       -d '{"method":"get_node_health"}' \
+       | jq '{height, chain_id, global_state_root, storage_root, registry_root,
+              policy_root, event_root, nonce_root, outbox_root}'
+   done
+   ```
+
+2. Confirm `chain_id` matches and the nodes are at the **same** `height`. If
+   heights differ, let the lagging node sync and re-sample; comparing roots at
+   different heights is meaningless.
+3. At equal height, all of `global_state_root`, `storage_root`, `registry_root`,
+   `policy_root`, `event_root`, `nonce_root`, and `outbox_root` must match the
+   majority exactly.
+4. **If any root differs from the honest majority:** the node's state is
+   divergent. Do not return it to service or let it sign. Stop the node, preserve
+   the storage directory as evidence, and rebuild it from a verified backup
+   (§7.2) or a verified snapshot/DA checkpoint. Re-run this check before
+   rejoining. A persistent mismatch across multiple honest nodes is an
+   escalation trigger (§10).
+
+### 11.3 Verify A DA Payload Is Reconstructable
+
+Use this wherever the manual says "verify reconstruction" or
+"payload_reconstructable == true".
+
+1. Resolve the manifest hash for the height of interest:
+
+   ```sh
+   target/release/detta-client da-manifest-index-by-height --height <h> --rpc <node-rpc>
+   ```
+
+   Record the `manifest_hash` from the returned `DaManifestIndexEntry`.
+
+2. Query DA status for that manifest:
+
+   ```sh
+   target/release/detta-client da-status --manifest-hash <manifest_hash> --rpc <node-rpc>
+   ```
+
+3. Read the `DaStatusReport` fields:
+   - `payload_reconstructable` must be `true`.
+   - `stored_share_count` must be `>=` the manifest reconstruction threshold
+     (for the v1 equal data/parity profile this is `expected_share_count / 2`).
+   - `missing_share_indices` lists shares to repair; it may be non-empty even
+     when `payload_reconstructable` is `true` (you still hold a threshold), but
+     a retention policy with `retain_all_shares` is not satisfied until it is
+     empty (§11.5).
+   - `manifest_available` and, when finalized, `certificate_available` must be
+     `true`; `reconstruction_error` must be `null`.
+4. **If `payload_reconstructable` is `false`:** the node lacks a threshold of
+   valid shares. Run the share-repair procedure in §11.4. If `reconstruction_error`
+   is set, it names the failing check (for example a share-hash or
+   payload-hash mismatch), which indicates corrupted local shares rather than
+   merely missing ones — preserve them as evidence and re-fetch from independent
+   peers.
+
+### 11.4 Repair Missing Or Corrupted DA Shares
+
+Use this for §6.4 (Repairs) and §7.3 (Lost DA Shares Or Payloads).
+
+1. Identify the affected manifest and the exact missing shares:
+
+   ```sh
+   target/release/detta-client da-repair-status --manifest-hash <hash> --rpc <node-rpc>
+   ```
+
+   In the `DaRepairStatusReport`, `repair_needed`, `missing_share_indices`, and
+   `pending_repair_count` define the work; `payload_reconstructable` tells you
+   whether reconstruction is currently possible at all.
+
+2. Fetch each missing share from **independent** peers (vary `--rpc` across at
+   least two operators so a single bad source cannot dictate the result):
+
+   ```sh
+   target/release/detta-client da-share --manifest-hash <hash> --index <i> --rpc <peer-rpc>
+   ```
+
+3. Verify every fetched share before trusting it. The node validates a share's
+   bytes against the committed `share_hash` and the manifest `share_root` on
+   ingest, so a share from a peer that does not match is rejected automatically;
+   confirm by re-running `da-status` and checking the share moved out of
+   `missing_share_indices`. Record any peer that served a non-matching share for
+   possible isolation or challenge (§11.8).
+4. Once `stored_share_count` reaches the reconstruction threshold, confirm the
+   payload reconstructs and is persisted:
+
+   ```sh
+   target/release/detta-client da-status --manifest-hash <hash> --rpc <node-rpc>
+   ```
+
+   Require `payload_reconstructable == true` and `reconstruction_error == null`.
+5. Re-verify retention obligations (§11.5) and, if checkpoint shares were
+   touched, re-run a sample-proof check (§11.6).
+6. **If shares cannot be obtained from any honest peer** and signed custody
+   cannot be served, escalate and follow the DA challenge/slashing path
+   (§11.8 and `detta-da-operator-runbook.md`).
+
+### 11.5 Verify DA Retention Obligations
+
+Use this wherever the manual says "verify retention is satisfied".
+
+```sh
+target/release/detta-client da-retention-audit --rpc <node-rpc>
+```
+
+In the `DaRetentionAuditReport`:
+
+- `unsatisfied_manifest_count` must be `0`. If non-zero, inspect `entries` for
+  any item whose `retention_satisfied` is `false`.
+- For each unsatisfied entry, `payload_retention_satisfied` and
+  `share_retention_satisfied` localize the gap: a missing payload
+  (`payload_present == false`) versus missing shares (`stored_share_count` <
+  `expected_share_count` while the class sets `retain_all_shares == true`).
+- `class` (`Hot`/`Warm`/`Cold`/`Checkpoint`) and `min_retention_blocks` show why
+  the obligation still applies; `expired == true` means the obligation has
+  lapsed and the data is a legitimate prune candidate (§6.3).
+
+**Fix:** for a payload gap, reconstruct and persist it from shares (§11.4); for a
+share gap on a `retain_all_shares` class, repair the missing shares (§11.4). Never
+clear an unsatisfied obligation by pruning — confirm `retention_satisfied`
+becomes `true` after repair.
+
+### 11.6 Verify Light-Client Sample Proofs
+
+Use this for weekly checks and after touching checkpoint shares.
+
+```sh
+target/release/detta-client da-sample-proofs --manifest-hash <hash> \
+  --client-randomness <bytes> --sample-count <n> --rpc <node-rpc>
+```
+
+The response carries the deterministic `schedule` (derived from manifest hash,
+block hash, and your `client-randomness`), one `sample_proof` per scheduled
+index, optional `namespace_proofs`, and a `verification` report. Require
+`verification.valid == true` and `verification.verified_share_count` equal to the
+scheduled sample count. A failure means a sampled share did not prove inclusion
+against the committed `share_root`; treat the serving node's data as suspect and
+repair/re-fetch (§11.4).
+
+### 11.7 Verify A DA Certificate Binds Its Block
+
+Use this when diagnosing a finality stall (§7.5) or a disputed block.
+
+1. Fetch the block header's DA commitment (`manifest_hash`, `payload_root`,
+   `share_root`, `certificate_hash`) and the manifest and certificate:
+
+   ```sh
+   target/release/detta-client da-manifest --manifest-hash <hash> --rpc <node-rpc>
+   target/release/detta-client da-certificate --certificate-hash <chash> --rpc <node-rpc>
+   ```
+
+2. Confirm the chain binds end to end: the manifest's `payload_hash`,
+   `share_root`, `chain_id`, `height`, and `block_hash` must match the header
+   commitment; the certificate's `manifest_hash`/`share_root`/`height`/
+   `block_hash` must match the manifest; and the certificate `signers` must all
+   be members of the active validator set and reach quorum.
+3. **If any binding fails**, the certificate does not certify this block.
+   Preserve the conflicting manifest/certificate, do not finalize on it, and
+   escalate (§10). A manifest whose `share_root` does not encode its
+   `payload_hash` is coding fraud; see §11.8.
+
+### 11.8 Diagnose A Finality Stall And File DA Evidence
+
+1. Quantify the stall from operator metrics on each validator:
+
+   ```sh
+   curl -s -X POST http://<node-rpc>/rpc -H 'content-type: application/json' \
+     -d '{"bearer_token":"<operator-token>","request":{"method":"get_operator_metrics"}}' \
+     | jq '{consensus_height, highest_finalized_height, finality_lag, peer_count,
+            da_missing_share_count, da_custody_failure_count,
+            da_pending_repair_record_count, da_oldest_pending_repair_age_blocks}'
+   ```
+
+2. Localize the cause:
+   - `finality_lag` rising with healthy `peer_count` and zero DA counters points
+     to a consensus/quorum problem, not DA — compare proposals and votes across
+     validators and check for equivocation.
+   - non-zero `da_missing_share_count` or `da_pending_repair_record_count`, or a
+     large `da_oldest_pending_repair_age_blocks`, points to a DA availability
+     stall — run §11.3/§11.4 on the stalled height's manifest.
+   - non-zero `da_custody_failure_count` means a validator signed availability it
+     cannot serve — identify it and prepare evidence.
+3. File evidence for the relevant fault:
+   - **Withheld/invalid challenged share:** open and track a share challenge.
+
+     ```sh
+     target/release/detta-client da-challenge --challenge-id <hash> --rpc <node-rpc>
+     ```
+
+     A challenge that expires without a valid response, or returns an invalid
+     share, becomes slashable challenge evidence — follow
+     `detta-da-operator-runbook.md`.
+   - **Coding-inconsistent manifest** (its committed shares do not encode the
+     committed payload): this is provable from the proposer's own data shares
+     and slashes the block proposer. Capture the manifest and the
+     `original_share_count` data shares and hand them to the validator group's
+     evidence process per `detta-da-operator-runbook.md` and
+     `detta-data-availability-layer.md`.
+4. Preserve all conflicting proposals, votes, manifests, and certificates before
+   removing or quarantining any validator through governed metadata updates
+   (§5.2). Resume only after a quorum agrees on roots and DA availability.
