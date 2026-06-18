@@ -1678,7 +1678,9 @@ impl DaCodingFraudProof {
             )));
         }
         if self.reporter_id.is_empty() {
-            return Err(DaError::InvalidCodingFraudProof("reporter_id is empty".into()));
+            return Err(DaError::InvalidCodingFraudProof(
+                "reporter_id is empty".into(),
+            ));
         }
         let manifest_hash = manifest.manifest_hash()?;
         if self.manifest_hash != manifest_hash

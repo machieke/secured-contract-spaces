@@ -112,6 +112,7 @@
           "get_da_sample_proofs",
           "get_da_status",
           "get_da_repair_status",
+          "get_da_coding_fraud_proof",
           "get_da_storage_stats",
           "get_da_retention_audit",
           "get_da_retention_prune_plan",

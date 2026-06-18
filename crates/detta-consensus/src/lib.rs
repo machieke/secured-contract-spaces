@@ -852,7 +852,10 @@ pub fn verify_data_availability_payload(
     // payload while its `share_root`/`share_hashes` encode something else,
     // letting a malicious proposer certify availability for data that no honest
     // party can reconstruct.
-    validate_da_result(verify_manifest_commits_payload(manifest, &canonical_payload))?;
+    validate_da_result(verify_manifest_commits_payload(
+        manifest,
+        &canonical_payload,
+    ))?;
 
     let payload_hash = validate_da_result(canonical_payload.hash())?;
     let namespace_root = validate_da_result(canonical_payload.namespace_root())?;
@@ -2284,7 +2287,8 @@ mod tests {
             fresh.record_data_availability_coding_fault(
                 &other_block,
                 &forged,
-                DaCodingFraudProof::from_committed_data_shares(&forged, &data_shares, "v2").unwrap(),
+                DaCodingFraudProof::from_committed_data_shares(&forged, &data_shares, "v2")
+                    .unwrap(),
                 13,
             ),
             Err(ConsensusError::DataAvailabilityMismatch { .. })

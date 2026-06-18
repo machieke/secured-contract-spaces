@@ -7,8 +7,8 @@ use detta_core::{
     StorageProof, Transaction, UpgradeRehearsalReport, ValidatorNode,
 };
 use detta_da::{
-    DaAvailabilityCertificate, DaChallengeRecord, DaManifest, DaNamespaceSection, DaPayload,
-    DaProductionProfile, DaSampleProofBundle, DaShare,
+    DaAvailabilityCertificate, DaChallengeRecord, DaCodingFault, DaCodingFraudProof, DaManifest,
+    DaNamespaceSection, DaPayload, DaProductionProfile, DaSampleProofBundle, DaShare,
 };
 use detta_evaluator::{
     canonical_script_source, parse_restricted_script, restricted_evaluator_fixture_inventory,
@@ -270,6 +270,9 @@ pub enum RpcRequest {
     GetDaRepairStatus {
         manifest_hash: String,
     },
+    GetDaCodingFraudProof {
+        manifest_hash: String,
+    },
     GetDaStorageStats,
     GetDaRetentionAudit,
     GetDaRetentionPrunePlan,
@@ -402,7 +405,10 @@ impl RpcRequest {
             RpcRequest::GetDaManifest { manifest_hash }
             | RpcRequest::GetDaPayload { manifest_hash }
             | RpcRequest::GetDaStatus { manifest_hash }
-            | RpcRequest::GetDaRepairStatus { manifest_hash } => validate_da_rpc_id(manifest_hash),
+            | RpcRequest::GetDaRepairStatus { manifest_hash }
+            | RpcRequest::GetDaCodingFraudProof { manifest_hash } => {
+                validate_da_rpc_id(manifest_hash)
+            }
             RpcRequest::GetDaShare { manifest_hash, .. } => validate_da_rpc_id(manifest_hash),
             RpcRequest::GetDaCertificate { certificate_hash } => {
                 validate_da_rpc_id(certificate_hash)
@@ -513,6 +519,21 @@ pub struct DaRepairStatusReport {
     pub pending_repair_count: usize,
     pub payload_reconstructable: bool,
     pub reconstruction_error: Option<String>,
+}
+
+/// Result of evaluating whether a locally stored manifest's committed shares are
+/// a valid erasure encoding of its committed payload, built from the proposer's
+/// own committed data shares.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaCodingFraudReport {
+    pub manifest_hash: String,
+    pub manifest_available: bool,
+    pub expected_data_share_count: u32,
+    pub available_data_share_count: u32,
+    pub fault_detected: bool,
+    pub fault: Option<DaCodingFault>,
+    pub proof: Option<DaCodingFraudProof>,
+    pub detail: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -852,6 +873,7 @@ pub enum RpcResult {
     DaSampleProofs(Box<DaSampleProofBundle>),
     DaStatus(Box<DaStatusReport>),
     DaRepairStatus(Box<DaRepairStatusReport>),
+    DaCodingFraud(Box<DaCodingFraudReport>),
     DaStorageStats(DaStorageStats),
     DaRetentionAudit(Box<DaRetentionAuditReport>),
     DaRetentionPrunePlan(Box<DaRetentionPrunePlanReport>),
@@ -1627,6 +1649,7 @@ impl RpcService {
             | RpcRequest::GetDaSampleProofs { .. }
             | RpcRequest::GetDaStatus { .. }
             | RpcRequest::GetDaRepairStatus { .. }
+            | RpcRequest::GetDaCodingFraudProof { .. }
             | RpcRequest::GetDaStorageStats
             | RpcRequest::GetDaRetentionAudit
             | RpcRequest::GetDaRetentionPrunePlan
@@ -2269,6 +2292,7 @@ mod tests {
             "get_da_sample_proofs",
             "get_da_status",
             "get_da_repair_status",
+            "get_da_coding_fraud_proof",
             "get_da_storage_stats",
             "get_da_retention_audit",
             "get_da_retention_prune_plan",

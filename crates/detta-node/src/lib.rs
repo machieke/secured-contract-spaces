@@ -10,10 +10,10 @@ use detta_core::{
 use detta_da::{
     derive_sample_schedule, prove_namespace, prove_share_inclusion,
     validate_production_block_payload, verify_light_client_samples, verify_share_against_manifest,
-    DaAvailabilityCertificate, DaAvailabilityVote, DaChallengeEvidence, DaChallengeRecord, DaError,
-    DaManifest, DaNamespace, DaNamespaceSection, DaPayload, DaProductionProfile, DaRecord,
-    DaSampleProof, DaSampleProofBundle, DaShare, DaShareChallenge, DaShareChallengeResponse,
-    DaShareSet,
+    DaAvailabilityCertificate, DaAvailabilityVote, DaChallengeEvidence, DaChallengeRecord,
+    DaCodingFraudProof, DaError, DaManifest, DaNamespace, DaNamespaceSection, DaPayload,
+    DaProductionProfile, DaRecord, DaSampleProof, DaSampleProofBundle, DaShare, DaShareChallenge,
+    DaShareChallengeResponse, DaShareSet,
 };
 use detta_network::{Envelope, InMemoryTransport, NetworkError, NetworkMessage, TcpProtocolStream};
 use detta_protocol::{
@@ -27,9 +27,9 @@ use detta_protocol::{
     SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT,
 };
 use detta_rpc::{
-    json_rpc_response_for_request, BlockPage, DaRepairStatusReport, DaStatusReport, JsonRpcHandler,
-    NodeHealthReport, OperatorAlert, OperatorAlertPolicy, OperatorAlertReport,
-    OperatorAlertSeverity, OperatorMetricsReport, PersistentNodeSnapshotRoots,
+    json_rpc_response_for_request, BlockPage, DaCodingFraudReport, DaRepairStatusReport,
+    DaStatusReport, JsonRpcHandler, NodeHealthReport, OperatorAlert, OperatorAlertPolicy,
+    OperatorAlertReport, OperatorAlertSeverity, OperatorMetricsReport, PersistentNodeSnapshotRoots,
     RequiredSnapshotMetadataRootsReport, RpcError, RpcErrorBody, RpcRequest, RpcResponse,
     RpcResult, RpcService, RpcTransportError, SnapshotMetadataRootStatus,
     SnapshotSyncClientMetricsReport, ValidatorSetMetadataUpdateStatus, DEFAULT_MAX_BLOCK_PAGE_SIZE,
@@ -1236,6 +1236,11 @@ impl PersistentValidatorNode {
             RpcRequest::GetDaRepairStatus { manifest_hash } => self
                 .da_repair_status(&manifest_hash)
                 .map(|status| RpcResult::DaRepairStatus(Box::new(status)))
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(node_rpc_error_response),
+            RpcRequest::GetDaCodingFraudProof { manifest_hash } => self
+                .da_coding_fraud_proof(&manifest_hash)
+                .map(|report| RpcResult::DaCodingFraud(Box::new(report)))
                 .map(RpcResponse::Ok)
                 .unwrap_or_else(node_rpc_error_response),
             RpcRequest::GetDaStorageStats => self
@@ -2891,6 +2896,98 @@ impl PersistentValidatorNode {
             payload_reconstructable: status.payload_reconstructable,
             reconstruction_error: status.reconstruction_error,
         })
+    }
+
+    /// Evaluate whether a locally stored manifest's committed shares are a valid
+    /// erasure encoding of its committed payload, building a transferable,
+    /// slashable coding-fraud proof from the proposer's own committed data shares
+    /// when they are not. Requires the manifest and all `original_share_count`
+    /// data shares to be locally present; coding correctness cannot be judged
+    /// from a partial share set.
+    pub fn da_coding_fraud_proof(
+        &self,
+        manifest_hash: &str,
+    ) -> Result<DaCodingFraudReport, NodeError> {
+        let Some(manifest) = self
+            .storage
+            .maybe_load_da_manifest(manifest_hash)
+            .map_err(NodeError::Storage)?
+        else {
+            return Ok(DaCodingFraudReport {
+                manifest_hash: manifest_hash.into(),
+                manifest_available: false,
+                expected_data_share_count: 0,
+                available_data_share_count: 0,
+                fault_detected: false,
+                fault: None,
+                proof: None,
+                detail: Some("manifest not found".into()),
+            });
+        };
+
+        let mut data_shares = Vec::new();
+        for index in 0..manifest.original_share_count {
+            if let Some(share) = self
+                .storage
+                .maybe_load_da_share(manifest_hash, index)
+                .map_err(NodeError::Storage)?
+            {
+                data_shares.push(share);
+            }
+        }
+        let available_data_share_count = data_shares.len() as u32;
+
+        if available_data_share_count < manifest.original_share_count {
+            return Ok(DaCodingFraudReport {
+                manifest_hash: manifest_hash.into(),
+                manifest_available: true,
+                expected_data_share_count: manifest.original_share_count,
+                available_data_share_count,
+                fault_detected: false,
+                fault: None,
+                proof: None,
+                detail: Some(format!(
+                    "{available_data_share_count} of {} data shares available; cannot evaluate coding correctness",
+                    manifest.original_share_count
+                )),
+            });
+        }
+
+        let reporter_id = self.validator_id.clone();
+        match DaCodingFraudProof::from_committed_data_shares(&manifest, &data_shares, reporter_id) {
+            Ok(proof) => Ok(DaCodingFraudReport {
+                manifest_hash: manifest_hash.into(),
+                manifest_available: true,
+                expected_data_share_count: manifest.original_share_count,
+                available_data_share_count,
+                fault_detected: true,
+                fault: Some(proof.fault.clone()),
+                proof: Some(proof),
+                detail: Some("manifest does not commit a valid encoding of its payload".into()),
+            }),
+            Err(DaError::InvalidCodingFraudProof(_)) => Ok(DaCodingFraudReport {
+                manifest_hash: manifest_hash.into(),
+                manifest_available: true,
+                expected_data_share_count: manifest.original_share_count,
+                available_data_share_count,
+                fault_detected: false,
+                fault: None,
+                proof: None,
+                detail: Some("manifest commits a valid encoding of its payload".into()),
+            }),
+            Err(error) => Ok(DaCodingFraudReport {
+                manifest_hash: manifest_hash.into(),
+                manifest_available: true,
+                expected_data_share_count: manifest.original_share_count,
+                available_data_share_count,
+                fault_detected: false,
+                fault: None,
+                proof: None,
+                detail: Some(format!(
+                    "could not evaluate coding correctness from local shares: {error:?}"
+                )),
+            }),
+        }
     }
 
     pub fn da_retention_audit(&self) -> Result<DaRetentionAuditReport, NodeError> {
@@ -4619,6 +4716,24 @@ mod tests {
         assert!(!repair_status.repair_needed);
         assert_eq!(repair_status.pending_repair_count, 0);
         assert!(repair_status.missing_share_indices.is_empty());
+
+        let coding_response = node.handle_rpc_request(RpcRequest::GetDaCodingFraudProof {
+            manifest_hash: commitment.manifest_hash.clone(),
+        });
+        let RpcResponse::Ok(RpcResult::DaCodingFraud(coding)) = coding_response else {
+            panic!("expected DA coding fraud report, got {coding_response:?}");
+        };
+        assert!(coding.manifest_available);
+        assert!(!coding.fault_detected);
+        assert!(coding.proof.is_none());
+        assert_eq!(
+            coding.available_data_share_count,
+            share_set.manifest.original_share_count
+        );
+        assert_eq!(
+            coding.detail.as_deref(),
+            Some("manifest commits a valid encoding of its payload")
+        );
 
         let restarted = PersistentValidatorNode::restart("validator-1", &dir).unwrap();
         assert_eq!(

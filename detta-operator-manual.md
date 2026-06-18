@@ -681,6 +681,7 @@ detta-client da-sample-proofs --manifest-hash <hash> \
   --client-randomness <bytes> --sample-count <n> [--namespaces <csv>]
 detta-client da-status --manifest-hash <hash>
 detta-client da-repair-status --manifest-hash <hash>
+detta-client da-coding-fraud-proof --manifest-hash <hash>
 detta-client da-stats
 detta-client da-retention-audit
 detta-client da-retention-prune-plan
@@ -967,10 +968,21 @@ Use this when diagnosing a finality stall (§7.5) or a disputed block.
      `detta-da-operator-runbook.md`.
    - **Coding-inconsistent manifest** (its committed shares do not encode the
      committed payload): this is provable from the proposer's own data shares
-     and slashes the block proposer. Capture the manifest and the
-     `original_share_count` data shares and hand them to the validator group's
-     evidence process per `detta-da-operator-runbook.md` and
-     `detta-data-availability-layer.md`.
+     and slashes the block proposer. On a node that holds the manifest and all
+     data shares, evaluate and capture the proof directly:
+
+     ```sh
+     target/release/detta-client da-coding-fraud-proof --manifest-hash <hash> --rpc <node-rpc>
+     ```
+
+     In the `DaCodingFraudReport`, `fault_detected == true` with a populated
+     `proof` and `fault` (`ParityMismatch` or `PayloadHashMismatch`) is
+     slashable coding fraud; retain the `proof` and submit it through the
+     validator group's evidence process per `detta-da-operator-runbook.md` and
+     `detta-data-availability-layer.md`. `fault_detected == false` with detail
+     "manifest commits a valid encoding of its payload" clears the manifest; a
+     detail noting fewer data shares than expected means coding correctness
+     cannot be judged locally — fetch the remaining data shares first (§11.4).
 4. Preserve all conflicting proposals, votes, manifests, and certificates before
    removing or quarantining any validator through governed metadata updates
    (§5.2). Resume only after a quorum agrees on roots and DA availability.

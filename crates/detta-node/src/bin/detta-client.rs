@@ -140,6 +140,12 @@ fn run(args: Vec<String>) -> Result<(), String> {
             })?;
             print_json(&result)
         }
+        "da-coding-fraud-proof" => {
+            let result = client.ok(RpcRequest::GetDaCodingFraudProof {
+                manifest_hash: options.required("manifest-hash")?,
+            })?;
+            print_json(&result)
+        }
         "da-stats" => {
             let result = client.ok(RpcRequest::GetDaStorageStats)?;
             print_json(&result)
@@ -558,6 +564,7 @@ fn usage() -> String {
   detta-client da-sample-proofs --manifest-hash <hash> --client-randomness <bytes> --sample-count <n> [--namespaces <csv>]
   detta-client da-status --manifest-hash <hash>
   detta-client da-repair-status --manifest-hash <hash>
+  detta-client da-coding-fraud-proof --manifest-hash <hash>
   detta-client da-stats
   detta-client da-retention-audit
   detta-client da-retention-prune-plan

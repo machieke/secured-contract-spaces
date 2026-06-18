@@ -165,6 +165,11 @@ Persistent validator nodes additionally handle:
   manifest hash.
 - `get_da_repair_status`: report whether a manifest currently needs repair,
   which share indices are missing, and whether payload reconstruction succeeds.
+- `get_da_coding_fraud_proof`: evaluate whether a locally stored manifest's
+  committed shares are a valid erasure encoding of its committed payload, and
+  return a transferable, slashable coding-fraud proof built from the proposer's
+  own committed data shares when they are not. Requires the manifest and all
+  data shares to be locally present.
 - `get_da_storage_stats`: report persisted experimental DA manifest count,
   expected shares, stored shares, missing shares, reconstructed payloads,
   challenge and repair records, validated index files, and DA byte totals.

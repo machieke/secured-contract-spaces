@@ -336,6 +336,13 @@ fn public_rpc_method_coverage_guard_calls_every_openapi_method() {
             manifest_hash: da_manifest_hash.clone(),
         },
     );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetDaCodingFraudProof {
+            manifest_hash: da_manifest_hash.clone(),
+        },
+    );
     call_ok(&mut client, &mut covered, RpcRequest::GetDaStorageStats);
     call_ok(&mut client, &mut covered, RpcRequest::GetDaRetentionAudit);
     call_ok(
