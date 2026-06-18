@@ -41,6 +41,8 @@ clients.
   verify against the manifest.
 - [x] Signed DA availability votes can be verified and aggregated into a
   canonical DA certificate when quorum votes bind the same manifest.
+- [x] Production DA vote aggregation counts only votes that declare the
+  validator's deterministic v1 custody share assignment.
 - [x] Persistent nodes can produce a DA v1-committed block, persist
   the matching share set, and reload it after restart.
 - [x] Persistent node RPC and packaged `detta-client` expose
@@ -822,7 +824,8 @@ Acceptance:
 - [x] Gossip manifest and shares with proposal.
 - [x] Assign deterministic validator custody/share sampling.
 - [x] Verify shares before signing DA vote.
-- [x] Aggregate DA votes into DA certificate.
+- [x] Aggregate DA votes into DA certificate only when matching votes carry
+  the validator's deterministic production custody assignment.
 - [x] Persist experimental DA certificate records.
 
 Acceptance:

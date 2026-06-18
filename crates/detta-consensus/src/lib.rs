@@ -4,8 +4,9 @@ use detta_core::{
     ValidatorNode,
 };
 use detta_da::{
-    validate_production_block_payload, DaAvailabilityCertificate, DaAvailabilityVote,
-    DaChallengeEvidence, DaChallengeFault, DaManifest, DaPayload, DaProductionProfile, DaRecord,
+    assigned_custody_share_indices, validate_production_block_payload, DaAvailabilityCertificate,
+    DaAvailabilityVote, DaChallengeEvidence, DaChallengeFault, DaManifest, DaPayload,
+    DaProductionProfile, DaRecord,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -544,6 +545,14 @@ impl ConsensusCluster {
         quorum: usize,
     ) -> Result<DaAvailabilityCertificate, ConsensusError> {
         validate_da_result(manifest.validate())?;
+        let production_profile = DaProductionProfile::v1();
+        validate_da_result(production_profile.validate())?;
+        if manifest.erasure_scheme != production_profile.erasure_scheme {
+            return Err(ConsensusError::DataAvailabilityInvalid(format!(
+                "production DA vote aggregation manifest erasure scheme {:?} does not match profile {:?}",
+                manifest.erasure_scheme, production_profile.erasure_scheme
+            )));
+        }
         let manifest_hash = validate_da_result(manifest.manifest_hash())?;
         let mut signers = BTreeSet::new();
 
@@ -555,6 +564,7 @@ impl ConsensusCluster {
                 && vote.manifest_hash == manifest_hash
                 && vote.share_root == manifest.share_root
             {
+                validate_da_vote_matches_production_profile(&vote, manifest, &production_profile)?;
                 signers.insert(vote.validator_id);
             }
         }
@@ -590,6 +600,35 @@ impl ConsensusCluster {
         }
         None
     }
+}
+
+fn validate_da_vote_matches_production_profile(
+    vote: &DaAvailabilityVote,
+    manifest: &DaManifest,
+    profile: &DaProductionProfile,
+) -> Result<(), ConsensusError> {
+    let expected_custody_share_indices = validate_da_result(assigned_custody_share_indices(
+        manifest,
+        &vote.validator_id,
+        profile.min_custody_share_count,
+    ))?;
+    if vote.custody_share_indices != expected_custody_share_indices {
+        return Err(ConsensusError::DataAvailabilityInvalid(format!(
+            "DA availability vote from {} does not declare expected custody shares {:?}",
+            vote.validator_id, expected_custody_share_indices
+        )));
+    }
+    if let Some(out_of_range) = vote
+        .sampled_share_indices
+        .iter()
+        .find(|index| **index >= manifest.encoded_share_count)
+    {
+        return Err(ConsensusError::DataAvailabilityInvalid(format!(
+            "DA availability vote from {} declares sampled share index {} outside encoded share count {}",
+            vote.validator_id, out_of_range, manifest.encoded_share_count
+        )));
+    }
+    Ok(())
 }
 
 fn ordered_hash_pair(left: &str, right: &str) -> (String, String) {
@@ -1153,6 +1192,20 @@ mod tests {
             certificate_hash: Some(certificate_hash),
         });
         (share_set.manifest, certificate)
+    }
+
+    fn da_custody_vote(manifest: &DaManifest, validator_id: &str) -> DaAvailabilityVote {
+        let profile = DaProductionProfile::v1();
+        let custody_share_indices =
+            assigned_custody_share_indices(manifest, validator_id, profile.min_custody_share_count)
+                .unwrap();
+        DaAvailabilityVote::from_manifest_with_custody(
+            manifest,
+            validator_id,
+            custody_share_indices,
+            Vec::<u32>::new(),
+        )
+        .unwrap()
     }
 
     fn da_payload_for_test_block(
@@ -1996,11 +2049,11 @@ mod tests {
     #[test]
     fn da_votes_aggregate_only_matching_manifest_commitments() {
         let (_, _, manifest, _) = da_certified_block(vec!["v1", "v2", "v3"]);
-        let mut wrong_manifest_vote = DaAvailabilityVote::from_manifest(&manifest, "v3").unwrap();
+        let mut wrong_manifest_vote = da_custody_vote(&manifest, "v3");
         wrong_manifest_vote.manifest_hash = "other-manifest".into();
         let votes = vec![
-            DaAvailabilityVote::from_manifest(&manifest, "v1").unwrap(),
-            DaAvailabilityVote::from_manifest(&manifest, "v2").unwrap(),
+            da_custody_vote(&manifest, "v1"),
+            da_custody_vote(&manifest, "v2"),
             wrong_manifest_vote,
         ];
 
@@ -2016,6 +2069,21 @@ mod tests {
                 required: 3,
             })
         );
+    }
+
+    #[test]
+    fn da_vote_aggregation_rejects_missing_profile_custody_claims() {
+        let (_, _, manifest, _) = da_certified_block(vec!["v1", "v2", "v3"]);
+        let votes = vec![
+            DaAvailabilityVote::from_manifest(&manifest, "v1").unwrap(),
+            DaAvailabilityVote::from_manifest(&manifest, "v2").unwrap(),
+        ];
+
+        assert!(matches!(
+            ConsensusCluster::data_availability_certificate_from_votes(&manifest, votes, 2),
+            Err(ConsensusError::DataAvailabilityInvalid(message))
+                if message.contains("expected custody shares")
+        ));
     }
 
     #[test]
