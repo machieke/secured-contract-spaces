@@ -9,6 +9,7 @@ pub const DA_CERTIFICATE_SCHEMA: &str = "detta.da-certificate.v1";
 pub const DA_CHALLENGE_SCHEMA: &str = "detta.da-share-challenge.v1";
 pub const DA_CHALLENGE_EVIDENCE_SCHEMA: &str = "detta.da-challenge-evidence.v1";
 pub const DA_SAMPLE_PROOF_SCHEMA: &str = "detta.da-sample-proof.v1";
+pub const DA_CODING_FRAUD_PROOF_SCHEMA: &str = "detta.da-coding-fraud-proof.v1";
 pub const DA_PAYLOAD_SCHEMA: &str = "detta.da-payload.v1";
 pub const DA_PRODUCTION_PROFILE_SCHEMA: &str = "detta.da-production-profile.v1";
 pub const DA_PAYLOAD_VERSION: u32 = 1;
@@ -1599,6 +1600,185 @@ pub fn verify_manifest_commits_payload(
     Ok(())
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum DaCodingFault {
+    /// Re-encoding the committed data shares yields a parity share whose hash
+    /// differs from the manifest's committed parity share hash.
+    ParityMismatch { share_index: u32 },
+    /// The committed data shares decode to payload bytes whose hash differs from
+    /// the manifest's committed `payload_hash`.
+    PayloadHashMismatch { expected: String, actual: String },
+}
+
+/// Transferable, slashable evidence that a manifest's committed shares are not a
+/// valid erasure encoding of its committed payload.
+///
+/// Unlike [`verify_manifest_commits_payload`], which requires the asserted-correct
+/// payload, this is derived purely from the proposer's own committed data shares
+/// (each bound to the manifest by hash). A node that fetched the
+/// `original_share_count` data shares from the network — without ever being handed
+/// a "claimed" payload — can produce this proof, and any third party holding only
+/// the manifest can verify it before acting on it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaCodingFraudProof {
+    pub schema: String,
+    pub schema_version: u32,
+    pub chain_id: ChainId,
+    pub height: u64,
+    pub block_hash: String,
+    pub manifest_hash: String,
+    pub share_root: String,
+    pub reporter_id: String,
+    pub data_shares: Vec<DaShare>,
+    pub fault: DaCodingFault,
+}
+
+impl DaCodingFraudProof {
+    pub fn from_committed_data_shares(
+        manifest: &DaManifest,
+        data_shares: &[DaShare],
+        reporter_id: impl Into<String>,
+    ) -> Result<Self, DaError> {
+        let fault = detect_da_coding_fault(manifest, data_shares)?.ok_or_else(|| {
+            DaError::InvalidCodingFraudProof(
+                "committed data shares form a valid encoding of the committed payload".into(),
+            )
+        })?;
+        let proof = Self {
+            schema: DA_CODING_FRAUD_PROOF_SCHEMA.into(),
+            schema_version: 1,
+            chain_id: manifest.chain_id.clone(),
+            height: manifest.height,
+            block_hash: manifest.block_hash.clone(),
+            manifest_hash: manifest.manifest_hash()?,
+            share_root: manifest.share_root.clone(),
+            reporter_id: reporter_id.into(),
+            data_shares: data_shares.to_vec(),
+            fault,
+        };
+        proof.validate(manifest)?;
+        Ok(proof)
+    }
+
+    pub fn proof_hash(&self) -> Result<String, DaError> {
+        hash_canonical(self)
+    }
+
+    pub fn validate(&self, manifest: &DaManifest) -> Result<(), DaError> {
+        if self.schema != DA_CODING_FRAUD_PROOF_SCHEMA {
+            return Err(DaError::InvalidCodingFraudProof(format!(
+                "unexpected coding fraud proof schema {}",
+                self.schema
+            )));
+        }
+        if self.schema_version != 1 {
+            return Err(DaError::InvalidCodingFraudProof(format!(
+                "unexpected coding fraud proof schema version {}",
+                self.schema_version
+            )));
+        }
+        if self.reporter_id.is_empty() {
+            return Err(DaError::InvalidCodingFraudProof("reporter_id is empty".into()));
+        }
+        let manifest_hash = manifest.manifest_hash()?;
+        if self.manifest_hash != manifest_hash
+            || self.chain_id != manifest.chain_id
+            || self.height != manifest.height
+            || self.block_hash != manifest.block_hash
+            || self.share_root != manifest.share_root
+        {
+            return Err(DaError::InvalidCodingFraudProof(
+                "coding fraud proof does not match manifest".into(),
+            ));
+        }
+        let detected = detect_da_coding_fault(manifest, &self.data_shares)?.ok_or_else(|| {
+            DaError::InvalidCodingFraudProof(
+                "committed data shares form a valid encoding of the committed payload".into(),
+            )
+        })?;
+        if detected != self.fault {
+            return Err(DaError::InvalidCodingFraudProof(
+                "declared fault does not match recomputed fault".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Inspect the committed data shares of a manifest and report the coding fault
+/// they expose, if any. Returns `Ok(None)` when the shares are a valid encoding
+/// of the committed payload.
+fn detect_da_coding_fault(
+    manifest: &DaManifest,
+    data_shares: &[DaShare],
+) -> Result<Option<DaCodingFault>, DaError> {
+    manifest.validate()?;
+
+    let mut by_index: BTreeMap<u32, &DaShare> = BTreeMap::new();
+    for share in data_shares {
+        verify_share_against_manifest(manifest, share)?;
+        if share.index >= manifest.original_share_count {
+            return Err(DaError::InvalidCodingFraudProof(
+                "coding fraud proof shares must be committed data shares".into(),
+            ));
+        }
+        if by_index.insert(share.index, share).is_some() {
+            return Err(DaError::DuplicateShare { index: share.index });
+        }
+    }
+    for index in 0..manifest.original_share_count {
+        if !by_index.contains_key(&index) {
+            return Err(DaError::MissingShare { index });
+        }
+    }
+
+    if manifest.erasure_scheme == ErasureScheme::ReedSolomonV1 {
+        let share_size = manifest.share_size_bytes as usize;
+        let mut shards: Vec<Vec<u8>> =
+            vec![vec![0_u8; share_size]; manifest.encoded_share_count as usize];
+        for index in 0..manifest.original_share_count {
+            let share = by_index[&index];
+            if share.bytes.len() != share_size {
+                return Err(DaError::InvalidManifest(format!(
+                    "reed-solomon data share {index} has {} bytes, expected {share_size}",
+                    share.bytes.len()
+                )));
+            }
+            shards[index as usize] = share.bytes.clone();
+        }
+        reed_solomon_codec(manifest)?.encode(&mut shards)?;
+        for index in manifest.original_share_count..manifest.encoded_share_count {
+            let recomputed = hash_bytes(&shards[index as usize]);
+            if recomputed != manifest.share_hashes[index as usize] {
+                return Ok(Some(DaCodingFault::ParityMismatch { share_index: index }));
+            }
+        }
+    }
+
+    let mut payload_bytes = Vec::new();
+    for index in 0..manifest.original_share_count {
+        payload_bytes.extend_from_slice(&by_index[&index].bytes);
+    }
+    let payload_len = usize::try_from(manifest.payload_bytes).map_err(|_| {
+        DaError::InvalidManifest("payload byte count does not fit this platform".into())
+    })?;
+    if payload_len > payload_bytes.len() {
+        return Err(DaError::InvalidManifest(
+            "committed payload bytes exceed data share capacity".into(),
+        ));
+    }
+    payload_bytes.truncate(payload_len);
+    let actual = hash_bytes(&payload_bytes);
+    if actual != manifest.payload_hash {
+        return Ok(Some(DaCodingFault::PayloadHashMismatch {
+            expected: manifest.payload_hash.clone(),
+            actual,
+        }));
+    }
+
+    Ok(None)
+}
+
 pub fn payload_hash(payload: &DaPayload) -> Result<String, DaError> {
     payload.hash()
 }
@@ -2237,6 +2417,7 @@ pub enum DaError {
     TotalBytesMismatch { expected: u64, actual: u64 },
     PayloadHashMismatch { expected: String, actual: String },
     ManifestPayloadMismatch { expected: String, actual: String },
+    InvalidCodingFraudProof(String),
     NamespaceRootMismatch { expected: String, actual: String },
     PayloadNotCanonical,
     ShareCountOverflow,
@@ -2739,6 +2920,76 @@ mod tests {
                 Err(DaError::ManifestPayloadMismatch { .. })
             ));
         }
+    }
+
+    #[test]
+    fn coding_fraud_proof_detects_parity_and_payload_inconsistency() {
+        let payload = payload_with_tx_count(5);
+        let honest = DaShareSet::from_payload_reed_solomon(&payload, "block-7", 4, 2).unwrap();
+        let data_shares: Vec<DaShare> = honest
+            .shares
+            .iter()
+            .filter(|share| share.index < honest.manifest.original_share_count)
+            .cloned()
+            .collect();
+
+        // An honest manifest is a valid encoding: no fraud proof can be built.
+        assert!(matches!(
+            DaCodingFraudProof::from_committed_data_shares(
+                &honest.manifest,
+                &data_shares,
+                "reporter-1"
+            ),
+            Err(DaError::InvalidCodingFraudProof(_))
+        ));
+
+        // Forge a parity share hash: the committed shares are no longer a valid
+        // codeword for the data shares.
+        let mut parity_forged = honest.manifest.clone();
+        let parity_index = parity_forged.original_share_count as usize;
+        parity_forged.share_hashes[parity_index] = "00".repeat(32);
+        parity_forged.share_root = share_root(&parity_forged.share_hashes).unwrap();
+        let manifest_hash = parity_forged.manifest_hash().unwrap();
+        let rebound: Vec<DaShare> = data_shares
+            .iter()
+            .cloned()
+            .map(|mut share| {
+                share.manifest_hash = manifest_hash.clone();
+                share
+            })
+            .collect();
+        let proof =
+            DaCodingFraudProof::from_committed_data_shares(&parity_forged, &rebound, "reporter-1")
+                .unwrap();
+        assert!(matches!(proof.fault, DaCodingFault::ParityMismatch { .. }));
+        proof.validate(&parity_forged).unwrap();
+        // The proof does not verify against the honest manifest.
+        assert!(proof.validate(&honest.manifest).is_err());
+
+        // Forge the committed payload hash: the data shares decode to a payload
+        // whose hash differs from the commitment.
+        let mut payload_forged = honest.manifest.clone();
+        payload_forged.payload_hash = "11".repeat(32);
+        let payload_manifest_hash = payload_forged.manifest_hash().unwrap();
+        let payload_rebound: Vec<DaShare> = data_shares
+            .iter()
+            .cloned()
+            .map(|mut share| {
+                share.manifest_hash = payload_manifest_hash.clone();
+                share
+            })
+            .collect();
+        let payload_proof = DaCodingFraudProof::from_committed_data_shares(
+            &payload_forged,
+            &payload_rebound,
+            "reporter-1",
+        )
+        .unwrap();
+        assert!(matches!(
+            payload_proof.fault,
+            DaCodingFault::PayloadHashMismatch { .. }
+        ));
+        payload_proof.validate(&payload_forged).unwrap();
     }
 
     #[test]

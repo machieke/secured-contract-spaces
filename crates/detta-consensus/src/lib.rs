@@ -6,7 +6,8 @@ use detta_core::{
 use detta_da::{
     assigned_custody_share_indices, validate_production_block_payload,
     verify_manifest_commits_payload, DaAvailabilityCertificate, DaAvailabilityVote,
-    DaChallengeEvidence, DaChallengeFault, DaManifest, DaPayload, DaProductionProfile, DaRecord,
+    DaChallengeEvidence, DaChallengeFault, DaCodingFraudProof, DaManifest, DaPayload,
+    DaProductionProfile, DaRecord,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -51,6 +52,7 @@ pub struct SlashingRecord {
 pub enum SlashingEvidence {
     Equivocation(EquivocationEvidence),
     DataAvailability(DaChallengeEvidence),
+    DataAvailabilityCoding(DaCodingFraudProof),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -310,6 +312,52 @@ impl ConsensusCluster {
         Ok(self
             .slashing_records
             .get(&validator_id)
+            .expect("record inserted above"))
+    }
+
+    /// Record a coding-fraud fault against the proposer of `block`. The proof is
+    /// cryptographically self-contained: it demonstrates, from the proposer's own
+    /// committed data shares, that the manifest is not a valid encoding of its
+    /// committed payload. The manifest is bound to the block's DA commitment so a
+    /// proof for one block cannot be replayed against another.
+    pub fn record_data_availability_coding_fault(
+        &mut self,
+        block: &Block,
+        manifest: &DaManifest,
+        proof: DaCodingFraudProof,
+        observed_at_height: u64,
+    ) -> Result<&SlashingRecord, ConsensusError> {
+        validate_da_result(manifest.validate())?;
+        validate_da_result(proof.validate(manifest))?;
+
+        let commitment = block
+            .header
+            .data_availability
+            .as_ref()
+            .ok_or(ConsensusError::MissingDataAvailabilityCommitment)?;
+        let manifest_hash = validate_da_result(manifest.manifest_hash())?;
+        require_da_match("manifest_hash", &commitment.manifest_hash, &manifest_hash)?;
+        require_da_match("share_root", &commitment.share_root, &manifest.share_root)?;
+        require_da_match(
+            "execution_block_hash",
+            &execution_block_hash_for_da(block),
+            &manifest.block_hash,
+        )?;
+
+        let proposer = block.header.proposer.clone();
+        if !self.validators.contains_key(&proposer) {
+            return Err(ConsensusError::UnknownValidator(proposer));
+        }
+        self.slashing_records
+            .entry(proposer.clone())
+            .or_insert_with(|| SlashingRecord {
+                validator_id: proposer.clone(),
+                slashed_at_height: observed_at_height,
+                evidence: SlashingEvidence::DataAvailabilityCoding(proof),
+            });
+        Ok(self
+            .slashing_records
+            .get(&proposer)
             .expect("record inserted above"))
     }
 
@@ -2158,6 +2206,91 @@ mod tests {
                 evidence: SlashingEvidence::DataAvailability(evidence),
             }
         );
+    }
+
+    #[test]
+    fn coding_fraud_proof_slashes_proposer_of_inconsistent_manifest() {
+        let mut cluster = ConsensusCluster::new(vec![
+            ("v1".into(), seeded_state()),
+            ("v2".into(), seeded_state()),
+            ("v3".into(), seeded_state()),
+        ])
+        .unwrap();
+
+        let (mut block, payload, _, _) = da_certified_block(vec!["v1", "v2", "v3"]);
+        let mut execution_block = block.clone();
+        execution_block.header.data_availability = None;
+        let execution_block_hash = execution_block.block_hash();
+        let share_set = DaShareSet::from_payload_reed_solomon_with_target_share_size(
+            &payload,
+            &execution_block_hash,
+            4096,
+        )
+        .unwrap();
+
+        // Forge the committed payload hash. The share commitment stays internally
+        // consistent (share_root is over share_hashes only), so the manifest still
+        // validates, but its data shares no longer decode to the committed payload.
+        let mut forged = share_set.manifest.clone();
+        forged.payload_hash = "11".repeat(32);
+        forged.validate().unwrap();
+        let forged_manifest_hash = forged.manifest_hash().unwrap();
+
+        block.header.data_availability = Some(DataAvailabilityCommitment {
+            payload_root: forged.payload_hash.clone(),
+            manifest_hash: forged_manifest_hash.clone(),
+            share_root: forged.share_root.clone(),
+            certificate_hash: None,
+        });
+
+        let data_shares: Vec<_> = share_set
+            .shares
+            .iter()
+            .filter(|share| share.index < forged.original_share_count)
+            .cloned()
+            .map(|mut share| {
+                share.manifest_hash = forged_manifest_hash.clone();
+                share
+            })
+            .collect();
+        let proof =
+            DaCodingFraudProof::from_committed_data_shares(&forged, &data_shares, "v2").unwrap();
+
+        let record = cluster
+            .record_data_availability_coding_fault(&block, &forged, proof.clone(), 13)
+            .unwrap()
+            .clone();
+
+        assert!(cluster.is_slashed("v1"));
+        assert_eq!(cluster.active_validator_count(), 2);
+        assert_eq!(
+            record,
+            SlashingRecord {
+                validator_id: "v1".into(),
+                slashed_at_height: 13,
+                evidence: SlashingEvidence::DataAvailabilityCoding(proof),
+            }
+        );
+
+        // A proof that does not match the block's DA commitment is rejected.
+        let (other_block, _, _, _) = da_certified_block(vec!["v1", "v2", "v3"]);
+        let mut fresh = ConsensusCluster::new(vec![
+            ("v1".into(), seeded_state()),
+            ("v2".into(), seeded_state()),
+            ("v3".into(), seeded_state()),
+        ])
+        .unwrap();
+        assert!(matches!(
+            fresh.record_data_availability_coding_fault(
+                &other_block,
+                &forged,
+                DaCodingFraudProof::from_committed_data_shares(&forged, &data_shares, "v2").unwrap(),
+                13,
+            ),
+            Err(ConsensusError::DataAvailabilityMismatch { .. })
+                | Err(ConsensusError::DataAvailabilityInvalid(_))
+        ));
+        assert!(!fresh.is_slashed("v1"));
     }
 
     #[test]

@@ -38,6 +38,10 @@ in `detta-data-availability-layer-implementation-plan.md`.
 - **DA slashing policy**: chain-governed parameters for whether missing
   challenge responses or invalid challenge responses are slashable, plus
   minimum and maximum observed-delay windows for admissible evidence.
+- **Coding-fraud proof**: transferable evidence (`DaCodingFraudProof`) that a
+  manifest's committed shares are not a valid erasure encoding of its committed
+  payload, derived from the proposer's own hash-bound data shares and slashing
+  the block proposer when recorded in consensus.
 
 ## Threat Model
 
@@ -121,14 +125,19 @@ Production v1 decisions:
 
 - Share commitments use Merkle SHA-256 roots over encoded share hashes.
 - Erasure coding uses Reed-Solomon v1; KZG commitments are deferred to a future
-  payload/manifest version. Until then, coding-correctness is enforced by
-  rebinding: any node that verifies the full payload re-derives the share set
-  and rejects a manifest whose commitment does not encode the payload. A
-  custody-only voter that holds a subset of shares without the full payload
-  still cannot independently detect a coding-inconsistent manifest, so v1 relies
-  on full-payload verifiers (proposers, finalizers, archive/full nodes) to
-  enforce the binding before a certificate is treated as final. A polynomial
-  commitment (KZG) or a coding-fraud challenge would remove that reliance.
+  payload/manifest version. Until then, coding-correctness is enforced two ways.
+  First, any node that verifies the full payload re-derives the share set and
+  rejects a manifest whose commitment does not encode the payload
+  (`verify_manifest_commits_payload`). Second, a node that fetched the
+  `original_share_count` committed data shares can publish a transferable,
+  slashable coding-fraud proof (`DaCodingFraudProof`) that demonstrates — from
+  the proposer's own hash-bound shares — that the manifest is not a valid
+  encoding of its committed payload (either a re-encoded parity share or the
+  decoded payload hash diverges from the commitment). The proof is verifiable by
+  anyone holding only the manifest and, in consensus, slashes the block proposer
+  (`record_data_availability_coding_fault`). A polynomial commitment (KZG) would
+  additionally let a light client reject coding fraud from a single sampled share
+  without reconstructing the data-share set.
 - DA block production derives equal data/parity Reed-Solomon share counts from
   the operator-provided target share size while respecting the v1 max-share
   bound.
