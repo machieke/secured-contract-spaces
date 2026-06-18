@@ -1,0 +1,20 @@
+name: DeTTa Perf Smoke
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+
+jobs:
+  perf-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run perf smoke
+        run: scripts/detta-perf-smoke.sh

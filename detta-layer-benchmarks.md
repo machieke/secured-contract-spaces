@@ -19,6 +19,35 @@ cargo run -p detta-e2e --bin layer_benchmarks --release
 The binary prints the Markdown tables embedded below. Re-run and replace the
 "Measured results" section to refresh.
 
+## CI perf-smoke
+
+The same binary runs in a regression-guard mode in CI:
+
+```sh
+cargo run -p detta-e2e --bin layer_benchmarks --release -- --check   # or: scripts/detta-perf-smoke.sh
+```
+
+It is wired into `.github/workflows/detta-perf-smoke.yml` (PRs and pushes to
+`master`) and into the release gate (`scripts/detta-release-gate.sh`). Because
+absolute wall-clock numbers vary across CI hardware, `--check` asserts only
+**hardware-independent** invariants and exits non-zero on a regression:
+
+- **Deterministic cost invariants** (exact, every workload size): DA data-gas
+  equals `ceil(payload / 1024)`; encoded shares are equal data/parity; share
+  size is within the target; the manifest and certificate stay compact relative
+  to the payload; the coding-fraud proof embeds the data shares; the block wire
+  message tracks payload size.
+- **Latency-ratio invariants** (measured within one process, so CPU speed
+  cancels): `manifest_hash` and certificate verification are ≥5× cheaper than
+  full reconstruct / full payload verify; sampling and custody derivation are
+  ≥3× cheaper than reconstruct; manifest encode is ≥10× cheaper than share-set
+  build; and the payload-binding check stays within one RS pass of share-set
+  build (0.2×–5×). These ratios all carry >3× margin, so only a real algorithmic
+  regression trips them.
+- **One coarse absolute backstop** against catastrophic blowups
+  (`verify_data_availability_payload` < 2000 ms), overridable for slow runners
+  via `DETTA_PERF_SMOKE_MAX_MS`.
+
 ## Methodology & caveats
 
 - **Latency** is mean wall-clock time per operation (`std::time::Instant`) over

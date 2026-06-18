@@ -80,6 +80,7 @@ DETTA_SKIP_READINESS_VERIFY=1 \
 cargo test -p detta-verify tests::differential_replay_accepts_generated_transfer_corpus -- --exact
 cargo test -p detta-verify tests::differential_replay_accepts_generated_defi_corpus -- --exact
 cargo build --locked --release
+scripts/detta-perf-smoke.sh
 run_packaged_operator_gate
 scripts/detta-model-check.sh
 
