@@ -154,6 +154,8 @@ SCS specification
   payload schema.
 - `detta-data-availability-layer-implementation-plan.md`: production-grade
   data availability layer plan and branch progress tracker.
+- `detta-operator-manual.md`: combined DeTTa and DA operator manual covering
+  architecture, launch, node membership, maintenance, and disaster recovery.
 - `detta-da-operator-runbook.md`: DA retention and repair operating guidance.
 - `detta-secure-metta-aspect-generalization-plan.md`: implementation plan for
   replacing hard-coded DeFi behavior with secure, restricted MeTTa aspect
