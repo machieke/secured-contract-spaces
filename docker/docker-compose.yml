@@ -56,22 +56,27 @@ services:
     volumes:
       - genesis:/genesis
 
+  # Leader: produces a block every few seconds, advancing the chain.
   validator-1:
     <<: *detta-node
     container_name: detta-validator-1
     environment:
       DETTA_VALIDATOR_ID: validator-1
+      DETTA_PRODUCE_INTERVAL_SECS: "5"
     volumes:
       - genesis:/genesis:ro
       - validator-1-data:/data
     ports:
       - "8081:8080"
 
+  # Followers: pull and verify-import the leader's blocks until heights match.
   validator-2:
     <<: *detta-node
     container_name: detta-validator-2
     environment:
       DETTA_VALIDATOR_ID: validator-2
+      DETTA_SYNC_PEER: validator-1:8080
+      DETTA_SYNC_INTERVAL_SECS: "2"
     volumes:
       - genesis:/genesis:ro
       - validator-2-data:/data
@@ -83,6 +88,8 @@ services:
     container_name: detta-validator-3
     environment:
       DETTA_VALIDATOR_ID: validator-3
+      DETTA_SYNC_PEER: validator-1:8080
+      DETTA_SYNC_INTERVAL_SECS: "2"
     volumes:
       - genesis:/genesis:ro
       - validator-3-data:/data
@@ -94,18 +101,22 @@ services:
     container_name: detta-validator-4
     environment:
       DETTA_VALIDATOR_ID: validator-4
+      DETTA_SYNC_PEER: validator-1:8080
+      DETTA_SYNC_INTERVAL_SECS: "2"
     volumes:
       - genesis:/genesis:ro
       - validator-4-data:/data
     ports:
       - "8084:8080"
 
-  # Non-validating full node for public RPC / client access.
+  # Non-validating full node for public RPC / client access; also follows the leader.
   rpc:
     <<: *detta-node
     container_name: detta-rpc
     environment:
       DETTA_VALIDATOR_ID: rpc-1
+      DETTA_SYNC_PEER: validator-1:8080
+      DETTA_SYNC_INTERVAL_SECS: "2"
     volumes:
       - genesis:/genesis:ro
       - rpc-data:/data

@@ -1,12 +1,20 @@
 use detta_core::{Argument, DeTTaState, Method, StateSnapshot, Transaction};
 use detta_node::PersistentValidatorNode;
-use detta_rpc::{HttpJsonRpcServer, JsonRpcServer};
+use detta_rpc::{
+    HttpJsonRpcServer, JsonRpcHandler, JsonRpcServer, RpcRequest, RpcResponse, RpcResult,
+    RpcTransportError,
+};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs::{self, File};
+use std::io::{BufRead, BufReader, Write};
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process;
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 
 const DEFAULT_CHAIN_ID: &str = "detta-local";
 const DEFAULT_VALIDATOR_ID: &str = "validator-1";
@@ -93,8 +101,16 @@ fn serve_node(options: &ParsedOptions) -> Result<(), String> {
         .map(|value| parse_usize(&value, "max-connections"))
         .transpose()?
         .unwrap_or(0);
-    let mut node = load_or_bootstrap_node(&validator_id, &storage, options.optional("genesis"))?;
-    let root = node.rpc().get_state_root();
+    let node = load_or_bootstrap_node(&validator_id, &storage, options.optional("genesis"))?;
+    let node = Arc::new(Mutex::new(node));
+    let root = node
+        .lock()
+        .expect("node mutex poisoned")
+        .rpc()
+        .get_state_root();
+
+    spawn_consensus_threads(&node, &validator_id);
+    let mut handler = SharedNodeHandler(node);
 
     match transport.as_str() {
         "tcp" => {
@@ -103,7 +119,7 @@ fn serve_node(options: &ParsedOptions) -> Result<(), String> {
             eprintln!(
                 "detta-node serving tcp rpc on {local_addr}; validator={validator_id}; state_root={root}"
             );
-            serve_tcp_connections(&server, &mut node, max_connections)
+            serve_tcp_connections(&server, &mut handler, max_connections)
         }
         "http" => {
             let server =
@@ -112,12 +128,150 @@ fn serve_node(options: &ParsedOptions) -> Result<(), String> {
             eprintln!(
                 "detta-node serving http rpc on {local_addr}; validator={validator_id}; state_root={root}"
             );
-            serve_http_connections(&server, &mut node, max_connections)
+            serve_http_connections(&server, &mut handler, max_connections)
         }
         other => Err(format!(
             "unsupported transport: {other}; supported transports: tcp, http"
         )),
     }
+}
+
+/// Shares one node across the RPC-serving loop and the background consensus
+/// threads. The mutex is locked only while a request is handled, so accepting a
+/// connection never blocks the producer/sync threads.
+struct SharedNodeHandler(Arc<Mutex<PersistentValidatorNode>>);
+
+impl JsonRpcHandler for SharedNodeHandler {
+    fn handle_json_request(&mut self, request: &[u8]) -> Result<Vec<u8>, RpcTransportError> {
+        self.0
+            .lock()
+            .expect("node mutex poisoned")
+            .handle_json_request(request)
+    }
+}
+
+/// Start the optional background consensus threads selected by environment:
+///
+/// * `DETTA_PRODUCE_INTERVAL_SECS` — leader role: produce a block every N
+///   seconds, advancing the chain from this node's mempool.
+/// * `DETTA_SYNC_PEER` (`host:port`) + `DETTA_SYNC_INTERVAL_SECS` — follower
+///   role: pull and verify-import blocks from a peer until heights match.
+///
+/// A node may be a leader, a follower, both, or neither (plain RPC server).
+fn spawn_consensus_threads(node: &Arc<Mutex<PersistentValidatorNode>>, validator_id: &str) {
+    if let Some(secs) = env_u64("DETTA_PRODUCE_INTERVAL_SECS").filter(|secs| *secs > 0) {
+        let node = Arc::clone(node);
+        let validator_id = validator_id.to_string();
+        eprintln!("[{validator_id}] leader: producing a block every {secs}s");
+        thread::spawn(move || run_leader_production(node, Duration::from_secs(secs), validator_id));
+    }
+    if let Some(peer) = env::var("DETTA_SYNC_PEER")
+        .ok()
+        .filter(|peer| !peer.is_empty())
+    {
+        let secs = env_u64("DETTA_SYNC_INTERVAL_SECS").unwrap_or(2).max(1);
+        let node = Arc::clone(node);
+        let validator_id = validator_id.to_string();
+        eprintln!("[{validator_id}] follower: syncing from {peer} every {secs}s");
+        thread::spawn(move || {
+            run_follower_sync(node, peer, Duration::from_secs(secs), validator_id)
+        });
+    }
+}
+
+/// Leader loop: produce a block per interval. Produces from this node's mempool
+/// (empty blocks still advance height so followers stay converged).
+fn run_leader_production(
+    node: Arc<Mutex<PersistentValidatorNode>>,
+    interval: Duration,
+    validator_id: String,
+) {
+    loop {
+        thread::sleep(interval);
+        let mut guard = node.lock().expect("node mutex poisoned");
+        let height = guard.current_height() + 1;
+        let timestamp = height.saturating_mul(1_000);
+        match guard.produce_block(height, timestamp) {
+            Ok(block) => eprintln!(
+                "[{validator_id}] produced block height={height} hash={}",
+                block.block_hash()
+            ),
+            Err(error) => eprintln!("[{validator_id}] produce height={height} failed: {error:?}"),
+        }
+    }
+}
+
+/// Follower loop: catch up to the peer's height by fetching and verify-importing
+/// each missing block. `import_block` re-executes and checks roots, so a forged
+/// or divergent block from the peer is rejected.
+fn run_follower_sync(
+    node: Arc<Mutex<PersistentValidatorNode>>,
+    peer: String,
+    interval: Duration,
+    validator_id: String,
+) {
+    loop {
+        thread::sleep(interval);
+        let peer_height = match peer_rpc(&peer, &RpcRequest::GetNodeHealth) {
+            Ok(RpcResponse::Ok(RpcResult::NodeHealth(report))) => report.height,
+            Ok(_) => continue,
+            Err(error) => {
+                eprintln!("[{validator_id}] sync: {peer} health failed: {error}");
+                continue;
+            }
+        };
+        loop {
+            let local_height = node.lock().expect("node mutex poisoned").current_height();
+            if local_height >= peer_height {
+                break;
+            }
+            let next = local_height + 1;
+            let block = match peer_rpc(&peer, &RpcRequest::GetBlock { height: next }) {
+                Ok(RpcResponse::Ok(RpcResult::Block(block))) => *block,
+                Ok(_) => break, // peer does not have this height yet
+                Err(error) => {
+                    eprintln!("[{validator_id}] sync: fetch height={next} failed: {error}");
+                    break;
+                }
+            };
+            let mut guard = node.lock().expect("node mutex poisoned");
+            match guard.import_block(&block) {
+                Ok(()) => eprintln!("[{validator_id}] imported block height={next}"),
+                Err(error) => {
+                    eprintln!("[{validator_id}] import height={next} failed: {error:?}");
+                    break;
+                }
+            }
+        }
+    }
+}
+
+/// Minimal line-framed JSON-RPC client for peer calls (matches the TCP server's
+/// `request + "\n"` framing). One connection per request keeps it stateless.
+fn peer_rpc(addr: &str, request: &RpcRequest) -> Result<RpcResponse, String> {
+    let stream = TcpStream::connect(addr).map_err(|error| format!("connect {addr}: {error}"))?;
+    stream.set_nodelay(true).ok();
+    let mut writer = stream
+        .try_clone()
+        .map_err(|error| format!("clone stream: {error}"))?;
+    let mut reader = BufReader::new(stream);
+    serde_json::to_writer(&mut writer, request).map_err(|error| format!("encode: {error}"))?;
+    writer
+        .write_all(b"\n")
+        .map_err(|error| format!("write: {error}"))?;
+    writer.flush().map_err(|error| format!("flush: {error}"))?;
+    let mut line = String::new();
+    reader
+        .read_line(&mut line)
+        .map_err(|error| format!("read: {error}"))?;
+    if line.is_empty() {
+        return Err("empty response".into());
+    }
+    serde_json::from_str(&line).map_err(|error| format!("decode: {error}"))
+}
+
+fn env_u64(key: &str) -> Option<u64> {
+    env::var(key).ok().and_then(|value| value.parse().ok())
 }
 
 fn write_faucet_transaction(options: &ParsedOptions) -> Result<(), String> {
@@ -187,13 +341,13 @@ fn load_or_bootstrap_node(
 
 fn serve_tcp_connections(
     server: &JsonRpcServer,
-    node: &mut PersistentValidatorNode,
+    handler: &mut SharedNodeHandler,
     max_connections: usize,
 ) -> Result<(), String> {
     let mut served = 0;
     while max_connections == 0 || served < max_connections {
         server
-            .serve_next_connection_with_handler(node)
+            .serve_next_connection_with_handler(handler)
             .map_err(|error| format!("{error:?}"))?;
         served += 1;
     }
@@ -202,13 +356,13 @@ fn serve_tcp_connections(
 
 fn serve_http_connections(
     server: &HttpJsonRpcServer,
-    node: &mut PersistentValidatorNode,
+    handler: &mut SharedNodeHandler,
     max_connections: usize,
 ) -> Result<(), String> {
     let mut served = 0;
     while max_connections == 0 || served < max_connections {
         server
-            .serve_next_connection_with_handler(node)
+            .serve_next_connection_with_handler(handler)
             .map_err(|error| format!("{error:?}"))?;
         served += 1;
     }
