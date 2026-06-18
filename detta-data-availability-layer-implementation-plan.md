@@ -63,6 +63,9 @@ clients.
   certificates, reconstructed payloads, and namespace sections.
 - [x] Persistent node RPC exposes DA status reports for manifest availability,
   certificate availability, missing share indices, and payload reconstruction.
+- [x] DA status resolves certificate availability from certificate-bound block
+  headers or the persistent certificate index for certificates stored before a
+  finalized header is imported.
 - [x] Persistent node RPC exposes DA repair status reports derived from missing
   shares and payload reconstruction.
 - [x] Persistent node RPC exposes DA storage stats with manifest/share counts,

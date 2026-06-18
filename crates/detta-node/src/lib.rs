@@ -2909,7 +2909,7 @@ impl PersistentValidatorNode {
         &self,
         manifest_hash: &str,
     ) -> Result<Option<String>, NodeError> {
-        Ok(self
+        let committed_certificate_hash = self
             .storage
             .load_blocks()
             .map_err(NodeError::Storage)?
@@ -2921,7 +2921,17 @@ impl PersistentValidatorNode {
                 } else {
                     None
                 }
-            }))
+            });
+        if committed_certificate_hash.is_some() {
+            return Ok(committed_certificate_hash);
+        }
+
+        Ok(self
+            .storage
+            .load_da_certificate_index_by_manifest_hash(manifest_hash)
+            .map_err(NodeError::Storage)?
+            .first()
+            .map(|entry| entry.certificate_hash.clone()))
     }
 
     fn pending_transactions_for_next_block(&self) -> Vec<Transaction> {
@@ -4598,6 +4608,8 @@ mod tests {
         assert_eq!(status.stored_share_count, share_set.shares.len() as u32);
         assert!(status.missing_share_indices.is_empty());
         assert!(status.payload_reconstructable);
+        assert_eq!(status.certificate_hash, Some(certificate_hash.clone()));
+        assert!(status.certificate_available);
         let repair_response = node.handle_rpc_request(RpcRequest::GetDaRepairStatus {
             manifest_hash: commitment.manifest_hash.clone(),
         });
@@ -4625,6 +4637,12 @@ mod tests {
             restarted.load_da_certificate(&certificate_hash).unwrap(),
             certificate
         );
+        let restarted_status = restarted.da_status(&commitment.manifest_hash).unwrap();
+        assert_eq!(
+            restarted_status.certificate_hash,
+            Some(certificate_hash.clone())
+        );
+        assert!(restarted_status.certificate_available);
 
         fs::remove_dir_all(dir).unwrap();
     }
