@@ -3,49 +3,60 @@
 Containerized DeTTa node + a Compose topology that spins up a small fleet of
 nodes sharing one genesis: four validators and one RPC/full node.
 
-## What this is (and isn't)
+## What this is
 
-The `detta-node serve` daemon runs the TCP JSON-RPC surface plus two optional
-background consensus threads, selected by environment:
+The Compose project runs **Byzantine-fault-tolerant consensus** across four
+validators:
 
-- **Leader** (`DETTA_PRODUCE_INTERVAL_SECS=N`): produces a block every N seconds
-  from its mempool, advancing the chain.
-- **Follower** (`DETTA_SYNC_PEER=host:port`): polls a peer, fetches each missing
-  block, and **verify-imports** it (`import_block` re-executes the block and
-  checks every root, so a divergent or invalid block is rejected).
+1. The **proposer** (`validator-1`) produces a block each round, signs it, and
+   sends the signed proposal to every peer.
+2. Each **voting validator** (`validator-2..4`) verifies the proposer's
+   signature, **re-executes** the block (`import_block` checks every root), and
+   replies with its own **signed vote**.
+3. The proposer aggregates a **quorum** of cryptographically verified votes into
+   a **finality certificate** and broadcasts it; each validator verifies the
+   certificate against the active set and persists it.
 
-This Compose project wires one leader (`validator-1`) and four followers
-(`validator-2..4`, `rpc`) so the network **reaches consensus automatically**: the
-leader proposes, every follower independently verifies and adopts the same block
-sequence, and all nodes converge on the same height and state root. Verified end
-to end — at a synchronized instant all five nodes report an identical
-`state_root`.
+A non-validating `rpc` node follows the chain over RPC for client queries. All
+nodes share one genesis. Validator keys are **derived deterministically** from a
+shared `DETTA_CONSENSUS_SEED` and the roster, so no key files are distributed —
+any node can recompute every validator's public key.
 
-So this Compose project gives you:
+Verified end to end: all validators converge on the same `state_root`, each
+independently persists every finality certificate (4-of-4 signers), and stopping
+one validator does not stop finality — the proposer keeps finalizing with a
+3-of-4 quorum (`signers=[validator-1, validator-2, validator-3]`).
 
-- a reproducible image with `detta-node` and `detta-client`;
-- a shared genesis written once into a volume, so every node starts identical;
-- a self-driving fleet that converges on one chain, with health checks;
-- a client driver to submit work and inspect DA/state over RPC.
+### Consensus model and its bounds — be precise
 
-**Consensus model — be precise about it.** This is single-leader, crash-fault
--tolerant, *verified* replication: followers re-execute and root-check every
-block, so they cannot be made to adopt an invalid chain. It is **not** full BFT —
-there is no vote gossip, quorum finality certificate, leader rotation, or
-view-change in the daemon (those primitives exist in `detta-consensus` /
-`detta-network` but are not wired into this loop). A crashed leader halts block
-production until it restarts; a single equivocating leader is not automatically
-replaced. Treat it as a converging dev/demo network, not a mainnet validator set.
+- **Safety is Byzantine fault tolerant** for f < N/3 (here N=4, f=1, quorum=3):
+  an invalid block cannot collect a quorum of honest votes, and every proposal
+  and vote is signature-checked, so honest validators never finalize a bad or
+  conflicting block.
+- **Liveness is single-proposer.** There is a fixed proposer and **no leader
+  rotation / view-change**: if the proposer crashes, finality halts until it
+  returns. A restarted *follower* that missed blocks does not auto-catch-up in
+  BFT mode (no block backfill on the consensus path). These are deliberate scope
+  cuts for a demo, not BFT safety gaps.
 
-### Tuning consensus
+For a plainer crash-fault-tolerant (non-BFT) mode — a single leader that
+auto-produces and followers that pull+verify-import over RPC — leave
+`DETTA_BFT` unset and use `DETTA_PRODUCE_INTERVAL_SECS` / `DETTA_SYNC_PEER`
+instead.
 
-| Env var | Role | Meaning |
+### Consensus environment
+
+| Env var | Who | Meaning |
 | --- | --- | --- |
-| `DETTA_PRODUCE_INTERVAL_SECS` | leader | seconds between produced blocks (unset = no production) |
-| `DETTA_SYNC_PEER` | follower | `host:port` of the node to pull blocks from (unset = no sync) |
-| `DETTA_SYNC_INTERVAL_SECS` | follower | poll interval, default 2s |
-
-A node may be a leader, a follower, both, or neither.
+| `DETTA_BFT` | all validators | `1` to enable BFT consensus |
+| `DETTA_VALIDATORS` | all | comma-separated validator roster |
+| `DETTA_PROPOSER` | all | which validator proposes (default: first in roster) |
+| `DETTA_CONSENSUS_SEED` | all | shared secret; per-validator keys = `H(seed, id)` |
+| `DETTA_NETWORK_ID` | all | signed-message domain separator |
+| `DETTA_CONSENSUS_LISTEN` | voters | `host:port` to receive proposals on (e.g. `0.0.0.0:9080`) |
+| `DETTA_CONSENSUS_PEERS` | proposer | comma-separated voter consensus addresses |
+| `DETTA_PRODUCE_INTERVAL_SECS` | proposer | seconds per consensus round |
+| `DETTA_QUORUM` | all | override quorum (default `2N/3 + 1`) |
 
 ## Layout
 
@@ -105,12 +116,23 @@ for n in validator-1 validator-2 validator-3 validator-4 rpc; do
 done'
 ```
 
-Watch a follower adopt the leader's blocks:
+Watch finality form and propagate:
 
 ```sh
+docker compose -f docker/docker-compose.yml logs -f validator-1
+# [validator-1] finalized height=1 signers=["validator-1","validator-2","validator-3","validator-4"]
 docker compose -f docker/docker-compose.yml logs -f validator-2
-# [validator-2] imported block height=1
-# [validator-2] imported block height=2 ...
+# [validator-2] persisted finality height=1 signers=[...]
+```
+
+Test fault tolerance — stop one validator and confirm finality continues with a
+quorum (N=4 tolerates f=1):
+
+```sh
+docker compose -f docker/docker-compose.yml stop validator-4
+docker compose -f docker/docker-compose.yml logs -f validator-1
+# [validator-1] peer validator-4:9080 unreachable this round
+# [validator-1] finalized height=N signers=["validator-1","validator-2","validator-3"]
 ```
 
 From the host you can target the published ports instead (TCP JSON-RPC):
@@ -144,8 +166,9 @@ docker compose -f docker/docker-compose.yml logs -f validator-1
 - **Transport:** nodes serve `--transport tcp` so the bundled `detta-client`
   (which speaks the TCP RPC framing) can drive and health-check them. The health
   check runs `detta-client state-root` against the node's own RPC.
-- **Scaling:** add another follower by copying a `validator-N` service block (new
-  `DETTA_VALIDATOR_ID`, `DETTA_SYNC_PEER: validator-1:8080`, a new data volume,
-  and a new host port). Move the leader role by setting
-  `DETTA_PRODUCE_INTERVAL_SECS` on a different service (only run one producer at a
-  time, or the followers will see two competing chains).
+- **Scaling:** add another validator by copying a `validator-N` service block
+  (new `DETTA_VALIDATOR_ID`, `DETTA_CONSENSUS_LISTEN: 0.0.0.0:9080`, a new data
+  volume, a new host port), adding it to `DETTA_VALIDATORS` on **every** node, and
+  adding `validator-N:9080` to the proposer's `DETTA_CONSENSUS_PEERS`. The quorum
+  (`2N/3 + 1`) updates automatically. Keep a single `DETTA_PROPOSER`; this build
+  has no leader rotation.

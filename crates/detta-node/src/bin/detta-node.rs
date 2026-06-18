@@ -1,20 +1,26 @@
+use detta_consensus::{quorum_for, verify_finality_certificate, Vote};
 use detta_core::{Argument, DeTTaState, Method, StateSnapshot, Transaction};
-use detta_node::PersistentValidatorNode;
+use detta_network::{Envelope, NetworkMessage, TcpProtocolStream};
+use detta_node::{NetworkIngestOutcome, PersistentValidatorNode};
+use detta_protocol::ValidatorSigningKey;
 use detta_rpc::{
     HttpJsonRpcServer, JsonRpcHandler, JsonRpcServer, RpcRequest, RpcResponse, RpcResult,
     RpcTransportError,
 };
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Write};
-use std::net::TcpStream;
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+
+const CONSENSUS_KEY_ID: &str = "consensus-key-1";
 
 const DEFAULT_CHAIN_ID: &str = "detta-local";
 const DEFAULT_VALIDATOR_ID: &str = "validator-1";
@@ -159,6 +165,13 @@ impl JsonRpcHandler for SharedNodeHandler {
 ///
 /// A node may be a leader, a follower, both, or neither (plain RPC server).
 fn spawn_consensus_threads(node: &Arc<Mutex<PersistentValidatorNode>>, validator_id: &str) {
+    // BFT mode replaces the plain leader/follower replication with signed
+    // proposals, signed votes, and quorum finality certificates.
+    if let Some(config) = BftConfig::from_env(validator_id) {
+        spawn_bft_threads(node, config);
+        return;
+    }
+
     if let Some(secs) = env_u64("DETTA_PRODUCE_INTERVAL_SECS").filter(|secs| *secs > 0) {
         let node = Arc::clone(node);
         let validator_id = validator_id.to_string();
@@ -272,6 +285,345 @@ fn peer_rpc(addr: &str, request: &RpcRequest) -> Result<RpcResponse, String> {
 
 fn env_u64(key: &str) -> Option<u64> {
     env::var(key).ok().and_then(|value| value.parse().ok())
+}
+
+// ---------------------------------------------------------------------------
+// BFT consensus
+//
+// A single fixed proposer drives rounds; every validator verifies the proposer's
+// signed block, re-executes it (`import_block` checks all roots), and signs a
+// vote. The proposer aggregates a quorum of cryptographically verified votes into
+// a finality certificate and broadcasts it; followers verify the certificate
+// against the active validator set and persist it.
+//
+// Safety is Byzantine fault tolerant for f < N/3: an invalid block cannot reach a
+// quorum of honest votes, and votes/proposals are signature-checked. Liveness is
+// single-proposer (no leader rotation / view-change): a crashed proposer halts
+// finality until it returns. Validator keys are derived deterministically from a
+// shared seed and the roster, so no key files need to be distributed.
+// ---------------------------------------------------------------------------
+
+struct BftConfig {
+    validator_id: String,
+    roster: Vec<String>,
+    proposer: String,
+    network_id: String,
+    seed: Vec<u8>,
+    listen: Option<String>,
+    peers: Vec<String>,
+    round_interval: Duration,
+    quorum: usize,
+}
+
+impl BftConfig {
+    fn from_env(validator_id: &str) -> Option<Self> {
+        let enabled = env::var("DETTA_BFT")
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes"))
+            .unwrap_or(false);
+        if !enabled {
+            return None;
+        }
+        let roster: Vec<String> = split_csv(&env::var("DETTA_VALIDATORS").unwrap_or_default());
+        if roster.is_empty() {
+            eprintln!("[{validator_id}] DETTA_BFT set but DETTA_VALIDATORS is empty; BFT disabled");
+            return None;
+        }
+        let proposer = env::var("DETTA_PROPOSER").unwrap_or_else(|_| roster[0].clone());
+        let quorum = env_u64("DETTA_QUORUM")
+            .map(|value| value as usize)
+            .unwrap_or_else(|| quorum_for(roster.len()));
+        Some(Self {
+            validator_id: validator_id.to_string(),
+            roster,
+            proposer,
+            network_id: env::var("DETTA_NETWORK_ID").unwrap_or_else(|_| "detta-local-bft".into()),
+            seed: env::var("DETTA_CONSENSUS_SEED")
+                .unwrap_or_else(|_| "detta-bft-dev-seed".into())
+                .into_bytes(),
+            listen: env::var("DETTA_CONSENSUS_LISTEN")
+                .ok()
+                .filter(|value| !value.is_empty()),
+            peers: split_csv(&env::var("DETTA_CONSENSUS_PEERS").unwrap_or_default()),
+            round_interval: Duration::from_secs(
+                env_u64("DETTA_PRODUCE_INTERVAL_SECS").unwrap_or(5).max(1),
+            ),
+            quorum,
+        })
+    }
+
+    fn active_validators(&self) -> BTreeSet<String> {
+        self.roster.iter().cloned().collect()
+    }
+
+    fn own_key(&self) -> ValidatorSigningKey {
+        validator_key_for(&self.seed, &self.validator_id)
+    }
+}
+
+fn split_csv(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(|entry| entry.trim().to_string())
+        .filter(|entry| !entry.is_empty())
+        .collect()
+}
+
+/// Deterministic per-validator key seed: `H(domain || master || validator_id)`.
+/// `from_seed` derives the keypair from these 32 bytes alone, so distinct seeds
+/// per validator are required, and any node with the master seed + roster can
+/// recompute every validator's public key.
+fn validator_key_for(master: &[u8], validator_id: &str) -> ValidatorSigningKey {
+    let mut hasher = Sha256::new();
+    hasher.update(b"detta.bft.key.v1");
+    hasher.update((master.len() as u64).to_be_bytes());
+    hasher.update(master);
+    hasher.update(validator_id.as_bytes());
+    let seed: [u8; 32] = hasher.finalize().into();
+    ValidatorSigningKey::from_seed(validator_id.to_string(), CONSENSUS_KEY_ID, seed)
+}
+
+fn spawn_bft_threads(node: &Arc<Mutex<PersistentValidatorNode>>, config: BftConfig) {
+    // Install the network id and trust every roster validator's public key.
+    {
+        let mut guard = node.lock().expect("node mutex poisoned");
+        guard.set_network_id(config.network_id.clone());
+        for validator in &config.roster {
+            guard.trust_validator_key(validator_key_for(&config.seed, validator).public_key());
+        }
+    }
+    eprintln!(
+        "[{}] BFT enabled: proposer={} roster={:?} quorum={}",
+        config.validator_id, config.proposer, config.roster, config.quorum
+    );
+
+    let config = Arc::new(config);
+    if config.listen.is_some() {
+        let node = Arc::clone(node);
+        let config = Arc::clone(&config);
+        thread::spawn(move || run_consensus_server(node, config));
+    }
+    if config.validator_id == config.proposer {
+        let node = Arc::clone(node);
+        let config = Arc::clone(&config);
+        thread::spawn(move || run_proposer_rounds(node, config));
+    }
+}
+
+/// Proposer loop: each round produce a block, sign it, collect a quorum of signed
+/// votes from peers, then form, persist, and broadcast a finality certificate.
+fn run_proposer_rounds(node: Arc<Mutex<PersistentValidatorNode>>, config: Arc<BftConfig>) {
+    let key = config.own_key();
+    loop {
+        thread::sleep(config.round_interval);
+
+        // Produce + sign under the node lock; release it for network I/O.
+        let round = {
+            let mut guard = node.lock().expect("node mutex poisoned");
+            let height = guard.current_height() + 1;
+            let block = match guard.produce_block(height, height.saturating_mul(1_000)) {
+                Ok(block) => block,
+                Err(error) => {
+                    eprintln!(
+                        "[{}] produce height={height} failed: {error:?}",
+                        config.validator_id
+                    );
+                    continue;
+                }
+            };
+            let block_hash = block.block_hash();
+            let signed_block =
+                match guard.sign_validator_message(&key, NetworkMessage::Block(Box::new(block))) {
+                    Ok(message) => message,
+                    Err(error) => {
+                        eprintln!("[{}] sign block failed: {error:?}", config.validator_id);
+                        continue;
+                    }
+                };
+            let self_vote = match guard.sign_validator_message(
+                &key,
+                NetworkMessage::Vote(Vote {
+                    validator_id: config.validator_id.clone(),
+                    height,
+                    block_hash: block_hash.clone(),
+                }),
+            ) {
+                Ok(message) => message,
+                Err(error) => {
+                    eprintln!("[{}] sign vote failed: {error:?}", config.validator_id);
+                    continue;
+                }
+            };
+            (height, block_hash, signed_block, self_vote)
+        };
+        let (height, block_hash, signed_block, self_vote) = round;
+
+        let mut votes = vec![self_vote];
+        for peer in &config.peers {
+            match TcpProtocolStream::connect(peer) {
+                Ok(mut tcp) => {
+                    if tcp.send(&signed_block).is_ok() {
+                        match tcp.receive() {
+                            Ok(vote) => votes.push(vote),
+                            Err(error) => {
+                                eprintln!(
+                                    "[{}] no vote from {peer}: {error:?}",
+                                    config.validator_id
+                                )
+                            }
+                        }
+                    }
+                }
+                Err(_) => eprintln!(
+                    "[{}] peer {peer} unreachable this round",
+                    config.validator_id
+                ),
+            }
+        }
+
+        let certificate = {
+            let mut guard = node.lock().expect("node mutex poisoned");
+            match guard.collect_finality_certificate(height, &block_hash, &votes, config.quorum) {
+                Ok(certificate) => {
+                    if let Err(error) = guard.persist_finality_certificate(&certificate) {
+                        eprintln!(
+                            "[{}] persist certificate failed: {error:?}",
+                            config.validator_id
+                        );
+                    }
+                    Some(certificate)
+                }
+                Err(error) => {
+                    eprintln!(
+                        "[{}] height={height} no quorum ({}/{} votes): {error:?}",
+                        config.validator_id,
+                        votes.len(),
+                        config.quorum
+                    );
+                    None
+                }
+            }
+        };
+
+        if let Some(certificate) = certificate {
+            eprintln!(
+                "[{}] finalized height={height} signers={:?}",
+                config.validator_id, certificate.signers
+            );
+            for peer in &config.peers {
+                if let Ok(mut tcp) = TcpProtocolStream::connect(peer) {
+                    let _ = tcp.send(&NetworkMessage::FinalityCertificate(certificate.clone()));
+                }
+            }
+        }
+    }
+}
+
+/// Follower consensus server: accept a connection, handle one message (a signed
+/// block proposal → verify-import and reply with a signed vote; a finality
+/// certificate → verify against the active set and persist).
+fn run_consensus_server(node: Arc<Mutex<PersistentValidatorNode>>, config: Arc<BftConfig>) {
+    let listen = config.listen.clone().expect("consensus listen address");
+    let listener = match TcpListener::bind(&listen) {
+        Ok(listener) => listener,
+        Err(error) => {
+            eprintln!(
+                "[{}] consensus listen on {listen} failed: {error}",
+                config.validator_id
+            );
+            return;
+        }
+    };
+    eprintln!("[{}] consensus server on {listen}", config.validator_id);
+    let key = config.own_key();
+    let active = config.active_validators();
+    for incoming in listener.incoming() {
+        let stream = match incoming {
+            Ok(stream) => stream,
+            Err(_) => continue,
+        };
+        if let Err(error) = handle_consensus_connection(&node, &config, &key, &active, stream) {
+            eprintln!(
+                "[{}] consensus connection error: {error}",
+                config.validator_id
+            );
+        }
+    }
+}
+
+fn handle_consensus_connection(
+    node: &Arc<Mutex<PersistentValidatorNode>>,
+    config: &BftConfig,
+    key: &ValidatorSigningKey,
+    active: &BTreeSet<String>,
+    stream: TcpStream,
+) -> Result<(), String> {
+    let mut tcp = TcpProtocolStream::from_stream(stream);
+    let message = tcp
+        .receive()
+        .map_err(|error| format!("receive: {error:?}"))?;
+
+    if let NetworkMessage::FinalityCertificate(certificate) = &message {
+        let mut guard = node.lock().expect("node mutex poisoned");
+        let matches_local = guard
+            .load_block(certificate.height)
+            .map(|block| block.block_hash() == certificate.block_hash)
+            .unwrap_or(false);
+        if matches_local
+            && verify_finality_certificate(
+                certificate,
+                certificate.height,
+                &certificate.block_hash,
+                active,
+                config.quorum,
+            )
+            .is_ok()
+        {
+            guard
+                .persist_finality_certificate(certificate)
+                .map_err(|error| format!("persist certificate: {error:?}"))?;
+            eprintln!(
+                "[{}] persisted finality height={} signers={:?}",
+                config.validator_id, certificate.height, certificate.signers
+            );
+        }
+        return Ok(());
+    }
+
+    // Otherwise treat the message as a signed block proposal: ingest verifies the
+    // proposer's signature and re-executes the block before it is accepted.
+    let envelope = Envelope {
+        from: config.proposer.clone(),
+        to: config.validator_id.clone(),
+        message,
+    };
+    let outcome = {
+        let mut guard = node.lock().expect("node mutex poisoned");
+        guard
+            .ingest_network_envelope(&envelope)
+            .map_err(|error| format!("ingest: {error:?}"))?
+    };
+    if outcome != NetworkIngestOutcome::BlockImported {
+        return Ok(());
+    }
+
+    let signed_vote = {
+        let guard = node.lock().expect("node mutex poisoned");
+        let height = guard.current_height();
+        let block = guard
+            .load_block(height)
+            .map_err(|error| format!("load_block: {error:?}"))?;
+        let vote = Vote {
+            validator_id: config.validator_id.clone(),
+            height,
+            block_hash: block.block_hash(),
+        };
+        guard
+            .sign_validator_message(key, NetworkMessage::Vote(vote))
+            .map_err(|error| format!("sign vote: {error:?}"))?
+    };
+    tcp.send(&signed_vote)
+        .map_err(|error| format!("send vote: {error:?}"))?;
+    Ok(())
 }
 
 fn write_faucet_transaction(options: &ParsedOptions) -> Result<(), String> {

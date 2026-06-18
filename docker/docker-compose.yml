@@ -1,23 +1,18 @@
-# DeTTa local network.
+# DeTTa BFT network.
 #
-# Spins up a fleet of DeTTa nodes that share one genesis: four validators and
-# one RPC/full node, each serving the TCP JSON-RPC on its own port. A one-shot
-# genesis-init service writes the shared genesis snapshot before the nodes boot.
+# Four validators run Byzantine-fault-tolerant consensus: validator-1 proposes
+# signed blocks each round; validator-2..4 verify-import them and return signed
+# votes; the proposer aggregates a quorum into a finality certificate and
+# broadcasts it. A non-validating RPC node follows the chain for clients. All
+# nodes share one genesis written once by genesis-init.
 #
 #   docker compose -f docker/docker-compose.yml up --build -d
 #   docker compose -f docker/docker-compose.yml ps
+#   docker compose -f docker/docker-compose.yml logs -f validator-1   # finalized height=N signers=[...]
 #
-# Drive a node (build the network state) and inspect it with the bundled client
-# via the `tools` profile, e.g.:
-#   docker compose -f docker/docker-compose.yml run --rm client produce-da-block --height 1 --rpc validator-1:8080
-#   docker compose -f docker/docker-compose.yml run --rm client da-stats --rpc validator-1:8080
-#
-# NOTE: the shipped `detta-node serve` daemon is RPC-driven and does NOT gossip
-# with peers. Each node is an independent replica of the same genesis; blocks are
-# produced on whichever node you send produce-block / produce-da-block to. This
-# compose stands up the node fleet, shared genesis, health checks, and a client
-# driver — it is a local development/demo network, not live multi-validator
-# consensus.
+# Validator keys are derived deterministically from the shared DETTA_CONSENSUS_SEED
+# and the roster, so no key files are distributed. See docker/README.md for the
+# consensus model and its bounds (single proposer; no leader rotation).
 
 name: detta-network
 
@@ -36,6 +31,16 @@ x-detta-node: &detta-node
     timeout: 5s
     retries: 5
     start_period: 10s
+
+# Shared BFT settings merged into every validator's environment.
+x-bft-env: &bft-env
+  DETTA_BFT: "1"
+  DETTA_VALIDATORS: validator-1,validator-2,validator-3,validator-4
+  DETTA_PROPOSER: validator-1
+  DETTA_NETWORK_ID: detta-testnet
+  # Demo secret — every node derives the whole validator set from this. Replace
+  # for any non-throwaway use.
+  DETTA_CONSENSUS_SEED: detta-demo-consensus-seed-change-me
 
 services:
   # One-shot: writes the shared genesis snapshot if it does not already exist.
@@ -56,12 +61,15 @@ services:
     volumes:
       - genesis:/genesis
 
-  # Leader: produces a block every few seconds, advancing the chain.
+  # Proposer: produces and signs a block each round, gathers votes, and forms +
+  # broadcasts the quorum finality certificate.
   validator-1:
     <<: *detta-node
     container_name: detta-validator-1
     environment:
+      <<: *bft-env
       DETTA_VALIDATOR_ID: validator-1
+      DETTA_CONSENSUS_PEERS: validator-2:9080,validator-3:9080,validator-4:9080
       DETTA_PRODUCE_INTERVAL_SECS: "5"
     volumes:
       - genesis:/genesis:ro
@@ -69,14 +77,15 @@ services:
     ports:
       - "8081:8080"
 
-  # Followers: pull and verify-import the leader's blocks until heights match.
+  # Voting validators: listen for the proposer's signed block, verify-import it,
+  # and reply with a signed vote.
   validator-2:
     <<: *detta-node
     container_name: detta-validator-2
     environment:
+      <<: *bft-env
       DETTA_VALIDATOR_ID: validator-2
-      DETTA_SYNC_PEER: validator-1:8080
-      DETTA_SYNC_INTERVAL_SECS: "2"
+      DETTA_CONSENSUS_LISTEN: 0.0.0.0:9080
     volumes:
       - genesis:/genesis:ro
       - validator-2-data:/data
@@ -87,9 +96,9 @@ services:
     <<: *detta-node
     container_name: detta-validator-3
     environment:
+      <<: *bft-env
       DETTA_VALIDATOR_ID: validator-3
-      DETTA_SYNC_PEER: validator-1:8080
-      DETTA_SYNC_INTERVAL_SECS: "2"
+      DETTA_CONSENSUS_LISTEN: 0.0.0.0:9080
     volumes:
       - genesis:/genesis:ro
       - validator-3-data:/data
@@ -100,16 +109,17 @@ services:
     <<: *detta-node
     container_name: detta-validator-4
     environment:
+      <<: *bft-env
       DETTA_VALIDATOR_ID: validator-4
-      DETTA_SYNC_PEER: validator-1:8080
-      DETTA_SYNC_INTERVAL_SECS: "2"
+      DETTA_CONSENSUS_LISTEN: 0.0.0.0:9080
     volumes:
       - genesis:/genesis:ro
       - validator-4-data:/data
     ports:
       - "8084:8080"
 
-  # Non-validating full node for public RPC / client access; also follows the leader.
+  # Non-validating full node for public RPC / client access. Not part of the
+  # validator set; follows the chain via RPC block sync for client queries.
   rpc:
     <<: *detta-node
     container_name: detta-rpc
