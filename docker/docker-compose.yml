@@ -86,6 +86,7 @@ services:
       <<: *bft-env
       DETTA_VALIDATOR_ID: validator-2
       DETTA_CONSENSUS_LISTEN: 0.0.0.0:9080
+      DETTA_BACKFILL_PEER: validator-1:8080
     volumes:
       - genesis:/genesis:ro
       - validator-2-data:/data
@@ -99,6 +100,7 @@ services:
       <<: *bft-env
       DETTA_VALIDATOR_ID: validator-3
       DETTA_CONSENSUS_LISTEN: 0.0.0.0:9080
+      DETTA_BACKFILL_PEER: validator-1:8080
     volumes:
       - genesis:/genesis:ro
       - validator-3-data:/data
@@ -112,6 +114,7 @@ services:
       <<: *bft-env
       DETTA_VALIDATOR_ID: validator-4
       DETTA_CONSENSUS_LISTEN: 0.0.0.0:9080
+      DETTA_BACKFILL_PEER: validator-1:8080
     volumes:
       - genesis:/genesis:ro
       - validator-4-data:/data

@@ -33,11 +33,17 @@ one validator does not stop finality — the proposer keeps finalizing with a
   an invalid block cannot collect a quorum of honest votes, and every proposal
   and vote is signature-checked, so honest validators never finalize a bad or
   conflicting block.
-- **Liveness is single-proposer.** There is a fixed proposer and **no leader
-  rotation / view-change**: if the proposer crashes, finality halts until it
-  returns. A restarted *follower* that missed blocks does not auto-catch-up in
-  BFT mode (no block backfill on the consensus path). These are deliberate scope
-  cuts for a demo, not BFT safety gaps.
+- **Restart / lag tolerance is built in.** A validator that restarts or falls
+  behind runs a **catch-up thread** (`DETTA_BACKFILL_PEER`) that pulls and
+  verify-imports the blocks it missed from a peer's RPC, then resumes voting on
+  live proposals. While it catches up it simply skips votes it cannot yet cast;
+  the remaining quorum is unaffected.
+- **Liveness is still single-proposer.** There is a fixed proposer and **no
+  leader rotation / view-change**: if the *proposer* crashes, new finality halts
+  until it returns. Automatic rotation needs a propose-without-commit path (build
+  and broadcast a block but only commit it once it is finalized) so a backup
+  proposer can never fork the chain — that is the next step and is deliberately
+  not yet wired in. This is a liveness bound, not a safety gap.
 
 For a plainer crash-fault-tolerant (non-BFT) mode — a single leader that
 auto-produces and followers that pull+verify-import over RPC — leave

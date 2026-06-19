@@ -313,6 +313,8 @@ struct BftConfig {
     peers: Vec<String>,
     round_interval: Duration,
     quorum: usize,
+    backfill_peer: Option<String>,
+    backfill_interval: Duration,
 }
 
 impl BftConfig {
@@ -348,6 +350,12 @@ impl BftConfig {
                 env_u64("DETTA_PRODUCE_INTERVAL_SECS").unwrap_or(5).max(1),
             ),
             quorum,
+            backfill_peer: env::var("DETTA_BACKFILL_PEER")
+                .ok()
+                .filter(|value| !value.is_empty()),
+            backfill_interval: Duration::from_secs(
+                env_u64("DETTA_SYNC_INTERVAL_SECS").unwrap_or(2).max(1),
+            ),
         })
     }
 
@@ -406,6 +414,17 @@ fn spawn_bft_threads(node: &Arc<Mutex<PersistentValidatorNode>>, config: BftConf
         let node = Arc::clone(node);
         let config = Arc::clone(&config);
         thread::spawn(move || run_proposer_rounds(node, config));
+    }
+    // Catch-up: a validator that restarts or falls behind pulls and
+    // verify-imports the blocks it missed from a peer's RPC, so it can resume
+    // voting on live proposals instead of stalling on a height gap. State sync
+    // is independent of finality; quorum is unaffected while it catches up.
+    if let Some(peer) = config.backfill_peer.clone() {
+        let node = Arc::clone(node);
+        let interval = config.backfill_interval;
+        let validator_id = config.validator_id.clone();
+        eprintln!("[{validator_id}] BFT catch-up: backfilling missed blocks from {peer}");
+        thread::spawn(move || run_follower_sync(node, peer, interval, validator_id));
     }
 }
 
@@ -598,9 +617,20 @@ fn handle_consensus_connection(
     };
     let outcome = {
         let mut guard = node.lock().expect("node mutex poisoned");
-        guard
-            .ingest_network_envelope(&envelope)
-            .map_err(|error| format!("ingest: {error:?}"))?
+        match guard.ingest_network_envelope(&envelope) {
+            Ok(outcome) => outcome,
+            // A height gap (this validator is behind / just restarted) makes the
+            // proposal unimportable right now. Skip this vote quietly; the
+            // catch-up thread backfills the missed blocks and the validator
+            // resumes voting on later proposals.
+            Err(error) => {
+                eprintln!(
+                    "[{}] skipping proposal, catching up ({error:?})",
+                    config.validator_id
+                );
+                return Ok(());
+            }
+        }
     };
     if outcome != NetworkIngestOutcome::BlockImported {
         return Ok(());
