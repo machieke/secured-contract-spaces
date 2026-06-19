@@ -2410,6 +2410,23 @@ impl PersistentValidatorNode {
         block
     }
 
+    /// Verify the signature on a signed validator message and return the inner
+    /// message **without applying it** (no import, no commit). Used by a voter to
+    /// authenticate a proposal before validating and voting on it in a
+    /// commit-after-finality flow. Errors if the message is not signed or the
+    /// signer is not trusted.
+    pub fn verify_signed_message(
+        &self,
+        message: &NetworkMessage,
+    ) -> Result<NetworkMessage, NodeError> {
+        let NetworkMessage::SignedValidator(signed) = message else {
+            return Err(NodeError::BlockProposalRejected(
+                "consensus message is not signed".into(),
+            ));
+        };
+        self.verified_signed_validator_message(signed)
+    }
+
     /// Verify a proposed block against the local chain tip **without committing
     /// it**: re-execute its transactions on a clone of the current state and
     /// confirm the recomputed block is identical (same roots and hash). A
@@ -5009,6 +5026,55 @@ mod tests {
             node.rpc().get_state_root(),
             proposal.header.global_state_root
         );
+    }
+
+    #[test]
+    fn validator_cannot_sign_two_blocks_at_one_height() {
+        // The safety foundation for proposer rotation: an honest validator signs
+        // at most one block per height, durably. With quorum overlap this means
+        // at most one block per height can gather a finality certificate, so no
+        // two conflicting blocks can be finalized — no fork — even when multiple
+        // proposers propose for the same height during a view change.
+        let dir = temp_dir("bft-anti-equivocation");
+        let node = PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &dir).unwrap();
+        let key = ValidatorSigningKey::from_seed("validator-1", "consensus-key-1", [1u8; 32]);
+        let vote = |hash: &str| {
+            NetworkMessage::Vote(Vote {
+                validator_id: "validator-1".into(),
+                height: 1,
+                block_hash: hash.into(),
+            })
+        };
+
+        // First vote at height 1 is accepted; re-signing the same block is
+        // idempotent; a different block at the same height is rejected.
+        node.sign_validator_message(&key, vote("block-aaa"))
+            .unwrap();
+        node.sign_validator_message(&key, vote("block-aaa"))
+            .unwrap();
+        assert!(matches!(
+            node.sign_validator_message(&key, vote("block-bbb")),
+            Err(NodeError::ConsensusSigningConflict { height: 1, .. })
+        ));
+
+        // The lock survives a restart (it is persisted, not just in memory).
+        drop(node);
+        let restarted = PersistentValidatorNode::restart("validator-1", &dir).unwrap();
+        assert!(matches!(
+            restarted.sign_validator_message(&key, vote("block-bbb")),
+            Err(NodeError::ConsensusSigningConflict { height: 1, .. })
+        ));
+        // A different height is unaffected.
+        restarted
+            .sign_validator_message(
+                &key,
+                NetworkMessage::Vote(Vote {
+                    validator_id: "validator-1".into(),
+                    height: 2,
+                    block_hash: "block-ccc".into(),
+                }),
+            )
+            .unwrap();
     }
 
     #[test]
