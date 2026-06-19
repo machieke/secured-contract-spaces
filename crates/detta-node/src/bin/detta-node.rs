@@ -516,8 +516,26 @@ fn propose_height(
         if guard.current_height() + 1 != target {
             return;
         }
-        let block = guard.build_proposal(target, target.saturating_mul(1_000));
+        // NEW-VIEW (partial): if this validator already voted for a block at this
+        // height (it is locked to the buffered block), re-propose that block
+        // instead of building a fresh one, so validators locked to it can vote
+        // again and reach quorum. Re-proposing is fork-safe — commit still
+        // requires a quorum certificate. Otherwise build a fresh proposal.
+        let locked = buffer
+            .lock()
+            .expect("buffer mutex poisoned")
+            .get(&target)
+            .cloned();
+        let reproposed = locked.is_some();
+        let block =
+            locked.unwrap_or_else(|| guard.build_proposal(target, target.saturating_mul(1_000)));
         let block_hash = block.block_hash();
+        if reproposed {
+            eprintln!(
+                "[{}] re-proposing locked block height={target} hash={block_hash}",
+                config.validator_id
+            );
+        }
         let signed_block = match guard
             .sign_validator_message(key, NetworkMessage::Block(Box::new(block.clone())))
         {
