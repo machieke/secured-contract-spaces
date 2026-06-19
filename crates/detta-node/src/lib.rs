@@ -121,6 +121,7 @@ pub enum NodeError {
         existing_block_hash: String,
         attempted_block_hash: String,
     },
+    BlockProposalRejected(String),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2386,6 +2387,58 @@ impl PersistentValidatorNode {
         self.last_block_execution_micros = Some(elapsed_micros(started));
         self.persist_committed_block(&block)?;
         Ok(block)
+    }
+
+    /// Build a block proposal from the pending mempool **without committing it**:
+    /// no state mutation, no mempool drain, no storage write. The block is
+    /// computed on a clone of the current state, so its roots are final, but the
+    /// node stays at its current height until the proposal is actually finalized
+    /// and applied via [`Self::import_block`]. This is the producer half of a
+    /// commit-after-finality (two-phase) consensus flow: a proposer can build and
+    /// broadcast a block and only commit it once a quorum has voted, so an
+    /// abandoned proposal can never fork the chain.
+    pub fn build_proposal(&self, height: u64, timestamp: u64) -> Block {
+        let transactions = self.pending_transactions_for_next_block();
+        let consensus_certificate = format!("bft-cert:{}:{}", self.validator_id, height);
+        let (block, _working_state) = self.rpc.node().state().build_block(
+            height,
+            transactions,
+            timestamp,
+            self.validator_id.clone(),
+            consensus_certificate,
+        );
+        block
+    }
+
+    /// Verify a proposed block against the local chain tip **without committing
+    /// it**: re-execute its transactions on a clone of the current state and
+    /// confirm the recomputed block is identical (same roots and hash). A
+    /// validator can call this to decide whether to vote before it commits, which
+    /// only happens once the block is finalized. Leaves state, mempool, and
+    /// storage untouched.
+    pub fn verify_block_without_commit(&self, block: &Block) -> Result<(), NodeError> {
+        let expected_height = self.current_height() + 1;
+        if block.header.height != expected_height {
+            return Err(NodeError::BlockProposalRejected(format!(
+                "proposed height {} does not build on current height {} (expected {expected_height})",
+                block.header.height,
+                self.current_height()
+            )));
+        }
+        let (rebuilt, _working_state) = self.rpc.node().state().build_block(
+            block.header.height,
+            block.transactions.clone(),
+            block.header.timestamp,
+            block.header.proposer.clone(),
+            block.header.consensus_certificate.clone(),
+        );
+        if rebuilt.block_hash() != block.block_hash() {
+            return Err(NodeError::BlockProposalRejected(format!(
+                "re-executed block at height {} does not match the proposal",
+                block.header.height
+            )));
+        }
+        Ok(())
     }
 
     pub fn produce_block_with_data_availability(
@@ -4903,6 +4956,59 @@ mod tests {
             }
             record => panic!("expected oracle evidence DA record, got {record:?}"),
         }
+    }
+
+    #[test]
+    fn build_proposal_does_not_commit_and_verifies_without_mutation() {
+        let dir = temp_dir("bft-build-proposal");
+        let mut node =
+            PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &dir).unwrap();
+        node.submit_transaction(transfer_tx()).unwrap();
+
+        let height_before = node.current_height();
+        let pending_before = node.pending_len();
+        let root_before = node.rpc().get_state_root();
+        assert!(pending_before > 0);
+
+        // Building a proposal commits nothing: height, mempool, and state are
+        // unchanged.
+        let proposal = node.build_proposal(height_before + 1, 1_000);
+        assert_eq!(proposal.header.height, height_before + 1);
+        assert_eq!(node.current_height(), height_before);
+        assert_eq!(node.pending_len(), pending_before);
+        assert_eq!(node.rpc().get_state_root(), root_before);
+
+        // A faithful proposal verifies, and verification is also non-mutating.
+        node.verify_block_without_commit(&proposal).unwrap();
+        assert_eq!(node.current_height(), height_before);
+        assert_eq!(node.pending_len(), pending_before);
+        assert_eq!(node.rpc().get_state_root(), root_before);
+
+        // A proposal whose committed roots were tampered is rejected (the
+        // re-execution produces the correct roots, which no longer match).
+        let mut forged_root = proposal.clone();
+        forged_root.header.global_state_root = "00".repeat(32);
+        assert!(matches!(
+            node.verify_block_without_commit(&forged_root),
+            Err(NodeError::BlockProposalRejected(_))
+        ));
+
+        // A proposal that does not build on the current tip is rejected.
+        let wrong_height = node.build_proposal(height_before + 2, 1_000);
+        assert!(matches!(
+            node.verify_block_without_commit(&wrong_height),
+            Err(NodeError::BlockProposalRejected(_))
+        ));
+
+        // Committing the verified proposal advances the chain and drains the
+        // now-committed transaction from the mempool.
+        node.import_block(&proposal).unwrap();
+        assert_eq!(node.current_height(), height_before + 1);
+        assert!(node.pending_len() < pending_before);
+        assert_eq!(
+            node.rpc().get_state_root(),
+            proposal.header.global_state_root
+        );
     }
 
     #[test]
