@@ -1164,6 +1164,222 @@ impl DaApplicationProfile {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum DaApplicationProfileStatus {
+    Active,
+    Deprecated,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaApplicationProfileRegistration {
+    pub profile_id: String,
+    pub profile: DaApplicationProfile,
+    pub status: DaApplicationProfileStatus,
+    pub activated_at_sequence: Option<u64>,
+    pub deprecated_at_sequence: Option<u64>,
+}
+
+impl DaApplicationProfileRegistration {
+    pub fn active(profile: DaApplicationProfile) -> Result<Self, DaError> {
+        let profile_id = profile.profile_id()?;
+        let registration = Self {
+            profile_id,
+            profile,
+            status: DaApplicationProfileStatus::Active,
+            activated_at_sequence: None,
+            deprecated_at_sequence: None,
+        };
+        registration.validate()?;
+        Ok(registration)
+    }
+
+    pub fn validate(&self) -> Result<(), DaError> {
+        self.profile.validate()?;
+        if self.profile_id != self.profile.profile_id()? {
+            return Err(DaError::InvalidManifest(
+                "application profile registration id does not match profile hash".into(),
+            ));
+        }
+        match self.status {
+            DaApplicationProfileStatus::Active => {
+                if self.deprecated_at_sequence.is_some() {
+                    return Err(DaError::InvalidManifest(
+                        "active application profile registration has deprecation sequence".into(),
+                    ));
+                }
+            }
+            DaApplicationProfileStatus::Deprecated => {
+                if self.deprecated_at_sequence.is_none() {
+                    return Err(DaError::InvalidManifest(
+                        "deprecated application profile registration lacks deprecation sequence"
+                            .into(),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.status == DaApplicationProfileStatus::Active
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Default)]
+pub struct DaApplicationProfileRegistry {
+    profiles_by_id: BTreeMap<String, DaApplicationProfileRegistration>,
+    profile_ids_by_application_version: BTreeMap<(DaApplicationId, u32), String>,
+}
+
+impl DaApplicationProfileRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_builtin_profiles() -> Result<Self, DaError> {
+        let mut registry = Self::new();
+        registry.register(DaApplicationProfile::detta_defi_v1())?;
+        registry.register(DaApplicationProfile::social_demo_v1())?;
+        Ok(registry)
+    }
+
+    pub fn from_registrations(
+        registrations: Vec<DaApplicationProfileRegistration>,
+    ) -> Result<Self, DaError> {
+        let mut registry = Self::new();
+        for registration in registrations {
+            registry.insert_registration(registration)?;
+        }
+        Ok(registry)
+    }
+
+    pub fn register(&mut self, profile: DaApplicationProfile) -> Result<String, DaError> {
+        let registration = DaApplicationProfileRegistration::active(profile)?;
+        let profile_id = registration.profile_id.clone();
+        self.insert_registration(registration)?;
+        Ok(profile_id)
+    }
+
+    pub fn deprecate(
+        &mut self,
+        profile_id: &str,
+        deprecated_at_sequence: u64,
+    ) -> Result<(), DaError> {
+        let registration = self.profiles_by_id.get_mut(profile_id).ok_or_else(|| {
+            DaError::InvalidManifest(format!("unknown application profile id {profile_id}"))
+        })?;
+        registration.status = DaApplicationProfileStatus::Deprecated;
+        registration.deprecated_at_sequence = Some(deprecated_at_sequence);
+        registration.validate()
+    }
+
+    pub fn get(&self, profile_id: &str) -> Result<&DaApplicationProfileRegistration, DaError> {
+        self.profiles_by_id.get(profile_id).ok_or_else(|| {
+            DaError::InvalidManifest(format!("unknown application profile id {profile_id}"))
+        })
+    }
+
+    pub fn get_profile(&self, profile_id: &str) -> Result<&DaApplicationProfile, DaError> {
+        Ok(&self.get(profile_id)?.profile)
+    }
+
+    pub fn get_profile_version(
+        &self,
+        application_id: &DaApplicationId,
+        profile_version: u32,
+    ) -> Result<&DaApplicationProfileRegistration, DaError> {
+        let profile_id = self
+            .profile_ids_by_application_version
+            .get(&(application_id.clone(), profile_version))
+            .ok_or_else(|| {
+                DaError::InvalidManifest(format!(
+                    "unknown application profile {} version {profile_version}",
+                    application_id.0
+                ))
+            })?;
+        self.get(profile_id)
+    }
+
+    pub fn latest_active_profile(
+        &self,
+        application_id: &DaApplicationId,
+    ) -> Option<&DaApplicationProfileRegistration> {
+        self.profile_ids_by_application_version
+            .iter()
+            .filter(|((candidate, _), _)| candidate == application_id)
+            .filter_map(|(_, profile_id)| self.profiles_by_id.get(profile_id))
+            .filter(|registration| registration.is_active())
+            .last()
+    }
+
+    pub fn profiles_for_application(
+        &self,
+        application_id: &DaApplicationId,
+    ) -> Vec<&DaApplicationProfileRegistration> {
+        self.profile_ids_by_application_version
+            .iter()
+            .filter(|((candidate, _), _)| candidate == application_id)
+            .filter_map(|(_, profile_id)| self.profiles_by_id.get(profile_id))
+            .collect()
+    }
+
+    pub fn registrations(&self) -> Vec<DaApplicationProfileRegistration> {
+        self.profiles_by_id.values().cloned().collect()
+    }
+
+    pub fn validate_payload(&self, payload: &ApplicationDaPayload) -> Result<(), DaError> {
+        let registration = self.get(&payload.profile_id)?;
+        if !registration.is_active() {
+            return Err(DaError::InvalidManifest(format!(
+                "application profile id {} is not active",
+                registration.profile_id
+            )));
+        }
+        payload.validate(&registration.profile)
+    }
+
+    pub fn validate_historical_payload(
+        &self,
+        payload: &ApplicationDaPayload,
+    ) -> Result<(), DaError> {
+        let registration = self.get(&payload.profile_id)?;
+        payload.validate(&registration.profile)
+    }
+
+    fn insert_registration(
+        &mut self,
+        registration: DaApplicationProfileRegistration,
+    ) -> Result<(), DaError> {
+        registration.validate()?;
+        let profile_id = registration.profile_id.clone();
+        let version_key = (
+            registration.profile.application_id.clone(),
+            registration.profile.profile_version,
+        );
+        if let Some(existing) = self.profiles_by_id.get(&profile_id) {
+            if existing != &registration {
+                return Err(DaError::InvalidManifest(format!(
+                    "conflicting application profile registration for id {profile_id}"
+                )));
+            }
+            return Ok(());
+        }
+        if let Some(existing_profile_id) = self.profile_ids_by_application_version.get(&version_key)
+        {
+            if existing_profile_id != &profile_id {
+                return Err(DaError::InvalidManifest(format!(
+                    "application profile {} version {} is already registered",
+                    version_key.0 .0, version_key.1
+                )));
+            }
+        }
+        self.profile_ids_by_application_version
+            .insert(version_key, profile_id.clone());
+        self.profiles_by_id.insert(profile_id, registration);
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DaRecordEnvelope {
     pub schema: String,
     pub schema_version: u32,
@@ -5698,6 +5914,99 @@ mod tests {
             forbidden_namespace.validate(),
             Err(DaError::InvalidManifest(_))
         ));
+    }
+
+    #[test]
+    fn application_profile_registry_registers_builtins_and_rejects_unknown_payloads() {
+        let registry = DaApplicationProfileRegistry::with_builtin_profiles().unwrap();
+        let social_profile = DaApplicationProfile::social_demo_v1();
+        let social_id = social_profile.profile_id().unwrap();
+        assert_eq!(registry.get_profile(&social_id).unwrap(), &social_profile);
+        assert_eq!(
+            registry
+                .latest_active_profile(&application_id_unchecked("social.demo"))
+                .unwrap()
+                .profile_id,
+            social_id
+        );
+        assert!(registry
+            .get_profile(&DaApplicationProfile::detta_defi_v1().profile_id().unwrap())
+            .is_ok());
+
+        let empty_registry = DaApplicationProfileRegistry::new();
+        assert!(matches!(
+            empty_registry.validate_payload(&social_demo_payload()),
+            Err(DaError::InvalidManifest(_))
+        ));
+    }
+
+    #[test]
+    fn application_profile_registry_keeps_deprecated_versions_for_history() {
+        let mut registry = DaApplicationProfileRegistry::new();
+        let v1 = DaApplicationProfile::social_demo_v1();
+        let v1_id = registry.register(v1.clone()).unwrap();
+        let v1_payload = social_demo_payload();
+
+        let mut v2 = v1.clone();
+        v2.profile_version = 2;
+        v2.profile_name = "Social Demo DA v2".into();
+        let v2_id = registry.register(v2.clone()).unwrap();
+        assert_ne!(v1_id, v2_id);
+
+        registry.deprecate(&v1_id, 42).unwrap();
+        assert_eq!(
+            registry
+                .get_profile_version(&application_id_unchecked("social.demo"), 1)
+                .unwrap()
+                .status,
+            DaApplicationProfileStatus::Deprecated
+        );
+        assert_eq!(
+            registry
+                .latest_active_profile(&application_id_unchecked("social.demo"))
+                .unwrap()
+                .profile_id,
+            v2_id
+        );
+        assert!(matches!(
+            registry.validate_payload(&v1_payload),
+            Err(DaError::InvalidManifest(_))
+        ));
+        registry.validate_historical_payload(&v1_payload).unwrap();
+
+        let v2_payload = ApplicationDaPayload::new(
+            &v2,
+            social_coordinate(2),
+            DaPayloadKind::Batch,
+            Some(v1_payload.hash().unwrap()),
+            vec![application_root(
+                "social.event.log.root",
+                b"social-event-log-root-2",
+            )],
+            vec![application_section(
+                "social.feed",
+                vec![application_record(
+                    "social.post",
+                    DaRecordEncoding::CanonicalJson,
+                    br#"{"author":"bob","post_id":"post-2","text":"next"}"#,
+                    Some("bob"),
+                )],
+            )],
+        )
+        .unwrap();
+        registry.validate_payload(&v2_payload).unwrap();
+
+        let reloaded =
+            DaApplicationProfileRegistry::from_registrations(registry.registrations()).unwrap();
+        assert_eq!(
+            reloaded
+                .get_profile_version(&application_id_unchecked("social.demo"), 1)
+                .unwrap()
+                .status,
+            DaApplicationProfileStatus::Deprecated
+        );
+        reloaded.validate_historical_payload(&v1_payload).unwrap();
+        reloaded.validate_payload(&v2_payload).unwrap();
     }
 
     #[test]

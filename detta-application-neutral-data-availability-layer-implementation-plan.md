@@ -803,18 +803,18 @@ Acceptance:
 
 ### Phase 4: Profile Registry
 
-- [ ] Add in-memory `DaApplicationProfileRegistry`.
-- [ ] Register built-in `detta.defi` profile.
-- [ ] Register test `social.demo` profile.
+- [x] Add in-memory `DaApplicationProfileRegistry`.
+- [x] Register built-in `detta.defi` profile.
+- [x] Register test `social.demo` profile.
 - [ ] Add durable profile storage.
-- [ ] Add profile indexes by application id, profile id, and profile version.
-- [ ] Add profile activation/deprecation status.
+- [x] Add profile indexes by application id, profile id, and profile version.
+- [x] Add profile activation/deprecation status.
 
 Acceptance:
 
-- unknown profile payloads are rejected;
-- registered profile hashes are stable;
-- old profile versions remain loadable for historical validation;
+- [x] unknown profile payloads are rejected;
+- [x] registered profile hashes are stable;
+- [x] old profile versions remain loadable for historical validation;
 - registry survives restart.
 
 ### Phase 5: Application Validators
