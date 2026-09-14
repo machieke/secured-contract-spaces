@@ -14,6 +14,9 @@ pub const DA_PAYLOAD_SCHEMA: &str = "detta.da-payload.v1";
 pub const DA_PRODUCTION_PROFILE_SCHEMA: &str = "detta.da-production-profile.v1";
 pub const DA_APPLICATION_PROFILE_SCHEMA: &str = "detta.da-application-profile.v1";
 pub const APPLICATION_DA_PAYLOAD_SCHEMA: &str = "detta.application-da-payload.v1";
+pub const APPLICATION_DA_MANIFEST_SCHEMA: &str = "detta.application-da-manifest.v1";
+pub const APPLICATION_DA_CODING_FRAUD_PROOF_SCHEMA: &str =
+    "detta.application-da-coding-fraud-proof.v1";
 pub const DA_PAYLOAD_VERSION: u32 = 1;
 pub const REED_SOLOMON_MAX_SHARES: u32 = 256;
 pub const DA_V1_MIN_CUSTODY_SHARE_COUNT: u32 = 2;
@@ -1852,6 +1855,346 @@ impl DaManifest {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ApplicationDaManifest {
+    pub schema: String,
+    pub schema_version: u32,
+    pub application_id: DaApplicationId,
+    pub profile_id: String,
+    pub coordinate: DaApplicationCoordinate,
+    pub payload_kind: DaPayloadKind,
+    pub payload_hash: String,
+    pub payload_bytes: u64,
+    pub namespace_root: String,
+    pub application_root: Option<String>,
+    pub share_root: String,
+    pub erasure_scheme: ErasureScheme,
+    pub original_share_count: u32,
+    pub encoded_share_count: u32,
+    pub reconstruction_threshold: u32,
+    pub share_size_bytes: u32,
+    pub share_hashes: Vec<String>,
+    pub namespace_ranges: Vec<DaNamespaceRange>,
+}
+
+impl ApplicationDaManifest {
+    pub fn manifest_hash(&self) -> Result<String, DaError> {
+        hash_canonical(self)
+    }
+
+    pub fn validate_structure(&self) -> Result<(), DaError> {
+        if self.schema != APPLICATION_DA_MANIFEST_SCHEMA {
+            return Err(DaError::InvalidManifest(format!(
+                "unexpected application DA manifest schema {}",
+                self.schema
+            )));
+        }
+        if self.schema_version != 1 {
+            return Err(DaError::InvalidManifest(format!(
+                "unexpected application DA manifest version {}",
+                self.schema_version
+            )));
+        }
+        self.application_id.validate()?;
+        validate_sha256_hex("application manifest profile_id", &self.profile_id)?;
+        self.coordinate.application_id.validate()?;
+        if self.coordinate.application_id != self.application_id {
+            return Err(DaError::InvalidManifest(
+                "application manifest coordinate application_id does not match manifest application_id"
+                    .into(),
+            ));
+        }
+        self.payload_kind.validate()?;
+        validate_sha256_hex("application manifest payload_hash", &self.payload_hash)?;
+        validate_sha256_hex("application manifest namespace_root", &self.namespace_root)?;
+        validate_optional_sha256_hex(
+            "application manifest application_root",
+            self.application_root.as_deref(),
+        )?;
+        validate_sha256_hex("application manifest share_root", &self.share_root)?;
+        if self.payload_bytes == 0 {
+            return Err(DaError::InvalidManifest(
+                "application manifest payload_bytes must be positive".into(),
+            ));
+        }
+        if self.share_size_bytes == 0 {
+            return Err(DaError::InvalidChunkSize);
+        }
+        if self.original_share_count == 0
+            || self.encoded_share_count == 0
+            || self.reconstruction_threshold == 0
+        {
+            return Err(DaError::InvalidManifest(
+                "share counts and reconstruction threshold must be positive".into(),
+            ));
+        }
+        match self.erasure_scheme {
+            ErasureScheme::DeterministicChunks => {
+                if self.original_share_count != self.encoded_share_count
+                    || self.reconstruction_threshold != self.encoded_share_count
+                {
+                    return Err(DaError::UnsupportedErasureScheme);
+                }
+            }
+            ErasureScheme::ReedSolomonV1 => {
+                if self.original_share_count >= self.encoded_share_count {
+                    return Err(DaError::InvalidManifest(
+                        "reed-solomon manifests must include parity shares".into(),
+                    ));
+                }
+                if self.reconstruction_threshold != self.original_share_count {
+                    return Err(DaError::InvalidManifest(
+                        "reed-solomon threshold must equal original share count".into(),
+                    ));
+                }
+                if self.encoded_share_count > REED_SOLOMON_MAX_SHARES {
+                    return Err(DaError::ShareCountOverflow);
+                }
+                let payload_capacity =
+                    u64::from(self.original_share_count) * u64::from(self.share_size_bytes);
+                if payload_capacity < self.payload_bytes {
+                    return Err(DaError::InvalidManifest(
+                        "payload bytes exceed reed-solomon data shard capacity".into(),
+                    ));
+                }
+            }
+        }
+        if self.share_hashes.len() != self.encoded_share_count as usize {
+            return Err(DaError::ManifestShareCountMismatch {
+                declared: self.encoded_share_count,
+                actual: self.share_hashes.len() as u32,
+            });
+        }
+        for share_hash in &self.share_hashes {
+            validate_sha256_hex("application manifest share_hash", share_hash)?;
+        }
+        let expected_share_root = share_root(&self.share_hashes)?;
+        if self.share_root != expected_share_root {
+            return Err(DaError::ShareRootMismatch {
+                expected: expected_share_root,
+                actual: self.share_root.clone(),
+            });
+        }
+        validate_namespace_ranges(&self.namespace_ranges)?;
+        let expected_namespace_root = namespace_root_for_ranges(&self.namespace_ranges)?;
+        if self.namespace_root != expected_namespace_root {
+            return Err(DaError::NamespaceRootMismatch {
+                expected: expected_namespace_root,
+                actual: self.namespace_root.clone(),
+            });
+        }
+        Ok(())
+    }
+
+    pub fn validate(&self, profile: &DaApplicationProfile) -> Result<(), DaError> {
+        profile.validate()?;
+        self.validate_structure()?;
+        if self.application_id != profile.application_id {
+            return Err(DaError::InvalidManifest(format!(
+                "manifest application_id {} does not match profile application_id {}",
+                self.application_id.0, profile.application_id.0
+            )));
+        }
+        if self.profile_id != profile.profile_id()? {
+            return Err(DaError::InvalidManifest(
+                "manifest profile_id does not match profile hash".into(),
+            ));
+        }
+        self.coordinate.validate(&profile.coordinate_policy)?;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApplicationDaShareSet {
+    pub manifest: ApplicationDaManifest,
+    pub shares: Vec<DaShare>,
+}
+
+impl ApplicationDaShareSet {
+    pub fn from_payload(
+        payload: &ApplicationDaPayload,
+        profile: &DaApplicationProfile,
+        share_size_bytes: usize,
+    ) -> Result<Self, DaError> {
+        build_application_da_share_set(payload, profile, share_size_bytes)
+    }
+
+    pub fn from_payload_reed_solomon(
+        payload: &ApplicationDaPayload,
+        profile: &DaApplicationProfile,
+        data_share_count: u32,
+        parity_share_count: u32,
+    ) -> Result<Self, DaError> {
+        build_application_reed_solomon_share_set(
+            payload,
+            profile,
+            data_share_count,
+            parity_share_count,
+        )
+    }
+
+    pub fn verify(&self, profile: &DaApplicationProfile) -> Result<(), DaError> {
+        self.reconstruct_payload(profile).map(|_| ())
+    }
+
+    pub fn reconstruct_payload(
+        &self,
+        profile: &DaApplicationProfile,
+    ) -> Result<ApplicationDaPayload, DaError> {
+        self.manifest.validate(profile)?;
+        let shares = validated_application_share_map(&self.manifest, &self.shares)?;
+
+        if shares.len() < self.manifest.reconstruction_threshold as usize {
+            return Err(DaError::InsufficientShares {
+                required: self.manifest.reconstruction_threshold,
+                actual: shares.len() as u32,
+            });
+        }
+
+        match self.manifest.erasure_scheme {
+            ErasureScheme::DeterministicChunks => {
+                reconstruct_deterministic_application_payload(&self.manifest, &shares, profile)
+            }
+            ErasureScheme::ReedSolomonV1 => {
+                reconstruct_reed_solomon_application_payload(&self.manifest, &shares, profile)
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ApplicationDaNamespaceProof {
+    pub manifest_hash: String,
+    pub application_id: DaApplicationId,
+    pub profile_id: String,
+    pub coordinate: DaApplicationCoordinate,
+    pub payload_hash: String,
+    pub namespace_root: String,
+    pub namespace: DaNamespace,
+    pub range: Option<DaNamespaceRange>,
+    pub namespace_ranges: Vec<DaNamespaceRange>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ApplicationDaCodingFraudProof {
+    pub schema: String,
+    pub schema_version: u32,
+    pub application_id: DaApplicationId,
+    pub profile_id: String,
+    pub coordinate: DaApplicationCoordinate,
+    pub payload_kind: DaPayloadKind,
+    pub manifest_hash: String,
+    pub share_root: String,
+    pub reporter_id: String,
+    pub data_shares: Vec<DaShare>,
+    pub fault: DaCodingFault,
+}
+
+impl ApplicationDaCodingFraudProof {
+    pub fn from_committed_data_shares(
+        manifest: &ApplicationDaManifest,
+        profile: &DaApplicationProfile,
+        data_shares: &[DaShare],
+        reporter_id: impl Into<String>,
+    ) -> Result<Self, DaError> {
+        let fault = detect_application_da_coding_fault(manifest, profile, data_shares)?
+            .ok_or_else(|| {
+                DaError::InvalidCodingFraudProof(
+                    "committed data shares form a valid application DA encoding".into(),
+                )
+            })?;
+        let proof = Self {
+            schema: APPLICATION_DA_CODING_FRAUD_PROOF_SCHEMA.into(),
+            schema_version: 1,
+            application_id: manifest.application_id.clone(),
+            profile_id: manifest.profile_id.clone(),
+            coordinate: manifest.coordinate.clone(),
+            payload_kind: manifest.payload_kind.clone(),
+            manifest_hash: manifest.manifest_hash()?,
+            share_root: manifest.share_root.clone(),
+            reporter_id: reporter_id.into(),
+            data_shares: data_shares.to_vec(),
+            fault,
+        };
+        proof.validate(manifest, profile)?;
+        Ok(proof)
+    }
+
+    pub fn proof_hash(&self) -> Result<String, DaError> {
+        self.validate_structure()?;
+        hash_canonical(self)
+    }
+
+    pub fn validate_structure(&self) -> Result<(), DaError> {
+        if self.schema != APPLICATION_DA_CODING_FRAUD_PROOF_SCHEMA {
+            return Err(DaError::InvalidCodingFraudProof(format!(
+                "unexpected application coding fraud proof schema {}",
+                self.schema
+            )));
+        }
+        if self.schema_version != 1 {
+            return Err(DaError::InvalidCodingFraudProof(format!(
+                "unexpected application coding fraud proof version {}",
+                self.schema_version
+            )));
+        }
+        self.application_id.validate()?;
+        validate_sha256_hex(
+            "application coding fraud proof profile_id",
+            &self.profile_id,
+        )?;
+        self.coordinate.application_id.validate()?;
+        self.payload_kind.validate()?;
+        validate_sha256_hex(
+            "application coding fraud proof manifest_hash",
+            &self.manifest_hash,
+        )?;
+        validate_sha256_hex(
+            "application coding fraud proof share_root",
+            &self.share_root,
+        )?;
+        validate_label(
+            "application coding fraud proof reporter_id",
+            &self.reporter_id,
+            256,
+        )?;
+        Ok(())
+    }
+
+    pub fn validate(
+        &self,
+        manifest: &ApplicationDaManifest,
+        profile: &DaApplicationProfile,
+    ) -> Result<(), DaError> {
+        self.validate_structure()?;
+        manifest.validate(profile)?;
+        if self.application_id != manifest.application_id
+            || self.profile_id != manifest.profile_id
+            || self.coordinate != manifest.coordinate
+            || self.payload_kind != manifest.payload_kind
+            || self.manifest_hash != manifest.manifest_hash()?
+            || self.share_root != manifest.share_root
+        {
+            return Err(DaError::InvalidCodingFraudProof(
+                "application coding fraud proof does not match manifest".into(),
+            ));
+        }
+        let detected = detect_application_da_coding_fault(manifest, profile, &self.data_shares)?
+            .ok_or_else(|| {
+                DaError::InvalidCodingFraudProof(
+                    "committed data shares form a valid application DA encoding".into(),
+                )
+            })?;
+        if detected != self.fault {
+            return Err(DaError::InvalidCodingFraudProof(
+                "declared application coding fault does not match recomputed fault".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DaMerkleSiblingSide {
     Left,
@@ -2538,6 +2881,40 @@ fn validated_share_map<'a>(
     Ok(by_index)
 }
 
+fn validated_application_share_map<'a>(
+    manifest: &ApplicationDaManifest,
+    shares: &'a [DaShare],
+) -> Result<BTreeMap<u32, &'a DaShare>, DaError> {
+    manifest.validate_structure()?;
+    let manifest_hash = manifest.manifest_hash()?;
+    let mut by_index = BTreeMap::new();
+
+    for share in shares {
+        if share.manifest_hash != manifest_hash {
+            return Err(DaError::ManifestHashMismatch {
+                expected: manifest_hash.clone(),
+                actual: share.manifest_hash.clone(),
+            });
+        }
+        if share.index >= manifest.encoded_share_count {
+            return Err(DaError::UnexpectedShare {
+                index: share.index,
+                share_count: manifest.encoded_share_count,
+            });
+        }
+        if by_index.insert(share.index, share).is_some() {
+            return Err(DaError::DuplicateShare { index: share.index });
+        }
+        let actual_share_hash = hash_bytes(&share.bytes);
+        let expected_share_hash = &manifest.share_hashes[share.index as usize];
+        if share.share_hash != actual_share_hash || &share.share_hash != expected_share_hash {
+            return Err(DaError::ShareHashMismatch { index: share.index });
+        }
+    }
+
+    Ok(by_index)
+}
+
 fn reconstruct_deterministic_payload(
     manifest: &DaManifest,
     shares: &BTreeMap<u32, &DaShare>,
@@ -2561,6 +2938,32 @@ fn reconstruct_deterministic_payload(
     }
 
     decode_payload_bytes(manifest, &payload_bytes)
+}
+
+fn reconstruct_deterministic_application_payload(
+    manifest: &ApplicationDaManifest,
+    shares: &BTreeMap<u32, &DaShare>,
+    profile: &DaApplicationProfile,
+) -> Result<ApplicationDaPayload, DaError> {
+    let mut total_bytes = 0_u64;
+    let mut payload_bytes =
+        Vec::with_capacity(usize::try_from(manifest.payload_bytes).map_err(|_| {
+            DaError::InvalidManifest("payload byte count does not fit this platform".into())
+        })?);
+    for index in 0..manifest.encoded_share_count {
+        let share = shares.get(&index).ok_or(DaError::MissingShare { index })?;
+        payload_bytes.extend_from_slice(&share.bytes);
+        total_bytes += share.bytes.len() as u64;
+    }
+
+    if total_bytes != manifest.payload_bytes {
+        return Err(DaError::TotalBytesMismatch {
+            expected: manifest.payload_bytes,
+            actual: total_bytes,
+        });
+    }
+
+    decode_application_payload_bytes(manifest, &payload_bytes, profile)
 }
 
 fn reconstruct_reed_solomon_payload(
@@ -2623,6 +3026,67 @@ fn reconstruct_reed_solomon_payload(
     decode_payload_bytes(manifest, &payload_bytes)
 }
 
+fn reconstruct_reed_solomon_application_payload(
+    manifest: &ApplicationDaManifest,
+    shares: &BTreeMap<u32, &DaShare>,
+    profile: &DaApplicationProfile,
+) -> Result<ApplicationDaPayload, DaError> {
+    let share_size = manifest.share_size_bytes as usize;
+    let mut shard_options = vec![None; manifest.encoded_share_count as usize];
+
+    for (index, share) in shares {
+        if share.bytes.len() != share_size {
+            return Err(DaError::InvalidManifest(format!(
+                "reed-solomon share {index} has {} bytes, expected {share_size}",
+                share.bytes.len()
+            )));
+        }
+        shard_options[*index as usize] = Some(share.bytes.clone());
+    }
+
+    reed_solomon_application_codec(manifest)?.reconstruct(&mut shard_options)?;
+
+    for (index, maybe_shard) in shard_options.iter().enumerate() {
+        let shard = maybe_shard.as_ref().ok_or(DaError::MissingShare {
+            index: index as u32,
+        })?;
+        let actual_share_hash = hash_bytes(shard);
+        if actual_share_hash != manifest.share_hashes[index] {
+            return Err(DaError::ShareHashMismatch {
+                index: index as u32,
+            });
+        }
+    }
+
+    let payload_capacity = usize::try_from(manifest.original_share_count)
+        .map_err(|_| DaError::ShareCountOverflow)?
+        .checked_mul(share_size)
+        .ok_or(DaError::ShareCountOverflow)?;
+    let payload_len = usize::try_from(manifest.payload_bytes).map_err(|_| {
+        DaError::InvalidManifest("payload byte count does not fit this platform".into())
+    })?;
+    if payload_len > payload_capacity {
+        return Err(DaError::InvalidManifest(
+            "payload bytes exceed reed-solomon data shard capacity".into(),
+        ));
+    }
+
+    let mut payload_bytes = Vec::with_capacity(payload_capacity);
+    for maybe_shard in shard_options
+        .iter()
+        .take(manifest.original_share_count as usize)
+    {
+        payload_bytes.extend_from_slice(
+            maybe_shard
+                .as_ref()
+                .expect("reed-solomon reconstruction populated all data shards"),
+        );
+    }
+    payload_bytes.truncate(payload_len);
+
+    decode_application_payload_bytes(manifest, &payload_bytes, profile)
+}
+
 fn decode_payload_bytes(manifest: &DaManifest, payload_bytes: &[u8]) -> Result<DaPayload, DaError> {
     let payload_hash = hash_bytes(payload_bytes);
     if payload_hash != manifest.payload_hash {
@@ -2649,7 +3113,71 @@ fn decode_payload_bytes(manifest: &DaManifest, payload_bytes: &[u8]) -> Result<D
     Ok(canonical)
 }
 
+fn decode_application_payload_bytes(
+    manifest: &ApplicationDaManifest,
+    payload_bytes: &[u8],
+    profile: &DaApplicationProfile,
+) -> Result<ApplicationDaPayload, DaError> {
+    let payload_hash = hash_bytes(payload_bytes);
+    if payload_hash != manifest.payload_hash {
+        return Err(DaError::PayloadHashMismatch {
+            expected: manifest.payload_hash.clone(),
+            actual: payload_hash,
+        });
+    }
+    if payload_bytes.len() as u64 != manifest.payload_bytes {
+        return Err(DaError::TotalBytesMismatch {
+            expected: manifest.payload_bytes,
+            actual: payload_bytes.len() as u64,
+        });
+    }
+
+    let payload: ApplicationDaPayload =
+        serde_json::from_slice(payload_bytes).map_err(|_| DaError::DecodeFailed)?;
+    payload.validate(profile)?;
+    let canonical = payload.canonicalized();
+    if canonical != payload {
+        return Err(DaError::PayloadNotCanonical);
+    }
+    if canonical.application_id != manifest.application_id
+        || canonical.profile_id != manifest.profile_id
+        || canonical.coordinate != manifest.coordinate
+        || canonical.payload_kind != manifest.payload_kind
+    {
+        return Err(DaError::ManifestPayloadMismatch {
+            expected: manifest.manifest_hash()?,
+            actual: canonical.hash()?,
+        });
+    }
+    let namespace_root = canonical.namespace_root()?;
+    if namespace_root != manifest.namespace_root {
+        return Err(DaError::NamespaceRootMismatch {
+            expected: manifest.namespace_root.clone(),
+            actual: namespace_root,
+        });
+    }
+    let application_root = application_root_commitment(&canonical)?;
+    if application_root != manifest.application_root {
+        return Err(DaError::ManifestPayloadMismatch {
+            expected: manifest.manifest_hash()?,
+            actual: canonical.hash()?,
+        });
+    }
+    Ok(canonical)
+}
+
 fn reed_solomon_codec(manifest: &DaManifest) -> Result<ReedSolomon, DaError> {
+    let data_share_count =
+        usize::try_from(manifest.original_share_count).map_err(|_| DaError::ShareCountOverflow)?;
+    let parity_share_count =
+        usize::try_from(manifest.encoded_share_count - manifest.original_share_count)
+            .map_err(|_| DaError::ShareCountOverflow)?;
+    ReedSolomon::new(data_share_count, parity_share_count).map_err(da_erasure_error)
+}
+
+fn reed_solomon_application_codec(
+    manifest: &ApplicationDaManifest,
+) -> Result<ReedSolomon, DaError> {
     let data_share_count =
         usize::try_from(manifest.original_share_count).map_err(|_| DaError::ShareCountOverflow)?;
     let parity_share_count =
@@ -2795,6 +3323,137 @@ pub fn build_reed_solomon_share_set(
     Ok(DaShareSet { manifest, shares })
 }
 
+pub fn build_application_da_share_set(
+    payload: &ApplicationDaPayload,
+    profile: &DaApplicationProfile,
+    share_size_bytes: usize,
+) -> Result<ApplicationDaShareSet, DaError> {
+    if share_size_bytes == 0 {
+        return Err(DaError::InvalidChunkSize);
+    }
+
+    let payload = payload.canonicalized();
+    payload.validate(profile)?;
+    let payload_bytes = canonical_bytes(&payload)?;
+    let payload_hash = hash_bytes(&payload_bytes);
+    let chunks: Vec<Vec<u8>> = payload_bytes
+        .chunks(share_size_bytes)
+        .map(|chunk| chunk.to_vec())
+        .collect();
+    let share_hashes: Vec<String> = chunks.iter().map(|chunk| hash_bytes(chunk)).collect();
+    let encoded_share_count =
+        u32::try_from(share_hashes.len()).map_err(|_| DaError::ShareCountOverflow)?;
+    let manifest = ApplicationDaManifest {
+        schema: APPLICATION_DA_MANIFEST_SCHEMA.into(),
+        schema_version: 1,
+        application_id: payload.application_id.clone(),
+        profile_id: payload.profile_id.clone(),
+        coordinate: payload.coordinate.clone(),
+        payload_kind: payload.payload_kind.clone(),
+        payload_hash,
+        payload_bytes: payload_bytes.len() as u64,
+        namespace_root: payload.namespace_root()?,
+        application_root: application_root_commitment(&payload)?,
+        share_root: share_root(&share_hashes)?,
+        erasure_scheme: ErasureScheme::DeterministicChunks,
+        original_share_count: encoded_share_count,
+        encoded_share_count,
+        reconstruction_threshold: encoded_share_count,
+        share_size_bytes: u32::try_from(share_size_bytes).map_err(|_| DaError::InvalidChunkSize)?,
+        share_hashes,
+        namespace_ranges: application_namespace_ranges(&payload),
+    };
+    manifest.validate(profile)?;
+    let manifest_hash = manifest.manifest_hash()?;
+    let shares = chunks
+        .into_iter()
+        .enumerate()
+        .map(|(index, bytes)| DaShare {
+            manifest_hash: manifest_hash.clone(),
+            index: index as u32,
+            share_hash: hash_bytes(&bytes),
+            bytes,
+        })
+        .collect();
+    Ok(ApplicationDaShareSet { manifest, shares })
+}
+
+pub fn build_application_reed_solomon_share_set(
+    payload: &ApplicationDaPayload,
+    profile: &DaApplicationProfile,
+    data_share_count: u32,
+    parity_share_count: u32,
+) -> Result<ApplicationDaShareSet, DaError> {
+    if data_share_count == 0 || parity_share_count == 0 {
+        return Err(DaError::InvalidManifest(
+            "reed-solomon data and parity share counts must be positive".into(),
+        ));
+    }
+    let encoded_share_count = data_share_count
+        .checked_add(parity_share_count)
+        .ok_or(DaError::ShareCountOverflow)?;
+    if encoded_share_count > REED_SOLOMON_MAX_SHARES {
+        return Err(DaError::ShareCountOverflow);
+    }
+
+    let payload = payload.canonicalized();
+    payload.validate(profile)?;
+    let payload_bytes = canonical_bytes(&payload)?;
+    let data_shards = usize::try_from(data_share_count).map_err(|_| DaError::ShareCountOverflow)?;
+    let parity_shards =
+        usize::try_from(parity_share_count).map_err(|_| DaError::ShareCountOverflow)?;
+    let encoded_shards =
+        usize::try_from(encoded_share_count).map_err(|_| DaError::ShareCountOverflow)?;
+    let share_size_bytes = payload_bytes.len().div_ceil(data_shards);
+    if share_size_bytes == 0 {
+        return Err(DaError::InvalidChunkSize);
+    }
+
+    let mut shards = vec![vec![0_u8; share_size_bytes]; encoded_shards];
+    for (index, chunk) in payload_bytes.chunks(share_size_bytes).enumerate() {
+        shards[index][..chunk.len()].copy_from_slice(chunk);
+    }
+    ReedSolomon::new(data_shards, parity_shards)
+        .map_err(da_erasure_error)?
+        .encode(&mut shards)?;
+
+    let payload_hash = hash_bytes(&payload_bytes);
+    let share_hashes: Vec<String> = shards.iter().map(|shard| hash_bytes(shard)).collect();
+    let manifest = ApplicationDaManifest {
+        schema: APPLICATION_DA_MANIFEST_SCHEMA.into(),
+        schema_version: 1,
+        application_id: payload.application_id.clone(),
+        profile_id: payload.profile_id.clone(),
+        coordinate: payload.coordinate.clone(),
+        payload_kind: payload.payload_kind.clone(),
+        payload_hash,
+        payload_bytes: u64::try_from(payload_bytes.len()).map_err(|_| DaError::InvalidChunkSize)?,
+        namespace_root: payload.namespace_root()?,
+        application_root: application_root_commitment(&payload)?,
+        share_root: share_root(&share_hashes)?,
+        erasure_scheme: ErasureScheme::ReedSolomonV1,
+        original_share_count: data_share_count,
+        encoded_share_count,
+        reconstruction_threshold: data_share_count,
+        share_size_bytes: u32::try_from(share_size_bytes).map_err(|_| DaError::InvalidChunkSize)?,
+        share_hashes,
+        namespace_ranges: application_namespace_ranges(&payload),
+    };
+    manifest.validate(profile)?;
+    let manifest_hash = manifest.manifest_hash()?;
+    let shares = shards
+        .into_iter()
+        .enumerate()
+        .map(|(index, bytes)| DaShare {
+            manifest_hash: manifest_hash.clone(),
+            index: index as u32,
+            share_hash: hash_bytes(&bytes),
+            bytes,
+        })
+        .collect();
+    Ok(ApplicationDaShareSet { manifest, shares })
+}
+
 pub fn build_reed_solomon_share_set_with_target_share_size(
     payload: &DaPayload,
     block_hash: impl Into<String>,
@@ -2857,6 +3516,44 @@ pub fn verify_manifest_commits_payload(
             build_reed_solomon_share_set(
                 &canonical,
                 manifest.block_hash.clone(),
+                manifest.original_share_count,
+                parity_share_count,
+            )?
+        }
+    };
+
+    if &rebuilt.manifest != manifest {
+        return Err(DaError::ManifestPayloadMismatch {
+            expected: rebuilt.manifest.manifest_hash()?,
+            actual: manifest.manifest_hash()?,
+        });
+    }
+    Ok(())
+}
+
+pub fn verify_application_manifest_commits_payload(
+    manifest: &ApplicationDaManifest,
+    payload: &ApplicationDaPayload,
+    profile: &DaApplicationProfile,
+) -> Result<(), DaError> {
+    manifest.validate(profile)?;
+    let canonical = payload.canonicalized();
+    canonical.validate(profile)?;
+
+    let rebuilt = match manifest.erasure_scheme {
+        ErasureScheme::DeterministicChunks => build_application_da_share_set(
+            &canonical,
+            profile,
+            usize::try_from(manifest.share_size_bytes).map_err(|_| DaError::InvalidChunkSize)?,
+        )?,
+        ErasureScheme::ReedSolomonV1 => {
+            let parity_share_count = manifest
+                .encoded_share_count
+                .checked_sub(manifest.original_share_count)
+                .ok_or(DaError::ShareCountOverflow)?;
+            build_application_reed_solomon_share_set(
+                &canonical,
+                profile,
                 manifest.original_share_count,
                 parity_share_count,
             )?
@@ -3053,6 +3750,78 @@ fn detect_da_coding_fault(
     Ok(None)
 }
 
+fn detect_application_da_coding_fault(
+    manifest: &ApplicationDaManifest,
+    profile: &DaApplicationProfile,
+    data_shares: &[DaShare],
+) -> Result<Option<DaCodingFault>, DaError> {
+    manifest.validate(profile)?;
+
+    let mut by_index: BTreeMap<u32, &DaShare> = BTreeMap::new();
+    for share in data_shares {
+        verify_application_share_against_manifest(manifest, share)?;
+        if share.index >= manifest.original_share_count {
+            return Err(DaError::InvalidCodingFraudProof(
+                "application coding fraud proof shares must be committed data shares".into(),
+            ));
+        }
+        if by_index.insert(share.index, share).is_some() {
+            return Err(DaError::DuplicateShare { index: share.index });
+        }
+    }
+    for index in 0..manifest.original_share_count {
+        if !by_index.contains_key(&index) {
+            return Err(DaError::MissingShare { index });
+        }
+    }
+
+    if manifest.erasure_scheme == ErasureScheme::ReedSolomonV1 {
+        let share_size = manifest.share_size_bytes as usize;
+        let mut shards: Vec<Vec<u8>> =
+            vec![vec![0_u8; share_size]; manifest.encoded_share_count as usize];
+        for index in 0..manifest.original_share_count {
+            let share = by_index[&index];
+            if share.bytes.len() != share_size {
+                return Err(DaError::InvalidManifest(format!(
+                    "reed-solomon application data share {index} has {} bytes, expected {share_size}",
+                    share.bytes.len()
+                )));
+            }
+            shards[index as usize] = share.bytes.clone();
+        }
+        reed_solomon_application_codec(manifest)?.encode(&mut shards)?;
+        for index in manifest.original_share_count..manifest.encoded_share_count {
+            let recomputed = hash_bytes(&shards[index as usize]);
+            if recomputed != manifest.share_hashes[index as usize] {
+                return Ok(Some(DaCodingFault::ParityMismatch { share_index: index }));
+            }
+        }
+    }
+
+    let mut payload_bytes = Vec::new();
+    for index in 0..manifest.original_share_count {
+        payload_bytes.extend_from_slice(&by_index[&index].bytes);
+    }
+    let payload_len = usize::try_from(manifest.payload_bytes).map_err(|_| {
+        DaError::InvalidManifest("payload byte count does not fit this platform".into())
+    })?;
+    if payload_len > payload_bytes.len() {
+        return Err(DaError::InvalidManifest(
+            "committed payload bytes exceed data share capacity".into(),
+        ));
+    }
+    payload_bytes.truncate(payload_len);
+    let actual = hash_bytes(&payload_bytes);
+    if actual != manifest.payload_hash {
+        return Ok(Some(DaCodingFault::PayloadHashMismatch {
+            expected: manifest.payload_hash.clone(),
+            actual,
+        }));
+    }
+
+    Ok(None)
+}
+
 pub fn payload_hash(payload: &DaPayload) -> Result<String, DaError> {
     payload.hash()
 }
@@ -3102,6 +3871,32 @@ pub fn verify_share_against_manifest(
     share: &DaShare,
 ) -> Result<(), DaError> {
     manifest.validate()?;
+    let manifest_hash = manifest.manifest_hash()?;
+    if share.manifest_hash != manifest_hash {
+        return Err(DaError::ManifestHashMismatch {
+            expected: manifest_hash,
+            actual: share.manifest_hash.clone(),
+        });
+    }
+    if share.index >= manifest.encoded_share_count {
+        return Err(DaError::UnexpectedShare {
+            index: share.index,
+            share_count: manifest.encoded_share_count,
+        });
+    }
+    let actual_share_hash = hash_bytes(&share.bytes);
+    let expected_share_hash = &manifest.share_hashes[share.index as usize];
+    if share.share_hash != actual_share_hash || &share.share_hash != expected_share_hash {
+        return Err(DaError::ShareHashMismatch { index: share.index });
+    }
+    Ok(())
+}
+
+pub fn verify_application_share_against_manifest(
+    manifest: &ApplicationDaManifest,
+    share: &DaShare,
+) -> Result<(), DaError> {
+    manifest.validate_structure()?;
     let manifest_hash = manifest.manifest_hash()?;
     if share.manifest_hash != manifest_hash {
         return Err(DaError::ManifestHashMismatch {
@@ -3385,6 +4180,85 @@ pub fn verify_namespace_proof(
     Ok(actual_range)
 }
 
+pub fn prove_application_namespace(
+    manifest: &ApplicationDaManifest,
+    profile: &DaApplicationProfile,
+    namespace: &DaNamespace,
+) -> Result<ApplicationDaNamespaceProof, DaError> {
+    manifest.validate(profile)?;
+    let range = manifest
+        .namespace_ranges
+        .iter()
+        .find(|range| &range.namespace == namespace)
+        .cloned();
+    Ok(ApplicationDaNamespaceProof {
+        manifest_hash: manifest.manifest_hash()?,
+        application_id: manifest.application_id.clone(),
+        profile_id: manifest.profile_id.clone(),
+        coordinate: manifest.coordinate.clone(),
+        payload_hash: manifest.payload_hash.clone(),
+        namespace_root: manifest.namespace_root.clone(),
+        namespace: namespace.clone(),
+        range,
+        namespace_ranges: manifest.namespace_ranges.clone(),
+    })
+}
+
+pub fn verify_application_namespace_proof(
+    manifest: &ApplicationDaManifest,
+    profile: &DaApplicationProfile,
+    proof: &ApplicationDaNamespaceProof,
+) -> Result<Option<DaNamespaceRange>, DaError> {
+    manifest.validate(profile)?;
+    let manifest_hash = manifest.manifest_hash()?;
+    if proof.manifest_hash != manifest_hash {
+        return Err(DaError::ManifestHashMismatch {
+            expected: manifest_hash,
+            actual: proof.manifest_hash.clone(),
+        });
+    }
+    if proof.application_id != manifest.application_id
+        || proof.profile_id != manifest.profile_id
+        || proof.coordinate != manifest.coordinate
+        || proof.payload_hash != manifest.payload_hash
+    {
+        return Err(DaError::InvalidSampling(
+            "application namespace proof does not match manifest metadata".into(),
+        ));
+    }
+    let expected_namespace_root = namespace_root_for_ranges(&proof.namespace_ranges)?;
+    if proof.namespace_root != expected_namespace_root {
+        return Err(DaError::NamespaceRootMismatch {
+            expected: expected_namespace_root,
+            actual: proof.namespace_root.clone(),
+        });
+    }
+    if proof.namespace_root != manifest.namespace_root {
+        return Err(DaError::NamespaceRootMismatch {
+            expected: manifest.namespace_root.clone(),
+            actual: proof.namespace_root.clone(),
+        });
+    }
+    validate_namespace_ranges(&proof.namespace_ranges)?;
+    if proof.namespace_ranges != manifest.namespace_ranges {
+        return Err(DaError::NamespaceRootMismatch {
+            expected: namespace_root_for_ranges(&manifest.namespace_ranges)?,
+            actual: namespace_root_for_ranges(&proof.namespace_ranges)?,
+        });
+    }
+    let actual_range = proof
+        .namespace_ranges
+        .iter()
+        .find(|range| range.namespace == proof.namespace)
+        .cloned();
+    if proof.range != actual_range {
+        return Err(DaError::InvalidSampling(
+            "application namespace proof range does not match committed ranges".into(),
+        ));
+    }
+    Ok(actual_range)
+}
+
 pub fn verify_light_client_samples(
     manifest: &DaManifest,
     client_randomness: &[u8],
@@ -3446,6 +4320,14 @@ fn application_namespace_ranges(payload: &ApplicationDaPayload) -> Vec<DaNamespa
             record_count: section.records.len() as u32,
         })
         .collect()
+}
+
+fn application_root_commitment(payload: &ApplicationDaPayload) -> Result<Option<String>, DaError> {
+    if payload.application_roots.is_empty() {
+        Ok(None)
+    } else {
+        hash_canonical(&payload.application_roots).map(Some)
+    }
 }
 
 fn validate_namespace_ranges(ranges: &[DaNamespaceRange]) -> Result<(), DaError> {
@@ -5057,6 +5939,206 @@ mod tests {
             namespace_root,
             "8c8899bbfd003d4f945c883519edfa43bd3e862eba7df96bfac701e2cc9e6b92"
         );
+    }
+
+    #[test]
+    fn application_reed_solomon_share_set_reconstructs_threshold_payload() {
+        let profile = DaApplicationProfile::social_demo_v1();
+        let payload = social_demo_payload();
+        let share_set =
+            ApplicationDaShareSet::from_payload_reed_solomon(&payload, &profile, 3, 2).unwrap();
+
+        share_set.verify(&profile).unwrap();
+        assert_eq!(share_set.reconstruct_payload(&profile).unwrap(), payload);
+
+        let threshold_share_set = ApplicationDaShareSet {
+            manifest: share_set.manifest.clone(),
+            shares: vec![
+                share_set.shares[0].clone(),
+                share_set.shares[2].clone(),
+                share_set.shares[4].clone(),
+            ],
+        };
+        assert_eq!(
+            threshold_share_set.reconstruct_payload(&profile).unwrap(),
+            payload
+        );
+    }
+
+    #[test]
+    fn application_manifest_hash_binds_application_metadata() {
+        let profile = DaApplicationProfile::social_demo_v1();
+        let payload = social_demo_payload();
+        let share_set =
+            ApplicationDaShareSet::from_payload_reed_solomon(&payload, &profile, 3, 2).unwrap();
+        let base_hash = share_set.manifest.manifest_hash().unwrap();
+
+        let mut changed_application = share_set.manifest.clone();
+        changed_application.application_id = application_id_unchecked("social.other");
+        assert_ne!(changed_application.manifest_hash().unwrap(), base_hash);
+
+        let mut changed_profile = share_set.manifest.clone();
+        changed_profile.profile_id = hash_bytes(b"other-profile");
+        assert_ne!(changed_profile.manifest_hash().unwrap(), base_hash);
+
+        let mut changed_coordinate = share_set.manifest.clone();
+        changed_coordinate.coordinate.sequence += 1;
+        assert_ne!(changed_coordinate.manifest_hash().unwrap(), base_hash);
+
+        let mut changed_payload = share_set.manifest.clone();
+        changed_payload.payload_hash = hash_bytes(b"other-payload");
+        assert_ne!(changed_payload.manifest_hash().unwrap(), base_hash);
+
+        let mut changed_namespace_root = share_set.manifest.clone();
+        changed_namespace_root.namespace_root = hash_bytes(b"other-namespace-root");
+        assert_ne!(changed_namespace_root.manifest_hash().unwrap(), base_hash);
+
+        let mut changed_share_root = share_set.manifest.clone();
+        changed_share_root.share_root = hash_bytes(b"other-share-root");
+        assert_ne!(changed_share_root.manifest_hash().unwrap(), base_hash);
+    }
+
+    #[test]
+    fn application_manifest_rejects_bad_roots_and_wrong_profile() {
+        let profile = DaApplicationProfile::social_demo_v1();
+        let payload = social_demo_payload();
+        let share_set =
+            ApplicationDaShareSet::from_payload_reed_solomon(&payload, &profile, 3, 2).unwrap();
+
+        let mut bad_share_root = share_set.manifest.clone();
+        bad_share_root.share_root = hash_bytes(b"bad-share-root");
+        assert!(matches!(
+            bad_share_root.validate(&profile),
+            Err(DaError::ShareRootMismatch { .. })
+        ));
+
+        let wrong_profile = DaApplicationProfile::detta_defi_v1();
+        assert!(matches!(
+            share_set.manifest.validate(&wrong_profile),
+            Err(DaError::InvalidManifest(_))
+        ));
+
+        let mut bad_payload = payload.clone();
+        bad_payload.profile_id = hash_bytes(b"wrong-profile");
+        assert!(matches!(
+            bad_payload.validate(&profile),
+            Err(DaError::InvalidPayload(_))
+        ));
+    }
+
+    #[test]
+    fn application_manifest_commits_payload_and_namespace_proofs() {
+        let profile = DaApplicationProfile::social_demo_v1();
+        let payload = social_demo_payload();
+        let share_set =
+            ApplicationDaShareSet::from_payload_reed_solomon(&payload, &profile, 3, 2).unwrap();
+
+        verify_application_manifest_commits_payload(&share_set.manifest, &payload, &profile)
+            .unwrap();
+
+        let proof = prove_application_namespace(
+            &share_set.manifest,
+            &profile,
+            &DaNamespace::new("social.media").unwrap(),
+        )
+        .unwrap();
+        let range =
+            verify_application_namespace_proof(&share_set.manifest, &profile, &proof).unwrap();
+        assert_eq!(
+            range.map(|range| range.namespace),
+            Some(DaNamespace::new("social.media").unwrap())
+        );
+
+        let missing = prove_application_namespace(
+            &share_set.manifest,
+            &profile,
+            &DaNamespace::new("social.private").unwrap(),
+        )
+        .unwrap();
+        assert!(
+            verify_application_namespace_proof(&share_set.manifest, &profile, &missing)
+                .unwrap()
+                .is_none()
+        );
+
+        let mut tampered_proof = proof.clone();
+        tampered_proof.namespace_ranges[0].record_count += 1;
+        assert!(matches!(
+            verify_application_namespace_proof(&share_set.manifest, &profile, &tampered_proof),
+            Err(DaError::NamespaceRootMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn application_coding_fraud_proof_detects_parity_and_payload_inconsistency() {
+        let profile = DaApplicationProfile::social_demo_v1();
+        let payload = social_demo_payload();
+        let honest =
+            ApplicationDaShareSet::from_payload_reed_solomon(&payload, &profile, 4, 2).unwrap();
+        let data_shares: Vec<DaShare> = honest
+            .shares
+            .iter()
+            .filter(|share| share.index < honest.manifest.original_share_count)
+            .cloned()
+            .collect();
+
+        assert!(matches!(
+            ApplicationDaCodingFraudProof::from_committed_data_shares(
+                &honest.manifest,
+                &profile,
+                &data_shares,
+                "reporter-1"
+            ),
+            Err(DaError::InvalidCodingFraudProof(_))
+        ));
+
+        let mut parity_forged = honest.manifest.clone();
+        let parity_index = parity_forged.original_share_count as usize;
+        parity_forged.share_hashes[parity_index] = "00".repeat(32);
+        parity_forged.share_root = share_root(&parity_forged.share_hashes).unwrap();
+        let manifest_hash = parity_forged.manifest_hash().unwrap();
+        let rebound: Vec<DaShare> = data_shares
+            .iter()
+            .cloned()
+            .map(|mut share| {
+                share.manifest_hash = manifest_hash.clone();
+                share
+            })
+            .collect();
+        let proof = ApplicationDaCodingFraudProof::from_committed_data_shares(
+            &parity_forged,
+            &profile,
+            &rebound,
+            "reporter-1",
+        )
+        .unwrap();
+        assert!(matches!(proof.fault, DaCodingFault::ParityMismatch { .. }));
+        proof.validate(&parity_forged, &profile).unwrap();
+        assert!(proof.validate(&honest.manifest, &profile).is_err());
+
+        let mut payload_forged = honest.manifest.clone();
+        payload_forged.payload_hash = "11".repeat(32);
+        let payload_manifest_hash = payload_forged.manifest_hash().unwrap();
+        let payload_rebound: Vec<DaShare> = data_shares
+            .iter()
+            .cloned()
+            .map(|mut share| {
+                share.manifest_hash = payload_manifest_hash.clone();
+                share
+            })
+            .collect();
+        let payload_proof = ApplicationDaCodingFraudProof::from_committed_data_shares(
+            &payload_forged,
+            &profile,
+            &payload_rebound,
+            "reporter-1",
+        )
+        .unwrap();
+        assert!(matches!(
+            payload_proof.fault,
+            DaCodingFault::PayloadHashMismatch { .. }
+        ));
+        payload_proof.validate(&payload_forged, &profile).unwrap();
     }
 
     #[test]

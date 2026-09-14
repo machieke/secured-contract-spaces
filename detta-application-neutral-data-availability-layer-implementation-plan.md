@@ -784,22 +784,22 @@ Acceptance:
 
 ### Phase 3: Application Manifest And Share Set
 
-- [ ] Add `ApplicationDaManifest`.
-- [ ] Add `ApplicationDaShareSet`.
-- [ ] Reuse Reed-Solomon v1 encoding and reconstruction.
-- [ ] Bind application coordinate and profile id into manifests.
-- [ ] Add `verify_application_manifest_commits_payload`.
-- [ ] Add application namespace proofs.
-- [ ] Add coding-fraud proof compatibility for application manifests.
+- [x] Add `ApplicationDaManifest`.
+- [x] Add `ApplicationDaShareSet`.
+- [x] Reuse Reed-Solomon v1 encoding and reconstruction.
+- [x] Bind application coordinate and profile id into manifests.
+- [x] Add `verify_application_manifest_commits_payload`.
+- [x] Add application namespace proofs.
+- [x] Add coding-fraud proof compatibility for application manifests.
 
 Acceptance:
 
-- any threshold-valid application share set reconstructs the canonical
+- [x] any threshold-valid application share set reconstructs the canonical
   application payload;
-- manifest hash changes when application id, profile id, coordinate, payload,
+- [x] manifest hash changes when application id, profile id, coordinate, payload,
   namespace root, or share root changes;
-- malformed share roots and wrong profile ids are rejected;
-- coding-fraud proofs work for application manifests.
+- [x] malformed share roots and wrong profile ids are rejected;
+- [x] coding-fraud proofs work for application manifests.
 
 ### Phase 4: Profile Registry
 
