@@ -20,6 +20,7 @@ experimental-da = [
 [dependencies]
 detta-consensus = { path = "../detta-consensus" }
 detta-core = { path = "../detta-core" }
+detta-client-sdk = { path = "../detta-client-sdk" }
 detta-da = { path = "../detta-da" }
 detta-network = { path = "../detta-network" }
 detta-node = { path = "../detta-node" }

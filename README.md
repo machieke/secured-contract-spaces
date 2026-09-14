@@ -127,6 +127,9 @@ The current implementation includes slices for:
   health, repair-job, retrieval-verification, multi-backend replication-policy,
   and unavailable-blob challenge-evidence records exposed through persistent
   node RPC.
+- `detta-client-sdk`, a Rust client SDK that wraps the common external blob +
+  application DA workflow into one idempotent publish call and one verified
+  retrieval call for application clients such as social avatar upload flows.
 
 The production roadmap and progress tracker live in
 `detta-production-implementation-plan.md`.
@@ -180,6 +183,8 @@ SCS specification
 - `detta-client-aspect-token-guide.md`: end-user client guide for submitting a
   verified MeTTa aspect module, inspecting its artifacts, deploying an
   aspect-backed token, and transferring it.
+- `detta-client-sdk.md`: Rust SDK guide for publishing and retrieving
+  application DA external blobs, including the social avatar workflow.
 - `detta-rpc-api.md`: human-readable DeTTa RPC API documentation.
 - `detta-rpc-openapi.json`: machine-readable RPC API schema.
 - `detta-restricted-evaluator-subset.md`: restricted evaluator subset.

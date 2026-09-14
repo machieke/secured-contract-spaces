@@ -1,10 +1,14 @@
+use detta_client_sdk::{
+    BlobRetrievalRequest, ClientSdkError, DettaClientSdk, DettaRpcClient, InMemoryBlobClient,
+    SocialAvatarPublishRequest,
+};
 use detta_core::{Block, Method};
 use detta_da::{
-    verify_application_share_against_manifest, verify_external_blob_record,
-    ApplicationDaNamespaceSection, ApplicationDaPayload, DaApplicationCoordinate, DaApplicationId,
-    DaApplicationPrivacyMode, DaApplicationProfile, DaApplicationRetentionClass, DaApplicationRoot,
-    DaApplicationValidationMode, DaExternalBlobAdapter, DaNamespace, DaNamespacePolicy,
-    DaNamespaceRequirement, DaPayloadKind, DaRecordEncoding, DaRecordEnvelope, IpfsAdapter,
+    verify_application_share_against_manifest, ApplicationDaNamespaceSection, ApplicationDaPayload,
+    DaApplicationCoordinate, DaApplicationId, DaApplicationPrivacyMode, DaApplicationProfile,
+    DaApplicationRetentionClass, DaApplicationRoot, DaApplicationValidationMode,
+    DaExternalBlobReference, DaNamespace, DaNamespacePolicy, DaNamespaceRequirement, DaPayloadKind,
+    DaRecordEncoding, DaRecordEnvelope,
 };
 use detta_e2e::client::TcpRpcClient;
 use detta_e2e::fixtures::{
@@ -12,7 +16,7 @@ use detta_e2e::fixtures::{
 };
 use detta_e2e::network::spawn_tcp_persistent_node;
 use detta_node::PersistentValidatorNode;
-use detta_rpc::{ApplicationDaProductionReport, RpcRequest, RpcResult};
+use detta_rpc::{ApplicationDaProductionReport, RpcRequest, RpcResponse, RpcResult};
 use detta_storage::FileStorage;
 
 #[test]
@@ -556,16 +560,34 @@ fn client_stores_social_avatar_reference_and_verifies_retrieved_ipfs_blob() {
         .unwrap();
     let (addr, server) = spawn_tcp_persistent_node(node).unwrap();
     let mut client = TcpRpcClient::connect(addr).unwrap();
-    let profile = DaApplicationProfile::social_demo_v1();
-    register_application_profile(&mut client, &profile);
+    let avatar_bytes = b"small-avatar-icon-webp".to_vec();
+    let publish = {
+        let blob_client = InMemoryBlobClient::ipfs("ipfs.local");
+        let mut sdk = DettaClientSdk::new(SdkTcpRpcClient(&mut client), blob_client);
+        let mut request = SocialAvatarPublishRequest::social_demo(
+            "alice",
+            "avatar-1",
+            1,
+            avatar_bytes.clone(),
+            vec!["validator-1".into(), "validator-2".into()],
+        )
+        .unwrap();
+        request.content_type = "image/webp".into();
+        let publish = sdk.publish_social_avatar(request).unwrap();
+        let retrieved = sdk
+            .retrieve_verified_blob(
+                BlobRetrievalRequest::new(publish.reference_record.clone(), "bob", 2)
+                    .with_provider("ipfs.local"),
+            )
+            .unwrap();
+        assert_eq!(retrieved.bytes, avatar_bytes.as_slice());
+        assert!(retrieved.verification.available);
+        assert!(sdk.blob_client_mut().contains_uri(&publish.reference.uri));
+        publish
+    };
 
-    let avatar_bytes = b"small-avatar-icon-webp";
-    let adapter = IpfsAdapter::default();
-    let payload = social_avatar_reference_payload(&profile, &adapter, avatar_bytes);
-    let report = produce_application_batch(&mut client, payload.clone());
-
-    let retrieved = application_payload(&mut client, &report.manifest_hash);
-    assert_eq!(retrieved, payload.canonicalized());
+    let retrieved = application_payload(&mut client, &publish.production.manifest_hash);
+    assert_eq!(retrieved, publish.payload.canonicalized());
     let media_record = retrieved
         .namespaces
         .iter()
@@ -574,15 +596,24 @@ fn client_stores_social_avatar_reference_and_verifies_retrieved_ipfs_blob() {
         .records
         .first()
         .unwrap();
-    let reference = verify_external_blob_record(media_record, avatar_bytes).unwrap();
-    assert_eq!(reference.backend, adapter.backend());
-    assert_eq!(reference.uri, "ipfs://bafyavatarcid");
+    let reference = DaExternalBlobReference::from_record_envelope(media_record).unwrap();
+    assert_eq!(reference, publish.reference);
+    assert!(reference.uri.starts_with("ipfs://sdk-ipfs-"));
     assert_eq!(reference.content_type, "image/webp");
     assert_eq!(reference.size_bytes, avatar_bytes.len() as u64);
 
-    let mut tampered_avatar = avatar_bytes.to_vec();
-    tampered_avatar.push(0x01);
-    assert!(verify_external_blob_record(media_record, &tampered_avatar).is_err());
+    let lifecycle_hash = publish.lifecycle_record.record_hash().unwrap();
+    match client
+        .ok(RpcRequest::GetApplicationDaExternalBlobLifecycleRecord {
+            record_id: lifecycle_hash,
+        })
+        .unwrap()
+    {
+        RpcResult::ApplicationDaExternalBlobLifecycleRecord(record) => {
+            assert_eq!(*record, publish.lifecycle_record);
+        }
+        result => panic!("expected external blob lifecycle record, got {result:?}"),
+    }
 
     client.close();
     server.join().unwrap();
@@ -749,47 +780,6 @@ fn opaque_demo_payload(profile: &DaApplicationProfile, bytes: Vec<u8>) -> Applic
     .unwrap()
 }
 
-fn social_avatar_reference_payload(
-    profile: &DaApplicationProfile,
-    adapter: &IpfsAdapter,
-    avatar_bytes: &[u8],
-) -> ApplicationDaPayload {
-    let avatar_reference = adapter
-        .commit_uploaded_blob(
-            "bafyavatarcid",
-            "image/webp",
-            avatar_bytes,
-            Some("pinset.social.demo".into()),
-            Some("pinset-root-1".into()),
-        )
-        .unwrap();
-    ApplicationDaPayload::new(
-        profile,
-        social_coordinate(profile, "user:alice.avatar", 1),
-        DaPayloadKind::MediaManifest,
-        None,
-        vec![DaApplicationRoot::new("social.event.log.root", "11".repeat(32)).unwrap()],
-        vec![
-            application_section(
-                "social.feed",
-                vec![application_record(
-                    "social.post",
-                    DaRecordEncoding::CanonicalJson,
-                    br#"{"author":"alice","post_id":"avatar-1","text":"avatar updated"}"#,
-                    Some("alice"),
-                )],
-            ),
-            application_section(
-                "social.media",
-                vec![adapter
-                    .reference_record("social.media.reference", &avatar_reference, None, None)
-                    .unwrap()],
-            ),
-        ],
-    )
-    .unwrap()
-}
-
 fn detta_defi_application_payload(
     profile: &DaApplicationProfile,
     block: &Block,
@@ -900,6 +890,16 @@ fn application_section(
     records: Vec<DaRecordEnvelope>,
 ) -> ApplicationDaNamespaceSection {
     ApplicationDaNamespaceSection::new(DaNamespace::new(namespace).unwrap(), records).unwrap()
+}
+
+struct SdkTcpRpcClient<'a>(&'a mut TcpRpcClient);
+
+impl DettaRpcClient for SdkTcpRpcClient<'_> {
+    fn request(&mut self, request: RpcRequest) -> Result<RpcResponse, ClientSdkError> {
+        self.0
+            .request(request)
+            .map_err(|error| ClientSdkError::Transport(error.to_string()))
+    }
 }
 
 fn submit_ok(client: &mut TcpRpcClient, transaction: detta_core::Transaction) {

@@ -116,6 +116,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "detta-client-sdk"
+version = "0.1.0"
+dependencies = [
+ "detta-da",
+ "detta-rpc",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "detta-consensus"
 version = "0.1.0"
 dependencies = [
@@ -151,6 +161,7 @@ dependencies = [
 name = "detta-e2e"
 version = "0.1.0"
 dependencies = [
+ "detta-client-sdk",
  "detta-consensus",
  "detta-core",
  "detta-da",

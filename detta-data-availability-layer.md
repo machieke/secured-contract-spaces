@@ -228,6 +228,23 @@ This keeps DeTTa DA responsible for durable publication, indexing,
 certification, and audit commitments, while blob networks handle large-byte
 storage and serving.
 
+## Client SDK
+
+`crates/detta-client-sdk` provides a small Rust SDK over the external blob and
+application DA APIs. For social avatar flows, `publish_social_avatar` uploads
+the avatar through a pluggable `BlobClient`, commits the canonical external
+reference inside a `social.media` application DA payload, produces the DA batch,
+and records a blob lifecycle record. `retrieve_verified_blob` fetches the
+external bytes, verifies them against the committed reference, and records the
+same retrieval-verification evidence exposed by RPC.
+
+The SDK is operationally atomic and retry-friendly for DeTTa writes: profile
+registration can be retried, duplicate registration is treated as success, the
+application DA batch is produced in one RPC call, and lifecycle metadata is
+recorded only after batch production succeeds. The external blob upload itself
+is outside DeTTa consensus, so production integrations should use content
+addressed or idempotent provider uploads and provider repair policies.
+
 Fresh and restarted persistent nodes commit `DaRetentionPolicyConfig::production_default()`
 when no DA retention policy is already present. Operator-provided policies are
 left intact. `get_da_storage_stats` reports the active retention policy, its

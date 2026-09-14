@@ -12,6 +12,7 @@ members = [
     "crates/detta-network",
     "crates/detta-protocol",
     "crates/detta-da",
+    "crates/detta-client-sdk",
     "crates/detta-e2e",
 ]
 resolver = "2"

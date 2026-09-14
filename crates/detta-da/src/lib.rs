@@ -7736,7 +7736,7 @@ fn validate_social_demo_event_log_root(payload: &ApplicationDaPayload) -> Result
     Ok(())
 }
 
-fn application_event_log_root_for_sections(
+pub fn application_event_log_root_for_sections(
     sections: &[ApplicationDaNamespaceSection],
 ) -> Result<String, DaError> {
     let mut record_hashes = Vec::new();
