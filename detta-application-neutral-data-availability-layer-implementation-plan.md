@@ -881,11 +881,13 @@ Acceptance:
   shares, certificates, status, samples, and indexes.
   - [x] Add read-only manifest, payload, share, certificate, and index
     retrieval RPCs.
-  - [ ] Add application namespace, status, sample-proof, and reconstruction
+  - [x] Add application namespace, status, sample-proof, and reconstruction
     retrieval RPCs.
 - [ ] Add request bounds and rate-limit hooks.
   - [x] Add request bounds for application profile ids, application ids, roots,
     and serialized coordinates.
+  - [x] Add request bounds for application namespace, sampling, status, and
+    reconstruction retrieval.
   - [ ] Add method-specific rate-limit buckets for application DA submission and
     retrieval.
 - [ ] Extend OpenAPI schema.
@@ -921,7 +923,7 @@ Acceptance:
 ### Phase 10: Retention, Repair, And Operations
 
 - [ ] Add retention classification from application profiles.
-- [ ] Add application DA status reports.
+- [x] Add application DA status reports.
 - [ ] Add application repair records.
 - [ ] Add application DA alerts.
 - [ ] Update operator manual and DA runbook.

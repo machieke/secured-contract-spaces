@@ -8,12 +8,15 @@ use detta_core::{
     Transaction, TxStatus, ValidatorNode,
 };
 use detta_da::{
-    derive_sample_schedule, prove_namespace, prove_share_inclusion,
-    validate_production_block_payload, verify_light_client_samples, verify_share_against_manifest,
-    DaAvailabilityCertificate, DaAvailabilityVote, DaChallengeEvidence, DaChallengeRecord,
-    DaCodingFraudProof, DaError, DaManifest, DaNamespace, DaNamespaceSection, DaPayload,
-    DaProductionProfile, DaRecord, DaSampleProof, DaSampleProofBundle, DaShare, DaShareChallenge,
-    DaShareChallengeResponse, DaShareSet,
+    derive_application_sample_schedule, derive_sample_schedule, prove_application_namespace,
+    prove_application_share_inclusion, prove_namespace, prove_share_inclusion,
+    validate_production_block_payload, verify_application_light_client_samples,
+    verify_light_client_samples, verify_share_against_manifest, ApplicationDaNamespaceSection,
+    ApplicationDaPayload, ApplicationDaSampleProofBundle, ApplicationDaShareSet,
+    DaApplicationProfile, DaAvailabilityCertificate, DaAvailabilityVote, DaChallengeEvidence,
+    DaChallengeRecord, DaCodingFraudProof, DaError, DaManifest, DaNamespace, DaNamespaceSection,
+    DaPayload, DaProductionProfile, DaRecord, DaSampleProof, DaSampleProofBundle, DaShare,
+    DaShareChallenge, DaShareChallengeResponse, DaShareSet,
 };
 use detta_network::{Envelope, InMemoryTransport, NetworkError, NetworkMessage, TcpProtocolStream};
 use detta_protocol::{
@@ -27,11 +30,11 @@ use detta_protocol::{
     SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT,
 };
 use detta_rpc::{
-    json_rpc_response_for_request, BlockPage, DaCodingFraudReport, DaRepairStatusReport,
-    DaStatusReport, JsonRpcHandler, NodeHealthReport, OperatorAlert, OperatorAlertPolicy,
-    OperatorAlertReport, OperatorAlertSeverity, OperatorMetricsReport, PersistentNodeSnapshotRoots,
-    RequiredSnapshotMetadataRootsReport, RpcError, RpcErrorBody, RpcRequest, RpcResponse,
-    RpcResult, RpcService, RpcTransportError, SnapshotMetadataRootStatus,
+    json_rpc_response_for_request, ApplicationDaStatusReport, BlockPage, DaCodingFraudReport,
+    DaRepairStatusReport, DaStatusReport, JsonRpcHandler, NodeHealthReport, OperatorAlert,
+    OperatorAlertPolicy, OperatorAlertReport, OperatorAlertSeverity, OperatorMetricsReport,
+    PersistentNodeSnapshotRoots, RequiredSnapshotMetadataRootsReport, RpcError, RpcErrorBody,
+    RpcRequest, RpcResponse, RpcResult, RpcService, RpcTransportError, SnapshotMetadataRootStatus,
     SnapshotSyncClientMetricsReport, ValidatorSetMetadataUpdateStatus, DEFAULT_MAX_BLOCK_PAGE_SIZE,
 };
 use detta_storage::{
@@ -1361,16 +1364,48 @@ impl PersistentValidatorNode {
                     None => Err(RpcError::ApplicationDaCertificateNotFound).into(),
                 })
                 .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
-            RpcRequest::GetApplicationDaPayload { manifest_hash } => self
-                .storage
-                .maybe_load_application_da_payload(&manifest_hash)
-                .map(|payload| match payload {
-                    Some(payload) => {
-                        RpcResponse::Ok(RpcResult::ApplicationDaPayload(Box::new(payload)))
-                    }
-                    None => Err(RpcError::ApplicationDaPayloadNotFound).into(),
-                })
-                .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
+            RpcRequest::GetApplicationDaPayload { manifest_hash }
+            | RpcRequest::GetApplicationDaReconstructedPayload { manifest_hash } => self
+                .load_application_da_payload(&manifest_hash)
+                .map(|payload| RpcResult::ApplicationDaPayload(Box::new(payload)))
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(|error| match error {
+                    NodeError::Rpc(error) => Err(error).into(),
+                    error => node_rpc_error_response(error),
+                }),
+            RpcRequest::GetApplicationDaNamespace {
+                manifest_hash,
+                namespace,
+            } => match self.load_application_da_namespace(&manifest_hash, &namespace) {
+                Ok(Some(section)) => {
+                    RpcResponse::Ok(RpcResult::ApplicationDaNamespace(Box::new(section)))
+                }
+                Ok(None) => Err(RpcError::ApplicationDaNamespaceNotFound).into(),
+                Err(error) => node_rpc_error_response(error),
+            },
+            RpcRequest::GetApplicationDaSampleProofs {
+                manifest_hash,
+                client_randomness,
+                sample_count,
+                namespaces,
+            } => self
+                .application_da_sample_proof_bundle(
+                    &manifest_hash,
+                    &client_randomness,
+                    sample_count,
+                    &namespaces,
+                )
+                .map(|bundle| RpcResult::ApplicationDaSampleProofs(Box::new(bundle)))
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(|error| match error {
+                    NodeError::Rpc(error) => Err(error).into(),
+                    error => node_rpc_error_response(error),
+                }),
+            RpcRequest::GetApplicationDaStatus { manifest_hash } => self
+                .application_da_status(&manifest_hash)
+                .map(|status| RpcResult::ApplicationDaStatus(Box::new(status)))
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(node_rpc_error_response),
             RpcRequest::GetApplicationDaManifestIndexByApplicationId { application_id } => self
                 .storage
                 .load_application_da_manifest_index_by_application_id(&application_id)
@@ -2829,6 +2864,57 @@ impl PersistentValidatorNode {
         Ok(payload)
     }
 
+    pub fn load_application_da_payload(
+        &self,
+        manifest_hash: &str,
+    ) -> Result<ApplicationDaPayload, NodeError> {
+        if let Some(payload) = self
+            .storage
+            .maybe_load_application_da_payload(manifest_hash)
+            .map_err(NodeError::Storage)?
+        {
+            return Ok(payload);
+        }
+
+        let manifest = self
+            .storage
+            .maybe_load_application_da_manifest(manifest_hash)
+            .map_err(NodeError::Storage)?
+            .ok_or(NodeError::Rpc(RpcError::ApplicationDaManifestNotFound))?;
+        let registration = self
+            .storage
+            .load_application_da_profile_registration(&manifest.profile_id)
+            .map_err(NodeError::Storage)?;
+        let shares =
+            self.local_application_da_shares(manifest_hash, manifest.encoded_share_count)?;
+        let share_set = ApplicationDaShareSet { manifest, shares };
+        let payload = share_set
+            .reconstruct_payload(&registration.profile)
+            .map_err(NodeError::DataAvailability)?;
+        self.storage
+            .commit_application_da_payload(manifest_hash, &payload)
+            .map_err(NodeError::Storage)?;
+        Ok(payload)
+    }
+
+    fn local_application_da_shares(
+        &self,
+        manifest_hash: &str,
+        encoded_share_count: u32,
+    ) -> Result<Vec<DaShare>, NodeError> {
+        let mut shares = Vec::new();
+        for index in 0..encoded_share_count {
+            if let Some(share) = self
+                .storage
+                .maybe_load_application_da_share(manifest_hash, index)
+                .map_err(NodeError::Storage)?
+            {
+                shares.push(share);
+            }
+        }
+        Ok(shares)
+    }
+
     pub fn build_snapshot_da_share_set(
         &self,
         max_snapshot_chunk_bytes: usize,
@@ -2970,6 +3056,19 @@ impl PersistentValidatorNode {
             .find(|section| section.namespace == namespace))
     }
 
+    pub fn load_application_da_namespace(
+        &self,
+        manifest_hash: &str,
+        namespace: &str,
+    ) -> Result<Option<ApplicationDaNamespaceSection>, NodeError> {
+        let namespace = DaNamespace::new(namespace).map_err(NodeError::DataAvailability)?;
+        let payload = self.load_application_da_payload(manifest_hash)?;
+        Ok(payload
+            .namespaces
+            .into_iter()
+            .find(|section| section.namespace == namespace))
+    }
+
     pub fn da_sample_proof_bundle(
         &self,
         manifest_hash: &str,
@@ -3017,6 +3116,71 @@ impl PersistentValidatorNode {
         .map_err(NodeError::DataAvailability)?;
 
         Ok(DaSampleProofBundle {
+            schedule,
+            sample_proofs,
+            namespace_proofs,
+            verification,
+        })
+    }
+
+    pub fn application_da_sample_proof_bundle(
+        &self,
+        manifest_hash: &str,
+        client_randomness: &str,
+        sample_count: u32,
+        namespaces: &[String],
+    ) -> Result<ApplicationDaSampleProofBundle, NodeError> {
+        let manifest = self
+            .storage
+            .maybe_load_application_da_manifest(manifest_hash)
+            .map_err(NodeError::Storage)?
+            .ok_or(NodeError::Rpc(RpcError::ApplicationDaManifestNotFound))?;
+        let registration = self
+            .storage
+            .load_application_da_profile_registration(&manifest.profile_id)
+            .map_err(NodeError::Storage)?;
+        let profile: DaApplicationProfile = registration.profile;
+        let schedule = derive_application_sample_schedule(
+            &manifest,
+            &profile,
+            client_randomness.as_bytes(),
+            sample_count,
+        )
+        .map_err(NodeError::DataAvailability)?;
+        let mut sample_proofs = Vec::with_capacity(schedule.share_indices.len());
+        for index in &schedule.share_indices {
+            let share = self
+                .storage
+                .maybe_load_application_da_share(manifest_hash, *index)
+                .map_err(NodeError::Storage)?
+                .ok_or(NodeError::Rpc(RpcError::ApplicationDaShareNotFound))?;
+            sample_proofs.push(DaSampleProof {
+                share,
+                inclusion_proof: prove_application_share_inclusion(&manifest, &profile, *index)
+                    .map_err(NodeError::DataAvailability)?,
+            });
+        }
+
+        let namespace_proofs = namespaces
+            .iter()
+            .map(|namespace| {
+                let namespace =
+                    DaNamespace::new(namespace.clone()).map_err(NodeError::DataAvailability)?;
+                prove_application_namespace(&manifest, &profile, &namespace)
+                    .map_err(NodeError::DataAvailability)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let verification = verify_application_light_client_samples(
+            &manifest,
+            &profile,
+            client_randomness.as_bytes(),
+            sample_count,
+            &sample_proofs,
+            &namespace_proofs,
+        )
+        .map_err(NodeError::DataAvailability)?;
+
+        Ok(ApplicationDaSampleProofBundle {
             schedule,
             sample_proofs,
             namespace_proofs,
@@ -3072,6 +3236,75 @@ impl PersistentValidatorNode {
         Ok(DaStatusReport {
             manifest_hash: manifest_hash.into(),
             manifest_available: true,
+            certificate_hash,
+            certificate_available,
+            expected_share_count: manifest.encoded_share_count,
+            stored_share_count,
+            missing_share_indices,
+            payload_reconstructable: reconstruction.is_ok(),
+            payload_bytes: Some(manifest.payload_bytes),
+            namespace_count: Some(manifest.namespace_ranges.len()),
+            reconstruction_error: reconstruction.err().map(|error| format!("{error:?}")),
+        })
+    }
+
+    pub fn application_da_status(
+        &self,
+        manifest_hash: &str,
+    ) -> Result<ApplicationDaStatusReport, NodeError> {
+        let certificate_hash = self.application_da_certificate_hash_for_manifest(manifest_hash)?;
+        let certificate_available = match &certificate_hash {
+            Some(hash) => self
+                .storage
+                .maybe_load_application_da_certificate(hash)
+                .map_err(NodeError::Storage)?
+                .is_some(),
+            None => false,
+        };
+
+        let Some(manifest) = self
+            .storage
+            .maybe_load_application_da_manifest(manifest_hash)
+            .map_err(NodeError::Storage)?
+        else {
+            return Ok(ApplicationDaStatusReport {
+                manifest_hash: manifest_hash.into(),
+                manifest_available: false,
+                application_id: None,
+                profile_id: None,
+                coordinate: None,
+                certificate_hash,
+                certificate_available,
+                expected_share_count: 0,
+                stored_share_count: 0,
+                missing_share_indices: Vec::new(),
+                payload_reconstructable: false,
+                payload_bytes: None,
+                namespace_count: None,
+                reconstruction_error: Some("manifest not found".into()),
+            });
+        };
+
+        let mut stored_share_count = 0_u32;
+        let mut missing_share_indices = Vec::new();
+        for index in 0..manifest.encoded_share_count {
+            match self
+                .storage
+                .maybe_load_application_da_share(manifest_hash, index)
+                .map_err(NodeError::Storage)?
+            {
+                Some(_) => stored_share_count = stored_share_count.saturating_add(1),
+                None => missing_share_indices.push(index),
+            }
+        }
+
+        let reconstruction = self.load_application_da_payload(manifest_hash);
+        Ok(ApplicationDaStatusReport {
+            manifest_hash: manifest_hash.into(),
+            manifest_available: true,
+            application_id: Some(manifest.application_id),
+            profile_id: Some(manifest.profile_id),
+            coordinate: Some(manifest.coordinate),
             certificate_hash,
             certificate_available,
             expected_share_count: manifest.encoded_share_count,
@@ -3225,6 +3458,18 @@ impl PersistentValidatorNode {
         Ok(self
             .storage
             .load_da_certificate_index_by_manifest_hash(manifest_hash)
+            .map_err(NodeError::Storage)?
+            .first()
+            .map(|entry| entry.certificate_hash.clone()))
+    }
+
+    fn application_da_certificate_hash_for_manifest(
+        &self,
+        manifest_hash: &str,
+    ) -> Result<Option<String>, NodeError> {
+        Ok(self
+            .storage
+            .load_application_da_certificate_index_by_manifest_hash(manifest_hash)
             .map_err(NodeError::Storage)?
             .first()
             .map(|entry| entry.certificate_hash.clone()))
@@ -5049,6 +5294,23 @@ mod tests {
             )))
         );
         assert_eq!(
+            node.handle_rpc_request(RpcRequest::GetApplicationDaReconstructedPayload {
+                manifest_hash: manifest_hash.clone(),
+            }),
+            RpcResponse::Ok(RpcResult::ApplicationDaPayload(Box::new(
+                payload.canonicalized()
+            )))
+        );
+        assert_eq!(
+            node.handle_rpc_request(RpcRequest::GetApplicationDaNamespace {
+                manifest_hash: manifest_hash.clone(),
+                namespace: "social.feed".into(),
+            }),
+            RpcResponse::Ok(RpcResult::ApplicationDaNamespace(Box::new(
+                payload.canonicalized().namespaces[0].clone()
+            )))
+        );
+        assert_eq!(
             node.handle_rpc_request(RpcRequest::GetApplicationDaShare {
                 manifest_hash: manifest_hash.clone(),
                 index: 0,
@@ -5065,6 +5327,53 @@ mod tests {
                 certificate.clone()
             )))
         );
+
+        let sample_response = node.handle_rpc_request(RpcRequest::GetApplicationDaSampleProofs {
+            manifest_hash: manifest_hash.clone(),
+            client_randomness: "application-da-rpc-randomness".into(),
+            sample_count: 2,
+            namespaces: vec!["social.feed".into()],
+        });
+        let RpcResponse::Ok(RpcResult::ApplicationDaSampleProofs(sample_bundle)) = sample_response
+        else {
+            panic!("expected application DA sample proof bundle, got {sample_response:?}");
+        };
+        assert_eq!(sample_bundle.schedule.manifest_hash, manifest_hash);
+        assert_eq!(sample_bundle.sample_proofs.len(), 2);
+        assert_eq!(sample_bundle.namespace_proofs.len(), 1);
+        assert!(sample_bundle.verification.valid);
+
+        let status_response = node.handle_rpc_request(RpcRequest::GetApplicationDaStatus {
+            manifest_hash: manifest_hash.clone(),
+        });
+        let RpcResponse::Ok(RpcResult::ApplicationDaStatus(status)) = status_response else {
+            panic!("expected application DA status, got {status_response:?}");
+        };
+        assert!(status.manifest_available);
+        assert_eq!(
+            status.application_id,
+            Some(coordinate.application_id.clone())
+        );
+        assert_eq!(status.profile_id, Some(registration.profile_id.clone()));
+        assert_eq!(status.coordinate, Some(coordinate.clone()));
+        assert_eq!(status.certificate_hash, Some(certificate_hash.clone()));
+        assert!(status.certificate_available);
+        assert_eq!(
+            status.expected_share_count,
+            share_set.manifest.encoded_share_count
+        );
+        assert_eq!(
+            status.stored_share_count,
+            share_set.manifest.encoded_share_count
+        );
+        assert!(status.missing_share_indices.is_empty());
+        assert!(status.payload_reconstructable);
+        assert_eq!(status.payload_bytes, Some(share_set.manifest.payload_bytes));
+        assert_eq!(
+            status.namespace_count,
+            Some(share_set.manifest.namespace_ranges.len())
+        );
+        assert!(status.reconstruction_error.is_none());
 
         let profile_index_response =
             node.handle_rpc_request(RpcRequest::GetApplicationDaProfileIndexByApplicationId {

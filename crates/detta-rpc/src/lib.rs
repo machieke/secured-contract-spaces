@@ -7,10 +7,11 @@ use detta_core::{
     StorageProof, Transaction, UpgradeRehearsalReport, ValidatorNode,
 };
 use detta_da::{
-    ApplicationDaAvailabilityCertificate, ApplicationDaManifest, ApplicationDaPayload,
-    DaApplicationCoordinate, DaApplicationProfileRegistration, DaApplicationRetentionClass,
-    DaAvailabilityCertificate, DaChallengeRecord, DaCodingFault, DaCodingFraudProof, DaManifest,
-    DaNamespaceSection, DaPayload, DaProductionProfile, DaSampleProofBundle, DaShare,
+    ApplicationDaAvailabilityCertificate, ApplicationDaManifest, ApplicationDaNamespaceSection,
+    ApplicationDaPayload, ApplicationDaSampleProofBundle, DaApplicationCoordinate, DaApplicationId,
+    DaApplicationProfileRegistration, DaApplicationRetentionClass, DaAvailabilityCertificate,
+    DaChallengeRecord, DaCodingFault, DaCodingFraudProof, DaManifest, DaNamespaceSection,
+    DaPayload, DaProductionProfile, DaSampleProofBundle, DaShare,
 };
 use detta_evaluator::{
     canonical_script_source, parse_restricted_script, restricted_evaluator_fixture_inventory,
@@ -66,6 +67,7 @@ pub enum RpcError {
     ApplicationDaShareNotFound,
     ApplicationDaCertificateNotFound,
     ApplicationDaPayloadNotFound,
+    ApplicationDaNamespaceNotFound,
     ProofNotFound,
     SubscriptionNotFound,
     Execution(ExecutionError),
@@ -329,6 +331,22 @@ pub enum RpcRequest {
     GetApplicationDaPayload {
         manifest_hash: String,
     },
+    GetApplicationDaReconstructedPayload {
+        manifest_hash: String,
+    },
+    GetApplicationDaNamespace {
+        manifest_hash: String,
+        namespace: String,
+    },
+    GetApplicationDaSampleProofs {
+        manifest_hash: String,
+        client_randomness: String,
+        sample_count: u32,
+        namespaces: Vec<String>,
+    },
+    GetApplicationDaStatus {
+        manifest_hash: String,
+    },
     GetApplicationDaManifestIndexByApplicationId {
         application_id: String,
     },
@@ -500,6 +518,8 @@ impl RpcRequest {
             }
             RpcRequest::GetApplicationDaManifest { manifest_hash }
             | RpcRequest::GetApplicationDaPayload { manifest_hash }
+            | RpcRequest::GetApplicationDaReconstructedPayload { manifest_hash }
+            | RpcRequest::GetApplicationDaStatus { manifest_hash }
             | RpcRequest::GetApplicationDaCertificateIndexByManifest { manifest_hash } => {
                 validate_da_rpc_id(manifest_hash)
             }
@@ -523,6 +543,13 @@ impl RpcRequest {
             RpcRequest::GetApplicationDaManifestIndexByNamespace { namespace } => {
                 validate_da_rpc_namespace(namespace)
             }
+            RpcRequest::GetApplicationDaNamespace {
+                manifest_hash,
+                namespace,
+            } => {
+                validate_da_rpc_id(manifest_hash)?;
+                validate_da_rpc_namespace(namespace)
+            }
             RpcRequest::GetApplicationDaManifestIndexByCoordinate { coordinate }
             | RpcRequest::GetApplicationDaCertificateIndexByCoordinate { coordinate } => {
                 validate_rpc_serialized_value(
@@ -531,6 +558,12 @@ impl RpcRequest {
                 )
             }
             RpcRequest::GetDaSampleProofs {
+                manifest_hash,
+                client_randomness,
+                sample_count,
+                namespaces,
+            }
+            | RpcRequest::GetApplicationDaSampleProofs {
                 manifest_hash,
                 client_randomness,
                 sample_count,
@@ -610,6 +643,24 @@ pub struct PersistentNodeSnapshotRoots {
 pub struct DaStatusReport {
     pub manifest_hash: String,
     pub manifest_available: bool,
+    pub certificate_hash: Option<String>,
+    pub certificate_available: bool,
+    pub expected_share_count: u32,
+    pub stored_share_count: u32,
+    pub missing_share_indices: Vec<u32>,
+    pub payload_reconstructable: bool,
+    pub payload_bytes: Option<u64>,
+    pub namespace_count: Option<usize>,
+    pub reconstruction_error: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ApplicationDaStatusReport {
+    pub manifest_hash: String,
+    pub manifest_available: bool,
+    pub application_id: Option<DaApplicationId>,
+    pub profile_id: Option<String>,
+    pub coordinate: Option<DaApplicationCoordinate>,
     pub certificate_hash: Option<String>,
     pub certificate_available: bool,
     pub expected_share_count: u32,
@@ -995,6 +1046,9 @@ pub enum RpcResult {
     ApplicationDaShare(Box<DaShare>),
     ApplicationDaAvailabilityCertificate(Box<ApplicationDaAvailabilityCertificate>),
     ApplicationDaPayload(Box<ApplicationDaPayload>),
+    ApplicationDaNamespace(Box<ApplicationDaNamespaceSection>),
+    ApplicationDaSampleProofs(Box<ApplicationDaSampleProofBundle>),
+    ApplicationDaStatus(Box<ApplicationDaStatusReport>),
     ApplicationDaManifestIndex(Vec<ApplicationDaManifestIndexEntry>),
     ApplicationDaCertificateIndex(Vec<ApplicationDaCertificateIndexEntry>),
 }
@@ -1785,6 +1839,10 @@ impl RpcService {
             | RpcRequest::GetApplicationDaShare { .. }
             | RpcRequest::GetApplicationDaCertificate { .. }
             | RpcRequest::GetApplicationDaPayload { .. }
+            | RpcRequest::GetApplicationDaReconstructedPayload { .. }
+            | RpcRequest::GetApplicationDaNamespace { .. }
+            | RpcRequest::GetApplicationDaSampleProofs { .. }
+            | RpcRequest::GetApplicationDaStatus { .. }
             | RpcRequest::GetApplicationDaManifestIndexByApplicationId { .. }
             | RpcRequest::GetApplicationDaManifestIndexByProfileId { .. }
             | RpcRequest::GetApplicationDaManifestIndexByCoordinate { .. }
@@ -2142,6 +2200,7 @@ fn rpc_error_code(error: &RpcError) -> &'static str {
         RpcError::ApplicationDaShareNotFound => "rpc.application_da_share_not_found",
         RpcError::ApplicationDaCertificateNotFound => "rpc.application_da_certificate_not_found",
         RpcError::ApplicationDaPayloadNotFound => "rpc.application_da_payload_not_found",
+        RpcError::ApplicationDaNamespaceNotFound => "rpc.application_da_namespace_not_found",
         RpcError::ProofNotFound => "rpc.proof_not_found",
         RpcError::SubscriptionNotFound => "rpc.subscription_not_found",
         RpcError::Execution(ExecutionError::UpgradeNotFound) => "execution.upgrade_not_found",
@@ -2233,6 +2292,7 @@ fn rpc_error_message(error: &RpcError) -> &'static str {
         RpcError::ApplicationDaShareNotFound => "application DA share was not found",
         RpcError::ApplicationDaCertificateNotFound => "application DA certificate was not found",
         RpcError::ApplicationDaPayloadNotFound => "application DA payload was not found",
+        RpcError::ApplicationDaNamespaceNotFound => "application DA namespace was not found",
         RpcError::ProofNotFound => "proof was not found",
         RpcError::SubscriptionNotFound => "subscription was not found",
         RpcError::Execution(ExecutionError::UpgradeNotFound) => "upgrade was not found",
@@ -2455,6 +2515,10 @@ mod tests {
             "get_application_da_share",
             "get_application_da_certificate",
             "get_application_da_payload",
+            "get_application_da_reconstructed_payload",
+            "get_application_da_namespace",
+            "get_application_da_sample_proofs",
+            "get_application_da_status",
             "get_application_da_manifest_index_by_application_id",
             "get_application_da_manifest_index_by_profile_id",
             "get_application_da_manifest_index_by_coordinate",
@@ -3884,6 +3948,22 @@ mod tests {
             RpcRequest::GetApplicationDaProfile {
                 profile_id: "e".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES),
             },
+            RpcRequest::GetApplicationDaReconstructedPayload {
+                manifest_hash: "f".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES),
+            },
+            RpcRequest::GetApplicationDaNamespace {
+                manifest_hash: "g".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES),
+                namespace: "social.feed".into(),
+            },
+            RpcRequest::GetApplicationDaSampleProofs {
+                manifest_hash: "h".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES),
+                client_randomness: "r".repeat(DEFAULT_MAX_DA_RPC_RANDOMNESS_BYTES),
+                sample_count: DEFAULT_MAX_DA_RPC_SAMPLE_COUNT,
+                namespaces: vec!["social.feed".into()],
+            },
+            RpcRequest::GetApplicationDaStatus {
+                manifest_hash: "i".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES),
+            },
             RpcRequest::GetApplicationDaManifestIndexByApplicationId {
                 application_id: "a".repeat(DEFAULT_MAX_DA_RPC_NAMESPACE_BYTES),
             },
@@ -3953,6 +4033,34 @@ mod tests {
             },
             RpcRequest::GetApplicationDaProfileIndexByApplicationId {
                 application_id: "a".repeat(DEFAULT_MAX_DA_RPC_NAMESPACE_BYTES + 1),
+            },
+            RpcRequest::GetApplicationDaReconstructedPayload {
+                manifest_hash: "m".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES + 1),
+            },
+            RpcRequest::GetApplicationDaNamespace {
+                manifest_hash: "m".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES),
+                namespace: "n".repeat(DEFAULT_MAX_DA_RPC_NAMESPACE_BYTES + 1),
+            },
+            RpcRequest::GetApplicationDaSampleProofs {
+                manifest_hash: "m".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES),
+                client_randomness: "r".repeat(DEFAULT_MAX_DA_RPC_RANDOMNESS_BYTES + 1),
+                sample_count: 1,
+                namespaces: Vec::new(),
+            },
+            RpcRequest::GetApplicationDaSampleProofs {
+                manifest_hash: "m".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES),
+                client_randomness: "r".into(),
+                sample_count: DEFAULT_MAX_DA_RPC_SAMPLE_COUNT + 1,
+                namespaces: Vec::new(),
+            },
+            RpcRequest::GetApplicationDaSampleProofs {
+                manifest_hash: "m".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES),
+                client_randomness: "r".into(),
+                sample_count: 1,
+                namespaces: vec!["social.feed".into(); DEFAULT_MAX_DA_RPC_NAMESPACES + 1],
+            },
+            RpcRequest::GetApplicationDaStatus {
+                manifest_hash: "m".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES + 1),
             },
             RpcRequest::GetApplicationDaManifestIndexByCoordinate {
                 coordinate: DaApplicationCoordinate {

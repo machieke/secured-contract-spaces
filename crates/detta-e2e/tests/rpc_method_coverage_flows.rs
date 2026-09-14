@@ -504,6 +504,38 @@ fn public_rpc_method_coverage_guard_calls_every_openapi_method() {
     call_ok(
         &mut client,
         &mut covered,
+        RpcRequest::GetApplicationDaReconstructedPayload {
+            manifest_hash: app_manifest_hash.clone(),
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetApplicationDaNamespace {
+            manifest_hash: app_manifest_hash.clone(),
+            namespace: "social.feed".into(),
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetApplicationDaSampleProofs {
+            manifest_hash: app_manifest_hash.clone(),
+            client_randomness: "application-da-coverage-randomness".into(),
+            sample_count: 2,
+            namespaces: vec!["social.feed".into()],
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetApplicationDaStatus {
+            manifest_hash: app_manifest_hash.clone(),
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
         RpcRequest::GetApplicationDaManifestIndexByApplicationId {
             application_id: "social.demo".into(),
         },
