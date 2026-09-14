@@ -197,12 +197,26 @@ Persistent validator nodes additionally handle:
 - `register_application_da_profile`: persist an active application DA profile
   registration. Built-in clients can register `detta.defi`, `social.demo`, or
   `checkpoint.demo`; arbitrary applications submit the typed profile JSON.
+- `plan_application_da_profile_registration`: persist a pending application DA
+  profile registration plus a lifecycle record with requester, reason, request
+  height, and timelock execution height. Profiles under reserved `detta.*`
+  application ids are rejected unless they match the built-in DeTTa profile.
+- `activate_application_da_profile`: activate a pending profile after its
+  timelock height has elapsed and append an activation lifecycle record.
+- `deprecate_application_da_profile`: mark an active profile inactive for new
+  payload production while keeping the profile registration available for
+  historical verification.
+- `record_application_da_profile_migration`: append migration evidence that a
+  profile supersedes an existing registered profile.
 - `produce_application_da_batch`: validate a submitted `ApplicationDaPayload`
   against its registered active profile, encode Reed-Solomon shares, persist
   payload/manifest/shares, create an application DA availability certificate,
   and return manifest/certificate hashes plus payload/share commitments.
 - `get_application_da_profile`: fetch an application DA profile registration by
   profile id.
+- `get_application_da_profile_lifecycle_records`: list deterministic lifecycle
+  records for planned, activated, deprecated, and migrated application DA
+  profiles.
 - `get_application_da_profile_index_by_application_id`: list profile
   registrations for an application id.
 - `get_application_da_profile_index_by_application_version`: list profile

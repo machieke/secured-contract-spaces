@@ -1217,6 +1217,7 @@ impl DaApplicationProfile {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum DaApplicationProfileStatus {
+    Pending,
     Active,
     Deprecated,
 }
@@ -1244,6 +1245,22 @@ impl DaApplicationProfileRegistration {
         Ok(registration)
     }
 
+    pub fn pending(
+        profile: DaApplicationProfile,
+        activate_after_sequence: u64,
+    ) -> Result<Self, DaError> {
+        let profile_id = profile.profile_id()?;
+        let registration = Self {
+            profile_id,
+            profile,
+            status: DaApplicationProfileStatus::Pending,
+            activated_at_sequence: Some(activate_after_sequence),
+            deprecated_at_sequence: None,
+        };
+        registration.validate()?;
+        Ok(registration)
+    }
+
     pub fn validate(&self) -> Result<(), DaError> {
         self.profile.validate()?;
         if self.profile_id != self.profile.profile_id()? {
@@ -1252,6 +1269,18 @@ impl DaApplicationProfileRegistration {
             ));
         }
         match self.status {
+            DaApplicationProfileStatus::Pending => {
+                if self.activated_at_sequence.is_none() {
+                    return Err(DaError::InvalidManifest(
+                        "pending application profile registration lacks activation sequence".into(),
+                    ));
+                }
+                if self.deprecated_at_sequence.is_some() {
+                    return Err(DaError::InvalidManifest(
+                        "pending application profile registration has deprecation sequence".into(),
+                    ));
+                }
+            }
             DaApplicationProfileStatus::Active => {
                 if self.deprecated_at_sequence.is_some() {
                     return Err(DaError::InvalidManifest(
@@ -1266,6 +1295,15 @@ impl DaApplicationProfileRegistration {
                             .into(),
                     ));
                 }
+            }
+        }
+        if let (Some(activated), Some(deprecated)) =
+            (self.activated_at_sequence, self.deprecated_at_sequence)
+        {
+            if deprecated < activated {
+                return Err(DaError::InvalidManifest(
+                    "application profile deprecation sequence precedes activation sequence".into(),
+                ));
             }
         }
         Ok(())
@@ -7197,6 +7235,42 @@ mod tests {
         );
         reloaded.validate_historical_payload(&v1_payload).unwrap();
         reloaded.validate_payload(&v2_payload).unwrap();
+    }
+
+    #[test]
+    fn application_profile_registry_keeps_pending_profiles_inactive_until_activation() {
+        let profile = DaApplicationProfile::social_demo_v1();
+        let pending = DaApplicationProfileRegistration::pending(profile.clone(), 7).unwrap();
+        assert_eq!(pending.status, DaApplicationProfileStatus::Pending);
+        assert_eq!(pending.activated_at_sequence, Some(7));
+        assert!(!pending.is_active());
+
+        let registry =
+            DaApplicationProfileRegistry::from_registrations(vec![pending.clone()]).unwrap();
+        assert!(registry
+            .latest_active_profile(&application_id_unchecked("social.demo"))
+            .is_none());
+        let payload = social_demo_payload();
+        assert!(matches!(
+            registry.validate_payload(&payload),
+            Err(DaError::InvalidManifest(_))
+        ));
+        registry.validate_historical_payload(&payload).unwrap();
+
+        let mut active = pending.clone();
+        active.status = DaApplicationProfileStatus::Active;
+        active.activated_at_sequence = Some(7);
+        active.validate().unwrap();
+        let active_registry =
+            DaApplicationProfileRegistry::from_registrations(vec![active]).unwrap();
+        active_registry.validate_payload(&payload).unwrap();
+
+        let mut invalid_pending = pending;
+        invalid_pending.activated_at_sequence = None;
+        assert!(matches!(
+            invalid_pending.validate(),
+            Err(DaError::InvalidManifest(_))
+        ));
     }
 
     #[test]

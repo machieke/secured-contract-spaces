@@ -961,18 +961,27 @@ Acceptance:
 
 ### Phase 11: Governance And Profile Lifecycle
 
-- [ ] Add governed profile registration plan.
-- [ ] Add timelocked profile activation.
-- [ ] Add profile deprecation rules.
-- [ ] Add profile migration evidence records.
-- [ ] Add policy for reserved application ids.
+- [x] Add governed profile registration plan.
+- [x] Add timelocked profile activation.
+- [x] Add profile deprecation rules.
+- [x] Add profile migration evidence records.
+- [x] Add policy for reserved application ids.
+- [ ] Add application-id ownership authorization outside reserved prefixes.
+- [ ] DA-cover profile lifecycle events with application DA manifests,
+  certificates, and retention evidence.
 
 Acceptance:
 
-- profile updates cannot silently change validation rules for historical data;
+- profile updates cannot silently change validation rules for historical data:
+  pending, active, and deprecated registrations are stored by immutable profile
+  id, and deprecated profiles remain loadable for historical verification;
 - deprecated profiles remain verifiable;
-- application id ownership and reserved prefixes are enforced;
-- governance events are DA-covered.
+- reserved `detta.*` prefixes are enforced for built-in profiles;
+- application id ownership outside reserved prefixes still needs an owner
+  registry or governance-authorized profile namespace;
+- profile lifecycle records are durable and RPC-visible, but the lifecycle
+  event stream still needs DA manifests and certificates before governance
+  events are fully DA-covered.
 
 ### Phase 12: Formal And Verification Artifacts
 

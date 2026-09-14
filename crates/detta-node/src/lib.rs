@@ -43,6 +43,7 @@ use detta_rpc::{
     SnapshotSyncClientMetricsReport, ValidatorSetMetadataUpdateStatus, DEFAULT_MAX_BLOCK_PAGE_SIZE,
 };
 use detta_storage::{
+    ApplicationDaProfileLifecycleAction, ApplicationDaProfileLifecycleRecord,
     ApplicationDaRetentionAuditReport, ApplicationDaRetentionPrunePlanReport,
     ConsensusSigningRecord, DaRetentionAuditReport, DaRetentionPolicyConfig,
     DaRetentionPrunePlanReport, FileStorage, SnapshotImportAuditConfig, SnapshotImportAuditRecord,
@@ -1247,6 +1248,52 @@ impl PersistentValidatorNode {
                 .map(|registration| RpcResult::ApplicationDaProfile(Box::new(registration)))
                 .map(RpcResponse::Ok)
                 .unwrap_or_else(node_rpc_error_response),
+            RpcRequest::PlanApplicationDaProfileRegistration {
+                profile,
+                execute_after_sequence,
+                requested_by,
+                reason,
+            } => self
+                .plan_application_da_profile_registration(
+                    &profile,
+                    execute_after_sequence,
+                    &requested_by,
+                    &reason,
+                )
+                .map(|record| RpcResult::ApplicationDaProfileLifecycleRecord(Box::new(record)))
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(node_rpc_error_response),
+            RpcRequest::ActivateApplicationDaProfile { profile_id } => self
+                .activate_application_da_profile(&profile_id)
+                .map(|record| RpcResult::ApplicationDaProfileLifecycleRecord(Box::new(record)))
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(node_rpc_error_response),
+            RpcRequest::DeprecateApplicationDaProfile {
+                profile_id,
+                requested_by,
+                reason,
+            } => self
+                .deprecate_application_da_profile(&profile_id, &requested_by, &reason)
+                .map(|record| RpcResult::ApplicationDaProfileLifecycleRecord(Box::new(record)))
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(node_rpc_error_response),
+            RpcRequest::RecordApplicationDaProfileMigration {
+                profile_id,
+                supersedes_profile_id,
+                migration_evidence_hash,
+                requested_by,
+                reason,
+            } => self
+                .record_application_da_profile_migration(
+                    &profile_id,
+                    &supersedes_profile_id,
+                    &migration_evidence_hash,
+                    &requested_by,
+                    &reason,
+                )
+                .map(|record| RpcResult::ApplicationDaProfileLifecycleRecord(Box::new(record)))
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(node_rpc_error_response),
             RpcRequest::ProduceApplicationDaBatch {
                 payload,
                 data_share_count,
@@ -1490,6 +1537,12 @@ impl PersistentValidatorNode {
                     }
                     None => Err(RpcError::ApplicationDaProfileNotFound).into(),
                 })
+                .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
+            RpcRequest::GetApplicationDaProfileLifecycleRecords => self
+                .storage
+                .load_application_da_profile_lifecycle_records()
+                .map(RpcResult::ApplicationDaProfileLifecycleRecords)
+                .map(RpcResponse::Ok)
                 .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
             RpcRequest::GetApplicationDaProfileIndexByApplicationId { application_id } => self
                 .storage
@@ -3150,12 +3203,222 @@ impl PersistentValidatorNode {
         &self,
         profile: &DaApplicationProfile,
     ) -> Result<DaApplicationProfileRegistration, NodeError> {
+        self.ensure_application_da_profile_id_allowed(profile)?;
         let registration = DaApplicationProfileRegistration::active(profile.clone())
             .map_err(NodeError::DataAvailability)?;
         self.storage
             .commit_application_da_profile_registration(&registration)
             .map_err(NodeError::Storage)?;
         Ok(registration)
+    }
+
+    pub fn plan_application_da_profile_registration(
+        &self,
+        profile: &DaApplicationProfile,
+        execute_after_sequence: u64,
+        requested_by: &str,
+        reason: &str,
+    ) -> Result<ApplicationDaProfileLifecycleRecord, NodeError> {
+        self.ensure_application_da_profile_id_allowed(profile)?;
+        let profile_id = profile.profile_id().map_err(NodeError::DataAvailability)?;
+        if self
+            .storage
+            .maybe_load_application_da_profile_registration(&profile_id)
+            .map_err(NodeError::Storage)?
+            .is_some()
+        {
+            return Err(NodeError::Rpc(
+                RpcError::ApplicationDaProfileAlreadyRegistered,
+            ));
+        }
+        let requested_at_sequence = self.current_height();
+        if execute_after_sequence <= requested_at_sequence {
+            return Err(NodeError::Rpc(
+                RpcError::ApplicationDaProfileTimelockNotReady,
+            ));
+        }
+        let registration =
+            DaApplicationProfileRegistration::pending(profile.clone(), execute_after_sequence)
+                .map_err(NodeError::DataAvailability)?;
+        self.storage
+            .commit_application_da_profile_registration(&registration)
+            .map_err(NodeError::Storage)?;
+        let record = ApplicationDaProfileLifecycleRecord {
+            profile_id,
+            application_id: profile.application_id.clone(),
+            profile_version: profile.profile_version,
+            action: ApplicationDaProfileLifecycleAction::Register,
+            requested_by: requested_by.into(),
+            requested_at_sequence,
+            execute_after_sequence,
+            executed_at_sequence: None,
+            supersedes_profile_id: None,
+            migration_evidence_hash: None,
+            reason: reason.into(),
+        };
+        self.storage
+            .commit_application_da_profile_lifecycle_record(&record)
+            .map_err(NodeError::Storage)?;
+        Ok(record)
+    }
+
+    pub fn activate_application_da_profile(
+        &self,
+        profile_id: &str,
+    ) -> Result<ApplicationDaProfileLifecycleRecord, NodeError> {
+        let mut registration = self
+            .storage
+            .maybe_load_application_da_profile_registration(profile_id)
+            .map_err(NodeError::Storage)?
+            .ok_or(NodeError::Rpc(RpcError::ApplicationDaProfileNotFound))?;
+        if registration.status == DaApplicationProfileStatus::Deprecated {
+            return Err(NodeError::Rpc(RpcError::ApplicationDaProfileInactive));
+        }
+        if registration.status == DaApplicationProfileStatus::Active {
+            return Err(NodeError::Rpc(
+                RpcError::ApplicationDaProfileAlreadyRegistered,
+            ));
+        }
+        let execute_after_sequence = registration.activated_at_sequence.unwrap_or(0);
+        let current_sequence = self.current_height();
+        if current_sequence < execute_after_sequence {
+            return Err(NodeError::Rpc(
+                RpcError::ApplicationDaProfileTimelockNotReady,
+            ));
+        }
+        let plan = self.application_da_profile_registration_plan(profile_id)?;
+        registration.status = DaApplicationProfileStatus::Active;
+        registration.activated_at_sequence = Some(current_sequence);
+        self.storage
+            .commit_application_da_profile_registration(&registration)
+            .map_err(NodeError::Storage)?;
+        let record = ApplicationDaProfileLifecycleRecord {
+            profile_id: profile_id.into(),
+            application_id: registration.profile.application_id.clone(),
+            profile_version: registration.profile.profile_version,
+            action: ApplicationDaProfileLifecycleAction::Activate,
+            requested_by: plan.requested_by,
+            requested_at_sequence: plan.requested_at_sequence,
+            execute_after_sequence,
+            executed_at_sequence: Some(current_sequence),
+            supersedes_profile_id: None,
+            migration_evidence_hash: None,
+            reason: "application profile timelock elapsed".into(),
+        };
+        self.storage
+            .commit_application_da_profile_lifecycle_record(&record)
+            .map_err(NodeError::Storage)?;
+        Ok(record)
+    }
+
+    pub fn deprecate_application_da_profile(
+        &self,
+        profile_id: &str,
+        requested_by: &str,
+        reason: &str,
+    ) -> Result<ApplicationDaProfileLifecycleRecord, NodeError> {
+        let mut registration = self
+            .storage
+            .maybe_load_application_da_profile_registration(profile_id)
+            .map_err(NodeError::Storage)?
+            .ok_or(NodeError::Rpc(RpcError::ApplicationDaProfileNotFound))?;
+        if registration.status != DaApplicationProfileStatus::Active {
+            return Err(NodeError::Rpc(RpcError::ApplicationDaProfileInactive));
+        }
+        let current_sequence = self.current_height();
+        registration.status = DaApplicationProfileStatus::Deprecated;
+        registration.deprecated_at_sequence = Some(current_sequence);
+        self.storage
+            .commit_application_da_profile_registration(&registration)
+            .map_err(NodeError::Storage)?;
+        let record = ApplicationDaProfileLifecycleRecord {
+            profile_id: profile_id.into(),
+            application_id: registration.profile.application_id.clone(),
+            profile_version: registration.profile.profile_version,
+            action: ApplicationDaProfileLifecycleAction::Deprecate,
+            requested_by: requested_by.into(),
+            requested_at_sequence: current_sequence,
+            execute_after_sequence: current_sequence,
+            executed_at_sequence: Some(current_sequence),
+            supersedes_profile_id: None,
+            migration_evidence_hash: None,
+            reason: reason.into(),
+        };
+        self.storage
+            .commit_application_da_profile_lifecycle_record(&record)
+            .map_err(NodeError::Storage)?;
+        Ok(record)
+    }
+
+    pub fn record_application_da_profile_migration(
+        &self,
+        profile_id: &str,
+        supersedes_profile_id: &str,
+        migration_evidence_hash: &str,
+        requested_by: &str,
+        reason: &str,
+    ) -> Result<ApplicationDaProfileLifecycleRecord, NodeError> {
+        let registration = self
+            .storage
+            .maybe_load_application_da_profile_registration(profile_id)
+            .map_err(NodeError::Storage)?
+            .ok_or(NodeError::Rpc(RpcError::ApplicationDaProfileNotFound))?;
+        self.storage
+            .maybe_load_application_da_profile_registration(supersedes_profile_id)
+            .map_err(NodeError::Storage)?
+            .ok_or(NodeError::Rpc(RpcError::ApplicationDaProfileNotFound))?;
+        let current_sequence = self.current_height();
+        let record = ApplicationDaProfileLifecycleRecord {
+            profile_id: profile_id.into(),
+            application_id: registration.profile.application_id.clone(),
+            profile_version: registration.profile.profile_version,
+            action: ApplicationDaProfileLifecycleAction::Migrate,
+            requested_by: requested_by.into(),
+            requested_at_sequence: current_sequence,
+            execute_after_sequence: current_sequence,
+            executed_at_sequence: Some(current_sequence),
+            supersedes_profile_id: Some(supersedes_profile_id.into()),
+            migration_evidence_hash: Some(migration_evidence_hash.into()),
+            reason: reason.into(),
+        };
+        self.storage
+            .commit_application_da_profile_lifecycle_record(&record)
+            .map_err(NodeError::Storage)?;
+        Ok(record)
+    }
+
+    fn application_da_profile_registration_plan(
+        &self,
+        profile_id: &str,
+    ) -> Result<ApplicationDaProfileLifecycleRecord, NodeError> {
+        self.storage
+            .load_application_da_profile_lifecycle_records()
+            .map_err(NodeError::Storage)?
+            .into_iter()
+            .find(|record| {
+                record.profile_id == profile_id
+                    && record.action == ApplicationDaProfileLifecycleAction::Register
+            })
+            .ok_or(NodeError::Rpc(
+                RpcError::ApplicationDaProfileTimelockNotReady,
+            ))
+    }
+
+    fn ensure_application_da_profile_id_allowed(
+        &self,
+        profile: &DaApplicationProfile,
+    ) -> Result<(), NodeError> {
+        if !profile.application_id.0.starts_with("detta.") {
+            return Ok(());
+        }
+        let profile_id = profile.profile_id().map_err(NodeError::DataAvailability)?;
+        let detta_defi_profile_id = DaApplicationProfile::detta_defi_v1()
+            .profile_id()
+            .map_err(NodeError::DataAvailability)?;
+        if profile_id == detta_defi_profile_id {
+            return Ok(());
+        }
+        Err(NodeError::Rpc(RpcError::ApplicationDaReservedApplicationId))
     }
 
     pub fn produce_application_da_batch(
@@ -4960,10 +5223,13 @@ fn elapsed_micros(started: Instant) -> u64 {
 }
 
 fn node_rpc_error_response(error: NodeError) -> RpcResponse {
-    RpcResponse::Error(RpcErrorBody {
-        code: node_rpc_error_code(&error).into(),
-        message: format!("{error:?}"),
-    })
+    match error {
+        NodeError::Rpc(error) => Err(error).into(),
+        error => RpcResponse::Error(RpcErrorBody {
+            code: node_rpc_error_code(&error).into(),
+            message: format!("{error:?}"),
+        }),
+    }
 }
 
 fn node_rpc_error_code(error: &NodeError) -> &'static str {
@@ -6188,6 +6454,194 @@ mod tests {
             RpcResponse::Error(RpcErrorBody {
                 code: "rpc.application_da_profile_inactive".into(),
                 message: "application DA profile is not active".into(),
+            })
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn persistent_node_governs_application_da_profile_lifecycle() {
+        let dir = temp_dir("application-da-profile-lifecycle-rpc");
+        let mut node =
+            PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &dir).unwrap();
+        let profile_v1 = detta_da::DaApplicationProfile::social_demo_v1();
+        let profile_v1_id = profile_v1.profile_id().unwrap();
+        let mut profile_v2 = detta_da::DaApplicationProfile::social_demo_v1();
+        profile_v2.profile_version = 2;
+        profile_v2.profile_name = "Social Demo DA v2".into();
+        let profile_v2_id = profile_v2.profile_id().unwrap();
+        let payload_v1 = social_demo_application_payload(&profile_v1, "v1");
+        let payload_v2 = social_demo_application_payload(&profile_v2, "v2");
+
+        let v1_response = node.handle_rpc_request(RpcRequest::RegisterApplicationDaProfile {
+            profile: Box::new(profile_v1.clone()),
+        });
+        let RpcResponse::Ok(RpcResult::ApplicationDaProfile(v1_registration)) = v1_response else {
+            panic!("expected active v1 profile registration, got {v1_response:?}");
+        };
+        assert_eq!(v1_registration.profile_id, profile_v1_id);
+
+        let plan_response =
+            node.handle_rpc_request(RpcRequest::PlanApplicationDaProfileRegistration {
+                profile: Box::new(profile_v2.clone()),
+                execute_after_sequence: 1,
+                requested_by: "governance".into(),
+                reason: "register social profile v2".into(),
+            });
+        let RpcResponse::Ok(RpcResult::ApplicationDaProfileLifecycleRecord(plan_record)) =
+            plan_response
+        else {
+            panic!("expected registration plan, got {plan_response:?}");
+        };
+        assert_eq!(
+            plan_record.action,
+            ApplicationDaProfileLifecycleAction::Register
+        );
+        assert_eq!(plan_record.profile_id, profile_v2_id);
+
+        let pending_response = node.handle_rpc_request(RpcRequest::GetApplicationDaProfile {
+            profile_id: profile_v2_id.clone(),
+        });
+        let RpcResponse::Ok(RpcResult::ApplicationDaProfile(pending_registration)) =
+            pending_response
+        else {
+            panic!("expected pending registration, got {pending_response:?}");
+        };
+        assert_eq!(
+            pending_registration.status,
+            detta_da::DaApplicationProfileStatus::Pending
+        );
+
+        assert_eq!(
+            node.handle_rpc_request(RpcRequest::ProduceApplicationDaBatch {
+                payload: Box::new(payload_v2.clone()),
+                data_share_count: 4,
+                parity_share_count: 2,
+                certificate_signers: vec!["validator-1".into()],
+            }),
+            RpcResponse::Error(RpcErrorBody {
+                code: "rpc.application_da_profile_inactive".into(),
+                message: "application DA profile is not active".into(),
+            })
+        );
+        assert_eq!(
+            node.handle_rpc_request(RpcRequest::ActivateApplicationDaProfile {
+                profile_id: profile_v2_id.clone(),
+            }),
+            RpcResponse::Error(RpcErrorBody {
+                code: "rpc.application_da_profile_timelock_not_ready".into(),
+                message: "application DA profile timelock is not ready".into(),
+            })
+        );
+
+        node.produce_block(1, 1_000).unwrap();
+        let activate_response = node.handle_rpc_request(RpcRequest::ActivateApplicationDaProfile {
+            profile_id: profile_v2_id.clone(),
+        });
+        let RpcResponse::Ok(RpcResult::ApplicationDaProfileLifecycleRecord(activation_record)) =
+            activate_response
+        else {
+            panic!("expected activation record, got {activate_response:?}");
+        };
+        assert_eq!(
+            activation_record.action,
+            ApplicationDaProfileLifecycleAction::Activate
+        );
+        assert_eq!(activation_record.executed_at_sequence, Some(1));
+
+        let production_response = node.handle_rpc_request(RpcRequest::ProduceApplicationDaBatch {
+            payload: Box::new(payload_v2),
+            data_share_count: 4,
+            parity_share_count: 2,
+            certificate_signers: vec!["validator-1".into()],
+        });
+        assert!(matches!(
+            production_response,
+            RpcResponse::Ok(RpcResult::ApplicationDaProduction(_))
+        ));
+
+        assert!(matches!(
+            node.handle_rpc_request(RpcRequest::RecordApplicationDaProfileMigration {
+                profile_id: profile_v2_id.clone(),
+                supersedes_profile_id: profile_v1_id.clone(),
+                migration_evidence_hash: "66".repeat(32),
+                requested_by: "governance".into(),
+                reason: "v2 supersedes v1".into(),
+            }),
+            RpcResponse::Ok(RpcResult::ApplicationDaProfileLifecycleRecord(_))
+        ));
+        let deprecate_response =
+            node.handle_rpc_request(RpcRequest::DeprecateApplicationDaProfile {
+                profile_id: profile_v1_id.clone(),
+                requested_by: "governance".into(),
+                reason: "v1 superseded".into(),
+            });
+        let RpcResponse::Ok(RpcResult::ApplicationDaProfileLifecycleRecord(deprecation_record)) =
+            deprecate_response
+        else {
+            panic!("expected deprecation record, got {deprecate_response:?}");
+        };
+        assert_eq!(
+            deprecation_record.action,
+            ApplicationDaProfileLifecycleAction::Deprecate
+        );
+
+        assert_eq!(
+            node.handle_rpc_request(RpcRequest::ProduceApplicationDaBatch {
+                payload: Box::new(payload_v1),
+                data_share_count: 4,
+                parity_share_count: 2,
+                certificate_signers: vec!["validator-1".into()],
+            }),
+            RpcResponse::Error(RpcErrorBody {
+                code: "rpc.application_da_profile_inactive".into(),
+                message: "application DA profile is not active".into(),
+            })
+        );
+        let deprecated_response = node.handle_rpc_request(RpcRequest::GetApplicationDaProfile {
+            profile_id: profile_v1_id,
+        });
+        let RpcResponse::Ok(RpcResult::ApplicationDaProfile(deprecated_registration)) =
+            deprecated_response
+        else {
+            panic!("expected deprecated registration, got {deprecated_response:?}");
+        };
+        assert_eq!(
+            deprecated_registration.status,
+            detta_da::DaApplicationProfileStatus::Deprecated
+        );
+
+        let lifecycle_response =
+            node.handle_rpc_request(RpcRequest::GetApplicationDaProfileLifecycleRecords);
+        let RpcResponse::Ok(RpcResult::ApplicationDaProfileLifecycleRecords(records)) =
+            lifecycle_response
+        else {
+            panic!("expected lifecycle records, got {lifecycle_response:?}");
+        };
+        assert_eq!(records.len(), 4);
+        assert!(records
+            .iter()
+            .any(|record| record.action == ApplicationDaProfileLifecycleAction::Register));
+        assert!(records
+            .iter()
+            .any(|record| record.action == ApplicationDaProfileLifecycleAction::Activate));
+        assert!(records
+            .iter()
+            .any(|record| record.action == ApplicationDaProfileLifecycleAction::Migrate));
+        assert!(records
+            .iter()
+            .any(|record| record.action == ApplicationDaProfileLifecycleAction::Deprecate));
+
+        let mut reserved_profile = detta_da::DaApplicationProfile::social_demo_v1();
+        reserved_profile.application_id = detta_da::DaApplicationId::new("detta.social").unwrap();
+        assert_eq!(
+            node.handle_rpc_request(RpcRequest::RegisterApplicationDaProfile {
+                profile: Box::new(reserved_profile),
+            }),
+            RpcResponse::Error(RpcErrorBody {
+                code: "rpc.application_da_reserved_application_id".into(),
+                message: "application DA profile uses a reserved application id".into(),
             })
         );
 

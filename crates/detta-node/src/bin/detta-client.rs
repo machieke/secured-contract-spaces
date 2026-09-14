@@ -86,6 +86,42 @@ fn run(args: Vec<String>) -> Result<(), String> {
             })?;
             print_json(&result)
         }
+        "application-da-plan-profile" => {
+            let result = client.ok(RpcRequest::PlanApplicationDaProfileRegistration {
+                profile: Box::new(application_da_profile_from_options(&options)?),
+                execute_after_sequence: parse_u64(
+                    &options.required("execute-after-sequence")?,
+                    "execute-after-sequence",
+                )?,
+                requested_by: options.required("requested-by")?,
+                reason: options.required("reason")?,
+            })?;
+            print_json(&result)
+        }
+        "application-da-activate-profile" => {
+            let result = client.ok(RpcRequest::ActivateApplicationDaProfile {
+                profile_id: options.required("profile-id")?,
+            })?;
+            print_json(&result)
+        }
+        "application-da-deprecate-profile" => {
+            let result = client.ok(RpcRequest::DeprecateApplicationDaProfile {
+                profile_id: options.required("profile-id")?,
+                requested_by: options.required("requested-by")?,
+                reason: options.required("reason")?,
+            })?;
+            print_json(&result)
+        }
+        "application-da-record-profile-migration" => {
+            let result = client.ok(RpcRequest::RecordApplicationDaProfileMigration {
+                profile_id: options.required("profile-id")?,
+                supersedes_profile_id: options.required("supersedes-profile-id")?,
+                migration_evidence_hash: options.required("migration-evidence-hash")?,
+                requested_by: options.required("requested-by")?,
+                reason: options.required("reason")?,
+            })?;
+            print_json(&result)
+        }
         "application-da-produce-batch" => {
             let result = client.ok(application_da_produce_batch_request(&options)?)?;
             print_json(&result)
@@ -94,6 +130,10 @@ fn run(args: Vec<String>) -> Result<(), String> {
             let result = client.ok(RpcRequest::GetApplicationDaProfile {
                 profile_id: options.required("profile-id")?,
             })?;
+            print_json(&result)
+        }
+        "application-da-profile-lifecycle-records" => {
+            let result = client.ok(RpcRequest::GetApplicationDaProfileLifecycleRecords)?;
             print_json(&result)
         }
         "application-da-profile-index-by-application" => {
@@ -803,8 +843,13 @@ fn usage() -> String {
   detta-client produce-block --height <h> [--timestamp <t>]
   detta-client produce-da-block --height <h> [--timestamp <t>] [--share-size <bytes>]
   detta-client application-da-register-profile (--builtin <detta.defi|social.demo|checkpoint.demo> | --profile-json <path>)
+  detta-client application-da-plan-profile (--builtin <detta.defi|social.demo|checkpoint.demo> | --profile-json <path>) --execute-after-sequence <n> --requested-by <id> --reason <text>
+  detta-client application-da-activate-profile --profile-id <hash>
+  detta-client application-da-deprecate-profile --profile-id <hash> --requested-by <id> --reason <text>
+  detta-client application-da-record-profile-migration --profile-id <hash> --supersedes-profile-id <hash> --migration-evidence-hash <hash> --requested-by <id> --reason <text>
   detta-client application-da-produce-batch --payload-json <path> --certificate-signers <csv> [--data-shares <n>] [--parity-shares <n>]
   detta-client application-da-profile --profile-id <hash>
+  detta-client application-da-profile-lifecycle-records
   detta-client application-da-profile-index-by-application --application-id <id>
   detta-client application-da-profile-index-by-version --application-id <id> --profile-version <n>
   detta-client application-da-manifest --manifest-hash <hash>

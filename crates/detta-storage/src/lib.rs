@@ -105,12 +105,14 @@ pub struct DaStorageStats {
     pub application_payload_count: u64,
     pub application_certificate_count: u64,
     pub application_repair_record_count: u64,
+    pub application_profile_lifecycle_record_count: u64,
     pub application_profile_bytes: u64,
     pub application_manifest_bytes: u64,
     pub application_share_bytes: u64,
     pub application_payload_bytes: u64,
     pub application_certificate_bytes: u64,
     pub application_repair_record_bytes: u64,
+    pub application_profile_lifecycle_record_bytes: u64,
     pub application_index_file_count: u64,
     pub application_index_bytes: u64,
     pub total_bytes: u64,
@@ -339,6 +341,29 @@ pub struct ApplicationDaRepairRecord {
     pub completed: bool,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+pub enum ApplicationDaProfileLifecycleAction {
+    Register,
+    Activate,
+    Deprecate,
+    Migrate,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ApplicationDaProfileLifecycleRecord {
+    pub profile_id: String,
+    pub application_id: DaApplicationId,
+    pub profile_version: u32,
+    pub action: ApplicationDaProfileLifecycleAction,
+    pub requested_by: String,
+    pub requested_at_sequence: u64,
+    pub execute_after_sequence: u64,
+    pub executed_at_sequence: Option<u64>,
+    pub supersedes_profile_id: Option<String>,
+    pub migration_evidence_hash: Option<String>,
+    pub reason: String,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DaManifestIndexEntry {
     pub manifest_hash: String,
@@ -483,6 +508,12 @@ impl FileStorage {
         fs::create_dir_all(
             root.join("da")
                 .join("applications")
+                .join("profile_lifecycle"),
+        )
+        .map_err(io_error)?;
+        fs::create_dir_all(
+            root.join("da")
+                .join("applications")
                 .join("indexes")
                 .join("profiles_by_application_id"),
         )
@@ -590,6 +621,7 @@ impl FileStorage {
         let application_payloads_dir = self.application_da_path().join("payloads");
         let application_certificates_dir = self.application_da_certificates_path();
         let application_repairs_dir = self.application_da_repairs_path();
+        let application_profile_lifecycle_dir = self.application_da_profile_lifecycle_path();
         let application_indexes_dir = self.application_da_indexes_path();
 
         for entry in fs::read_dir(&manifests_dir).map_err(io_error)? {
@@ -678,6 +710,12 @@ impl FileStorage {
         let application_repair_file_stats = directory_file_stats(&application_repairs_dir)?;
         stats.application_repair_record_count = application_repair_file_stats.file_count;
         stats.application_repair_record_bytes = application_repair_file_stats.total_bytes;
+        let application_profile_lifecycle_file_stats =
+            directory_file_stats(&application_profile_lifecycle_dir)?;
+        stats.application_profile_lifecycle_record_count =
+            application_profile_lifecycle_file_stats.file_count;
+        stats.application_profile_lifecycle_record_bytes =
+            application_profile_lifecycle_file_stats.total_bytes;
         let application_index_file_stats = directory_file_stats(&application_indexes_dir)?;
         stats.application_index_file_count = application_index_file_stats.file_count;
         stats.application_index_bytes = application_index_file_stats.total_bytes;
@@ -704,6 +742,7 @@ impl FileStorage {
             .saturating_add(stats.application_payload_bytes)
             .saturating_add(stats.application_certificate_bytes)
             .saturating_add(stats.application_repair_record_bytes)
+            .saturating_add(stats.application_profile_lifecycle_record_bytes)
             .saturating_add(stats.application_index_bytes)
             .saturating_add(stats.retention_policy_bytes);
         Ok(stats)
@@ -1827,6 +1866,164 @@ impl FileStorage {
             Some(&application_id),
             Some(profile_version),
         )
+    }
+
+    pub fn commit_application_da_profile_lifecycle_record(
+        &self,
+        record: &ApplicationDaProfileLifecycleRecord,
+    ) -> Result<String, StorageError> {
+        self.validate_application_da_profile_lifecycle_record(record)?;
+        let record_id = hash_canonical_json(record)?;
+        write_json_atomic(
+            &self.application_da_profile_lifecycle_record_path(&record_id),
+            record,
+        )?;
+        Ok(record_id)
+    }
+
+    pub fn load_application_da_profile_lifecycle_record(
+        &self,
+        record_id: &str,
+    ) -> Result<ApplicationDaProfileLifecycleRecord, StorageError> {
+        validate_sha256_storage_hex("application DA profile lifecycle record id", record_id)?;
+        let record: ApplicationDaProfileLifecycleRecord =
+            read_json(&self.application_da_profile_lifecycle_record_path(record_id))?;
+        let actual_record_id = hash_canonical_json(&record)?;
+        if actual_record_id != record_id {
+            return Err(StorageError::CorruptData(format!(
+                "application DA profile lifecycle record id mismatch: expected {record_id}, got {actual_record_id}"
+            )));
+        }
+        self.validate_application_da_profile_lifecycle_record(&record)?;
+        Ok(record)
+    }
+
+    pub fn load_application_da_profile_lifecycle_records(
+        &self,
+    ) -> Result<Vec<ApplicationDaProfileLifecycleRecord>, StorageError> {
+        let mut records = Vec::new();
+        for path in sorted_bin_paths(&self.application_da_profile_lifecycle_path())? {
+            let record: ApplicationDaProfileLifecycleRecord = read_json(&path)?;
+            let record_id = hash_canonical_json(&record)?;
+            let expected_file_name = format!("{}.bin", file_safe_id(&record_id));
+            if path.file_name().and_then(|name| name.to_str()) != Some(expected_file_name.as_str())
+            {
+                return Err(StorageError::CorruptData(
+                    "application DA profile lifecycle filename does not match record id".into(),
+                ));
+            }
+            self.validate_application_da_profile_lifecycle_record(&record)?;
+            records.push(record);
+        }
+        records.sort_by(|left, right| {
+            left.requested_at_sequence
+                .cmp(&right.requested_at_sequence)
+                .then_with(|| {
+                    left.execute_after_sequence
+                        .cmp(&right.execute_after_sequence)
+                })
+                .then_with(|| left.profile_id.cmp(&right.profile_id))
+                .then_with(|| left.action.cmp(&right.action))
+        });
+        Ok(records)
+    }
+
+    fn validate_application_da_profile_lifecycle_record(
+        &self,
+        record: &ApplicationDaProfileLifecycleRecord,
+    ) -> Result<(), StorageError> {
+        validate_sha256_storage_hex(
+            "application DA profile lifecycle profile_id",
+            &record.profile_id,
+        )?;
+        record.application_id.validate().map_err(da_error)?;
+        if record.profile_version == 0 {
+            return Err(StorageError::CorruptData(
+                "application DA profile lifecycle profile_version must be positive".into(),
+            ));
+        }
+        if record.requested_by.is_empty() {
+            return Err(StorageError::CorruptData(
+                "application DA profile lifecycle requested_by must be nonempty".into(),
+            ));
+        }
+        if record.reason.is_empty() {
+            return Err(StorageError::CorruptData(
+                "application DA profile lifecycle reason must be nonempty".into(),
+            ));
+        }
+        if record.execute_after_sequence < record.requested_at_sequence {
+            return Err(StorageError::CorruptData(
+                "application DA profile lifecycle execute_after_sequence precedes request".into(),
+            ));
+        }
+        if record
+            .executed_at_sequence
+            .is_some_and(|sequence| sequence < record.execute_after_sequence)
+        {
+            return Err(StorageError::CorruptData(
+                "application DA profile lifecycle executed before timelock".into(),
+            ));
+        }
+        if let Some(profile_id) = record.supersedes_profile_id.as_deref() {
+            validate_sha256_storage_hex(
+                "application DA profile lifecycle supersedes_profile_id",
+                profile_id,
+            )?;
+        }
+        if let Some(evidence_hash) = record.migration_evidence_hash.as_deref() {
+            validate_sha256_storage_hex(
+                "application DA profile lifecycle migration_evidence_hash",
+                evidence_hash,
+            )?;
+        }
+        match record.action {
+            ApplicationDaProfileLifecycleAction::Register => {
+                if record.executed_at_sequence.is_some() {
+                    return Err(StorageError::CorruptData(
+                        "application DA profile registration plan cannot be executed".into(),
+                    ));
+                }
+                if record.supersedes_profile_id.is_some()
+                    || record.migration_evidence_hash.is_some()
+                {
+                    return Err(StorageError::CorruptData(
+                        "application DA profile registration plan cannot carry migration evidence"
+                            .into(),
+                    ));
+                }
+            }
+            ApplicationDaProfileLifecycleAction::Activate
+            | ApplicationDaProfileLifecycleAction::Deprecate => {
+                if record.executed_at_sequence.is_none() {
+                    return Err(StorageError::CorruptData(
+                        "application DA profile lifecycle execution record is missing executed_at_sequence"
+                            .into(),
+                    ));
+                }
+            }
+            ApplicationDaProfileLifecycleAction::Migrate => {
+                if record.executed_at_sequence.is_none()
+                    || record.supersedes_profile_id.is_none()
+                    || record.migration_evidence_hash.is_none()
+                {
+                    return Err(StorageError::CorruptData(
+                        "application DA profile migration record requires execution, superseded profile, and evidence hash"
+                            .into(),
+                    ));
+                }
+            }
+        }
+
+        let registration = self.load_application_da_profile_registration(&record.profile_id)?;
+        if registration.profile.application_id != record.application_id
+            || registration.profile.profile_version != record.profile_version
+        {
+            return Err(StorageError::CorruptData(
+                "application DA profile lifecycle record does not match stored profile".into(),
+            ));
+        }
+        Ok(())
     }
 
     pub fn commit_application_da_manifest(
@@ -3604,6 +3801,10 @@ impl FileStorage {
         self.application_da_path().join("repairs")
     }
 
+    fn application_da_profile_lifecycle_path(&self) -> PathBuf {
+        self.application_da_path().join("profile_lifecycle")
+    }
+
     fn application_da_profile_path(&self, profile_id: &str) -> PathBuf {
         self.application_da_profiles_path()
             .join(format!("{}.bin", file_safe_id(profile_id)))
@@ -3634,6 +3835,11 @@ impl FileStorage {
 
     fn application_da_repair_record_path(&self, record_id: &str) -> PathBuf {
         self.application_da_repairs_path()
+            .join(format!("{}.bin", file_safe_id(record_id)))
+    }
+
+    fn application_da_profile_lifecycle_record_path(&self, record_id: &str) -> PathBuf {
+        self.application_da_profile_lifecycle_path()
             .join(format!("{}.bin", file_safe_id(record_id)))
     }
 
@@ -5267,12 +5473,14 @@ mod tests {
         assert_eq!(stats.application_payload_count, 1);
         assert_eq!(stats.application_certificate_count, 0);
         assert_eq!(stats.application_repair_record_count, 1);
+        assert_eq!(stats.application_profile_lifecycle_record_count, 0);
         assert!(stats.application_profile_bytes > 0);
         assert!(stats.application_manifest_bytes > 0);
         assert!(stats.application_share_bytes > 0);
         assert!(stats.application_payload_bytes > 0);
         assert_eq!(stats.application_certificate_bytes, 0);
         assert!(stats.application_repair_record_bytes > 0);
+        assert_eq!(stats.application_profile_lifecycle_record_bytes, 0);
         assert!(stats.application_index_file_count > 0);
         assert!(stats.application_index_bytes > 0);
 
@@ -5470,6 +5678,106 @@ mod tests {
                 .unwrap(),
             vec![expected]
         );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn persists_application_da_profile_lifecycle_records() {
+        let dir = temp_dir("application-da-profile-lifecycle");
+        let storage = FileStorage::open(&dir).unwrap();
+        let profile = DaApplicationProfile::social_demo_v1();
+        let pending = DaApplicationProfileRegistration::pending(profile.clone(), 10).unwrap();
+        let profile_id = storage
+            .commit_application_da_profile_registration(&pending)
+            .unwrap();
+        let registration_plan = ApplicationDaProfileLifecycleRecord {
+            profile_id: profile_id.clone(),
+            application_id: profile.application_id.clone(),
+            profile_version: profile.profile_version,
+            action: ApplicationDaProfileLifecycleAction::Register,
+            requested_by: "governance".into(),
+            requested_at_sequence: 5,
+            execute_after_sequence: 10,
+            executed_at_sequence: None,
+            supersedes_profile_id: None,
+            migration_evidence_hash: None,
+            reason: "new application profile".into(),
+        };
+        let plan_id = storage
+            .commit_application_da_profile_lifecycle_record(&registration_plan)
+            .unwrap();
+        assert_eq!(
+            storage
+                .load_application_da_profile_lifecycle_record(&plan_id)
+                .unwrap(),
+            registration_plan.clone()
+        );
+
+        let mut active = pending.clone();
+        active.status = DaApplicationProfileStatus::Active;
+        active.activated_at_sequence = Some(10);
+        storage
+            .commit_application_da_profile_registration(&active)
+            .unwrap();
+        let activation_record = ApplicationDaProfileLifecycleRecord {
+            profile_id: profile_id.clone(),
+            application_id: profile.application_id.clone(),
+            profile_version: profile.profile_version,
+            action: ApplicationDaProfileLifecycleAction::Activate,
+            requested_by: "governance".into(),
+            requested_at_sequence: 5,
+            execute_after_sequence: 10,
+            executed_at_sequence: Some(10),
+            supersedes_profile_id: None,
+            migration_evidence_hash: None,
+            reason: "timelock elapsed".into(),
+        };
+        storage
+            .commit_application_da_profile_lifecycle_record(&activation_record)
+            .unwrap();
+
+        let migration_record = ApplicationDaProfileLifecycleRecord {
+            profile_id: profile_id.clone(),
+            application_id: profile.application_id.clone(),
+            profile_version: profile.profile_version,
+            action: ApplicationDaProfileLifecycleAction::Migrate,
+            requested_by: "governance".into(),
+            requested_at_sequence: 10,
+            execute_after_sequence: 10,
+            executed_at_sequence: Some(10),
+            supersedes_profile_id: Some("44".repeat(32)),
+            migration_evidence_hash: Some("55".repeat(32)),
+            reason: "migration evidence committed".into(),
+        };
+        storage
+            .commit_application_da_profile_lifecycle_record(&migration_record)
+            .unwrap();
+
+        let mut early_activation = activation_record.clone();
+        early_activation.executed_at_sequence = Some(9);
+        assert!(matches!(
+            storage.commit_application_da_profile_lifecycle_record(&early_activation),
+            Err(StorageError::CorruptData(_))
+        ));
+
+        let mut bad_migration = migration_record.clone();
+        bad_migration.migration_evidence_hash = None;
+        assert!(matches!(
+            storage.commit_application_da_profile_lifecycle_record(&bad_migration),
+            Err(StorageError::CorruptData(_))
+        ));
+
+        let records = storage
+            .load_application_da_profile_lifecycle_records()
+            .unwrap();
+        assert_eq!(
+            records,
+            vec![registration_plan, activation_record, migration_record]
+        );
+        let stats = storage.da_storage_stats().unwrap();
+        assert_eq!(stats.application_profile_lifecycle_record_count, 3);
+        assert!(stats.application_profile_lifecycle_record_bytes > 0);
 
         fs::remove_dir_all(dir).unwrap();
     }
@@ -5950,6 +6258,7 @@ mod tests {
                 + stats.application_payload_bytes
                 + stats.application_certificate_bytes
                 + stats.application_repair_record_bytes
+                + stats.application_profile_lifecycle_record_bytes
                 + stats.application_index_bytes
                 + stats.retention_policy_bytes
         );

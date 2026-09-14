@@ -21,10 +21,11 @@ use detta_evaluator::{
 use detta_protocol::SignedValidatorMessage;
 use detta_storage::{
     ApplicationDaCertificateIndexEntry, ApplicationDaManifestIndexEntry,
-    ApplicationDaRetentionAuditReport, ApplicationDaRetentionPrunePlanReport,
-    DaApplicationProfileIndexEntry, DaCertificateIndexEntry, DaManifestIndexEntry,
-    DaRetentionAuditReport, DaRetentionClass, DaRetentionPrunePlanReport, DaStorageStats,
-    SnapshotImportAuditConfig, SnapshotImportAuditRecord, ValidatorSetMetadataAuditRecord,
+    ApplicationDaProfileLifecycleRecord, ApplicationDaRetentionAuditReport,
+    ApplicationDaRetentionPrunePlanReport, DaApplicationProfileIndexEntry, DaCertificateIndexEntry,
+    DaManifestIndexEntry, DaRetentionAuditReport, DaRetentionClass, DaRetentionPrunePlanReport,
+    DaStorageStats, SnapshotImportAuditConfig, SnapshotImportAuditRecord,
+    ValidatorSetMetadataAuditRecord,
 };
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
@@ -50,6 +51,7 @@ pub const DEFAULT_MAX_APPLICATION_DA_RPC_PROFILE_BYTES: usize = 256 * 1024;
 pub const DEFAULT_MAX_APPLICATION_DA_RPC_PAYLOAD_BYTES: usize = DEFAULT_MAX_RPC_REQUEST_BYTES;
 pub const DEFAULT_MAX_APPLICATION_DA_RPC_TOTAL_SHARES: u32 = 4096;
 pub const DEFAULT_MAX_APPLICATION_DA_RPC_CERTIFICATE_SIGNERS: usize = 256;
+pub const DEFAULT_MAX_APPLICATION_DA_RPC_LIFECYCLE_REASON_BYTES: usize = 4096;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RpcError {
@@ -74,6 +76,9 @@ pub enum RpcError {
     ApplicationDaPayloadNotFound,
     ApplicationDaNamespaceNotFound,
     ApplicationDaProfileInactive,
+    ApplicationDaProfileAlreadyRegistered,
+    ApplicationDaProfileTimelockNotReady,
+    ApplicationDaReservedApplicationId,
     ProofNotFound,
     SubscriptionNotFound,
     Execution(ExecutionError),
@@ -232,6 +237,27 @@ pub enum RpcRequest {
     RegisterApplicationDaProfile {
         profile: Box<DaApplicationProfile>,
     },
+    PlanApplicationDaProfileRegistration {
+        profile: Box<DaApplicationProfile>,
+        execute_after_sequence: u64,
+        requested_by: String,
+        reason: String,
+    },
+    ActivateApplicationDaProfile {
+        profile_id: String,
+    },
+    DeprecateApplicationDaProfile {
+        profile_id: String,
+        requested_by: String,
+        reason: String,
+    },
+    RecordApplicationDaProfileMigration {
+        profile_id: String,
+        supersedes_profile_id: String,
+        migration_evidence_hash: String,
+        requested_by: String,
+        reason: String,
+    },
     ProduceApplicationDaBatch {
         payload: Box<ApplicationDaPayload>,
         data_share_count: u32,
@@ -326,6 +352,7 @@ pub enum RpcRequest {
     GetApplicationDaProfile {
         profile_id: String,
     },
+    GetApplicationDaProfileLifecycleRecords,
     GetApplicationDaProfileIndexByApplicationId {
         application_id: String,
     },
@@ -505,6 +532,53 @@ impl RpcRequest {
             RpcRequest::RegisterApplicationDaProfile { profile } => {
                 validate_rpc_serialized_value(profile, DEFAULT_MAX_APPLICATION_DA_RPC_PROFILE_BYTES)
             }
+            RpcRequest::PlanApplicationDaProfileRegistration {
+                profile,
+                requested_by,
+                reason,
+                ..
+            } => {
+                validate_rpc_serialized_value(
+                    profile,
+                    DEFAULT_MAX_APPLICATION_DA_RPC_PROFILE_BYTES,
+                )?;
+                validate_lifecycle_text(requested_by, DEFAULT_MAX_DA_RPC_ID_BYTES)?;
+                validate_lifecycle_text(
+                    reason,
+                    DEFAULT_MAX_APPLICATION_DA_RPC_LIFECYCLE_REASON_BYTES,
+                )
+            }
+            RpcRequest::ActivateApplicationDaProfile { profile_id } => {
+                validate_da_rpc_id(profile_id)
+            }
+            RpcRequest::DeprecateApplicationDaProfile {
+                profile_id,
+                requested_by,
+                reason,
+            } => {
+                validate_da_rpc_id(profile_id)?;
+                validate_lifecycle_text(requested_by, DEFAULT_MAX_DA_RPC_ID_BYTES)?;
+                validate_lifecycle_text(
+                    reason,
+                    DEFAULT_MAX_APPLICATION_DA_RPC_LIFECYCLE_REASON_BYTES,
+                )
+            }
+            RpcRequest::RecordApplicationDaProfileMigration {
+                profile_id,
+                supersedes_profile_id,
+                migration_evidence_hash,
+                requested_by,
+                reason,
+            } => {
+                validate_da_rpc_id(profile_id)?;
+                validate_da_rpc_id(supersedes_profile_id)?;
+                validate_da_rpc_id(migration_evidence_hash)?;
+                validate_lifecycle_text(requested_by, DEFAULT_MAX_DA_RPC_ID_BYTES)?;
+                validate_lifecycle_text(
+                    reason,
+                    DEFAULT_MAX_APPLICATION_DA_RPC_LIFECYCLE_REASON_BYTES,
+                )
+            }
             RpcRequest::ProduceApplicationDaBatch {
                 payload,
                 data_share_count,
@@ -637,10 +711,15 @@ impl RpcRequest {
     pub fn rate_limit_bucket(&self) -> Option<RpcRateLimitBucket> {
         match self {
             RpcRequest::RegisterApplicationDaProfile { .. }
+            | RpcRequest::PlanApplicationDaProfileRegistration { .. }
+            | RpcRequest::ActivateApplicationDaProfile { .. }
+            | RpcRequest::DeprecateApplicationDaProfile { .. }
+            | RpcRequest::RecordApplicationDaProfileMigration { .. }
             | RpcRequest::ProduceApplicationDaBatch { .. } => {
                 Some(RpcRateLimitBucket::ApplicationDaSubmission)
             }
             RpcRequest::GetApplicationDaProfile { .. }
+            | RpcRequest::GetApplicationDaProfileLifecycleRecords
             | RpcRequest::GetApplicationDaProfileIndexByApplicationId { .. }
             | RpcRequest::GetApplicationDaProfileIndexByApplicationVersion { .. }
             | RpcRequest::GetApplicationDaManifest { .. }
@@ -680,6 +759,13 @@ fn validate_da_rpc_id(value: &str) -> Result<(), RpcError> {
 
 fn validate_da_rpc_namespace(value: &str) -> Result<(), RpcError> {
     if value.is_empty() || value.len() > DEFAULT_MAX_DA_RPC_NAMESPACE_BYTES {
+        return Err(RpcError::RequestBoundsExceeded);
+    }
+    Ok(())
+}
+
+fn validate_lifecycle_text(value: &str, max_bytes: usize) -> Result<(), RpcError> {
+    if value.is_empty() || value.len() > max_bytes {
         return Err(RpcError::RequestBoundsExceeded);
     }
     Ok(())
@@ -1091,6 +1177,8 @@ pub enum RpcResult {
     Submitted,
     Imported,
     ApplicationDaProduction(Box<ApplicationDaProductionReport>),
+    ApplicationDaProfileLifecycleRecord(Box<ApplicationDaProfileLifecycleRecord>),
+    ApplicationDaProfileLifecycleRecords(Vec<ApplicationDaProfileLifecycleRecord>),
     Block(Box<Block>),
     BlocksPage(BlockPage),
     FinalityCertificate(Box<FinalityCertificate>),
@@ -1849,6 +1937,10 @@ impl RpcService {
                 .into(),
             RpcRequest::ProduceDaBlock { .. }
             | RpcRequest::RegisterApplicationDaProfile { .. }
+            | RpcRequest::PlanApplicationDaProfileRegistration { .. }
+            | RpcRequest::ActivateApplicationDaProfile { .. }
+            | RpcRequest::DeprecateApplicationDaProfile { .. }
+            | RpcRequest::RecordApplicationDaProfileMigration { .. }
             | RpcRequest::ProduceApplicationDaBatch { .. } => {
                 Err(RpcError::UnsupportedNodeMethod).into()
             }
@@ -2003,6 +2095,7 @@ impl RpcService {
             | RpcRequest::GetDaCertificateIndexByHeight { .. }
             | RpcRequest::GetDaCertificateIndexByBlockHash { .. }
             | RpcRequest::GetApplicationDaProfile { .. }
+            | RpcRequest::GetApplicationDaProfileLifecycleRecords
             | RpcRequest::GetApplicationDaProfileIndexByApplicationId { .. }
             | RpcRequest::GetApplicationDaProfileIndexByApplicationVersion { .. }
             | RpcRequest::GetApplicationDaManifest { .. }
@@ -2375,6 +2468,15 @@ fn rpc_error_code(error: &RpcError) -> &'static str {
         RpcError::ApplicationDaPayloadNotFound => "rpc.application_da_payload_not_found",
         RpcError::ApplicationDaNamespaceNotFound => "rpc.application_da_namespace_not_found",
         RpcError::ApplicationDaProfileInactive => "rpc.application_da_profile_inactive",
+        RpcError::ApplicationDaProfileAlreadyRegistered => {
+            "rpc.application_da_profile_already_registered"
+        }
+        RpcError::ApplicationDaProfileTimelockNotReady => {
+            "rpc.application_da_profile_timelock_not_ready"
+        }
+        RpcError::ApplicationDaReservedApplicationId => {
+            "rpc.application_da_reserved_application_id"
+        }
         RpcError::ProofNotFound => "rpc.proof_not_found",
         RpcError::SubscriptionNotFound => "rpc.subscription_not_found",
         RpcError::Execution(ExecutionError::UpgradeNotFound) => "execution.upgrade_not_found",
@@ -2468,6 +2570,15 @@ fn rpc_error_message(error: &RpcError) -> &'static str {
         RpcError::ApplicationDaPayloadNotFound => "application DA payload was not found",
         RpcError::ApplicationDaNamespaceNotFound => "application DA namespace was not found",
         RpcError::ApplicationDaProfileInactive => "application DA profile is not active",
+        RpcError::ApplicationDaProfileAlreadyRegistered => {
+            "application DA profile is already registered"
+        }
+        RpcError::ApplicationDaProfileTimelockNotReady => {
+            "application DA profile timelock is not ready"
+        }
+        RpcError::ApplicationDaReservedApplicationId => {
+            "application DA profile uses a reserved application id"
+        }
         RpcError::ProofNotFound => "proof was not found",
         RpcError::SubscriptionNotFound => "subscription was not found",
         RpcError::Execution(ExecutionError::UpgradeNotFound) => "upgrade was not found",
@@ -2693,6 +2804,10 @@ mod tests {
             "produce_block",
             "produce_da_block",
             "register_application_da_profile",
+            "plan_application_da_profile_registration",
+            "activate_application_da_profile",
+            "deprecate_application_da_profile",
+            "record_application_da_profile_migration",
             "produce_application_da_batch",
             "import_block",
             "get_transaction",
@@ -2723,6 +2838,7 @@ mod tests {
             "get_da_certificate_index_by_height",
             "get_da_certificate_index_by_block_hash",
             "get_application_da_profile",
+            "get_application_da_profile_lifecycle_records",
             "get_application_da_profile_index_by_application_id",
             "get_application_da_profile_index_by_application_version",
             "get_application_da_manifest",
@@ -4266,6 +4382,27 @@ mod tests {
             RpcRequest::RegisterApplicationDaProfile {
                 profile: Box::new(DaApplicationProfile::social_demo_v1()),
             },
+            RpcRequest::PlanApplicationDaProfileRegistration {
+                profile: Box::new(DaApplicationProfile::social_demo_v1()),
+                execute_after_sequence: u64::MAX,
+                requested_by: "g".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES),
+                reason: "r".repeat(DEFAULT_MAX_APPLICATION_DA_RPC_LIFECYCLE_REASON_BYTES),
+            },
+            RpcRequest::ActivateApplicationDaProfile {
+                profile_id: "k".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES),
+            },
+            RpcRequest::DeprecateApplicationDaProfile {
+                profile_id: "l".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES),
+                requested_by: "g".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES),
+                reason: "r".repeat(DEFAULT_MAX_APPLICATION_DA_RPC_LIFECYCLE_REASON_BYTES),
+            },
+            RpcRequest::RecordApplicationDaProfileMigration {
+                profile_id: "m".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES),
+                supersedes_profile_id: "n".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES),
+                migration_evidence_hash: "o".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES),
+                requested_by: "g".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES),
+                reason: "r".repeat(DEFAULT_MAX_APPLICATION_DA_RPC_LIFECYCLE_REASON_BYTES),
+            },
             RpcRequest::ProduceApplicationDaBatch {
                 payload: Box::new(social_demo_application_payload()),
                 data_share_count: 4,
@@ -4275,6 +4412,7 @@ mod tests {
             RpcRequest::GetApplicationDaProfile {
                 profile_id: "e".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES),
             },
+            RpcRequest::GetApplicationDaProfileLifecycleRecords,
             RpcRequest::GetApplicationDaReconstructedPayload {
                 manifest_hash: "f".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES),
             },
@@ -4369,6 +4507,27 @@ mod tests {
             },
             RpcRequest::RegisterApplicationDaProfile {
                 profile: Box::new(oversized_profile),
+            },
+            RpcRequest::PlanApplicationDaProfileRegistration {
+                profile: Box::new(DaApplicationProfile::social_demo_v1()),
+                execute_after_sequence: 1,
+                requested_by: "g".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES + 1),
+                reason: "reason".into(),
+            },
+            RpcRequest::ActivateApplicationDaProfile {
+                profile_id: "p".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES + 1),
+            },
+            RpcRequest::DeprecateApplicationDaProfile {
+                profile_id: "p".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES),
+                requested_by: "governance".into(),
+                reason: "r".repeat(DEFAULT_MAX_APPLICATION_DA_RPC_LIFECYCLE_REASON_BYTES + 1),
+            },
+            RpcRequest::RecordApplicationDaProfileMigration {
+                profile_id: "p".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES),
+                supersedes_profile_id: "s".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES),
+                migration_evidence_hash: "e".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES + 1),
+                requested_by: "governance".into(),
+                reason: "migration".into(),
             },
             RpcRequest::ProduceApplicationDaBatch {
                 payload: Box::new(oversized_payload),

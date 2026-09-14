@@ -172,6 +172,10 @@ fn public_rpc_method_coverage_guard_calls_every_openapi_method() {
     let app_certificate_hash = app_storage
         .commit_application_da_certificate(&app_certificate)
         .unwrap();
+    let mut app_profile_v2 = DaApplicationProfile::social_demo_v1();
+    app_profile_v2.profile_version = 2;
+    app_profile_v2.profile_name = "Social Demo DA v2".into();
+    let app_profile_v2_id = app_profile_v2.profile_id().unwrap();
 
     let (addr, server) = spawn_tcp_persistent_node(node).unwrap();
     let mut client = TcpRpcClient::connect(addr).unwrap();
@@ -281,12 +285,62 @@ fn public_rpc_method_coverage_guard_calls_every_openapi_method() {
     call_ok(
         &mut client,
         &mut covered,
+        RpcRequest::PlanApplicationDaProfileRegistration {
+            profile: Box::new(app_profile_v2),
+            execute_after_sequence: 5,
+            requested_by: "coverage-governance".into(),
+            reason: "coverage profile registration plan".into(),
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::ProduceBlock {
+            height: 5,
+            timestamp: 5_000,
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::ActivateApplicationDaProfile {
+            profile_id: app_profile_v2_id.clone(),
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::RecordApplicationDaProfileMigration {
+            profile_id: app_profile_v2_id,
+            supersedes_profile_id: app_profile_id.clone(),
+            migration_evidence_hash: "66".repeat(32),
+            requested_by: "coverage-governance".into(),
+            reason: "coverage migration evidence".into(),
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
         RpcRequest::ProduceApplicationDaBatch {
             payload: Box::new(app_payload.clone()),
             data_share_count: 4,
             parity_share_count: 2,
             certificate_signers: vec!["validator-1".into(), "validator-2".into()],
         },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::DeprecateApplicationDaProfile {
+            profile_id: app_profile_id.clone(),
+            requested_by: "coverage-governance".into(),
+            reason: "coverage superseded by v2".into(),
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetApplicationDaProfileLifecycleRecords,
     );
 
     call_ok(
