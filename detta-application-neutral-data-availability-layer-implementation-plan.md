@@ -518,20 +518,29 @@ reconstructable, and auditable.
 Add generic RPC methods beside existing DeTTa DA methods:
 
 ```text
-register_da_application_profile
-get_da_application_profile
-get_da_application_profiles
-submit_application_da_payload
+register_application_da_profile
 produce_application_da_batch
+get_application_da_profile
+get_application_da_profile_index_by_application_id
+get_application_da_profile_index_by_application_version
 get_application_da_manifest
+get_application_da_share
+get_application_da_certificate
 get_application_da_payload
+get_application_da_reconstructed_payload
 get_application_da_namespace
-get_application_da_status
 get_application_da_sample_proofs
-get_application_da_manifest_index_by_application
+get_application_da_status
+get_application_da_manifest_index_by_application_id
+get_application_da_manifest_index_by_profile_id
 get_application_da_manifest_index_by_coordinate
 get_application_da_manifest_index_by_namespace
-get_application_da_manifest_index_by_retention
+get_application_da_manifest_index_by_retention_class
+get_application_da_manifest_index_by_application_root
+get_application_da_certificate_index_by_manifest
+get_application_da_certificate_index_by_application_id
+get_application_da_certificate_index_by_profile_id
+get_application_da_certificate_index_by_coordinate
 ```
 
 Initial RPC can be operator-only and local-test oriented. Public production RPC
@@ -549,12 +558,18 @@ should require:
 CLI additions:
 
 ```text
-detta-client da-profile-register --profile PATH
-detta-client da-profile --application <id> [--profile-id <hash>]
-detta-client produce-application-da-batch --application <id> --profile-id <hash> --payload PATH
+detta-client application-da-register-profile (--builtin <detta.defi|social.demo> | --profile-json <path>)
+detta-client application-da-produce-batch --payload-json <path> --certificate-signers <csv> [--data-shares <n>] [--parity-shares <n>]
+detta-client application-da-profile --profile-id <hash>
+detta-client application-da-profile-index-by-application --application-id <id>
+detta-client application-da-profile-index-by-version --application-id <id> --profile-version <n>
 detta-client application-da-manifest --manifest-hash <hash>
+detta-client application-da-share --manifest-hash <hash> --index <i>
+detta-client application-da-certificate --certificate-hash <hash>
 detta-client application-da-payload --manifest-hash <hash>
+detta-client application-da-reconstructed-payload --manifest-hash <hash>
 detta-client application-da-namespace --manifest-hash <hash> --namespace <name>
+detta-client application-da-sample-proofs --manifest-hash <hash> --client-randomness <bytes> --sample-count <n> [--namespaces <csv>]
 detta-client application-da-status --manifest-hash <hash>
 ```
 
@@ -894,8 +909,8 @@ Acceptance:
   - [x] Add application DA method tags to the checked OpenAPI enum.
   - [ ] Add full component schemas and endpoint examples for application DA
     request/response bodies.
-- [ ] Extend `detta-client`.
-- [ ] Add social-demo client flow.
+- [x] Extend `detta-client`.
+- [x] Add social-demo client flow.
 
 Acceptance:
 
@@ -978,9 +993,9 @@ Required E2E tests:
 
 - DeTTa DeFi block still finalizes with existing DA path;
 - DeTTa DeFi block can be exposed through the generic profile adapter;
-- social-demo app registers profile, submits post/follow/moderation payloads,
-  produces DA manifests and shares, collects DA certificate, retrieves payload,
-  verifies namespace proofs, and reconstructs from threshold shares;
+- social-demo app registers profile, submits a post payload, produces DA
+  manifests and shares, collects DA certificate, retrieves payload, verifies
+  namespace proofs, and reconstructs from threshold shares;
 - social-demo encrypted/private record is accepted only in encrypted or
   commitment-only mode;
 - social-demo public private-message record is rejected;

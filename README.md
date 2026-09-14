@@ -154,6 +154,9 @@ SCS specification
   payload schema.
 - `detta-data-availability-layer-implementation-plan.md`: production-grade
   data availability layer plan and branch progress tracker.
+- `detta-application-neutral-data-availability-layer-implementation-plan.md`:
+  plan and progress tracker for generalizing DA from DeTTa DeFi blocks to
+  registered application profiles and namespaced payloads.
 - `detta-operator-manual.md`: combined DeTTa and DA operator manual covering
   architecture, launch, node membership, maintenance, and disaster recovery.
 - `detta-blog-post.md`: short non-technical blog post explaining what the
@@ -230,9 +233,10 @@ Rust workspace crates:
   logic.
 - `crates/detta-protocol`: versioned protocol envelopes, signatures, DA
   manifest/share/certificate/challenge messages, and snapshot sync wire types.
-- `crates/detta-da`: DA v1 data availability payloads, manifests,
-  deterministic and Reed-Solomon share commitments, reconstruction, custody
-  challenges, and tamper/withholding verification.
+- `crates/detta-da`: DA v1 and application-neutral data availability payloads,
+  profiles, manifests, deterministic and Reed-Solomon share commitments,
+  reconstruction, custody challenges, sampling proofs, and tamper/withholding
+  verification.
 - `crates/detta-network`: validator transport, peer handshakes, retries, and
   TCP protocol streams.
 - `crates/detta-storage`: durable blocks, mempool records, snapshots, metadata,
@@ -243,8 +247,9 @@ Rust workspace crates:
 - `crates/detta-node/src/bin/detta-client.rs`: packaged TCP RPC client for
   deploying tokens, creating pools, adding liquidity, swapping assets, reading
   receipts, producing ordinary or DA-committed blocks, querying roots, and
-  inspecting DA manifests, certificates,
-  payloads, sampling proofs, retention reports, and indexes.
+  registering application DA profiles, producing application DA batches, and
+  inspecting DA manifests, certificates, payloads, namespaces, sampling proofs,
+  status reports, retention reports, and indexes.
 - `crates/detta-aspects`: parser, canonicalizer, verifier, IR lowering, and
   artifact tooling for secure taxonomy-aligned MeTTa aspect modules.
 - `crates/detta-aspect-runtime`: deterministic executable runtime for verified

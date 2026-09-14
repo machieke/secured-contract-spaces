@@ -1,9 +1,12 @@
 use detta_core::{Argument, Block, Method, Receipt, Transaction};
+use detta_da::{ApplicationDaPayload, DaApplicationProfile, DaApplicationRetentionClass};
 use detta_rpc::{RpcRequest, RpcResponse, RpcResult};
 use detta_storage::DaRetentionClass;
+use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::env;
+use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 use std::process;
@@ -15,6 +18,8 @@ const DEFAULT_POOL_CONTRACT: &str = "PoolAB";
 const DEFAULT_SENDER: &str = "Alice";
 const DEFAULT_BUDGET: u64 = 1_000_000;
 const DEFAULT_DA_SHARE_SIZE_BYTES: u32 = 128;
+const DEFAULT_APPLICATION_DA_DATA_SHARES: u32 = 4;
+const DEFAULT_APPLICATION_DA_PARITY_SHARES: u32 = 2;
 
 fn main() {
     if let Err(error) = run(env::args().collect()) {
@@ -72,6 +77,161 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 height,
                 timestamp,
                 share_size_bytes,
+            })?;
+            print_json(&result)
+        }
+        "application-da-register-profile" => {
+            let result = client.ok(RpcRequest::RegisterApplicationDaProfile {
+                profile: Box::new(application_da_profile_from_options(&options)?),
+            })?;
+            print_json(&result)
+        }
+        "application-da-produce-batch" => {
+            let result = client.ok(application_da_produce_batch_request(&options)?)?;
+            print_json(&result)
+        }
+        "application-da-profile" => {
+            let result = client.ok(RpcRequest::GetApplicationDaProfile {
+                profile_id: options.required("profile-id")?,
+            })?;
+            print_json(&result)
+        }
+        "application-da-profile-index-by-application" => {
+            let result = client.ok(RpcRequest::GetApplicationDaProfileIndexByApplicationId {
+                application_id: options.required("application-id")?,
+            })?;
+            print_json(&result)
+        }
+        "application-da-profile-index-by-version" => {
+            let result = client.ok(
+                RpcRequest::GetApplicationDaProfileIndexByApplicationVersion {
+                    application_id: options.required("application-id")?,
+                    profile_version: parse_u32(
+                        &options.required("profile-version")?,
+                        "profile-version",
+                    )?,
+                },
+            )?;
+            print_json(&result)
+        }
+        "application-da-manifest" => {
+            let result = client.ok(RpcRequest::GetApplicationDaManifest {
+                manifest_hash: options.required("manifest-hash")?,
+            })?;
+            print_json(&result)
+        }
+        "application-da-share" => {
+            let result = client.ok(RpcRequest::GetApplicationDaShare {
+                manifest_hash: options.required("manifest-hash")?,
+                index: parse_u32(&options.required("index")?, "index")?,
+            })?;
+            print_json(&result)
+        }
+        "application-da-certificate" => {
+            let result = client.ok(RpcRequest::GetApplicationDaCertificate {
+                certificate_hash: options.required("certificate-hash")?,
+            })?;
+            print_json(&result)
+        }
+        "application-da-payload" => {
+            let result = client.ok(RpcRequest::GetApplicationDaPayload {
+                manifest_hash: options.required("manifest-hash")?,
+            })?;
+            print_json(&result)
+        }
+        "application-da-reconstructed-payload" => {
+            let result = client.ok(RpcRequest::GetApplicationDaReconstructedPayload {
+                manifest_hash: options.required("manifest-hash")?,
+            })?;
+            print_json(&result)
+        }
+        "application-da-namespace" => {
+            let result = client.ok(RpcRequest::GetApplicationDaNamespace {
+                manifest_hash: options.required("manifest-hash")?,
+                namespace: options.required("namespace")?,
+            })?;
+            print_json(&result)
+        }
+        "application-da-sample-proofs" => {
+            let result = client.ok(RpcRequest::GetApplicationDaSampleProofs {
+                manifest_hash: options.required("manifest-hash")?,
+                client_randomness: options.required("client-randomness")?,
+                sample_count: parse_u32(&options.required("sample-count")?, "sample-count")?,
+                namespaces: parse_csv_option(options.optional("namespaces")),
+            })?;
+            print_json(&result)
+        }
+        "application-da-status" => {
+            let result = client.ok(RpcRequest::GetApplicationDaStatus {
+                manifest_hash: options.required("manifest-hash")?,
+            })?;
+            print_json(&result)
+        }
+        "application-da-manifest-index-by-application" => {
+            let result = client.ok(RpcRequest::GetApplicationDaManifestIndexByApplicationId {
+                application_id: options.required("application-id")?,
+            })?;
+            print_json(&result)
+        }
+        "application-da-manifest-index-by-profile" => {
+            let result = client.ok(RpcRequest::GetApplicationDaManifestIndexByProfileId {
+                profile_id: options.required("profile-id")?,
+            })?;
+            print_json(&result)
+        }
+        "application-da-manifest-index-by-coordinate" => {
+            let result = client.ok(RpcRequest::GetApplicationDaManifestIndexByCoordinate {
+                coordinate: read_json_file(
+                    &options.required("coordinate-json")?,
+                    "coordinate-json",
+                )?,
+            })?;
+            print_json(&result)
+        }
+        "application-da-manifest-index-by-namespace" => {
+            let result = client.ok(RpcRequest::GetApplicationDaManifestIndexByNamespace {
+                namespace: options.required("namespace")?,
+            })?;
+            print_json(&result)
+        }
+        "application-da-manifest-index-by-retention" => {
+            let result = client.ok(RpcRequest::GetApplicationDaManifestIndexByRetentionClass {
+                class: parse_application_da_retention_class(&options.required("class")?)?,
+            })?;
+            print_json(&result)
+        }
+        "application-da-manifest-index-by-root" => {
+            let result = client.ok(RpcRequest::GetApplicationDaManifestIndexByApplicationRoot {
+                application_root: options.required("application-root")?,
+            })?;
+            print_json(&result)
+        }
+        "application-da-certificate-index-by-manifest" => {
+            let result = client.ok(RpcRequest::GetApplicationDaCertificateIndexByManifest {
+                manifest_hash: options.required("manifest-hash")?,
+            })?;
+            print_json(&result)
+        }
+        "application-da-certificate-index-by-application" => {
+            let result = client.ok(
+                RpcRequest::GetApplicationDaCertificateIndexByApplicationId {
+                    application_id: options.required("application-id")?,
+                },
+            )?;
+            print_json(&result)
+        }
+        "application-da-certificate-index-by-profile" => {
+            let result = client.ok(RpcRequest::GetApplicationDaCertificateIndexByProfileId {
+                profile_id: options.required("profile-id")?,
+            })?;
+            print_json(&result)
+        }
+        "application-da-certificate-index-by-coordinate" => {
+            let result = client.ok(RpcRequest::GetApplicationDaCertificateIndexByCoordinate {
+                coordinate: read_json_file(
+                    &options.required("coordinate-json")?,
+                    "coordinate-json",
+                )?,
             })?;
             print_json(&result)
         }
@@ -525,6 +685,79 @@ fn parse_da_retention_class(value: &str) -> Result<DaRetentionClass, String> {
     }
 }
 
+fn parse_application_da_retention_class(
+    value: &str,
+) -> Result<DaApplicationRetentionClass, String> {
+    match value.to_ascii_lowercase().as_str() {
+        "hot" => Ok(DaApplicationRetentionClass::Hot),
+        "warm" => Ok(DaApplicationRetentionClass::Warm),
+        "cold" => Ok(DaApplicationRetentionClass::Cold),
+        "archive" => Ok(DaApplicationRetentionClass::Archive),
+        "checkpoint" => Ok(DaApplicationRetentionClass::Checkpoint),
+        custom => {
+            let Some(value) = custom.strip_prefix("custom:") else {
+                return Err(format!(
+                    "invalid --class: expected hot, warm, cold, archive, checkpoint, or custom:<id>, got {value}"
+                ));
+            };
+            let class = DaApplicationRetentionClass::Custom(value.into());
+            class
+                .validate()
+                .map_err(|error| format!("invalid --class: {error:?}"))?;
+            Ok(class)
+        }
+    }
+}
+
+fn application_da_profile_from_options(
+    options: &ParsedOptions,
+) -> Result<DaApplicationProfile, String> {
+    if let Some(builtin) = options.optional("builtin") {
+        return builtin_application_da_profile(&builtin);
+    }
+    read_json_file(&options.required("profile-json")?, "profile-json")
+}
+
+fn builtin_application_da_profile(value: &str) -> Result<DaApplicationProfile, String> {
+    match value.to_ascii_lowercase().as_str() {
+        "detta.defi" | "detta-defi" => Ok(DaApplicationProfile::detta_defi_v1()),
+        "social.demo" | "social-demo" => Ok(DaApplicationProfile::social_demo_v1()),
+        _ => Err(format!(
+            "invalid --builtin: expected detta.defi or social.demo, got {value}"
+        )),
+    }
+}
+
+fn application_da_produce_batch_request(options: &ParsedOptions) -> Result<RpcRequest, String> {
+    let payload: ApplicationDaPayload =
+        read_json_file(&options.required("payload-json")?, "payload-json")?;
+    let data_share_count = options
+        .optional("data-shares")
+        .map(|value| parse_u32(&value, "data-shares"))
+        .transpose()?
+        .unwrap_or(DEFAULT_APPLICATION_DA_DATA_SHARES);
+    let parity_share_count = options
+        .optional("parity-shares")
+        .map(|value| parse_u32(&value, "parity-shares"))
+        .transpose()?
+        .unwrap_or(DEFAULT_APPLICATION_DA_PARITY_SHARES);
+    let certificate_signers = parse_csv_option(Some(options.required("certificate-signers")?));
+    if certificate_signers.is_empty() {
+        return Err("--certificate-signers must include at least one signer".into());
+    }
+    Ok(RpcRequest::ProduceApplicationDaBatch {
+        payload: Box::new(payload),
+        data_share_count,
+        parity_share_count,
+        certificate_signers,
+    })
+}
+
+fn read_json_file<T: DeserializeOwned>(path: &str, label: &str) -> Result<T, String> {
+    let bytes = fs::read(path).map_err(|error| format!("failed to read --{label}: {error}"))?;
+    serde_json::from_slice(&bytes).map_err(|error| format!("failed to parse --{label}: {error}"))
+}
+
 fn parse_csv_option(value: Option<String>) -> Vec<String> {
     value
         .into_iter()
@@ -554,6 +787,29 @@ fn usage() -> String {
   detta-client swap --pool <id> --input-asset <symbol> --amount-in <amount> --min-output <amount> --nonce <n> [--produce-height <h>]
   detta-client produce-block --height <h> [--timestamp <t>]
   detta-client produce-da-block --height <h> [--timestamp <t>] [--share-size <bytes>]
+  detta-client application-da-register-profile (--builtin <detta.defi|social.demo> | --profile-json <path>)
+  detta-client application-da-produce-batch --payload-json <path> --certificate-signers <csv> [--data-shares <n>] [--parity-shares <n>]
+  detta-client application-da-profile --profile-id <hash>
+  detta-client application-da-profile-index-by-application --application-id <id>
+  detta-client application-da-profile-index-by-version --application-id <id> --profile-version <n>
+  detta-client application-da-manifest --manifest-hash <hash>
+  detta-client application-da-share --manifest-hash <hash> --index <i>
+  detta-client application-da-certificate --certificate-hash <hash>
+  detta-client application-da-payload --manifest-hash <hash>
+  detta-client application-da-reconstructed-payload --manifest-hash <hash>
+  detta-client application-da-namespace --manifest-hash <hash> --namespace <name>
+  detta-client application-da-sample-proofs --manifest-hash <hash> --client-randomness <bytes> --sample-count <n> [--namespaces <csv>]
+  detta-client application-da-status --manifest-hash <hash>
+  detta-client application-da-manifest-index-by-application --application-id <id>
+  detta-client application-da-manifest-index-by-profile --profile-id <hash>
+  detta-client application-da-manifest-index-by-coordinate --coordinate-json <path>
+  detta-client application-da-manifest-index-by-namespace --namespace <name>
+  detta-client application-da-manifest-index-by-retention --class <hot|warm|cold|archive|checkpoint|custom:id>
+  detta-client application-da-manifest-index-by-root --application-root <hash>
+  detta-client application-da-certificate-index-by-manifest --manifest-hash <hash>
+  detta-client application-da-certificate-index-by-application --application-id <id>
+  detta-client application-da-certificate-index-by-profile --profile-id <hash>
+  detta-client application-da-certificate-index-by-coordinate --coordinate-json <path>
   detta-client receipt --tx-hash <hash>
   detta-client da-manifest --manifest-hash <hash>
   detta-client da-share --manifest-hash <hash> --index <i>
@@ -671,6 +927,101 @@ mod tests {
             DaRetentionClass::Checkpoint
         );
         assert!(parse_da_retention_class("archive").is_err());
+    }
+
+    #[test]
+    fn parses_application_da_retention_class_names_and_builtins() {
+        assert_eq!(
+            parse_application_da_retention_class("Archive").unwrap(),
+            DaApplicationRetentionClass::Archive
+        );
+        assert_eq!(
+            parse_application_da_retention_class("custom:social.pin").unwrap(),
+            DaApplicationRetentionClass::Custom("social.pin".into())
+        );
+        assert!(parse_application_da_retention_class("unknown").is_err());
+        assert_eq!(
+            builtin_application_da_profile("social-demo")
+                .unwrap()
+                .application_id
+                .0,
+            "social.demo"
+        );
+        assert!(builtin_application_da_profile("unknown").is_err());
+    }
+
+    #[test]
+    fn application_da_produce_batch_command_builds_rpc_request() {
+        let profile = DaApplicationProfile::social_demo_v1();
+        let coordinate = detta_da::DaApplicationCoordinate {
+            application_id: detta_da::DaApplicationId::new("social.demo").unwrap(),
+            stream_id: "main".into(),
+            sequence: 1,
+            epoch: Some(1),
+            parent_hash: None,
+            subject_hash: None,
+        };
+        let post = detta_da::DaRecordEnvelope::new(
+            "social.post",
+            1,
+            "application/json",
+            detta_da::DaRecordEncoding::CanonicalJson,
+            br#"{"author":"alice","post_id":"post-1","text":"client"}"#.to_vec(),
+            Some("alice".into()),
+            Some("signature-1".into()),
+        )
+        .unwrap();
+        let payload = ApplicationDaPayload::new(
+            &profile,
+            coordinate,
+            detta_da::DaPayloadKind::Batch,
+            None,
+            vec![
+                detta_da::DaApplicationRoot::new("social.event.log.root", "11".repeat(32)).unwrap(),
+            ],
+            vec![detta_da::ApplicationDaNamespaceSection::new(
+                detta_da::DaNamespace::new("social.feed").unwrap(),
+                vec![post],
+            )
+            .unwrap()],
+        )
+        .unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "detta-client-application-da-payload-{}.json",
+            std::process::id()
+        ));
+        fs::write(&path, serde_json::to_vec(&payload).unwrap()).unwrap();
+        let options = ParsedOptions::parse(&[
+            "--payload-json".into(),
+            path.to_string_lossy().into_owned(),
+            "--certificate-signers".into(),
+            "validator-2,validator-1".into(),
+            "--data-shares".into(),
+            "5".into(),
+            "--parity-shares".into(),
+            "3".into(),
+        ])
+        .unwrap();
+
+        let request = application_da_produce_batch_request(&options).unwrap();
+        let RpcRequest::ProduceApplicationDaBatch {
+            payload: parsed_payload,
+            data_share_count,
+            parity_share_count,
+            certificate_signers,
+        } = request
+        else {
+            panic!("expected application DA production request");
+        };
+        assert_eq!(*parsed_payload, payload);
+        assert_eq!(data_share_count, 5);
+        assert_eq!(parity_share_count, 3);
+        assert_eq!(
+            certificate_signers,
+            vec!["validator-2".to_string(), "validator-1".to_string()]
+        );
+
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

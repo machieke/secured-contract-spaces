@@ -194,6 +194,56 @@ Persistent validator nodes additionally handle:
   a block height.
 - `get_da_certificate_index_by_block_hash`: return DA certificate index entries
   for an execution block hash.
+- `register_application_da_profile`: persist an active application DA profile
+  registration. Built-in clients can register `detta.defi` or `social.demo`;
+  arbitrary applications submit the typed profile JSON.
+- `produce_application_da_batch`: validate a submitted `ApplicationDaPayload`
+  against its registered active profile, encode Reed-Solomon shares, persist
+  payload/manifest/shares, create an application DA availability certificate,
+  and return manifest/certificate hashes plus payload/share commitments.
+- `get_application_da_profile`: fetch an application DA profile registration by
+  profile id.
+- `get_application_da_profile_index_by_application_id`: list profile
+  registrations for an application id.
+- `get_application_da_profile_index_by_application_version`: list profile
+  registrations for an application id and profile version.
+- `get_application_da_manifest`: fetch an application DA manifest by hash.
+- `get_application_da_share`: fetch one application DA share by manifest hash
+  and share index.
+- `get_application_da_certificate`: fetch an application DA availability
+  certificate by certificate hash.
+- `get_application_da_payload`: return a stored application DA payload,
+  reconstructing and caching it from threshold shares when needed.
+- `get_application_da_reconstructed_payload`: explicitly reconstruct and return
+  the application DA payload through the same verified reconstruction path.
+- `get_application_da_namespace`: return one namespace section from the
+  reconstructed application DA payload.
+- `get_application_da_sample_proofs`: return deterministic sample shares,
+  share-root inclusion proofs, optional namespace proofs, and a verification
+  report for an application DA manifest.
+- `get_application_da_status`: report application manifest availability,
+  certificate availability, expected and missing shares, payload
+  reconstructability, application id, profile id, and coordinate.
+- `get_application_da_manifest_index_by_application_id`: list application
+  manifest entries by application id.
+- `get_application_da_manifest_index_by_profile_id`: list application manifest
+  entries by profile id.
+- `get_application_da_manifest_index_by_coordinate`: list application manifest
+  entries for an exact application coordinate.
+- `get_application_da_manifest_index_by_namespace`: list application manifests
+  containing a namespace.
+- `get_application_da_manifest_index_by_retention_class`: list application
+  manifests assigned to a retention class.
+- `get_application_da_manifest_index_by_application_root`: list application
+  manifests by committed application root.
+- `get_application_da_certificate_index_by_manifest`: list application
+  certificates for a manifest hash.
+- `get_application_da_certificate_index_by_application_id`: list application
+  certificates for an application id.
+- `get_application_da_certificate_index_by_profile_id`: list application
+  certificates for a profile id.
+- `get_application_da_certificate_index_by_coordinate`: list application
+  certificates for an exact application coordinate.
 - `propose_validator_set_metadata_update`: submit a signed validator-set update
   authorization.
 - `get_validator_set_metadata_update_status`: report pending authorization
@@ -216,8 +266,9 @@ Persistent validator nodes additionally handle:
 Persistent nodes serve `get_block`, `get_transaction`, `get_receipt`, and
 `get_receipt_proof` from durable block storage after restart. On
 `experimental/data-availability-layer`, persistent nodes also serve
-experimental DA manifests, shares, certificates, reconstructed payloads, and
-namespace sections from durable DA storage. This lets wallets, indexers, and
+experimental DeTTa DA and application-neutral DA profiles, manifests, shares,
+certificates, reconstructed payloads, namespace sections, sampling proofs, and
+status/index reports from durable DA storage. This lets wallets, indexers, and
 auditors recover finalized history even when the in-memory validator indexes
 are empty after process recovery.
 
