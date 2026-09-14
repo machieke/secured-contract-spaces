@@ -185,6 +185,72 @@ pub struct DaRetentionPrunePlanReport {
     pub entries: Vec<DaRetentionPrunePlanEntry>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ApplicationDaRetentionAuditEntry {
+    pub manifest_hash: String,
+    pub application_id: DaApplicationId,
+    pub profile_id: String,
+    pub coordinate: DaApplicationCoordinate,
+    pub payload_kind: DaPayloadKind,
+    pub class: DaApplicationRetentionClass,
+    pub latest_observed_sequence: u64,
+    pub age_sequences: u64,
+    pub retention_expires_at_sequence: Option<u64>,
+    pub expired: bool,
+    pub policy_present: bool,
+    pub retain_payloads: bool,
+    pub retain_all_shares: bool,
+    pub min_retention_sequences: Option<u64>,
+    pub max_payload_bytes: Option<u64>,
+    pub payload_bytes: u64,
+    pub payload_within_policy_limit: bool,
+    pub payload_present: bool,
+    pub expected_share_count: u32,
+    pub stored_share_count: u32,
+    pub missing_share_count: u32,
+    pub payload_retention_satisfied: bool,
+    pub share_retention_satisfied: bool,
+    pub retention_satisfied: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ApplicationDaRetentionAuditReport {
+    pub manifest_count: u64,
+    pub expired_manifest_count: u64,
+    pub active_manifest_count: u64,
+    pub missing_policy_class_count: u64,
+    pub unsatisfied_manifest_count: u64,
+    pub entries: Vec<ApplicationDaRetentionAuditEntry>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ApplicationDaRetentionPrunePlanEntry {
+    pub manifest_hash: String,
+    pub application_id: DaApplicationId,
+    pub profile_id: String,
+    pub coordinate: DaApplicationCoordinate,
+    pub payload_kind: DaPayloadKind,
+    pub class: DaApplicationRetentionClass,
+    pub expired: bool,
+    pub retention_expires_at_sequence: Option<u64>,
+    pub payload_prunable: bool,
+    pub prunable_payload_bytes: u64,
+    pub prunable_share_indices: Vec<u32>,
+    pub prunable_share_count: u32,
+    pub prunable_share_bytes: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ApplicationDaRetentionPrunePlanReport {
+    pub manifest_count: u64,
+    pub candidate_manifest_count: u64,
+    pub prunable_payload_count: u64,
+    pub prunable_share_count: u64,
+    pub prunable_payload_bytes: u64,
+    pub prunable_share_bytes: u64,
+    pub entries: Vec<ApplicationDaRetentionPrunePlanEntry>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub enum DaRetentionClass {
     Hot,
@@ -825,6 +891,228 @@ impl FileStorage {
             current_height: audit.current_height,
             policy_root: audit.policy_root,
             policy: audit.policy,
+            manifest_count: audit.manifest_count,
+            candidate_manifest_count: entries.len() as u64,
+            prunable_payload_count,
+            prunable_share_count,
+            prunable_payload_bytes,
+            prunable_share_bytes,
+            entries,
+        })
+    }
+
+    pub fn application_da_retention_audit(
+        &self,
+    ) -> Result<ApplicationDaRetentionAuditReport, StorageError> {
+        let mut manifests = Vec::new();
+        let mut latest_sequences: BTreeMap<(DaApplicationId, String), u64> = BTreeMap::new();
+
+        for path in sorted_bin_paths(&self.application_da_manifests_path())? {
+            let manifest: ApplicationDaManifest = read_json(&path)?;
+            manifest.validate_structure().map_err(da_error)?;
+            let manifest_hash = manifest.manifest_hash().map_err(da_error)?;
+            let expected_file_name = format!("{}.bin", file_safe_id(&manifest_hash));
+            if path.file_name().and_then(|name| name.to_str()) != Some(expected_file_name.as_str())
+            {
+                return Err(StorageError::CorruptData(
+                    "application DA manifest filename does not match manifest hash".into(),
+                ));
+            }
+            let registration =
+                self.load_application_da_profile_registration(&manifest.profile_id)?;
+            let class = application_da_manifest_retention_class(&manifest, &registration.profile)?;
+            latest_sequences
+                .entry((
+                    manifest.application_id.clone(),
+                    manifest.coordinate.stream_id.clone(),
+                ))
+                .and_modify(|latest_sequence| {
+                    *latest_sequence = (*latest_sequence).max(manifest.coordinate.sequence);
+                })
+                .or_insert(manifest.coordinate.sequence);
+            manifests.push((manifest_hash, manifest, registration.profile, class));
+        }
+
+        let mut entries = Vec::new();
+        for (manifest_hash, manifest, profile, class) in manifests {
+            let latest_observed_sequence = latest_sequences
+                .get(&(
+                    manifest.application_id.clone(),
+                    manifest.coordinate.stream_id.clone(),
+                ))
+                .copied()
+                .unwrap_or(manifest.coordinate.sequence);
+            let obligation = application_da_retention_obligation(&profile, &class);
+            let age_sequences =
+                latest_observed_sequence.saturating_sub(manifest.coordinate.sequence);
+            let min_retention_sequences = obligation
+                .as_ref()
+                .map(|policy| policy.min_retention_sequences);
+            let retention_expires_at_sequence = min_retention_sequences
+                .map(|window| manifest.coordinate.sequence.saturating_add(window));
+            let expired = retention_expires_at_sequence
+                .is_some_and(|sequence| latest_observed_sequence >= sequence);
+            let retain_payloads = obligation
+                .as_ref()
+                .is_some_and(|policy| policy.retain_payloads);
+            let retain_all_shares = obligation
+                .as_ref()
+                .is_some_and(|policy| policy.retain_all_shares);
+            let max_payload_bytes = obligation
+                .as_ref()
+                .and_then(|policy| policy.max_payload_bytes);
+            let payload_within_policy_limit =
+                max_payload_bytes.is_none_or(|max_bytes| manifest.payload_bytes <= max_bytes);
+            let payload_present = self.application_da_payload_path(&manifest_hash).exists();
+            let mut stored_share_count = 0_u32;
+            for index in 0..manifest.encoded_share_count {
+                if self
+                    .application_da_share_path(&manifest_hash, index)
+                    .exists()
+                {
+                    stored_share_count = stored_share_count.saturating_add(1);
+                }
+            }
+            let missing_share_count = manifest
+                .encoded_share_count
+                .saturating_sub(stored_share_count);
+            let payload_retention_required = retain_payloads && !expired;
+            let share_retention_required = retain_all_shares && !expired;
+            let payload_retention_satisfied =
+                !payload_retention_required || (payload_present && payload_within_policy_limit);
+            let share_retention_satisfied = !share_retention_required || missing_share_count == 0;
+            let retention_satisfied = obligation.is_some()
+                && payload_within_policy_limit
+                && payload_retention_satisfied
+                && share_retention_satisfied;
+
+            entries.push(ApplicationDaRetentionAuditEntry {
+                manifest_hash,
+                application_id: manifest.application_id,
+                profile_id: manifest.profile_id,
+                coordinate: manifest.coordinate,
+                payload_kind: manifest.payload_kind,
+                class,
+                latest_observed_sequence,
+                age_sequences,
+                retention_expires_at_sequence,
+                expired,
+                policy_present: obligation.is_some(),
+                retain_payloads,
+                retain_all_shares,
+                min_retention_sequences,
+                max_payload_bytes,
+                payload_bytes: manifest.payload_bytes,
+                payload_within_policy_limit,
+                payload_present,
+                expected_share_count: manifest.encoded_share_count,
+                stored_share_count,
+                missing_share_count,
+                payload_retention_satisfied,
+                share_retention_satisfied,
+                retention_satisfied,
+            });
+        }
+
+        entries.sort_by(|left, right| {
+            left.application_id
+                .cmp(&right.application_id)
+                .then_with(|| left.coordinate.stream_id.cmp(&right.coordinate.stream_id))
+                .then_with(|| left.coordinate.sequence.cmp(&right.coordinate.sequence))
+                .then_with(|| left.manifest_hash.cmp(&right.manifest_hash))
+        });
+
+        let manifest_count = entries.len() as u64;
+        let expired_manifest_count = entries.iter().filter(|entry| entry.expired).count() as u64;
+        let missing_policy_class_count =
+            entries.iter().filter(|entry| !entry.policy_present).count() as u64;
+        let unsatisfied_manifest_count = entries
+            .iter()
+            .filter(|entry| !entry.retention_satisfied)
+            .count() as u64;
+
+        Ok(ApplicationDaRetentionAuditReport {
+            manifest_count,
+            expired_manifest_count,
+            active_manifest_count: manifest_count.saturating_sub(expired_manifest_count),
+            missing_policy_class_count,
+            unsatisfied_manifest_count,
+            entries,
+        })
+    }
+
+    pub fn application_da_retention_prune_plan(
+        &self,
+    ) -> Result<ApplicationDaRetentionPrunePlanReport, StorageError> {
+        let audit = self.application_da_retention_audit()?;
+        let mut entries = Vec::new();
+        let mut prunable_payload_count = 0_u64;
+        let mut prunable_share_count = 0_u64;
+        let mut prunable_payload_bytes = 0_u64;
+        let mut prunable_share_bytes = 0_u64;
+
+        for audit_entry in &audit.entries {
+            if !audit_entry.policy_present {
+                continue;
+            }
+
+            let manifest = self.load_application_da_manifest(&audit_entry.manifest_hash)?;
+            let payload_path = self.application_da_payload_path(&audit_entry.manifest_hash);
+            let payload_prunable = audit_entry.expired && payload_path.exists();
+            let entry_payload_bytes = if payload_prunable {
+                file_size_if_exists(&payload_path)?
+            } else {
+                0
+            };
+
+            let active_payload_retained =
+                audit_entry.payload_present && audit_entry.payload_within_policy_limit;
+            let shares_no_longer_required =
+                audit_entry.expired || (!audit_entry.retain_all_shares && active_payload_retained);
+            let mut prunable_share_indices = Vec::new();
+            let mut entry_share_bytes = 0_u64;
+            if shares_no_longer_required {
+                for index in 0..manifest.encoded_share_count {
+                    let share_path =
+                        self.application_da_share_path(&audit_entry.manifest_hash, index);
+                    if share_path.exists() {
+                        prunable_share_indices.push(index);
+                        entry_share_bytes =
+                            entry_share_bytes.saturating_add(file_size_if_exists(&share_path)?);
+                    }
+                }
+            }
+
+            if !payload_prunable && prunable_share_indices.is_empty() {
+                continue;
+            }
+
+            if payload_prunable {
+                prunable_payload_count = prunable_payload_count.saturating_add(1);
+                prunable_payload_bytes = prunable_payload_bytes.saturating_add(entry_payload_bytes);
+            }
+            prunable_share_count =
+                prunable_share_count.saturating_add(prunable_share_indices.len() as u64);
+            prunable_share_bytes = prunable_share_bytes.saturating_add(entry_share_bytes);
+
+            entries.push(ApplicationDaRetentionPrunePlanEntry {
+                manifest_hash: audit_entry.manifest_hash.clone(),
+                application_id: audit_entry.application_id.clone(),
+                profile_id: audit_entry.profile_id.clone(),
+                coordinate: audit_entry.coordinate.clone(),
+                payload_kind: audit_entry.payload_kind.clone(),
+                class: audit_entry.class.clone(),
+                expired: audit_entry.expired,
+                retention_expires_at_sequence: audit_entry.retention_expires_at_sequence,
+                payload_prunable,
+                prunable_payload_bytes: entry_payload_bytes,
+                prunable_share_count: prunable_share_indices.len() as u32,
+                prunable_share_indices,
+                prunable_share_bytes: entry_share_bytes,
+            });
+        }
+
+        Ok(ApplicationDaRetentionPrunePlanReport {
             manifest_count: audit.manifest_count,
             candidate_manifest_count: entries.len() as u64,
             prunable_payload_count,
@@ -3695,6 +3983,46 @@ fn application_da_manifest_retention_class(
     Ok(class)
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ApplicationDaRetentionObligation {
+    retain_payloads: bool,
+    retain_all_shares: bool,
+    min_retention_sequences: u64,
+    max_payload_bytes: Option<u64>,
+}
+
+fn application_da_retention_obligation(
+    profile: &DaApplicationProfile,
+    class: &DaApplicationRetentionClass,
+) -> Option<ApplicationDaRetentionObligation> {
+    match class {
+        DaApplicationRetentionClass::Hot => Some(ApplicationDaRetentionObligation {
+            retain_payloads: true,
+            retain_all_shares: true,
+            min_retention_sequences: profile.da_profile.validator_min_retention_blocks,
+            max_payload_bytes: Some(profile.max_payload_bytes),
+        }),
+        DaApplicationRetentionClass::Warm => Some(ApplicationDaRetentionObligation {
+            retain_payloads: true,
+            retain_all_shares: false,
+            min_retention_sequences: profile
+                .da_profile
+                .validator_min_retention_blocks
+                .saturating_mul(4),
+            max_payload_bytes: Some(profile.max_payload_bytes),
+        }),
+        DaApplicationRetentionClass::Cold
+        | DaApplicationRetentionClass::Archive
+        | DaApplicationRetentionClass::Checkpoint => Some(ApplicationDaRetentionObligation {
+            retain_payloads: true,
+            retain_all_shares: true,
+            min_retention_sequences: profile.da_profile.archive_min_retention_blocks,
+            max_payload_bytes: None,
+        }),
+        DaApplicationRetentionClass::Custom(_) => None,
+    }
+}
+
 fn validate_application_da_share_against_manifest(
     share: &DaShare,
     manifest: &ApplicationDaManifest,
@@ -4190,6 +4518,14 @@ mod tests {
 
     fn application_payload(sequence: u64, text: &str) -> ApplicationDaPayload {
         let profile = DaApplicationProfile::social_demo_v1();
+        application_payload_for_profile(&profile, sequence, text)
+    }
+
+    fn application_payload_for_profile(
+        profile: &DaApplicationProfile,
+        sequence: u64,
+        text: &str,
+    ) -> ApplicationDaPayload {
         let record = DaRecordEnvelope::new(
             "social.post",
             1,
@@ -4212,6 +4548,54 @@ mod tests {
                 vec![record],
             )
             .unwrap()],
+        )
+        .unwrap()
+    }
+
+    fn moderation_application_payload_for_profile(
+        profile: &DaApplicationProfile,
+        sequence: u64,
+    ) -> ApplicationDaPayload {
+        let feed_record = DaRecordEnvelope::new(
+            "social.post",
+            1,
+            "application/json",
+            DaRecordEncoding::CanonicalJson,
+            format!(r#"{{"author":"alice","post_id":"post-{sequence}","text":"moderated"}}"#)
+                .into_bytes(),
+            Some("alice".into()),
+            Some(format!("signature-{sequence}")),
+        )
+        .unwrap();
+        let moderation_record = DaRecordEnvelope::new(
+            "social.moderation.action",
+            1,
+            "application/json",
+            DaRecordEncoding::CanonicalJson,
+            format!(r#"{{"moderator":"mod-1","target":"post-{sequence}","action":"hide"}}"#)
+                .into_bytes(),
+            Some("mod-1".into()),
+            Some(format!("moderation-signature-{sequence}")),
+        )
+        .unwrap();
+        ApplicationDaPayload::new(
+            profile,
+            application_coordinate(sequence),
+            DaPayloadKind::ModerationLog,
+            None,
+            vec![DaApplicationRoot::new("social.event.log.root", "22".repeat(32)).unwrap()],
+            vec![
+                ApplicationDaNamespaceSection::new(
+                    DaNamespace::new("social.feed").unwrap(),
+                    vec![feed_record],
+                )
+                .unwrap(),
+                ApplicationDaNamespaceSection::new(
+                    DaNamespace::new("social.moderation").unwrap(),
+                    vec![moderation_record],
+                )
+                .unwrap(),
+            ],
         )
         .unwrap()
     }
@@ -4891,6 +5275,157 @@ mod tests {
         assert!(stats.application_repair_record_bytes > 0);
         assert!(stats.application_index_file_count > 0);
         assert!(stats.application_index_bytes > 0);
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn application_da_retention_audit_and_prune_plan_respect_profile_classes() {
+        let dir = temp_dir("application-da-retention-audit");
+        let storage = FileStorage::open(&dir).unwrap();
+        let mut profile = DaApplicationProfile::social_demo_v1();
+        profile.da_profile.validator_min_retention_blocks = 1;
+        profile.da_profile.archive_min_retention_blocks = 10;
+
+        let old_warm_payload = application_payload_for_profile(&profile, 1, "old feed item");
+        let old_warm_share_set =
+            ApplicationDaShareSet::from_payload_reed_solomon(&old_warm_payload, &profile, 3, 2)
+                .unwrap();
+        let old_warm_hash = storage
+            .commit_application_da_share_set(&old_warm_share_set, &profile)
+            .unwrap();
+
+        let archive_payload = moderation_application_payload_for_profile(&profile, 2);
+        let archive_share_set =
+            ApplicationDaShareSet::from_payload_reed_solomon(&archive_payload, &profile, 3, 2)
+                .unwrap();
+        let archive_hash = storage
+            .commit_application_da_share_set(&archive_share_set, &profile)
+            .unwrap();
+
+        let latest_warm_payload = application_payload_for_profile(&profile, 5, "latest feed item");
+        let latest_warm_share_set =
+            ApplicationDaShareSet::from_payload_reed_solomon(&latest_warm_payload, &profile, 3, 2)
+                .unwrap();
+        let latest_warm_hash = storage
+            .commit_application_da_share_set(&latest_warm_share_set, &profile)
+            .unwrap();
+
+        let audit = storage.application_da_retention_audit().unwrap();
+        assert_eq!(audit.manifest_count, 3);
+        assert_eq!(audit.expired_manifest_count, 1);
+        assert_eq!(audit.active_manifest_count, 2);
+        assert_eq!(audit.missing_policy_class_count, 0);
+        assert_eq!(audit.unsatisfied_manifest_count, 0);
+
+        let old_warm_entry = audit
+            .entries
+            .iter()
+            .find(|entry| entry.manifest_hash == old_warm_hash)
+            .unwrap();
+        assert_eq!(old_warm_entry.class, DaApplicationRetentionClass::Warm);
+        assert_eq!(old_warm_entry.latest_observed_sequence, 5);
+        assert_eq!(old_warm_entry.age_sequences, 4);
+        assert_eq!(old_warm_entry.min_retention_sequences, Some(4));
+        assert_eq!(old_warm_entry.retention_expires_at_sequence, Some(5));
+        assert!(old_warm_entry.expired);
+        assert!(old_warm_entry.payload_retention_satisfied);
+        assert!(old_warm_entry.share_retention_satisfied);
+        assert!(old_warm_entry.retention_satisfied);
+
+        let archive_entry = audit
+            .entries
+            .iter()
+            .find(|entry| entry.manifest_hash == archive_hash)
+            .unwrap();
+        assert_eq!(archive_entry.class, DaApplicationRetentionClass::Archive);
+        assert_eq!(archive_entry.latest_observed_sequence, 5);
+        assert_eq!(archive_entry.age_sequences, 3);
+        assert_eq!(archive_entry.min_retention_sequences, Some(10));
+        assert_eq!(archive_entry.retention_expires_at_sequence, Some(12));
+        assert!(!archive_entry.expired);
+        assert!(archive_entry.retain_all_shares);
+        assert!(archive_entry.retention_satisfied);
+
+        let prune_plan = storage.application_da_retention_prune_plan().unwrap();
+        assert_eq!(prune_plan.manifest_count, 3);
+        assert_eq!(prune_plan.candidate_manifest_count, 2);
+        assert_eq!(prune_plan.prunable_payload_count, 1);
+        assert_eq!(
+            prune_plan.prunable_share_count,
+            old_warm_share_set
+                .manifest
+                .encoded_share_count
+                .saturating_add(latest_warm_share_set.manifest.encoded_share_count)
+                as u64
+        );
+        assert!(prune_plan.prunable_payload_bytes > 0);
+        assert!(prune_plan.prunable_share_bytes > 0);
+
+        let old_warm_prune = prune_plan
+            .entries
+            .iter()
+            .find(|entry| entry.manifest_hash == old_warm_hash)
+            .unwrap();
+        assert!(old_warm_prune.payload_prunable);
+        assert_eq!(
+            old_warm_prune.prunable_share_count,
+            old_warm_share_set.manifest.encoded_share_count
+        );
+
+        let latest_warm_prune = prune_plan
+            .entries
+            .iter()
+            .find(|entry| entry.manifest_hash == latest_warm_hash)
+            .unwrap();
+        assert!(!latest_warm_prune.payload_prunable);
+        assert_eq!(
+            latest_warm_prune.prunable_share_count,
+            latest_warm_share_set.manifest.encoded_share_count
+        );
+        assert!(!prune_plan
+            .entries
+            .iter()
+            .any(|entry| entry.manifest_hash == archive_hash));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn application_da_retention_audit_reports_custom_classes_as_missing_policy() {
+        let dir = temp_dir("application-da-custom-retention-audit");
+        let storage = FileStorage::open(&dir).unwrap();
+        let mut profile = DaApplicationProfile::social_demo_v1();
+        profile.retention_policy.default_class =
+            DaApplicationRetentionClass::Custom("legal.hold".into());
+
+        let payload = application_payload_for_profile(&profile, 1, "custom retention");
+        let share_set =
+            ApplicationDaShareSet::from_payload_reed_solomon(&payload, &profile, 3, 2).unwrap();
+        let manifest_hash = storage
+            .commit_application_da_share_set(&share_set, &profile)
+            .unwrap();
+
+        let audit = storage.application_da_retention_audit().unwrap();
+        assert_eq!(audit.manifest_count, 1);
+        assert_eq!(audit.missing_policy_class_count, 1);
+        assert_eq!(audit.unsatisfied_manifest_count, 1);
+        let entry = audit
+            .entries
+            .iter()
+            .find(|entry| entry.manifest_hash == manifest_hash)
+            .unwrap();
+        assert_eq!(
+            entry.class,
+            DaApplicationRetentionClass::Custom("legal.hold".into())
+        );
+        assert!(!entry.policy_present);
+        assert!(!entry.retention_satisfied);
+        assert!(storage
+            .application_da_retention_prune_plan()
+            .unwrap()
+            .entries
+            .is_empty());
 
         fs::remove_dir_all(dir).unwrap();
     }

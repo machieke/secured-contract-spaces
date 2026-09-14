@@ -21,6 +21,7 @@ use detta_evaluator::{
 use detta_protocol::SignedValidatorMessage;
 use detta_storage::{
     ApplicationDaCertificateIndexEntry, ApplicationDaManifestIndexEntry,
+    ApplicationDaRetentionAuditReport, ApplicationDaRetentionPrunePlanReport,
     DaApplicationProfileIndexEntry, DaCertificateIndexEntry, DaManifestIndexEntry,
     DaRetentionAuditReport, DaRetentionClass, DaRetentionPrunePlanReport, DaStorageStats,
     SnapshotImportAuditConfig, SnapshotImportAuditRecord, ValidatorSetMetadataAuditRecord,
@@ -364,6 +365,8 @@ pub enum RpcRequest {
     GetApplicationDaRepairStatus {
         manifest_hash: String,
     },
+    GetApplicationDaRetentionAudit,
+    GetApplicationDaRetentionPrunePlan,
     GetApplicationDaManifestIndexByApplicationId {
         application_id: String,
     },
@@ -1121,6 +1124,8 @@ pub enum RpcResult {
     ApplicationDaSampleProofs(Box<ApplicationDaSampleProofBundle>),
     ApplicationDaStatus(Box<ApplicationDaStatusReport>),
     ApplicationDaRepairStatus(Box<DaRepairStatusReport>),
+    ApplicationDaRetentionAudit(Box<ApplicationDaRetentionAuditReport>),
+    ApplicationDaRetentionPrunePlan(Box<ApplicationDaRetentionPrunePlanReport>),
     ApplicationDaManifestIndex(Vec<ApplicationDaManifestIndexEntry>),
     ApplicationDaCertificateIndex(Vec<ApplicationDaCertificateIndexEntry>),
 }
@@ -1920,6 +1925,8 @@ impl RpcService {
             | RpcRequest::GetApplicationDaSampleProofs { .. }
             | RpcRequest::GetApplicationDaStatus { .. }
             | RpcRequest::GetApplicationDaRepairStatus { .. }
+            | RpcRequest::GetApplicationDaRetentionAudit
+            | RpcRequest::GetApplicationDaRetentionPrunePlan
             | RpcRequest::GetApplicationDaManifestIndexByApplicationId { .. }
             | RpcRequest::GetApplicationDaManifestIndexByProfileId { .. }
             | RpcRequest::GetApplicationDaManifestIndexByCoordinate { .. }
@@ -2638,6 +2645,8 @@ mod tests {
             "get_application_da_sample_proofs",
             "get_application_da_status",
             "get_application_da_repair_status",
+            "get_application_da_retention_audit",
+            "get_application_da_retention_prune_plan",
             "get_application_da_manifest_index_by_application_id",
             "get_application_da_manifest_index_by_profile_id",
             "get_application_da_manifest_index_by_coordinate",

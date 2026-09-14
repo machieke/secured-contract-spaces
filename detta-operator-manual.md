@@ -251,6 +251,8 @@ After first DA block production, verify:
 target/release/detta-client da-stats --rpc 127.0.0.1:8080
 target/release/detta-client da-retention-audit --rpc 127.0.0.1:8080
 target/release/detta-client da-retention-prune-plan --rpc 127.0.0.1:8080
+target/release/detta-client application-da-retention-audit --rpc 127.0.0.1:8080
+target/release/detta-client application-da-retention-prune-plan --rpc 127.0.0.1:8080
 ```
 
 Expected launch conditions:
@@ -259,6 +261,8 @@ Expected launch conditions:
 - retention policy root is present;
 - `missing_share_count == 0` for local hot data;
 - `unsatisfied_manifest_count == 0`;
+- application DA reports have `unsatisfied_manifest_count == 0` for every
+  active application profile;
 - no DA custody, repair, or challenge alerts are active.
 
 ## 4. Adding Nodes
@@ -391,9 +395,12 @@ Check every validator and public RPC node:
   challenge failures;
 - `get_mempool_status`: pending count, per-sender pressure, admission limits;
 - `get_finality_certificate`: latest finalized signer set;
-- `get_da_storage_stats`: active retention policy, root, stored/missing shares;
+- `get_da_storage_stats`: active retention policy, root, native and application
+  stored/missing shares;
 - `get_da_retention_audit`: active/expired manifests and unsatisfied
   obligations.
+- `get_application_da_retention_audit`: active/expired application manifests,
+  profile-derived retention classes, and unsatisfied application obligations.
 
 Alert immediately on:
 
@@ -403,7 +410,9 @@ Alert immediately on:
 - any slashing record;
 - repeated state-sync failures;
 - nonzero active DA missing-share count;
+- nonzero active application DA missing-share count;
 - DA repair lag beyond the policy window;
+- application DA repair lag beyond the profile retention window;
 - disk pressure near retention limits;
 - unexpected DA production profile changes.
 
@@ -944,7 +953,9 @@ Use this when diagnosing a finality stall (§7.5) or a disputed block.
      -d '{"bearer_token":"<operator-token>","request":{"method":"get_operator_metrics"}}' \
      | jq '{consensus_height, highest_finalized_height, finality_lag, peer_count,
             da_missing_share_count, da_custody_failure_count,
-            da_pending_repair_record_count, da_oldest_pending_repair_age_blocks}'
+            da_pending_repair_record_count, da_oldest_pending_repair_age_blocks,
+            application_da_missing_share_count, application_da_pending_repair_record_count,
+            application_da_oldest_pending_repair_age_blocks}'
    ```
 
 2. Localize the cause:
@@ -954,6 +965,13 @@ Use this when diagnosing a finality stall (§7.5) or a disputed block.
    - non-zero `da_missing_share_count` or `da_pending_repair_record_count`, or a
      large `da_oldest_pending_repair_age_blocks`, points to a DA availability
      stall — run §11.3/§11.4 on the stalled height's manifest.
+   - non-zero `application_da_missing_share_count` or
+     `application_da_pending_repair_record_count`, or a large
+     `application_da_oldest_pending_repair_age_blocks`, points to an
+     application DA availability gap. Query
+     `application-da-retention-audit`, then run
+     `application-da-repair-status --manifest-hash <hash>` for each affected
+     application manifest.
    - non-zero `da_custody_failure_count` means a validator signed availability it
      cannot serve — identify it and prepare evidence.
 3. File evidence for the relevant fault:

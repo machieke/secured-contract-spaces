@@ -531,6 +531,9 @@ get_application_da_reconstructed_payload
 get_application_da_namespace
 get_application_da_sample_proofs
 get_application_da_status
+get_application_da_repair_status
+get_application_da_retention_audit
+get_application_da_retention_prune_plan
 get_application_da_manifest_index_by_application_id
 get_application_da_manifest_index_by_profile_id
 get_application_da_manifest_index_by_coordinate
@@ -572,6 +575,8 @@ detta-client application-da-namespace --manifest-hash <hash> --namespace <name>
 detta-client application-da-sample-proofs --manifest-hash <hash> --client-randomness <bytes> --sample-count <n> [--namespaces <csv>]
 detta-client application-da-status --manifest-hash <hash>
 detta-client application-da-repair-status --manifest-hash <hash>
+detta-client application-da-retention-audit
+detta-client application-da-retention-prune-plan
 ```
 
 ## 11. Storage And Indexes
@@ -942,8 +947,8 @@ Acceptance:
 - [x] Add application DA status reports.
 - [x] Add application repair records.
 - [x] Add application DA alerts.
-- [ ] Update operator manual and DA runbook.
-- [ ] Add retention prune-plan support for application payload/share files.
+- [x] Update operator manual and DA runbook.
+- [x] Add retention prune-plan support for application payload/share files.
 
 Acceptance:
 

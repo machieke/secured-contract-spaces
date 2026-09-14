@@ -226,6 +226,11 @@ Persistent validator nodes additionally handle:
   reconstructability, application id, profile id, and coordinate.
 - `get_application_da_repair_status`: report whether an application DA manifest
   needs repair based on missing shares or failed payload reconstruction.
+- `get_application_da_retention_audit`: report per-application retention
+  obligations, missing policy classes, payload/share presence, and satisfaction.
+- `get_application_da_retention_prune_plan`: list prunable application payload
+  and share files without marking manifests, certificates, indexes, or evidence
+  as removable.
 - `get_application_da_manifest_index_by_application_id`: list application
   manifest entries by application id.
 - `get_application_da_manifest_index_by_profile_id`: list application manifest

@@ -43,6 +43,7 @@ use detta_rpc::{
     SnapshotSyncClientMetricsReport, ValidatorSetMetadataUpdateStatus, DEFAULT_MAX_BLOCK_PAGE_SIZE,
 };
 use detta_storage::{
+    ApplicationDaRetentionAuditReport, ApplicationDaRetentionPrunePlanReport,
     ConsensusSigningRecord, DaRetentionAuditReport, DaRetentionPolicyConfig,
     DaRetentionPrunePlanReport, FileStorage, SnapshotImportAuditConfig, SnapshotImportAuditRecord,
     StorageError, ValidatorSetMetadataAuditOutcome, ValidatorSetMetadataAuditRecord,
@@ -1584,6 +1585,16 @@ impl PersistentValidatorNode {
             RpcRequest::GetApplicationDaRepairStatus { manifest_hash } => self
                 .application_da_repair_status(&manifest_hash)
                 .map(|status| RpcResult::ApplicationDaRepairStatus(Box::new(status)))
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(node_rpc_error_response),
+            RpcRequest::GetApplicationDaRetentionAudit => self
+                .application_da_retention_audit()
+                .map(|report| RpcResult::ApplicationDaRetentionAudit(Box::new(report)))
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(node_rpc_error_response),
+            RpcRequest::GetApplicationDaRetentionPrunePlan => self
+                .application_da_retention_prune_plan()
+                .map(|report| RpcResult::ApplicationDaRetentionPrunePlan(Box::new(report)))
                 .map(RpcResponse::Ok)
                 .unwrap_or_else(node_rpc_error_response),
             RpcRequest::GetApplicationDaManifestIndexByApplicationId { application_id } => self
@@ -3832,6 +3843,22 @@ impl PersistentValidatorNode {
             .map_err(NodeError::Storage)
     }
 
+    pub fn application_da_retention_audit(
+        &self,
+    ) -> Result<ApplicationDaRetentionAuditReport, NodeError> {
+        self.storage
+            .application_da_retention_audit()
+            .map_err(NodeError::Storage)
+    }
+
+    pub fn application_da_retention_prune_plan(
+        &self,
+    ) -> Result<ApplicationDaRetentionPrunePlanReport, NodeError> {
+        self.storage
+            .application_da_retention_prune_plan()
+            .map_err(NodeError::Storage)
+    }
+
     fn da_certificate_hash_for_manifest(
         &self,
         manifest_hash: &str,
@@ -5913,6 +5940,37 @@ mod tests {
         assert_eq!(repair_status.pending_repair_count, 0);
         assert!(repair_status.missing_share_indices.is_empty());
         assert!(repair_status.payload_reconstructable);
+
+        let retention_audit_response =
+            node.handle_rpc_request(RpcRequest::GetApplicationDaRetentionAudit);
+        let RpcResponse::Ok(RpcResult::ApplicationDaRetentionAudit(retention_audit)) =
+            retention_audit_response
+        else {
+            panic!("expected application DA retention audit, got {retention_audit_response:?}");
+        };
+        assert_eq!(retention_audit.manifest_count, 1);
+        assert_eq!(retention_audit.active_manifest_count, 1);
+        assert_eq!(retention_audit.unsatisfied_manifest_count, 0);
+        assert_eq!(retention_audit.entries[0].manifest_hash, manifest_hash);
+        assert_eq!(
+            retention_audit.entries[0].class,
+            detta_da::DaApplicationRetentionClass::Warm
+        );
+
+        let prune_plan_response =
+            node.handle_rpc_request(RpcRequest::GetApplicationDaRetentionPrunePlan);
+        let RpcResponse::Ok(RpcResult::ApplicationDaRetentionPrunePlan(prune_plan)) =
+            prune_plan_response
+        else {
+            panic!("expected application DA retention prune plan, got {prune_plan_response:?}");
+        };
+        assert_eq!(prune_plan.manifest_count, 1);
+        assert_eq!(prune_plan.candidate_manifest_count, 1);
+        assert_eq!(prune_plan.prunable_payload_count, 0);
+        assert_eq!(
+            prune_plan.prunable_share_count,
+            share_set.manifest.encoded_share_count as u64
+        );
 
         let profile_index_response =
             node.handle_rpc_request(RpcRequest::GetApplicationDaProfileIndexByApplicationId {

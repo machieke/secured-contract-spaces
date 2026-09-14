@@ -173,6 +173,14 @@ fn run(args: Vec<String>) -> Result<(), String> {
             })?;
             print_json(&result)
         }
+        "application-da-retention-audit" => {
+            let result = client.ok(RpcRequest::GetApplicationDaRetentionAudit)?;
+            print_json(&result)
+        }
+        "application-da-retention-prune-plan" => {
+            let result = client.ok(RpcRequest::GetApplicationDaRetentionPrunePlan)?;
+            print_json(&result)
+        }
         "application-da-manifest-index-by-application" => {
             let result = client.ok(RpcRequest::GetApplicationDaManifestIndexByApplicationId {
                 application_id: options.required("application-id")?,
@@ -808,6 +816,8 @@ fn usage() -> String {
   detta-client application-da-sample-proofs --manifest-hash <hash> --client-randomness <bytes> --sample-count <n> [--namespaces <csv>]
   detta-client application-da-status --manifest-hash <hash>
   detta-client application-da-repair-status --manifest-hash <hash>
+  detta-client application-da-retention-audit
+  detta-client application-da-retention-prune-plan
   detta-client application-da-manifest-index-by-application --application-id <id>
   detta-client application-da-manifest-index-by-profile --profile-id <hash>
   detta-client application-da-manifest-index-by-coordinate --coordinate-json <path>

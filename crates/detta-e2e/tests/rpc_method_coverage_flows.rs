@@ -560,6 +560,16 @@ fn public_rpc_method_coverage_guard_calls_every_openapi_method() {
     call_ok(
         &mut client,
         &mut covered,
+        RpcRequest::GetApplicationDaRetentionAudit,
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetApplicationDaRetentionPrunePlan,
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
         RpcRequest::GetApplicationDaManifestIndexByApplicationId {
             application_id: "social.demo".into(),
         },

@@ -170,6 +170,29 @@ fn client_registers_social_profile_produces_batch_and_retrieves_da_evidence() {
     }
 
     match client
+        .ok(RpcRequest::GetApplicationDaRetentionAudit)
+        .unwrap()
+    {
+        RpcResult::ApplicationDaRetentionAudit(audit) => {
+            assert_eq!(audit.manifest_count, 1);
+            assert_eq!(audit.unsatisfied_manifest_count, 0);
+            assert_eq!(audit.entries[0].manifest_hash, production.manifest_hash);
+        }
+        result => panic!("expected application DA retention audit, got {result:?}"),
+    }
+
+    match client
+        .ok(RpcRequest::GetApplicationDaRetentionPrunePlan)
+        .unwrap()
+    {
+        RpcResult::ApplicationDaRetentionPrunePlan(prune_plan) => {
+            assert_eq!(prune_plan.manifest_count, 1);
+            assert_eq!(prune_plan.prunable_payload_count, 0);
+        }
+        result => panic!("expected application DA retention prune plan, got {result:?}"),
+    }
+
+    match client
         .ok(RpcRequest::GetApplicationDaManifestIndexByCoordinate {
             coordinate: payload.coordinate.clone(),
         })
