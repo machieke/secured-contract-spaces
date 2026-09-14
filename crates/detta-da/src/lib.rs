@@ -10,6 +10,8 @@ pub const DA_CHALLENGE_SCHEMA: &str = "detta.da-share-challenge.v1";
 pub const DA_CHALLENGE_EVIDENCE_SCHEMA: &str = "detta.da-challenge-evidence.v1";
 pub const DA_SAMPLE_PROOF_SCHEMA: &str = "detta.da-sample-proof.v1";
 pub const DA_CODING_FRAUD_PROOF_SCHEMA: &str = "detta.da-coding-fraud-proof.v1";
+pub const APPLICATION_DA_VOTE_SCHEMA: &str = "detta.application-da-vote.v1";
+pub const APPLICATION_DA_CERTIFICATE_SCHEMA: &str = "detta.application-da-certificate.v1";
 pub const DA_PAYLOAD_SCHEMA: &str = "detta.da-payload.v1";
 pub const DA_PRODUCTION_PROFILE_SCHEMA: &str = "detta.da-production-profile.v1";
 pub const DA_APPLICATION_PROFILE_SCHEMA: &str = "detta.da-application-profile.v1";
@@ -2948,6 +2950,326 @@ impl DaAvailabilityCertificate {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ApplicationDaAvailabilityVote {
+    pub schema: String,
+    pub schema_version: u32,
+    pub application_id: DaApplicationId,
+    pub profile_id: String,
+    pub coordinate: DaApplicationCoordinate,
+    pub payload_kind: DaPayloadKind,
+    pub manifest_hash: String,
+    pub payload_hash: String,
+    pub namespace_root: String,
+    pub share_root: String,
+    pub validator_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub custody_share_indices: Vec<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sampled_share_indices: Vec<u32>,
+}
+
+impl ApplicationDaAvailabilityVote {
+    pub fn from_manifest(
+        manifest: &ApplicationDaManifest,
+        profile: &DaApplicationProfile,
+        validator_id: impl Into<String>,
+    ) -> Result<Self, DaError> {
+        manifest.validate(profile)?;
+        let vote = Self {
+            schema: APPLICATION_DA_VOTE_SCHEMA.into(),
+            schema_version: 1,
+            application_id: manifest.application_id.clone(),
+            profile_id: manifest.profile_id.clone(),
+            coordinate: manifest.coordinate.clone(),
+            payload_kind: manifest.payload_kind.clone(),
+            manifest_hash: manifest.manifest_hash()?,
+            payload_hash: manifest.payload_hash.clone(),
+            namespace_root: manifest.namespace_root.clone(),
+            share_root: manifest.share_root.clone(),
+            validator_id: validator_id.into(),
+            custody_share_indices: Vec::new(),
+            sampled_share_indices: Vec::new(),
+        };
+        vote.validate(manifest, profile)?;
+        Ok(vote)
+    }
+
+    pub fn from_manifest_with_custody(
+        manifest: &ApplicationDaManifest,
+        profile: &DaApplicationProfile,
+        validator_id: impl Into<String>,
+        custody_share_indices: impl IntoIterator<Item = u32>,
+        sampled_share_indices: impl IntoIterator<Item = u32>,
+    ) -> Result<Self, DaError> {
+        manifest.validate(profile)?;
+        let vote = Self {
+            schema: APPLICATION_DA_VOTE_SCHEMA.into(),
+            schema_version: 1,
+            application_id: manifest.application_id.clone(),
+            profile_id: manifest.profile_id.clone(),
+            coordinate: manifest.coordinate.clone(),
+            payload_kind: manifest.payload_kind.clone(),
+            manifest_hash: manifest.manifest_hash()?,
+            payload_hash: manifest.payload_hash.clone(),
+            namespace_root: manifest.namespace_root.clone(),
+            share_root: manifest.share_root.clone(),
+            validator_id: validator_id.into(),
+            custody_share_indices: canonical_share_indices(
+                custody_share_indices,
+                manifest.encoded_share_count,
+            )?,
+            sampled_share_indices: canonical_share_indices(
+                sampled_share_indices,
+                manifest.encoded_share_count,
+            )?,
+        };
+        vote.validate(manifest, profile)?;
+        Ok(vote)
+    }
+
+    pub fn from_verified_custody(
+        manifest: &ApplicationDaManifest,
+        profile: &DaApplicationProfile,
+        shares: &[DaShare],
+        validator_id: impl Into<String>,
+        custody_share_count: u32,
+    ) -> Result<Self, DaError> {
+        let validator_id = validator_id.into();
+        let custody_share_indices = assigned_application_custody_share_indices(
+            manifest,
+            &validator_id,
+            custody_share_count,
+        )?;
+        verify_application_custody_shares(manifest, shares, &custody_share_indices)?;
+        Self::from_manifest_with_custody(
+            manifest,
+            profile,
+            validator_id,
+            custody_share_indices,
+            Vec::new(),
+        )
+    }
+
+    pub fn vote_hash(&self) -> Result<String, DaError> {
+        self.validate_structure()?;
+        hash_canonical(self)
+    }
+
+    pub fn validate_structure(&self) -> Result<(), DaError> {
+        if self.schema != APPLICATION_DA_VOTE_SCHEMA {
+            return Err(DaError::InvalidAvailabilityVote(format!(
+                "unexpected application DA vote schema {}",
+                self.schema
+            )));
+        }
+        if self.schema_version != 1 {
+            return Err(DaError::InvalidAvailabilityVote(format!(
+                "unexpected application DA vote version {}",
+                self.schema_version
+            )));
+        }
+        self.application_id.validate()?;
+        validate_sha256_hex("application DA vote profile_id", &self.profile_id)?;
+        self.coordinate.application_id.validate()?;
+        self.payload_kind.validate()?;
+        validate_sha256_hex("application DA vote manifest_hash", &self.manifest_hash)?;
+        validate_sha256_hex("application DA vote payload_hash", &self.payload_hash)?;
+        validate_sha256_hex("application DA vote namespace_root", &self.namespace_root)?;
+        validate_sha256_hex("application DA vote share_root", &self.share_root)?;
+        validate_label("application DA vote validator_id", &self.validator_id, 256)?;
+        ensure_sorted_unique_indices(&self.custody_share_indices, "custody_share_indices")?;
+        ensure_sorted_unique_indices(&self.sampled_share_indices, "sampled_share_indices")?;
+        Ok(())
+    }
+
+    pub fn validate(
+        &self,
+        manifest: &ApplicationDaManifest,
+        profile: &DaApplicationProfile,
+    ) -> Result<(), DaError> {
+        self.validate_structure()?;
+        manifest.validate(profile)?;
+        if self.application_id != manifest.application_id
+            || self.profile_id != manifest.profile_id
+            || self.coordinate != manifest.coordinate
+            || self.payload_kind != manifest.payload_kind
+            || self.manifest_hash != manifest.manifest_hash()?
+            || self.payload_hash != manifest.payload_hash
+            || self.namespace_root != manifest.namespace_root
+            || self.share_root != manifest.share_root
+        {
+            return Err(DaError::InvalidAvailabilityVote(
+                "application DA vote does not match manifest".into(),
+            ));
+        }
+        if self
+            .custody_share_indices
+            .iter()
+            .chain(self.sampled_share_indices.iter())
+            .any(|index| *index >= manifest.encoded_share_count)
+        {
+            return Err(DaError::InvalidAvailabilityVote(
+                "application DA vote references share index outside manifest".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ApplicationDaAvailabilityCertificate {
+    pub schema: String,
+    pub schema_version: u32,
+    pub application_id: DaApplicationId,
+    pub profile_id: String,
+    pub coordinate: DaApplicationCoordinate,
+    pub payload_kind: DaPayloadKind,
+    pub manifest_hash: String,
+    pub payload_hash: String,
+    pub namespace_root: String,
+    pub share_root: String,
+    pub signers: Vec<String>,
+}
+
+impl ApplicationDaAvailabilityCertificate {
+    pub fn from_manifest(
+        manifest: &ApplicationDaManifest,
+        profile: &DaApplicationProfile,
+        signers: impl IntoIterator<Item = String>,
+    ) -> Result<Self, DaError> {
+        manifest.validate(profile)?;
+        let certificate = Self {
+            schema: APPLICATION_DA_CERTIFICATE_SCHEMA.into(),
+            schema_version: 1,
+            application_id: manifest.application_id.clone(),
+            profile_id: manifest.profile_id.clone(),
+            coordinate: manifest.coordinate.clone(),
+            payload_kind: manifest.payload_kind.clone(),
+            manifest_hash: manifest.manifest_hash()?,
+            payload_hash: manifest.payload_hash.clone(),
+            namespace_root: manifest.namespace_root.clone(),
+            share_root: manifest.share_root.clone(),
+            signers: canonical_signers(signers)?,
+        };
+        certificate.validate(manifest, profile)?;
+        Ok(certificate)
+    }
+
+    pub fn from_votes(
+        manifest: &ApplicationDaManifest,
+        profile: &DaApplicationProfile,
+        votes: &[ApplicationDaAvailabilityVote],
+        quorum: u32,
+        custody_share_count: u32,
+    ) -> Result<Self, DaError> {
+        manifest.validate(profile)?;
+        if quorum == 0 || custody_share_count == 0 {
+            return Err(DaError::InvalidAvailabilityCertificate(
+                "application DA vote quorum and custody share count must be positive".into(),
+            ));
+        }
+        let mut signers = BTreeSet::new();
+        for vote in votes {
+            vote.validate(manifest, profile)?;
+            let expected_custody = assigned_application_custody_share_indices(
+                manifest,
+                &vote.validator_id,
+                custody_share_count,
+            )?;
+            if vote.custody_share_indices != expected_custody {
+                return Err(DaError::InvalidAvailabilityCertificate(format!(
+                    "application DA vote from {} has wrong custody assignment",
+                    vote.validator_id
+                )));
+            }
+            if !signers.insert(vote.validator_id.clone()) {
+                return Err(DaError::DuplicateAvailabilitySigner(
+                    vote.validator_id.clone(),
+                ));
+            }
+        }
+        if signers.len() < quorum as usize {
+            return Err(DaError::InvalidAvailabilityCertificate(format!(
+                "application DA certificate has {} votes, quorum is {quorum}",
+                signers.len()
+            )));
+        }
+        Self::from_manifest(manifest, profile, signers)
+    }
+
+    pub fn certificate_hash(&self) -> Result<String, DaError> {
+        self.validate_structure()?;
+        hash_canonical(self)
+    }
+
+    pub fn validate_structure(&self) -> Result<(), DaError> {
+        if self.schema != APPLICATION_DA_CERTIFICATE_SCHEMA {
+            return Err(DaError::InvalidAvailabilityCertificate(format!(
+                "unexpected application DA certificate schema {}",
+                self.schema
+            )));
+        }
+        if self.schema_version != 1 {
+            return Err(DaError::InvalidAvailabilityCertificate(format!(
+                "unexpected application DA certificate version {}",
+                self.schema_version
+            )));
+        }
+        self.application_id.validate()?;
+        validate_sha256_hex("application DA certificate profile_id", &self.profile_id)?;
+        self.coordinate.application_id.validate()?;
+        self.payload_kind.validate()?;
+        validate_sha256_hex(
+            "application DA certificate manifest_hash",
+            &self.manifest_hash,
+        )?;
+        validate_sha256_hex(
+            "application DA certificate payload_hash",
+            &self.payload_hash,
+        )?;
+        validate_sha256_hex(
+            "application DA certificate namespace_root",
+            &self.namespace_root,
+        )?;
+        validate_sha256_hex("application DA certificate share_root", &self.share_root)?;
+        if self.signers.is_empty() {
+            return Err(DaError::InvalidAvailabilityCertificate(
+                "application DA certificate signers must be nonempty".into(),
+            ));
+        }
+        if self.signers != canonical_signers(self.signers.clone())? {
+            return Err(DaError::InvalidAvailabilityCertificate(
+                "application DA certificate signers must be unique and sorted".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn validate(
+        &self,
+        manifest: &ApplicationDaManifest,
+        profile: &DaApplicationProfile,
+    ) -> Result<(), DaError> {
+        self.validate_structure()?;
+        manifest.validate(profile)?;
+        if self.application_id != manifest.application_id
+            || self.profile_id != manifest.profile_id
+            || self.coordinate != manifest.coordinate
+            || self.payload_kind != manifest.payload_kind
+            || self.manifest_hash != manifest.manifest_hash()?
+            || self.payload_hash != manifest.payload_hash
+            || self.namespace_root != manifest.namespace_root
+            || self.share_root != manifest.share_root
+        {
+            return Err(DaError::InvalidAvailabilityCertificate(
+                "application DA certificate does not match manifest".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DaShareChallenge {
     pub schema: String,
     pub schema_version: u32,
@@ -4368,6 +4690,42 @@ pub fn assigned_custody_share_indices(
     Ok(assigned.into_iter().collect())
 }
 
+pub fn assigned_application_custody_share_indices(
+    manifest: &ApplicationDaManifest,
+    validator_id: &str,
+    custody_share_count: u32,
+) -> Result<Vec<u32>, DaError> {
+    manifest.validate_structure()?;
+    if validator_id.is_empty() {
+        return Err(DaError::InvalidAvailabilityVote(
+            "validator_id is empty".into(),
+        ));
+    }
+    if custody_share_count == 0 {
+        return Ok(Vec::new());
+    }
+
+    let manifest_hash = manifest.manifest_hash()?;
+    let target = custody_share_count.min(manifest.encoded_share_count);
+    let mut assigned = BTreeSet::new();
+    let mut counter = 0_u64;
+    while assigned.len() < target as usize {
+        let mut hasher = Sha256::new();
+        hasher.update(b"detta.application-da.custody.v1");
+        hasher.update((manifest_hash.len() as u64).to_be_bytes());
+        hasher.update(manifest_hash.as_bytes());
+        hasher.update((validator_id.len() as u64).to_be_bytes());
+        hasher.update(validator_id.as_bytes());
+        hasher.update(counter.to_be_bytes());
+        let digest = hasher.finalize();
+        let mut bytes = [0_u8; 8];
+        bytes.copy_from_slice(&digest[..8]);
+        assigned.insert((u64::from_be_bytes(bytes) % manifest.encoded_share_count as u64) as u32);
+        counter = counter.saturating_add(1);
+    }
+    Ok(assigned.into_iter().collect())
+}
+
 pub fn verify_share_against_manifest(
     manifest: &DaManifest,
     share: &DaShare,
@@ -4417,6 +4775,28 @@ pub fn verify_application_share_against_manifest(
     if share.share_hash != actual_share_hash || &share.share_hash != expected_share_hash {
         return Err(DaError::ShareHashMismatch { index: share.index });
     }
+    Ok(())
+}
+
+pub fn verify_application_custody_shares(
+    manifest: &ApplicationDaManifest,
+    shares: &[DaShare],
+    custody_share_indices: &[u32],
+) -> Result<(), DaError> {
+    manifest.validate_structure()?;
+    let mut by_index = BTreeMap::new();
+    for share in shares {
+        verify_application_share_against_manifest(manifest, share)?;
+        if by_index.insert(share.index, share).is_some() {
+            return Err(DaError::DuplicateShare { index: share.index });
+        }
+    }
+    for index in custody_share_indices {
+        if !by_index.contains_key(index) {
+            return Err(DaError::MissingShare { index: *index });
+        }
+    }
+    ensure_sorted_unique_indices(custody_share_indices, "custody_share_indices")?;
     Ok(())
 }
 
@@ -6992,6 +7372,200 @@ mod tests {
         assert!(matches!(
             validator.validate_block_payload(&tampered_evidence, None),
             Err(DaError::InvalidPayload(_))
+        ));
+    }
+
+    #[test]
+    fn application_da_certificate_aggregates_matching_custody_votes() {
+        let profile = DaApplicationProfile::social_demo_v1();
+        let payload = social_demo_payload();
+        let share_set =
+            ApplicationDaShareSet::from_payload_reed_solomon(&payload, &profile, 4, 2).unwrap();
+
+        let votes = ["validator-2", "validator-1"]
+            .into_iter()
+            .map(|validator| {
+                ApplicationDaAvailabilityVote::from_verified_custody(
+                    &share_set.manifest,
+                    &profile,
+                    &share_set.shares,
+                    validator,
+                    2,
+                )
+                .unwrap()
+            })
+            .collect::<Vec<_>>();
+
+        let certificate = ApplicationDaAvailabilityCertificate::from_votes(
+            &share_set.manifest,
+            &profile,
+            &votes,
+            2,
+            2,
+        )
+        .unwrap();
+        certificate.validate(&share_set.manifest, &profile).unwrap();
+
+        assert_eq!(
+            certificate.signers,
+            vec!["validator-1".to_string(), "validator-2".to_string()]
+        );
+        assert_eq!(certificate.certificate_hash().unwrap().len(), 64);
+        assert_eq!(votes[0].vote_hash().unwrap().len(), 64);
+    }
+
+    #[test]
+    fn application_da_certificate_rejects_empty_wrong_and_non_quorum_custody_votes() {
+        let profile = DaApplicationProfile::social_demo_v1();
+        let payload = social_demo_payload();
+        let share_set =
+            ApplicationDaShareSet::from_payload_reed_solomon(&payload, &profile, 4, 2).unwrap();
+        let valid_vote = ApplicationDaAvailabilityVote::from_verified_custody(
+            &share_set.manifest,
+            &profile,
+            &share_set.shares,
+            "validator-1",
+            2,
+        )
+        .unwrap();
+        let empty_vote = ApplicationDaAvailabilityVote::from_manifest(
+            &share_set.manifest,
+            &profile,
+            "validator-2",
+        )
+        .unwrap();
+
+        assert!(matches!(
+            ApplicationDaAvailabilityCertificate::from_votes(
+                &share_set.manifest,
+                &profile,
+                &[valid_vote.clone(), empty_vote],
+                2,
+                2,
+            ),
+            Err(DaError::InvalidAvailabilityCertificate(_))
+        ));
+
+        let wrong_vote = ApplicationDaAvailabilityVote::from_manifest_with_custody(
+            &share_set.manifest,
+            &profile,
+            "validator-2",
+            vec![0],
+            Vec::new(),
+        )
+        .unwrap();
+        assert!(matches!(
+            ApplicationDaAvailabilityCertificate::from_votes(
+                &share_set.manifest,
+                &profile,
+                &[valid_vote.clone(), wrong_vote],
+                2,
+                2,
+            ),
+            Err(DaError::InvalidAvailabilityCertificate(_))
+        ));
+
+        assert!(matches!(
+            ApplicationDaAvailabilityCertificate::from_votes(
+                &share_set.manifest,
+                &profile,
+                &[valid_vote],
+                2,
+                2,
+            ),
+            Err(DaError::InvalidAvailabilityCertificate(_))
+        ));
+    }
+
+    #[test]
+    fn application_da_certificate_rejects_votes_for_different_manifest_bindings() {
+        let profile = DaApplicationProfile::social_demo_v1();
+        let first_payload = social_demo_payload();
+        let first_share_set =
+            ApplicationDaShareSet::from_payload_reed_solomon(&first_payload, &profile, 4, 2)
+                .unwrap();
+        let first_vote = ApplicationDaAvailabilityVote::from_verified_custody(
+            &first_share_set.manifest,
+            &profile,
+            &first_share_set.shares,
+            "validator-1",
+            2,
+        )
+        .unwrap();
+
+        let second_sections = vec![application_section(
+            "social.feed",
+            vec![application_record(
+                "social.post",
+                DaRecordEncoding::CanonicalJson,
+                br#"{"author":"bob","post_id":"post-2","text":"next"}"#,
+                Some("bob"),
+            )],
+        )];
+        let second_root = application_event_log_root_for_sections(&second_sections).unwrap();
+        let second_payload = ApplicationDaPayload::new(
+            &profile,
+            social_coordinate(2),
+            DaPayloadKind::Batch,
+            Some(first_payload.hash().unwrap()),
+            vec![DaApplicationRoot::new("social.event.log.root", second_root).unwrap()],
+            second_sections,
+        )
+        .unwrap();
+        let second_share_set =
+            ApplicationDaShareSet::from_payload_reed_solomon(&second_payload, &profile, 4, 2)
+                .unwrap();
+        let second_vote = ApplicationDaAvailabilityVote::from_verified_custody(
+            &second_share_set.manifest,
+            &profile,
+            &second_share_set.shares,
+            "validator-2",
+            2,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            ApplicationDaAvailabilityCertificate::from_votes(
+                &first_share_set.manifest,
+                &profile,
+                &[first_vote.clone(), second_vote],
+                2,
+                2,
+            ),
+            Err(DaError::InvalidAvailabilityVote(_))
+        ));
+
+        let mut wrong_share_root = ApplicationDaAvailabilityVote::from_verified_custody(
+            &first_share_set.manifest,
+            &profile,
+            &first_share_set.shares,
+            "validator-2",
+            2,
+        )
+        .unwrap();
+        wrong_share_root.share_root = hash_bytes(b"wrong-share-root");
+        assert!(matches!(
+            ApplicationDaAvailabilityCertificate::from_votes(
+                &first_share_set.manifest,
+                &profile,
+                &[first_vote.clone(), wrong_share_root],
+                2,
+                2,
+            ),
+            Err(DaError::InvalidAvailabilityVote(_))
+        ));
+
+        let mut wrong_profile_id = first_vote.clone();
+        wrong_profile_id.profile_id = hash_bytes(b"wrong-profile-id");
+        assert!(matches!(
+            ApplicationDaAvailabilityCertificate::from_votes(
+                &first_share_set.manifest,
+                &profile,
+                &[wrong_profile_id],
+                1,
+                2,
+            ),
+            Err(DaError::InvalidAvailabilityVote(_))
         ));
     }
 

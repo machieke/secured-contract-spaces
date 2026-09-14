@@ -837,19 +837,19 @@ Acceptance:
 
 ### Phase 6: Generic DA Certificates
 
-- [ ] Add application availability vote type or extend existing vote with
+- [x] Add application availability vote type or extend existing vote with
   application manifest support.
-- [ ] Add application DA certificate type or generic certificate envelope.
-- [ ] Enforce deterministic custody declarations for application manifests.
-- [ ] Add certificate hash and validation helpers.
-- [ ] Add aggregation tests for matching and mismatched application manifests.
+- [x] Add application DA certificate type or generic certificate envelope.
+- [x] Enforce deterministic custody declarations for application manifests.
+- [x] Add certificate hash and validation helpers.
+- [x] Add aggregation tests for matching and mismatched application manifests.
 
 Acceptance:
 
-- quorum certificates bind one application manifest;
-- votes with empty or wrong custody assignments do not count;
-- votes for different profile ids, coordinates, or share roots do not count;
-- non-quorum votes cannot produce certificates.
+- [x] quorum certificates bind one application manifest;
+- [x] votes with empty or wrong custody assignments do not count;
+- [x] votes for different profile ids, coordinates, or share roots do not count;
+- [x] non-quorum votes cannot produce certificates.
 
 ### Phase 7: Storage And Indexes
 
