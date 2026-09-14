@@ -11,12 +11,16 @@ use detta_da::{
     derive_application_sample_schedule, derive_sample_schedule, prove_application_namespace,
     prove_application_share_inclusion, prove_namespace, prove_share_inclusion,
     validate_production_block_payload, verify_application_light_client_samples,
-    verify_light_client_samples, verify_share_against_manifest, ApplicationDaNamespaceSection,
+    verify_light_client_samples, verify_share_against_manifest,
+    ApplicationDaAvailabilityCertificate, ApplicationDaManifest, ApplicationDaNamespaceSection,
     ApplicationDaPayload, ApplicationDaSampleProofBundle, ApplicationDaShareSet,
-    DaApplicationProfile, DaAvailabilityCertificate, DaAvailabilityVote, DaChallengeEvidence,
-    DaChallengeRecord, DaCodingFraudProof, DaError, DaManifest, DaNamespace, DaNamespaceSection,
-    DaPayload, DaProductionProfile, DaRecord, DaSampleProof, DaSampleProofBundle, DaShare,
-    DaShareChallenge, DaShareChallengeResponse, DaShareSet,
+    DaApplicationProfile, DaApplicationProfileRegistration, DaApplicationProfileStatus,
+    DaApplicationValidationMode, DaApplicationValidator, DaAvailabilityCertificate,
+    DaAvailabilityVote, DaChallengeEvidence, DaChallengeRecord, DaCodingFraudProof, DaError,
+    DaManifest, DaNamespace, DaNamespaceSection, DaPayload, DaProductionProfile, DaRecord,
+    DaSampleProof, DaSampleProofBundle, DaShare, DaShareChallenge, DaShareChallengeResponse,
+    DaShareSet, DettaDefiDaValidator, OpaqueApplicationValidator, SchemaApplicationValidator,
+    SocialDemoDaValidator,
 };
 use detta_network::{Envelope, InMemoryTransport, NetworkError, NetworkMessage, TcpProtocolStream};
 use detta_protocol::{
@@ -30,11 +34,12 @@ use detta_protocol::{
     SNAPSHOT_METADATA_VALIDATOR_SET_AUDIT_ROOT,
 };
 use detta_rpc::{
-    json_rpc_response_for_request, ApplicationDaStatusReport, BlockPage, DaCodingFraudReport,
-    DaRepairStatusReport, DaStatusReport, JsonRpcHandler, NodeHealthReport, OperatorAlert,
-    OperatorAlertPolicy, OperatorAlertReport, OperatorAlertSeverity, OperatorMetricsReport,
-    PersistentNodeSnapshotRoots, RequiredSnapshotMetadataRootsReport, RpcError, RpcErrorBody,
-    RpcRequest, RpcResponse, RpcResult, RpcService, RpcTransportError, SnapshotMetadataRootStatus,
+    json_rpc_response_for_request, ApplicationDaProductionReport, ApplicationDaStatusReport,
+    BlockPage, DaCodingFraudReport, DaRepairStatusReport, DaStatusReport, JsonRpcHandler,
+    NodeHealthReport, OperatorAlert, OperatorAlertPolicy, OperatorAlertReport,
+    OperatorAlertSeverity, OperatorMetricsReport, PersistentNodeSnapshotRoots,
+    RequiredSnapshotMetadataRootsReport, RpcError, RpcErrorBody, RpcRequest, RpcResponse,
+    RpcResult, RpcService, RpcTransportError, SnapshotMetadataRootStatus,
     SnapshotSyncClientMetricsReport, ValidatorSetMetadataUpdateStatus, DEFAULT_MAX_BLOCK_PAGE_SIZE,
 };
 use detta_storage::{
@@ -1089,6 +1094,29 @@ impl PersistentValidatorNode {
                 .map(|block| RpcResult::Block(Box::new(block)))
                 .map(RpcResponse::Ok)
                 .unwrap_or_else(node_rpc_error_response),
+            RpcRequest::RegisterApplicationDaProfile { profile } => self
+                .register_application_da_profile(&profile)
+                .map(|registration| RpcResult::ApplicationDaProfile(Box::new(registration)))
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(node_rpc_error_response),
+            RpcRequest::ProduceApplicationDaBatch {
+                payload,
+                data_share_count,
+                parity_share_count,
+                certificate_signers,
+            } => self
+                .produce_application_da_batch(
+                    &payload,
+                    data_share_count,
+                    parity_share_count,
+                    certificate_signers,
+                )
+                .map(|report| RpcResult::ApplicationDaProduction(Box::new(report)))
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(|error| match error {
+                    NodeError::Rpc(error) => Err(error).into(),
+                    error => node_rpc_error_response(error),
+                }),
             RpcRequest::ImportBlock { block } => self
                 .import_block(&block)
                 .map(|()| RpcResult::Imported)
@@ -2864,6 +2892,114 @@ impl PersistentValidatorNode {
         Ok(payload)
     }
 
+    pub fn register_application_da_profile(
+        &self,
+        profile: &DaApplicationProfile,
+    ) -> Result<DaApplicationProfileRegistration, NodeError> {
+        let registration = DaApplicationProfileRegistration::active(profile.clone())
+            .map_err(NodeError::DataAvailability)?;
+        self.storage
+            .commit_application_da_profile_registration(&registration)
+            .map_err(NodeError::Storage)?;
+        Ok(registration)
+    }
+
+    pub fn produce_application_da_batch(
+        &self,
+        payload: &ApplicationDaPayload,
+        data_share_count: u32,
+        parity_share_count: u32,
+        certificate_signers: Vec<String>,
+    ) -> Result<ApplicationDaProductionReport, NodeError> {
+        let payload = payload.canonicalized();
+        let registration = self
+            .storage
+            .maybe_load_application_da_profile_registration(&payload.profile_id)
+            .map_err(NodeError::Storage)?
+            .ok_or(NodeError::Rpc(RpcError::ApplicationDaProfileNotFound))?;
+        if registration.status != DaApplicationProfileStatus::Active {
+            return Err(NodeError::Rpc(RpcError::ApplicationDaProfileInactive));
+        }
+        self.validate_application_da_payload_for_profile(&registration.profile, &payload, None)?;
+
+        let share_set = ApplicationDaShareSet::from_payload_reed_solomon(
+            &payload,
+            &registration.profile,
+            data_share_count,
+            parity_share_count,
+        )
+        .map_err(NodeError::DataAvailability)?;
+        self.validate_application_da_payload_for_profile(
+            &registration.profile,
+            &payload,
+            Some(&share_set.manifest),
+        )?;
+        let manifest_hash = self
+            .storage
+            .commit_application_da_share_set(&share_set, &registration.profile)
+            .map_err(NodeError::Storage)?;
+        self.storage
+            .commit_application_da_profile_registration(&registration)
+            .map_err(NodeError::Storage)?;
+        let certificate = ApplicationDaAvailabilityCertificate::from_manifest(
+            &share_set.manifest,
+            &registration.profile,
+            certificate_signers,
+        )
+        .map_err(NodeError::DataAvailability)?;
+        let certificate_hash = self
+            .storage
+            .commit_application_da_certificate(&certificate)
+            .map_err(NodeError::Storage)?;
+
+        Ok(ApplicationDaProductionReport {
+            application_id: share_set.manifest.application_id.clone(),
+            profile_id: share_set.manifest.profile_id.clone(),
+            coordinate: share_set.manifest.coordinate.clone(),
+            manifest_hash,
+            certificate_hash,
+            payload_hash: share_set.manifest.payload_hash.clone(),
+            namespace_root: share_set.manifest.namespace_root.clone(),
+            share_root: share_set.manifest.share_root.clone(),
+            payload_bytes: share_set.manifest.payload_bytes,
+            original_share_count: share_set.manifest.original_share_count,
+            encoded_share_count: share_set.manifest.encoded_share_count,
+            reconstruction_threshold: share_set.manifest.reconstruction_threshold,
+            certificate_signers: certificate.signers,
+        })
+    }
+
+    fn validate_application_da_payload_for_profile(
+        &self,
+        profile: &DaApplicationProfile,
+        payload: &ApplicationDaPayload,
+        manifest: Option<&ApplicationDaManifest>,
+    ) -> Result<(), NodeError> {
+        let report = match profile.validation_mode {
+            DaApplicationValidationMode::OpaqueBytes => OpaqueApplicationValidator::new(profile)
+                .and_then(|validator| validator.validate_payload(profile, payload, manifest)),
+            DaApplicationValidationMode::SchemaDecodableRecords => {
+                SchemaApplicationValidator::new(profile)
+                    .and_then(|validator| validator.validate_payload(profile, payload, manifest))
+            }
+            DaApplicationValidationMode::ApplicationAdapterVerified => {
+                match profile.application_id.0.as_str() {
+                    "detta.defi" => DettaDefiDaValidator::new().and_then(|validator| {
+                        validator.validate_payload(profile, payload, manifest)
+                    }),
+                    "social.demo" => SocialDemoDaValidator::new().and_then(|validator| {
+                        validator.validate_payload(profile, payload, manifest)
+                    }),
+                    application_id => Err(DaError::InvalidPayload(format!(
+                        "no application DA adapter is registered for {application_id}"
+                    ))),
+                }
+            }
+        }
+        .map_err(NodeError::DataAvailability)?;
+        report.validate().map_err(NodeError::DataAvailability)
+    }
+
     pub fn load_application_da_payload(
         &self,
         manifest_hash: &str,
@@ -4588,6 +4724,47 @@ mod tests {
         state
     }
 
+    fn social_demo_application_payload(
+        profile: &detta_da::DaApplicationProfile,
+        text: &str,
+    ) -> detta_da::ApplicationDaPayload {
+        let coordinate = detta_da::DaApplicationCoordinate {
+            application_id: detta_da::DaApplicationId::new("social.demo").unwrap(),
+            stream_id: "main".into(),
+            sequence: 1,
+            epoch: Some(1),
+            parent_hash: None,
+            subject_hash: None,
+        };
+        let post_bytes =
+            format!(r#"{{"author":"alice","post_id":"post-1","text":"{text}"}}"#).into_bytes();
+        let post = detta_da::DaRecordEnvelope::new(
+            "social.post",
+            1,
+            "application/json",
+            detta_da::DaRecordEncoding::CanonicalJson,
+            post_bytes,
+            Some("alice".into()),
+            Some("signature-1".into()),
+        )
+        .unwrap();
+        detta_da::ApplicationDaPayload::new(
+            profile,
+            coordinate,
+            detta_da::DaPayloadKind::Batch,
+            None,
+            vec![
+                detta_da::DaApplicationRoot::new("social.event.log.root", "11".repeat(32)).unwrap(),
+            ],
+            vec![detta_da::ApplicationDaNamespaceSection::new(
+                DaNamespace::new("social.feed").unwrap(),
+                vec![post],
+            )
+            .unwrap()],
+        )
+        .unwrap()
+    }
+
     fn state_rejecting_invalid_da_slashing_evidence() -> DeTTaState {
         let mut state = seeded_state();
         state
@@ -5471,6 +5648,127 @@ mod tests {
             RpcResponse::Ok(RpcResult::ApplicationDaAvailabilityCertificate(Box::new(
                 certificate
             )))
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn persistent_node_json_rpc_registers_and_produces_application_da_batch() {
+        let dir = temp_dir("application-da-produce-rpc");
+        let mut node =
+            PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &dir).unwrap();
+        let profile = detta_da::DaApplicationProfile::social_demo_v1();
+        let profile_id = profile.profile_id().unwrap();
+        let payload = social_demo_application_payload(&profile, "produced");
+
+        let registration_response =
+            node.handle_rpc_request(RpcRequest::RegisterApplicationDaProfile {
+                profile: Box::new(profile.clone()),
+            });
+        let RpcResponse::Ok(RpcResult::ApplicationDaProfile(registration)) = registration_response
+        else {
+            panic!("expected application DA profile registration, got {registration_response:?}");
+        };
+        assert_eq!(registration.profile_id, profile_id);
+        assert_eq!(
+            registration.status,
+            detta_da::DaApplicationProfileStatus::Active
+        );
+
+        let production_response = node.handle_rpc_request(RpcRequest::ProduceApplicationDaBatch {
+            payload: Box::new(payload.clone()),
+            data_share_count: 4,
+            parity_share_count: 2,
+            certificate_signers: vec!["validator-2".into(), "validator-1".into()],
+        });
+        let RpcResponse::Ok(RpcResult::ApplicationDaProduction(report)) = production_response
+        else {
+            panic!("expected application DA production report, got {production_response:?}");
+        };
+        assert_eq!(report.application_id, profile.application_id);
+        assert_eq!(report.profile_id, registration.profile_id);
+        assert_eq!(report.coordinate, payload.coordinate);
+        assert_eq!(report.payload_hash, payload.hash().unwrap());
+        assert_eq!(
+            report.payload_bytes as usize,
+            serde_json::to_vec(&payload.canonicalized()).unwrap().len()
+        );
+        assert_eq!(report.original_share_count, 4);
+        assert_eq!(report.encoded_share_count, 6);
+        assert_eq!(report.reconstruction_threshold, 4);
+        assert_eq!(
+            report.certificate_signers,
+            vec!["validator-1".to_string(), "validator-2".to_string()]
+        );
+
+        assert!(node
+            .storage
+            .maybe_load_application_da_manifest(&report.manifest_hash)
+            .unwrap()
+            .is_some());
+        assert!(node
+            .storage
+            .maybe_load_application_da_certificate(&report.certificate_hash)
+            .unwrap()
+            .is_some());
+        assert_eq!(
+            node.handle_rpc_request(RpcRequest::GetApplicationDaPayload {
+                manifest_hash: report.manifest_hash.clone(),
+            }),
+            RpcResponse::Ok(RpcResult::ApplicationDaPayload(Box::new(
+                payload.canonicalized()
+            )))
+        );
+        let status_response = node.handle_rpc_request(RpcRequest::GetApplicationDaStatus {
+            manifest_hash: report.manifest_hash.clone(),
+        });
+        let RpcResponse::Ok(RpcResult::ApplicationDaStatus(status)) = status_response else {
+            panic!("expected application DA status, got {status_response:?}");
+        };
+        assert!(status.payload_reconstructable);
+        assert_eq!(
+            status.certificate_hash,
+            Some(report.certificate_hash.clone())
+        );
+        assert!(status.certificate_available);
+
+        let mut unknown_profile_payload = payload.clone();
+        unknown_profile_payload.profile_id = "22".repeat(32);
+        assert_eq!(
+            node.handle_rpc_request(RpcRequest::ProduceApplicationDaBatch {
+                payload: Box::new(unknown_profile_payload),
+                data_share_count: 4,
+                parity_share_count: 2,
+                certificate_signers: vec!["validator-1".into()],
+            }),
+            RpcResponse::Error(RpcErrorBody {
+                code: "rpc.application_da_profile_not_found".into(),
+                message: "application DA profile was not found".into(),
+            })
+        );
+
+        let deprecated = detta_da::DaApplicationProfileRegistration {
+            profile_id: registration.profile_id.clone(),
+            profile,
+            status: detta_da::DaApplicationProfileStatus::Deprecated,
+            activated_at_sequence: Some(1),
+            deprecated_at_sequence: Some(2),
+        };
+        node.storage
+            .commit_application_da_profile_registration(&deprecated)
+            .unwrap();
+        assert_eq!(
+            node.handle_rpc_request(RpcRequest::ProduceApplicationDaBatch {
+                payload: Box::new(payload),
+                data_share_count: 4,
+                parity_share_count: 2,
+                certificate_signers: vec!["validator-1".into()],
+            }),
+            RpcResponse::Error(RpcErrorBody {
+                code: "rpc.application_da_profile_inactive".into(),
+                message: "application DA profile is not active".into(),
+            })
         );
 
         fs::remove_dir_all(dir).unwrap();

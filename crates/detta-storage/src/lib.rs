@@ -2208,12 +2208,46 @@ impl FileStorage {
         expected_profile_version: Option<u32>,
         entry: &DaApplicationProfileIndexEntry,
     ) -> Result<(), StorageError> {
-        let mut entries = self.load_application_da_profile_index_entries(
-            path,
-            expected_application_id,
-            expected_profile_version,
-        )?;
-        entries.retain(|existing| existing.profile_id != entry.profile_id);
+        let mut entries = if path.exists() {
+            let entries: Vec<DaApplicationProfileIndexEntry> = read_json(path)?;
+            let mut retained = Vec::new();
+            for existing in entries {
+                if existing.profile_id == entry.profile_id {
+                    continue;
+                }
+                validate_sha256_storage_hex(
+                    "application DA profile index profile_id",
+                    &existing.profile_id,
+                )?;
+                existing.application_id.validate().map_err(da_error)?;
+                if expected_application_id
+                    .is_some_and(|application_id| &existing.application_id != application_id)
+                {
+                    return Err(StorageError::CorruptData(
+                        "application DA profile index application id does not match index path"
+                            .into(),
+                    ));
+                }
+                if expected_profile_version
+                    .is_some_and(|profile_version| existing.profile_version != profile_version)
+                {
+                    return Err(StorageError::CorruptData(
+                        "application DA profile index version does not match index path".into(),
+                    ));
+                }
+                let registration =
+                    self.load_application_da_profile_registration(&existing.profile_id)?;
+                if application_da_profile_index_entry(&registration) != existing {
+                    return Err(StorageError::CorruptData(
+                        "application DA profile index entry does not match stored profile".into(),
+                    ));
+                }
+                retained.push(existing);
+            }
+            retained
+        } else {
+            Vec::new()
+        };
         entries.push(entry.clone());
         entries.sort_by(|left, right| left.profile_id.cmp(&right.profile_id));
         write_json_atomic(path, &entries)
@@ -4541,6 +4575,50 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
         fs::remove_dir_all(backup_dir).unwrap();
         fs::remove_dir_all(restore_dir).unwrap();
+    }
+
+    #[test]
+    fn application_da_profile_index_upsert_replaces_status_changes() {
+        let dir = temp_dir("application-da-profile-status-index");
+        let storage = FileStorage::open(&dir).unwrap();
+        let profile = DaApplicationProfile::social_demo_v1();
+        let profile_id = storage.commit_application_da_profile(&profile).unwrap();
+
+        let active_entry = storage
+            .load_application_da_profile_index_by_application_id("social.demo")
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+        assert_eq!(active_entry.profile_id, profile_id);
+        assert_eq!(active_entry.status, DaApplicationProfileStatus::Active);
+
+        let deprecated = DaApplicationProfileRegistration {
+            profile_id: profile_id.clone(),
+            profile,
+            status: DaApplicationProfileStatus::Deprecated,
+            activated_at_sequence: Some(1),
+            deprecated_at_sequence: Some(2),
+        };
+        storage
+            .commit_application_da_profile_registration(&deprecated)
+            .unwrap();
+
+        let expected = application_da_profile_index_entry(&deprecated);
+        assert_eq!(
+            storage
+                .load_application_da_profile_index_by_application_id("social.demo")
+                .unwrap(),
+            vec![expected.clone()]
+        );
+        assert_eq!(
+            storage
+                .load_application_da_profile_index_by_application_version("social.demo", 1)
+                .unwrap(),
+            vec![expected]
+        );
+
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

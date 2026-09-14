@@ -271,6 +271,23 @@ fn public_rpc_method_coverage_guard_calls_every_openapi_method() {
             share_size_bytes: 128,
         },
     );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::RegisterApplicationDaProfile {
+            profile: Box::new(app_profile.clone()),
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::ProduceApplicationDaBatch {
+            payload: Box::new(app_payload.clone()),
+            data_share_count: 4,
+            parity_share_count: 2,
+            certificate_signers: vec!["validator-1".into(), "validator-2".into()],
+        },
+    );
 
     call_ok(
         &mut client,

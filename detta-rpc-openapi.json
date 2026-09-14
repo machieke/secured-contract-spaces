@@ -95,6 +95,8 @@
           "submit_signed_transaction",
           "produce_block",
           "produce_da_block",
+          "register_application_da_profile",
+          "produce_application_da_batch",
           "import_block",
           "get_transaction",
           "get_receipt",

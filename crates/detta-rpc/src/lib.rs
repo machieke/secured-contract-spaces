@@ -9,9 +9,9 @@ use detta_core::{
 use detta_da::{
     ApplicationDaAvailabilityCertificate, ApplicationDaManifest, ApplicationDaNamespaceSection,
     ApplicationDaPayload, ApplicationDaSampleProofBundle, DaApplicationCoordinate, DaApplicationId,
-    DaApplicationProfileRegistration, DaApplicationRetentionClass, DaAvailabilityCertificate,
-    DaChallengeRecord, DaCodingFault, DaCodingFraudProof, DaManifest, DaNamespaceSection,
-    DaPayload, DaProductionProfile, DaSampleProofBundle, DaShare,
+    DaApplicationProfile, DaApplicationProfileRegistration, DaApplicationRetentionClass,
+    DaAvailabilityCertificate, DaChallengeRecord, DaCodingFault, DaCodingFraudProof, DaManifest,
+    DaNamespaceSection, DaPayload, DaProductionProfile, DaSampleProofBundle, DaShare,
 };
 use detta_evaluator::{
     canonical_script_source, parse_restricted_script, restricted_evaluator_fixture_inventory,
@@ -45,6 +45,10 @@ pub const DEFAULT_MAX_DA_RPC_NAMESPACES: usize = 32;
 pub const DEFAULT_MAX_DA_RPC_NAMESPACE_BYTES: usize = 128;
 pub const DEFAULT_MAX_DA_PRODUCE_SHARE_SIZE_BYTES: u32 = 1024 * 1024;
 pub const DEFAULT_MAX_APPLICATION_DA_RPC_COORDINATE_BYTES: usize = 4 * 1024;
+pub const DEFAULT_MAX_APPLICATION_DA_RPC_PROFILE_BYTES: usize = 256 * 1024;
+pub const DEFAULT_MAX_APPLICATION_DA_RPC_PAYLOAD_BYTES: usize = DEFAULT_MAX_RPC_REQUEST_BYTES;
+pub const DEFAULT_MAX_APPLICATION_DA_RPC_TOTAL_SHARES: u32 = 4096;
+pub const DEFAULT_MAX_APPLICATION_DA_RPC_CERTIFICATE_SIGNERS: usize = 256;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RpcError {
@@ -68,6 +72,7 @@ pub enum RpcError {
     ApplicationDaCertificateNotFound,
     ApplicationDaPayloadNotFound,
     ApplicationDaNamespaceNotFound,
+    ApplicationDaProfileInactive,
     ProofNotFound,
     SubscriptionNotFound,
     Execution(ExecutionError),
@@ -222,6 +227,15 @@ pub enum RpcRequest {
         height: u64,
         timestamp: u64,
         share_size_bytes: u32,
+    },
+    RegisterApplicationDaProfile {
+        profile: Box<DaApplicationProfile>,
+    },
+    ProduceApplicationDaBatch {
+        payload: Box<ApplicationDaPayload>,
+        data_share_count: u32,
+        parity_share_count: u32,
+        certificate_signers: Vec<String>,
     },
     ImportBlock {
         block: Box<Block>,
@@ -482,6 +496,34 @@ impl RpcRequest {
                 }
                 Ok(())
             }
+            RpcRequest::RegisterApplicationDaProfile { profile } => {
+                validate_rpc_serialized_value(profile, DEFAULT_MAX_APPLICATION_DA_RPC_PROFILE_BYTES)
+            }
+            RpcRequest::ProduceApplicationDaBatch {
+                payload,
+                data_share_count,
+                parity_share_count,
+                certificate_signers,
+            } => {
+                validate_rpc_serialized_value(
+                    payload,
+                    DEFAULT_MAX_APPLICATION_DA_RPC_PAYLOAD_BYTES,
+                )?;
+                let total_shares = data_share_count.saturating_add(*parity_share_count);
+                if *data_share_count == 0
+                    || *parity_share_count == 0
+                    || total_shares > DEFAULT_MAX_APPLICATION_DA_RPC_TOTAL_SHARES
+                    || certificate_signers.is_empty()
+                    || certificate_signers.len()
+                        > DEFAULT_MAX_APPLICATION_DA_RPC_CERTIFICATE_SIGNERS
+                {
+                    return Err(RpcError::RequestBoundsExceeded);
+                }
+                for signer in certificate_signers {
+                    validate_da_rpc_id(signer)?;
+                }
+                Ok(())
+            }
             RpcRequest::GetDaManifest { manifest_hash }
             | RpcRequest::GetDaPayload { manifest_hash }
             | RpcRequest::GetDaStatus { manifest_hash }
@@ -670,6 +712,23 @@ pub struct ApplicationDaStatusReport {
     pub payload_bytes: Option<u64>,
     pub namespace_count: Option<usize>,
     pub reconstruction_error: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ApplicationDaProductionReport {
+    pub application_id: DaApplicationId,
+    pub profile_id: String,
+    pub coordinate: DaApplicationCoordinate,
+    pub manifest_hash: String,
+    pub certificate_hash: String,
+    pub payload_hash: String,
+    pub namespace_root: String,
+    pub share_root: String,
+    pub payload_bytes: u64,
+    pub original_share_count: u32,
+    pub encoded_share_count: u32,
+    pub reconstruction_threshold: u32,
+    pub certificate_signers: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -981,6 +1040,7 @@ pub struct RestrictedEvaluationReport {
 pub enum RpcResult {
     Submitted,
     Imported,
+    ApplicationDaProduction(Box<ApplicationDaProductionReport>),
     Block(Box<Block>),
     BlocksPage(BlockPage),
     FinalityCertificate(Box<FinalityCertificate>),
@@ -1681,7 +1741,11 @@ impl RpcService {
                 .produce_block(height, timestamp)
                 .map(|block| RpcResult::Block(Box::new(block)))
                 .into(),
-            RpcRequest::ProduceDaBlock { .. } => Err(RpcError::UnsupportedNodeMethod).into(),
+            RpcRequest::ProduceDaBlock { .. }
+            | RpcRequest::RegisterApplicationDaProfile { .. }
+            | RpcRequest::ProduceApplicationDaBatch { .. } => {
+                Err(RpcError::UnsupportedNodeMethod).into()
+            }
             RpcRequest::ImportBlock { block } => self
                 .import_block(&block)
                 .map(|()| RpcResult::Imported)
@@ -2201,6 +2265,7 @@ fn rpc_error_code(error: &RpcError) -> &'static str {
         RpcError::ApplicationDaCertificateNotFound => "rpc.application_da_certificate_not_found",
         RpcError::ApplicationDaPayloadNotFound => "rpc.application_da_payload_not_found",
         RpcError::ApplicationDaNamespaceNotFound => "rpc.application_da_namespace_not_found",
+        RpcError::ApplicationDaProfileInactive => "rpc.application_da_profile_inactive",
         RpcError::ProofNotFound => "rpc.proof_not_found",
         RpcError::SubscriptionNotFound => "rpc.subscription_not_found",
         RpcError::Execution(ExecutionError::UpgradeNotFound) => "execution.upgrade_not_found",
@@ -2293,6 +2358,7 @@ fn rpc_error_message(error: &RpcError) -> &'static str {
         RpcError::ApplicationDaCertificateNotFound => "application DA certificate was not found",
         RpcError::ApplicationDaPayloadNotFound => "application DA payload was not found",
         RpcError::ApplicationDaNamespaceNotFound => "application DA namespace was not found",
+        RpcError::ApplicationDaProfileInactive => "application DA profile is not active",
         RpcError::ProofNotFound => "proof was not found",
         RpcError::SubscriptionNotFound => "subscription was not found",
         RpcError::Execution(ExecutionError::UpgradeNotFound) => "upgrade was not found",
@@ -2361,6 +2427,43 @@ mod tests {
             )
             .unwrap();
         RpcService::new(ValidatorNode::new("validator-1", state))
+    }
+
+    fn social_demo_application_payload() -> ApplicationDaPayload {
+        let profile = DaApplicationProfile::social_demo_v1();
+        let coordinate = DaApplicationCoordinate {
+            application_id: detta_da::DaApplicationId::new("social.demo").unwrap(),
+            stream_id: "main".into(),
+            sequence: 1,
+            epoch: Some(1),
+            parent_hash: None,
+            subject_hash: None,
+        };
+        let post = detta_da::DaRecordEnvelope::new(
+            "social.post",
+            1,
+            "application/json",
+            detta_da::DaRecordEncoding::CanonicalJson,
+            br#"{"author":"alice","post_id":"post-1","text":"rpc"}"#.to_vec(),
+            Some("alice".into()),
+            Some("signature-1".into()),
+        )
+        .unwrap();
+        ApplicationDaPayload::new(
+            &profile,
+            coordinate,
+            detta_da::DaPayloadKind::Batch,
+            None,
+            vec![
+                detta_da::DaApplicationRoot::new("social.event.log.root", "11".repeat(32)).unwrap(),
+            ],
+            vec![ApplicationDaNamespaceSection::new(
+                detta_da::DaNamespace::new("social.feed").unwrap(),
+                vec![post],
+            )
+            .unwrap()],
+        )
+        .unwrap()
     }
 
     fn aspect_module_record() -> AspectModuleRecord {
@@ -2480,6 +2583,8 @@ mod tests {
             "submit_signed_transaction",
             "produce_block",
             "produce_da_block",
+            "register_application_da_profile",
+            "produce_application_da_batch",
             "import_block",
             "get_transaction",
             "get_receipt",
@@ -3945,6 +4050,15 @@ mod tests {
                 timestamp: u64::MAX,
                 share_size_bytes: DEFAULT_MAX_DA_PRODUCE_SHARE_SIZE_BYTES,
             },
+            RpcRequest::RegisterApplicationDaProfile {
+                profile: Box::new(DaApplicationProfile::social_demo_v1()),
+            },
+            RpcRequest::ProduceApplicationDaBatch {
+                payload: Box::new(social_demo_application_payload()),
+                data_share_count: 4,
+                parity_share_count: 2,
+                certificate_signers: vec!["validator-1".into()],
+            },
             RpcRequest::GetApplicationDaProfile {
                 profile_id: "e".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES),
             },
@@ -3992,6 +4106,12 @@ mod tests {
 
     #[test]
     fn da_rpc_request_bounds_reject_oversized_sampling_inputs() {
+        let mut oversized_profile = DaApplicationProfile::social_demo_v1();
+        oversized_profile.profile_name = "p".repeat(DEFAULT_MAX_APPLICATION_DA_RPC_PROFILE_BYTES);
+        let mut oversized_payload = social_demo_application_payload();
+        oversized_payload.namespaces[0].records[0].bytes =
+            vec![0_u8; DEFAULT_MAX_APPLICATION_DA_RPC_PAYLOAD_BYTES + 1];
+
         let oversized = vec![
             RpcRequest::GetDaManifest {
                 manifest_hash: "m".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES + 1),
@@ -4030,6 +4150,48 @@ mod tests {
             },
             RpcRequest::GetApplicationDaProfile {
                 profile_id: "p".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES + 1),
+            },
+            RpcRequest::RegisterApplicationDaProfile {
+                profile: Box::new(oversized_profile),
+            },
+            RpcRequest::ProduceApplicationDaBatch {
+                payload: Box::new(oversized_payload),
+                data_share_count: 4,
+                parity_share_count: 2,
+                certificate_signers: vec!["validator-1".into()],
+            },
+            RpcRequest::ProduceApplicationDaBatch {
+                payload: Box::new(social_demo_application_payload()),
+                data_share_count: 0,
+                parity_share_count: 2,
+                certificate_signers: vec!["validator-1".into()],
+            },
+            RpcRequest::ProduceApplicationDaBatch {
+                payload: Box::new(social_demo_application_payload()),
+                data_share_count: DEFAULT_MAX_APPLICATION_DA_RPC_TOTAL_SHARES,
+                parity_share_count: 1,
+                certificate_signers: vec!["validator-1".into()],
+            },
+            RpcRequest::ProduceApplicationDaBatch {
+                payload: Box::new(social_demo_application_payload()),
+                data_share_count: 4,
+                parity_share_count: 2,
+                certificate_signers: Vec::new(),
+            },
+            RpcRequest::ProduceApplicationDaBatch {
+                payload: Box::new(social_demo_application_payload()),
+                data_share_count: 4,
+                parity_share_count: 2,
+                certificate_signers: vec![
+                    "validator-1".into();
+                    DEFAULT_MAX_APPLICATION_DA_RPC_CERTIFICATE_SIGNERS + 1
+                ],
+            },
+            RpcRequest::ProduceApplicationDaBatch {
+                payload: Box::new(social_demo_application_payload()),
+                data_share_count: 4,
+                parity_share_count: 2,
+                certificate_signers: vec!["s".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES + 1)],
             },
             RpcRequest::GetApplicationDaProfileIndexByApplicationId {
                 application_id: "a".repeat(DEFAULT_MAX_DA_RPC_NAMESPACE_BYTES + 1),
