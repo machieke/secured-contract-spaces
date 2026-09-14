@@ -15,6 +15,8 @@ pub const DA_PRODUCTION_PROFILE_SCHEMA: &str = "detta.da-production-profile.v1";
 pub const DA_APPLICATION_PROFILE_SCHEMA: &str = "detta.da-application-profile.v1";
 pub const APPLICATION_DA_PAYLOAD_SCHEMA: &str = "detta.application-da-payload.v1";
 pub const APPLICATION_DA_MANIFEST_SCHEMA: &str = "detta.application-da-manifest.v1";
+pub const DA_APPLICATION_VALIDATION_REPORT_SCHEMA: &str =
+    "detta.da-application-validation-report.v1";
 pub const APPLICATION_DA_CODING_FRAUD_PROOF_SCHEMA: &str =
     "detta.application-da-coding-fraud-proof.v1";
 pub const DA_PAYLOAD_VERSION: u32 = 1;
@@ -1795,6 +1797,290 @@ impl ApplicationDaPayload {
 
 pub fn application_payload_hash(payload: &ApplicationDaPayload) -> Result<String, DaError> {
     payload.hash()
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaApplicationValidationReport {
+    pub schema: String,
+    pub schema_version: u32,
+    pub validator_id: String,
+    pub application_id: DaApplicationId,
+    pub profile_id: String,
+    pub payload_hash: String,
+    pub manifest_hash: Option<String>,
+    pub payload_kind: DaPayloadKind,
+    pub sequence: u64,
+    pub namespace_count: u32,
+    pub record_count: u32,
+    pub application_root: Option<String>,
+    pub accepted: bool,
+}
+
+impl DaApplicationValidationReport {
+    pub fn report_hash(&self) -> Result<String, DaError> {
+        self.validate()?;
+        hash_canonical(self)
+    }
+
+    pub fn validate(&self) -> Result<(), DaError> {
+        if self.schema != DA_APPLICATION_VALIDATION_REPORT_SCHEMA {
+            return Err(DaError::InvalidManifest(format!(
+                "unexpected application validation report schema {}",
+                self.schema
+            )));
+        }
+        if self.schema_version != 1 {
+            return Err(DaError::InvalidManifest(format!(
+                "unexpected application validation report version {}",
+                self.schema_version
+            )));
+        }
+        validate_label("application validator_id", &self.validator_id, 128)?;
+        self.application_id.validate()?;
+        validate_sha256_hex("application validation report profile_id", &self.profile_id)?;
+        validate_sha256_hex(
+            "application validation report payload_hash",
+            &self.payload_hash,
+        )?;
+        validate_optional_sha256_hex(
+            "application validation report manifest_hash",
+            self.manifest_hash.as_deref(),
+        )?;
+        self.payload_kind.validate()?;
+        validate_optional_sha256_hex(
+            "application validation report application_root",
+            self.application_root.as_deref(),
+        )?;
+        if !self.accepted {
+            return Err(DaError::InvalidManifest(
+                "successful application validation reports must be accepted".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+pub trait DaApplicationValidator {
+    fn profile_id(&self) -> &str;
+
+    fn validate_payload(
+        &self,
+        profile: &DaApplicationProfile,
+        payload: &ApplicationDaPayload,
+        manifest: Option<&ApplicationDaManifest>,
+    ) -> Result<DaApplicationValidationReport, DaError>;
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OpaqueApplicationValidator {
+    profile_id: String,
+}
+
+impl OpaqueApplicationValidator {
+    pub fn new(profile: &DaApplicationProfile) -> Result<Self, DaError> {
+        Ok(Self {
+            profile_id: profile.profile_id()?,
+        })
+    }
+}
+
+impl DaApplicationValidator for OpaqueApplicationValidator {
+    fn profile_id(&self) -> &str {
+        &self.profile_id
+    }
+
+    fn validate_payload(
+        &self,
+        profile: &DaApplicationProfile,
+        payload: &ApplicationDaPayload,
+        manifest: Option<&ApplicationDaManifest>,
+    ) -> Result<DaApplicationValidationReport, DaError> {
+        validate_application_payload_with_optional_manifest(
+            self.profile_id(),
+            profile,
+            payload,
+            manifest,
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SchemaApplicationValidator {
+    profile_id: String,
+}
+
+impl SchemaApplicationValidator {
+    pub fn new(profile: &DaApplicationProfile) -> Result<Self, DaError> {
+        Ok(Self {
+            profile_id: profile.profile_id()?,
+        })
+    }
+}
+
+impl DaApplicationValidator for SchemaApplicationValidator {
+    fn profile_id(&self) -> &str {
+        &self.profile_id
+    }
+
+    fn validate_payload(
+        &self,
+        profile: &DaApplicationProfile,
+        payload: &ApplicationDaPayload,
+        manifest: Option<&ApplicationDaManifest>,
+    ) -> Result<DaApplicationValidationReport, DaError> {
+        let report = validate_application_payload_with_optional_manifest(
+            self.profile_id(),
+            profile,
+            payload,
+            manifest,
+        )?;
+        validate_application_schema_records(payload)?;
+        Ok(report)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SocialDemoDaValidator {
+    profile_id: String,
+}
+
+impl SocialDemoDaValidator {
+    pub fn new() -> Result<Self, DaError> {
+        let profile = DaApplicationProfile::social_demo_v1();
+        Ok(Self {
+            profile_id: profile.profile_id()?,
+        })
+    }
+}
+
+impl DaApplicationValidator for SocialDemoDaValidator {
+    fn profile_id(&self) -> &str {
+        &self.profile_id
+    }
+
+    fn validate_payload(
+        &self,
+        profile: &DaApplicationProfile,
+        payload: &ApplicationDaPayload,
+        manifest: Option<&ApplicationDaManifest>,
+    ) -> Result<DaApplicationValidationReport, DaError> {
+        if profile.application_id != application_id_unchecked("social.demo") {
+            return Err(DaError::InvalidPayload(
+                "social-demo validator requires the social.demo profile".into(),
+            ));
+        }
+        if !matches!(
+            payload.payload_kind,
+            DaPayloadKind::Batch | DaPayloadKind::MediaManifest | DaPayloadKind::ModerationLog
+        ) {
+            return Err(DaError::InvalidPayload(
+                "social-demo payload kind is not supported".into(),
+            ));
+        }
+        if payload.coordinate.sequence == 0 {
+            return Err(DaError::InvalidPayload(
+                "social-demo sequence must be positive".into(),
+            ));
+        }
+        if payload.coordinate.sequence > 1 && payload.previous_payload_hash.is_none() {
+            return Err(DaError::InvalidPayload(
+                "social-demo non-genesis payloads must reference previous_payload_hash".into(),
+            ));
+        }
+
+        let report = validate_application_payload_with_optional_manifest(
+            self.profile_id(),
+            profile,
+            payload,
+            manifest,
+        )?;
+        validate_application_schema_records(payload)?;
+        validate_social_demo_signatures(profile, payload)?;
+        validate_social_demo_event_log_root(payload)?;
+        Ok(report)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DettaDefiDaValidator {
+    profile_id: String,
+}
+
+impl DettaDefiDaValidator {
+    pub fn new() -> Result<Self, DaError> {
+        let profile = DaApplicationProfile::detta_defi_v1();
+        Ok(Self {
+            profile_id: profile.profile_id()?,
+        })
+    }
+
+    pub fn validate_block_payload(
+        &self,
+        payload: &DaPayload,
+        manifest: Option<&DaManifest>,
+    ) -> Result<DaApplicationValidationReport, DaError> {
+        let profile = DaApplicationProfile::detta_defi_v1();
+        validate_production_block_payload(payload, &profile.da_profile)?;
+        if let Some(manifest) = manifest {
+            verify_manifest_commits_payload(manifest, payload)?;
+        }
+        let canonical = payload.canonicalized();
+        let payload_hash = canonical.hash()?;
+        Ok(DaApplicationValidationReport {
+            schema: DA_APPLICATION_VALIDATION_REPORT_SCHEMA.into(),
+            schema_version: 1,
+            validator_id: self.profile_id.clone(),
+            application_id: profile.application_id,
+            profile_id: self.profile_id.clone(),
+            payload_hash,
+            manifest_hash: manifest.map(DaManifest::manifest_hash).transpose()?,
+            payload_kind: DaPayloadKind::Block,
+            sequence: canonical.height,
+            namespace_count: canonical.namespaces.len() as u32,
+            record_count: canonical
+                .namespaces
+                .iter()
+                .map(|section| section.records.len() as u32)
+                .sum(),
+            application_root: None,
+            accepted: true,
+        })
+    }
+}
+
+impl DaApplicationValidator for DettaDefiDaValidator {
+    fn profile_id(&self) -> &str {
+        &self.profile_id
+    }
+
+    fn validate_payload(
+        &self,
+        profile: &DaApplicationProfile,
+        payload: &ApplicationDaPayload,
+        manifest: Option<&ApplicationDaManifest>,
+    ) -> Result<DaApplicationValidationReport, DaError> {
+        if profile.application_id != application_id_unchecked("detta.defi") {
+            return Err(DaError::InvalidPayload(
+                "DeTTa DeFi validator requires the detta.defi profile".into(),
+            ));
+        }
+        if payload.payload_kind != DaPayloadKind::Block {
+            return Err(DaError::InvalidPayload(
+                "DeTTa DeFi application payloads must use block payload kind".into(),
+            ));
+        }
+        validate_application_payload_with_optional_manifest(
+            self.profile_id(),
+            profile,
+            payload,
+            manifest,
+        )
+    }
+}
+
+pub fn social_demo_event_log_root(payload: &ApplicationDaPayload) -> Result<String, DaError> {
+    let canonical = payload.canonicalized();
+    application_event_log_root_for_sections(&canonical.namespaces)
 }
 
 fn namespace_policy(
@@ -4785,6 +5071,146 @@ fn validate_application_roots_against_profile(
     Ok(())
 }
 
+fn validate_application_payload_with_optional_manifest(
+    validator_id: &str,
+    profile: &DaApplicationProfile,
+    payload: &ApplicationDaPayload,
+    manifest: Option<&ApplicationDaManifest>,
+) -> Result<DaApplicationValidationReport, DaError> {
+    if validator_id != profile.profile_id()? {
+        return Err(DaError::InvalidManifest(
+            "application validator profile id does not match supplied profile".into(),
+        ));
+    }
+    payload.validate(profile)?;
+    if let Some(manifest) = manifest {
+        verify_application_manifest_commits_payload(manifest, payload, profile)?;
+    }
+    application_validation_report(validator_id, payload, manifest)
+}
+
+fn application_validation_report(
+    validator_id: &str,
+    payload: &ApplicationDaPayload,
+    manifest: Option<&ApplicationDaManifest>,
+) -> Result<DaApplicationValidationReport, DaError> {
+    let canonical = payload.canonicalized();
+    let report = DaApplicationValidationReport {
+        schema: DA_APPLICATION_VALIDATION_REPORT_SCHEMA.into(),
+        schema_version: 1,
+        validator_id: validator_id.into(),
+        application_id: canonical.application_id.clone(),
+        profile_id: canonical.profile_id.clone(),
+        payload_hash: canonical.hash()?,
+        manifest_hash: manifest
+            .map(ApplicationDaManifest::manifest_hash)
+            .transpose()?,
+        payload_kind: canonical.payload_kind.clone(),
+        sequence: canonical.coordinate.sequence,
+        namespace_count: canonical.namespaces.len() as u32,
+        record_count: canonical
+            .namespaces
+            .iter()
+            .map(|section| section.records.len() as u32)
+            .sum(),
+        application_root: application_root_commitment(&canonical)?,
+        accepted: true,
+    };
+    report.validate()?;
+    Ok(report)
+}
+
+fn validate_application_schema_records(payload: &ApplicationDaPayload) -> Result<(), DaError> {
+    for section in &payload.canonicalized().namespaces {
+        for record in &section.records {
+            match record.encoding {
+                DaRecordEncoding::CanonicalJson | DaRecordEncoding::ExternalContentAddress => {
+                    serde_json::from_slice::<serde_json::Value>(&record.bytes).map_err(|_| {
+                        DaError::InvalidPayload(format!(
+                            "record schema {} is not valid JSON",
+                            record.schema
+                        ))
+                    })?;
+                }
+                DaRecordEncoding::OpaqueBytes | DaRecordEncoding::EncryptedBytes => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_social_demo_signatures(
+    profile: &DaApplicationProfile,
+    payload: &ApplicationDaPayload,
+) -> Result<(), DaError> {
+    let record_policies = profile
+        .record_policies
+        .iter()
+        .map(|policy| (policy.schema.as_str(), policy))
+        .collect::<BTreeMap<_, _>>();
+    for section in &payload.canonicalized().namespaces {
+        for record in &section.records {
+            let Some(policy) = record_policies.get(record.schema.as_str()) else {
+                continue;
+            };
+            if !policy.require_signer {
+                continue;
+            }
+            let signer = record.signer.as_deref().ok_or_else(|| {
+                DaError::InvalidPayload(format!(
+                    "social-demo record {} is missing signer",
+                    record.schema
+                ))
+            })?;
+            let expected_signature = format!("sig-{signer}");
+            if record.signature.as_deref() != Some(expected_signature.as_str()) {
+                return Err(DaError::InvalidPayload(format!(
+                    "social-demo record {} has invalid signature",
+                    record.schema
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_social_demo_event_log_root(payload: &ApplicationDaPayload) -> Result<(), DaError> {
+    let expected = social_demo_event_log_root(payload)?;
+    let actual = payload
+        .canonicalized()
+        .application_roots
+        .iter()
+        .find(|root| root.name == "social.event.log.root")
+        .map(|root| root.hash.clone())
+        .ok_or_else(|| {
+            DaError::InvalidPayload("social-demo payload is missing event log root".into())
+        })?;
+    if actual != expected {
+        return Err(DaError::InvalidPayload(
+            "social-demo event log root does not match record content hashes".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn application_event_log_root_for_sections(
+    sections: &[ApplicationDaNamespaceSection],
+) -> Result<String, DaError> {
+    let mut record_hashes = Vec::new();
+    for section in sections {
+        section.validate_structure()?;
+        for record in &section.records {
+            record_hashes.push(record.content_hash.clone());
+        }
+    }
+    if record_hashes.is_empty() {
+        return Err(DaError::InvalidPayload(
+            "application event log root requires at least one record".into(),
+        ));
+    }
+    merkle_root(&record_hashes)
+}
+
 fn validate_sorted_unique_record_encodings(encodings: &[DaRecordEncoding]) -> Result<(), DaError> {
     if !encodings.windows(2).all(|window| window[0] < window[1]) {
         return Err(DaError::InvalidManifest(
@@ -5206,35 +5632,34 @@ mod tests {
 
     fn social_demo_payload() -> ApplicationDaPayload {
         let profile = DaApplicationProfile::social_demo_v1();
+        let sections = vec![
+            application_section(
+                "social.feed",
+                vec![application_record(
+                    "social.post",
+                    DaRecordEncoding::CanonicalJson,
+                    br#"{"author":"alice","post_id":"post-1","text":"hello"}"#,
+                    Some("alice"),
+                )],
+            ),
+            application_section(
+                "social.media",
+                vec![application_record(
+                    "social.media.reference",
+                    DaRecordEncoding::ExternalContentAddress,
+                    br#"{"content_hash":"media-root","uri":"ipfs://example"}"#,
+                    None,
+                )],
+            ),
+        ];
+        let event_log_root = application_event_log_root_for_sections(&sections).unwrap();
         ApplicationDaPayload::new(
             &profile,
             social_coordinate(1),
             DaPayloadKind::Batch,
             None,
-            vec![application_root(
-                "social.event.log.root",
-                b"social-event-log-root-1",
-            )],
-            vec![
-                application_section(
-                    "social.feed",
-                    vec![application_record(
-                        "social.post",
-                        DaRecordEncoding::CanonicalJson,
-                        br#"{"author":"alice","post_id":"post-1","text":"hello"}"#,
-                        Some("alice"),
-                    )],
-                ),
-                application_section(
-                    "social.media",
-                    vec![application_record(
-                        "social.media.reference",
-                        DaRecordEncoding::ExternalContentAddress,
-                        br#"{"content_hash":"media-root","uri":"ipfs://example"}"#,
-                        None,
-                    )],
-                ),
-            ],
+            vec![DaApplicationRoot::new("social.event.log.root", event_log_root).unwrap()],
+            sections,
         )
         .unwrap()
     }
@@ -6242,7 +6667,7 @@ mod tests {
 
         assert_eq!(
             payload_hash,
-            "0e2ec3add83d7fa033bad12491caf08b31101f6c5fe5285b635c6dd0ba2ef9f1"
+            "a5908058f7142cb7c843007ac7be55b564a3bb39cdfb9d19341cfe78dd48b291"
         );
         assert_eq!(
             namespace_root,
@@ -6448,6 +6873,126 @@ mod tests {
             DaCodingFault::PayloadHashMismatch { .. }
         ));
         payload_proof.validate(&payload_forged, &profile).unwrap();
+    }
+
+    #[test]
+    fn application_validators_produce_reports_and_schema_validator_rejects_bad_json() {
+        let profile = DaApplicationProfile::social_demo_v1();
+        let payload = social_demo_payload();
+        let share_set =
+            ApplicationDaShareSet::from_payload_reed_solomon(&payload, &profile, 3, 2).unwrap();
+        let schema_validator = SchemaApplicationValidator::new(&profile).unwrap();
+
+        let report = schema_validator
+            .validate_payload(&profile, &payload, Some(&share_set.manifest))
+            .unwrap();
+        report.validate().unwrap();
+        assert_eq!(
+            report,
+            schema_validator
+                .validate_payload(&profile, &payload, Some(&share_set.manifest))
+                .unwrap()
+        );
+        assert_eq!(report.report_hash().unwrap().len(), 64);
+
+        let mut bad_json = payload.clone();
+        bad_json.namespaces[0].records[0].bytes = b"{bad-json".to_vec();
+        bad_json.namespaces[0].records[0].content_hash =
+            hash_bytes(&bad_json.namespaces[0].records[0].bytes);
+        let opaque_validator = OpaqueApplicationValidator::new(&profile).unwrap();
+        opaque_validator
+            .validate_payload(&profile, &bad_json, None)
+            .unwrap();
+        assert!(matches!(
+            schema_validator.validate_payload(&profile, &bad_json, None),
+            Err(DaError::InvalidPayload(_))
+        ));
+    }
+
+    #[test]
+    fn social_demo_validator_rejects_bad_signature_sequence_gap_and_wrong_root() {
+        let profile = DaApplicationProfile::social_demo_v1();
+        let validator = SocialDemoDaValidator::new().unwrap();
+        let payload = social_demo_payload();
+        let share_set =
+            ApplicationDaShareSet::from_payload_reed_solomon(&payload, &profile, 3, 2).unwrap();
+
+        validator
+            .validate_payload(&profile, &payload, Some(&share_set.manifest))
+            .unwrap();
+
+        let mut bad_signature = payload.clone();
+        bad_signature.namespaces[0].records[0].signature = Some("not-the-signature".into());
+        assert!(matches!(
+            validator.validate_payload(&profile, &bad_signature, None),
+            Err(DaError::InvalidPayload(_))
+        ));
+
+        let sections = vec![application_section(
+            "social.feed",
+            vec![application_record(
+                "social.post",
+                DaRecordEncoding::CanonicalJson,
+                br#"{"author":"bob","post_id":"post-2","text":"gap"}"#,
+                Some("bob"),
+            )],
+        )];
+        let event_log_root = application_event_log_root_for_sections(&sections).unwrap();
+        let sequence_gap = ApplicationDaPayload::new(
+            &profile,
+            social_coordinate(2),
+            DaPayloadKind::Batch,
+            None,
+            vec![DaApplicationRoot::new("social.event.log.root", event_log_root).unwrap()],
+            sections,
+        )
+        .unwrap();
+        assert!(matches!(
+            validator.validate_payload(&profile, &sequence_gap, None),
+            Err(DaError::InvalidPayload(_))
+        ));
+
+        let mut wrong_root = payload.clone();
+        wrong_root.application_roots[0].hash = hash_bytes(b"wrong-social-root");
+        assert!(matches!(
+            validator.validate_payload(&profile, &wrong_root, None),
+            Err(DaError::InvalidPayload(_))
+        ));
+    }
+
+    #[test]
+    fn detta_defi_validator_accepts_v1_payload_and_rejects_tampered_evidence() {
+        let validator = DettaDefiDaValidator::new().unwrap();
+        let payload = payload_with_sections(vec![
+            tx_section(
+                "detta.block",
+                vec![DaRecord::BlockHeader(Box::new(block_header()))],
+            ),
+            tx_section("detta.tx", vec![DaRecord::SignedTransaction(tx("tx-1", 1))]),
+            tx_section("detta.receipt", vec![DaRecord::Receipt(receipt("tx-1"))]),
+        ]);
+        let share_set = DaShareSet::from_payload_reed_solomon(&payload, "block-7", 3, 2).unwrap();
+        let report = validator
+            .validate_block_payload(&payload, Some(&share_set.manifest))
+            .unwrap();
+        report.validate().unwrap();
+        assert_eq!(
+            report.application_id,
+            application_id_unchecked("detta.defi")
+        );
+        assert_eq!(report.payload_kind, DaPayloadKind::Block);
+
+        let tampered_evidence = payload_with_sections(vec![
+            tx_section(
+                "detta.block",
+                vec![DaRecord::BlockHeader(Box::new(block_header()))],
+            ),
+            tx_section("detta.oracle", vec![DaRecord::Event(event("tx-1"))]),
+        ]);
+        assert!(matches!(
+            validator.validate_block_payload(&tampered_evidence, None),
+            Err(DaError::InvalidPayload(_))
+        ));
     }
 
     #[test]

@@ -819,20 +819,20 @@ Acceptance:
 
 ### Phase 5: Application Validators
 
-- [ ] Add `DaApplicationValidator` trait.
-- [ ] Add `OpaqueApplicationValidator`.
-- [ ] Add `SchemaApplicationValidator`.
-- [ ] Add `DettaDefiDaValidator` adapter over current DeTTa DA validation.
-- [ ] Add `SocialDemoDaValidator` for signed social events and event-log root
+- [x] Add `DaApplicationValidator` trait.
+- [x] Add `OpaqueApplicationValidator`.
+- [x] Add `SchemaApplicationValidator`.
+- [x] Add `DettaDefiDaValidator` adapter over current DeTTa DA validation.
+- [x] Add `SocialDemoDaValidator` for signed social events and event-log root
   checks.
-- [ ] Add resource budget enforcement for validators.
+- [x] Add resource budget enforcement for validators.
 
 Acceptance:
 
-- DA validators are deterministic and side-effect-free;
-- DeTTa DeFi adapter accepts current valid block DA and rejects tampered
+- [x] DA validators are deterministic and side-effect-free;
+- [x] DeTTa DeFi adapter accepts current valid block DA and rejects tampered
   DeFi evidence;
-- social-demo adapter rejects bad signatures, malformed records, sequence
+- [x] social-demo adapter rejects bad signatures, malformed records, sequence
   gaps, and wrong event-log roots.
 
 ### Phase 6: Generic DA Certificates
