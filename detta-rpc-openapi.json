@@ -17,6 +17,17 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/RpcRequest"
+              },
+              "examples": {
+                "registerApplicationDaProfile": {
+                  "$ref": "#/components/examples/RegisterApplicationDaProfileRequest"
+                },
+                "produceApplicationDaBatch": {
+                  "$ref": "#/components/examples/ProduceApplicationDaBatchRequest"
+                },
+                "getApplicationDaRetentionAudit": {
+                  "$ref": "#/components/examples/GetApplicationDaRetentionAuditRequest"
+                }
               }
             }
           }
@@ -28,6 +39,14 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/RpcResponse"
+                },
+                "examples": {
+                  "applicationDaStatus": {
+                    "$ref": "#/components/examples/ApplicationDaStatusResponse"
+                  },
+                  "applicationDaRetentionPrunePlan": {
+                    "$ref": "#/components/examples/ApplicationDaRetentionPrunePlanResponse"
+                  }
                 }
               }
             }
@@ -261,6 +280,1759 @@
           }
         },
         "additionalProperties": false
+      },
+      "Sha256Hex": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "DaApplicationId": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "pattern": "^[a-z0-9][a-z0-9._-]*$"
+      },
+      "DaApplicationCoordinate": {
+        "type": "object",
+        "required": [
+          "application_id",
+          "stream_id",
+          "sequence"
+        ],
+        "properties": {
+          "application_id": {
+            "$ref": "#/components/schemas/DaApplicationId"
+          },
+          "stream_id": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "sequence": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "epoch": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "parent_hash": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Sha256Hex"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "subject_hash": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Sha256Hex"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "DaPayloadKind": {
+        "oneOf": [
+          {
+            "type": "string",
+            "enum": [
+              "Block",
+              "Batch",
+              "Checkpoint",
+              "Snapshot",
+              "MediaManifest",
+              "ModerationLog",
+              "IndexDelta"
+            ]
+          },
+          {
+            "type": "object",
+            "required": [
+              "ApplicationDefined"
+            ],
+            "properties": {
+              "ApplicationDefined": {
+                "type": "string",
+                "maxLength": 128
+              }
+            },
+            "additionalProperties": false
+          }
+        ]
+      },
+      "DaRecordEncoding": {
+        "type": "string",
+        "enum": [
+          "CanonicalJson",
+          "OpaqueBytes",
+          "EncryptedBytes",
+          "ExternalContentAddress"
+        ]
+      },
+      "DaApplicationRetentionClass": {
+        "oneOf": [
+          {
+            "type": "string",
+            "enum": [
+              "Hot",
+              "Warm",
+              "Cold",
+              "Archive",
+              "Checkpoint"
+            ]
+          },
+          {
+            "type": "object",
+            "required": [
+              "Custom"
+            ],
+            "properties": {
+              "Custom": {
+                "type": "string",
+                "maxLength": 128
+              }
+            },
+            "additionalProperties": false
+          }
+        ]
+      },
+      "DaRecordEnvelope": {
+        "type": "object",
+        "required": [
+          "schema",
+          "schema_version",
+          "content_type",
+          "encoding",
+          "bytes",
+          "content_hash"
+        ],
+        "properties": {
+          "schema": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "schema_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "content_type": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "encoding": {
+            "$ref": "#/components/schemas/DaRecordEncoding"
+          },
+          "bytes": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 255
+            }
+          },
+          "content_hash": {
+            "$ref": "#/components/schemas/Sha256Hex"
+          },
+          "signer": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "signature": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "ApplicationDaNamespaceSection": {
+        "type": "object",
+        "required": [
+          "namespace",
+          "records"
+        ],
+        "properties": {
+          "namespace": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "records": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DaRecordEnvelope"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "DaApplicationRoot": {
+        "type": "object",
+        "required": [
+          "name",
+          "hash"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "hash": {
+            "$ref": "#/components/schemas/Sha256Hex"
+          }
+        },
+        "additionalProperties": false
+      },
+      "DaNamespacePolicy": {
+        "type": "object",
+        "required": [
+          "namespace",
+          "requirement",
+          "allowed_record_schemas",
+          "min_records",
+          "max_records",
+          "retention_class"
+        ],
+        "properties": {
+          "namespace": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "requirement": {
+            "type": "string",
+            "enum": [
+              "Required",
+              "Optional",
+              "Forbidden"
+            ]
+          },
+          "allowed_record_schemas": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "min_records": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "max_records": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "retention_class": {
+            "$ref": "#/components/schemas/DaApplicationRetentionClass"
+          }
+        },
+        "additionalProperties": false
+      },
+      "DaRecordPolicy": {
+        "type": "object",
+        "required": [
+          "schema",
+          "schema_version",
+          "allowed_namespaces",
+          "allowed_encodings",
+          "max_record_bytes",
+          "require_content_hash",
+          "require_signer"
+        ],
+        "properties": {
+          "schema": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "schema_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "allowed_namespaces": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "allowed_encodings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DaRecordEncoding"
+            }
+          },
+          "max_record_bytes": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "require_content_hash": {
+            "type": "boolean"
+          },
+          "require_signer": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "DaApplicationRetentionPolicy": {
+        "type": "object",
+        "required": [
+          "default_class",
+          "namespace_overrides",
+          "payload_kind_overrides"
+        ],
+        "properties": {
+          "default_class": {
+            "$ref": "#/components/schemas/DaApplicationRetentionClass"
+          },
+          "namespace_overrides": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "namespace",
+                "retention_class"
+              ],
+              "properties": {
+                "namespace": {
+                  "type": "string"
+                },
+                "retention_class": {
+                  "$ref": "#/components/schemas/DaApplicationRetentionClass"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "payload_kind_overrides": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "payload_kind",
+                "retention_class"
+              ],
+              "properties": {
+                "payload_kind": {
+                  "$ref": "#/components/schemas/DaPayloadKind"
+                },
+                "retention_class": {
+                  "$ref": "#/components/schemas/DaApplicationRetentionClass"
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "DaProductionProfile": {
+        "type": "object",
+        "required": [
+          "schema",
+          "schema_version",
+          "commitment_scheme",
+          "erasure_scheme",
+          "custody_mode",
+          "min_custody_share_count",
+          "min_light_client_sample_count",
+          "full_payload_required_for_rpc",
+          "receipts_are_payload_records",
+          "event_availability_mode",
+          "validator_min_retention_blocks",
+          "archive_min_retention_blocks",
+          "data_gas_bytes_per_unit",
+          "slashing_governance_mode",
+          "archive_incentive_mode",
+          "mandatory_da_namespaces"
+        ],
+        "properties": {
+          "schema": {
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "commitment_scheme": {
+            "type": "string"
+          },
+          "erasure_scheme": {
+            "type": "string",
+            "enum": [
+              "DeterministicChunks",
+              "ReedSolomonV1"
+            ]
+          },
+          "custody_mode": {
+            "type": "string"
+          },
+          "min_custody_share_count": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "min_light_client_sample_count": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "full_payload_required_for_rpc": {
+            "type": "boolean"
+          },
+          "receipts_are_payload_records": {
+            "type": "boolean"
+          },
+          "event_availability_mode": {
+            "type": "string"
+          },
+          "validator_min_retention_blocks": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "archive_min_retention_blocks": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "data_gas_bytes_per_unit": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "slashing_governance_mode": {
+            "type": "string"
+          },
+          "archive_incentive_mode": {
+            "type": "string"
+          },
+          "mandatory_da_namespaces": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "DaApplicationProfile": {
+        "type": "object",
+        "required": [
+          "schema",
+          "schema_version",
+          "application_id",
+          "profile_version",
+          "profile_name",
+          "da_profile",
+          "namespace_policies",
+          "record_policies",
+          "coordinate_policy",
+          "root_bindings",
+          "retention_policy",
+          "validation_mode",
+          "privacy_mode",
+          "max_payload_bytes",
+          "max_records_per_payload"
+        ],
+        "properties": {
+          "schema": {
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "application_id": {
+            "$ref": "#/components/schemas/DaApplicationId"
+          },
+          "profile_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "profile_name": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "da_profile": {
+            "$ref": "#/components/schemas/DaProductionProfile"
+          },
+          "namespace_policies": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DaNamespacePolicy"
+            }
+          },
+          "record_policies": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DaRecordPolicy"
+            }
+          },
+          "coordinate_policy": {
+            "type": "object",
+            "required": [
+              "max_stream_id_bytes",
+              "allow_epoch",
+              "require_parent_hash",
+              "require_subject_hash"
+            ],
+            "properties": {
+              "max_stream_id_bytes": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "allow_epoch": {
+                "type": "boolean"
+              },
+              "require_parent_hash": {
+                "type": "boolean"
+              },
+              "require_subject_hash": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          },
+          "root_bindings": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "required"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "required": {
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "retention_policy": {
+            "$ref": "#/components/schemas/DaApplicationRetentionPolicy"
+          },
+          "validation_mode": {
+            "type": "string",
+            "enum": [
+              "OpaqueBytes",
+              "SchemaDecodableRecords",
+              "ApplicationAdapterVerified"
+            ]
+          },
+          "privacy_mode": {
+            "type": "string",
+            "enum": [
+              "Public",
+              "Encrypted",
+              "CommitmentOnly",
+              "MixedExplicit"
+            ]
+          },
+          "max_payload_bytes": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "max_records_per_payload": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "ApplicationDaPayload": {
+        "type": "object",
+        "required": [
+          "schema",
+          "schema_version",
+          "application_id",
+          "profile_id",
+          "coordinate",
+          "payload_kind",
+          "application_roots",
+          "namespaces"
+        ],
+        "properties": {
+          "schema": {
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "application_id": {
+            "$ref": "#/components/schemas/DaApplicationId"
+          },
+          "profile_id": {
+            "$ref": "#/components/schemas/Sha256Hex"
+          },
+          "coordinate": {
+            "$ref": "#/components/schemas/DaApplicationCoordinate"
+          },
+          "payload_kind": {
+            "$ref": "#/components/schemas/DaPayloadKind"
+          },
+          "previous_payload_hash": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Sha256Hex"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "application_roots": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DaApplicationRoot"
+            }
+          },
+          "namespaces": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ApplicationDaNamespaceSection"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ApplicationDaManifest": {
+        "type": "object",
+        "required": [
+          "schema",
+          "schema_version",
+          "application_id",
+          "profile_id",
+          "coordinate",
+          "payload_kind",
+          "payload_hash",
+          "payload_bytes",
+          "namespace_root",
+          "share_root",
+          "erasure_scheme",
+          "original_share_count",
+          "encoded_share_count",
+          "reconstruction_threshold",
+          "share_size_bytes",
+          "share_hashes",
+          "namespace_ranges"
+        ],
+        "properties": {
+          "schema": {
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "application_id": {
+            "$ref": "#/components/schemas/DaApplicationId"
+          },
+          "profile_id": {
+            "$ref": "#/components/schemas/Sha256Hex"
+          },
+          "coordinate": {
+            "$ref": "#/components/schemas/DaApplicationCoordinate"
+          },
+          "payload_kind": {
+            "$ref": "#/components/schemas/DaPayloadKind"
+          },
+          "payload_hash": {
+            "$ref": "#/components/schemas/Sha256Hex"
+          },
+          "payload_bytes": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "namespace_root": {
+            "$ref": "#/components/schemas/Sha256Hex"
+          },
+          "application_root": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Sha256Hex"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "share_root": {
+            "$ref": "#/components/schemas/Sha256Hex"
+          },
+          "erasure_scheme": {
+            "type": "string",
+            "enum": [
+              "DeterministicChunks",
+              "ReedSolomonV1"
+            ]
+          },
+          "original_share_count": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "encoded_share_count": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "reconstruction_threshold": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "share_size_bytes": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "share_hashes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Sha256Hex"
+            }
+          },
+          "namespace_ranges": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "namespace",
+                "section_index",
+                "record_count"
+              ],
+              "properties": {
+                "namespace": {
+                  "type": "string"
+                },
+                "section_index": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "record_count": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ApplicationDaShare": {
+        "type": "object",
+        "required": [
+          "manifest_hash",
+          "index",
+          "bytes",
+          "share_hash"
+        ],
+        "properties": {
+          "manifest_hash": {
+            "$ref": "#/components/schemas/Sha256Hex"
+          },
+          "index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "bytes": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 255
+            }
+          },
+          "share_hash": {
+            "$ref": "#/components/schemas/Sha256Hex"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ApplicationDaAvailabilityCertificate": {
+        "type": "object",
+        "required": [
+          "schema",
+          "schema_version",
+          "application_id",
+          "profile_id",
+          "coordinate",
+          "payload_kind",
+          "manifest_hash",
+          "payload_hash",
+          "namespace_root",
+          "share_root",
+          "signers"
+        ],
+        "properties": {
+          "schema": {
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "application_id": {
+            "$ref": "#/components/schemas/DaApplicationId"
+          },
+          "profile_id": {
+            "$ref": "#/components/schemas/Sha256Hex"
+          },
+          "coordinate": {
+            "$ref": "#/components/schemas/DaApplicationCoordinate"
+          },
+          "payload_kind": {
+            "$ref": "#/components/schemas/DaPayloadKind"
+          },
+          "manifest_hash": {
+            "$ref": "#/components/schemas/Sha256Hex"
+          },
+          "payload_hash": {
+            "$ref": "#/components/schemas/Sha256Hex"
+          },
+          "namespace_root": {
+            "$ref": "#/components/schemas/Sha256Hex"
+          },
+          "share_root": {
+            "$ref": "#/components/schemas/Sha256Hex"
+          },
+          "signers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ApplicationDaProductionReport": {
+        "type": "object",
+        "required": [
+          "application_id",
+          "profile_id",
+          "coordinate",
+          "manifest_hash",
+          "certificate_hash",
+          "payload_hash",
+          "namespace_root",
+          "share_root",
+          "payload_bytes",
+          "original_share_count",
+          "encoded_share_count",
+          "reconstruction_threshold",
+          "certificate_signers"
+        ],
+        "properties": {
+          "application_id": {
+            "$ref": "#/components/schemas/DaApplicationId"
+          },
+          "profile_id": {
+            "$ref": "#/components/schemas/Sha256Hex"
+          },
+          "coordinate": {
+            "$ref": "#/components/schemas/DaApplicationCoordinate"
+          },
+          "manifest_hash": {
+            "$ref": "#/components/schemas/Sha256Hex"
+          },
+          "certificate_hash": {
+            "$ref": "#/components/schemas/Sha256Hex"
+          },
+          "payload_hash": {
+            "$ref": "#/components/schemas/Sha256Hex"
+          },
+          "namespace_root": {
+            "$ref": "#/components/schemas/Sha256Hex"
+          },
+          "share_root": {
+            "$ref": "#/components/schemas/Sha256Hex"
+          },
+          "payload_bytes": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "original_share_count": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "encoded_share_count": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "reconstruction_threshold": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "certificate_signers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ApplicationDaStatusReport": {
+        "type": "object",
+        "required": [
+          "manifest_hash",
+          "manifest_available",
+          "certificate_available",
+          "expected_share_count",
+          "stored_share_count",
+          "missing_share_indices",
+          "payload_reconstructable"
+        ],
+        "properties": {
+          "manifest_hash": {
+            "$ref": "#/components/schemas/Sha256Hex"
+          },
+          "manifest_available": {
+            "type": "boolean"
+          },
+          "application_id": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DaApplicationId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "profile_id": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Sha256Hex"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "coordinate": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DaApplicationCoordinate"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "certificate_hash": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Sha256Hex"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "certificate_available": {
+            "type": "boolean"
+          },
+          "expected_share_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "stored_share_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "missing_share_indices": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "payload_reconstructable": {
+            "type": "boolean"
+          },
+          "payload_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "namespace_count": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "reconstruction_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "DaRepairStatusReport": {
+        "type": "object",
+        "required": [
+          "manifest_hash",
+          "repair_needed",
+          "missing_share_indices",
+          "pending_repair_count",
+          "payload_reconstructable"
+        ],
+        "properties": {
+          "manifest_hash": {
+            "$ref": "#/components/schemas/Sha256Hex"
+          },
+          "repair_needed": {
+            "type": "boolean"
+          },
+          "missing_share_indices": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "pending_repair_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "payload_reconstructable": {
+            "type": "boolean"
+          },
+          "reconstruction_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "ApplicationDaRetentionAuditReport": {
+        "type": "object",
+        "required": [
+          "manifest_count",
+          "expired_manifest_count",
+          "active_manifest_count",
+          "missing_policy_class_count",
+          "unsatisfied_manifest_count",
+          "entries"
+        ],
+        "properties": {
+          "manifest_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "expired_manifest_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "active_manifest_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "missing_policy_class_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unsatisfied_manifest_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ApplicationDaRetentionAuditEntry"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ApplicationDaRetentionAuditEntry": {
+        "type": "object",
+        "required": [
+          "manifest_hash",
+          "application_id",
+          "profile_id",
+          "coordinate",
+          "payload_kind",
+          "class",
+          "latest_observed_sequence",
+          "age_sequences",
+          "expired",
+          "policy_present",
+          "retain_payloads",
+          "retain_all_shares",
+          "payload_bytes",
+          "payload_within_policy_limit",
+          "payload_present",
+          "expected_share_count",
+          "stored_share_count",
+          "missing_share_count",
+          "payload_retention_satisfied",
+          "share_retention_satisfied",
+          "retention_satisfied"
+        ],
+        "properties": {
+          "manifest_hash": {
+            "$ref": "#/components/schemas/Sha256Hex"
+          },
+          "application_id": {
+            "$ref": "#/components/schemas/DaApplicationId"
+          },
+          "profile_id": {
+            "$ref": "#/components/schemas/Sha256Hex"
+          },
+          "coordinate": {
+            "$ref": "#/components/schemas/DaApplicationCoordinate"
+          },
+          "payload_kind": {
+            "$ref": "#/components/schemas/DaPayloadKind"
+          },
+          "class": {
+            "$ref": "#/components/schemas/DaApplicationRetentionClass"
+          },
+          "latest_observed_sequence": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "age_sequences": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "retention_expires_at_sequence": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "expired": {
+            "type": "boolean"
+          },
+          "policy_present": {
+            "type": "boolean"
+          },
+          "retain_payloads": {
+            "type": "boolean"
+          },
+          "retain_all_shares": {
+            "type": "boolean"
+          },
+          "min_retention_sequences": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "max_payload_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "payload_bytes": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "payload_within_policy_limit": {
+            "type": "boolean"
+          },
+          "payload_present": {
+            "type": "boolean"
+          },
+          "expected_share_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "stored_share_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "missing_share_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "payload_retention_satisfied": {
+            "type": "boolean"
+          },
+          "share_retention_satisfied": {
+            "type": "boolean"
+          },
+          "retention_satisfied": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ApplicationDaRetentionPrunePlanReport": {
+        "type": "object",
+        "required": [
+          "manifest_count",
+          "candidate_manifest_count",
+          "prunable_payload_count",
+          "prunable_share_count",
+          "prunable_payload_bytes",
+          "prunable_share_bytes",
+          "entries"
+        ],
+        "properties": {
+          "manifest_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "candidate_manifest_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "prunable_payload_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "prunable_share_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "prunable_payload_bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "prunable_share_bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ApplicationDaRetentionPrunePlanEntry"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ApplicationDaRetentionPrunePlanEntry": {
+        "type": "object",
+        "required": [
+          "manifest_hash",
+          "application_id",
+          "profile_id",
+          "coordinate",
+          "payload_kind",
+          "class",
+          "expired",
+          "payload_prunable",
+          "prunable_payload_bytes",
+          "prunable_share_indices",
+          "prunable_share_count",
+          "prunable_share_bytes"
+        ],
+        "properties": {
+          "manifest_hash": {
+            "$ref": "#/components/schemas/Sha256Hex"
+          },
+          "application_id": {
+            "$ref": "#/components/schemas/DaApplicationId"
+          },
+          "profile_id": {
+            "$ref": "#/components/schemas/Sha256Hex"
+          },
+          "coordinate": {
+            "$ref": "#/components/schemas/DaApplicationCoordinate"
+          },
+          "payload_kind": {
+            "$ref": "#/components/schemas/DaPayloadKind"
+          },
+          "class": {
+            "$ref": "#/components/schemas/DaApplicationRetentionClass"
+          },
+          "expired": {
+            "type": "boolean"
+          },
+          "retention_expires_at_sequence": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "payload_prunable": {
+            "type": "boolean"
+          },
+          "prunable_payload_bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "prunable_share_indices": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "prunable_share_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "prunable_share_bytes": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "RegisterApplicationDaProfileParams": {
+        "type": "object",
+        "required": [
+          "profile"
+        ],
+        "properties": {
+          "profile": {
+            "$ref": "#/components/schemas/DaApplicationProfile"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProduceApplicationDaBatchParams": {
+        "type": "object",
+        "required": [
+          "payload",
+          "data_share_count",
+          "parity_share_count",
+          "certificate_signers"
+        ],
+        "properties": {
+          "payload": {
+            "$ref": "#/components/schemas/ApplicationDaPayload"
+          },
+          "data_share_count": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "parity_share_count": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "certificate_signers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "ApplicationDaManifestHashParams": {
+        "type": "object",
+        "required": [
+          "manifest_hash"
+        ],
+        "properties": {
+          "manifest_hash": {
+            "$ref": "#/components/schemas/Sha256Hex"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ApplicationDaShareParams": {
+        "type": "object",
+        "required": [
+          "manifest_hash",
+          "index"
+        ],
+        "properties": {
+          "manifest_hash": {
+            "$ref": "#/components/schemas/Sha256Hex"
+          },
+          "index": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "ApplicationDaCertificateHashParams": {
+        "type": "object",
+        "required": [
+          "certificate_hash"
+        ],
+        "properties": {
+          "certificate_hash": {
+            "$ref": "#/components/schemas/Sha256Hex"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ApplicationDaNamespaceParams": {
+        "type": "object",
+        "required": [
+          "manifest_hash",
+          "namespace"
+        ],
+        "properties": {
+          "manifest_hash": {
+            "$ref": "#/components/schemas/Sha256Hex"
+          },
+          "namespace": {
+            "type": "string",
+            "maxLength": 128
+          }
+        },
+        "additionalProperties": false
+      },
+      "ApplicationDaSampleProofsParams": {
+        "type": "object",
+        "required": [
+          "manifest_hash",
+          "client_randomness",
+          "sample_count",
+          "namespaces"
+        ],
+        "properties": {
+          "manifest_hash": {
+            "$ref": "#/components/schemas/Sha256Hex"
+          },
+          "client_randomness": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "sample_count": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 128
+          },
+          "namespaces": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 128
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ApplicationDaProfileIdParams": {
+        "type": "object",
+        "required": [
+          "profile_id"
+        ],
+        "properties": {
+          "profile_id": {
+            "$ref": "#/components/schemas/Sha256Hex"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ApplicationDaApplicationIdParams": {
+        "type": "object",
+        "required": [
+          "application_id"
+        ],
+        "properties": {
+          "application_id": {
+            "$ref": "#/components/schemas/DaApplicationId"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ApplicationDaProfileVersionParams": {
+        "type": "object",
+        "required": [
+          "application_id",
+          "profile_version"
+        ],
+        "properties": {
+          "application_id": {
+            "$ref": "#/components/schemas/DaApplicationId"
+          },
+          "profile_version": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "ApplicationDaCoordinateParams": {
+        "type": "object",
+        "required": [
+          "coordinate"
+        ],
+        "properties": {
+          "coordinate": {
+            "$ref": "#/components/schemas/DaApplicationCoordinate"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ApplicationDaRetentionClassParams": {
+        "type": "object",
+        "required": [
+          "class"
+        ],
+        "properties": {
+          "class": {
+            "$ref": "#/components/schemas/DaApplicationRetentionClass"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ApplicationDaApplicationRootParams": {
+        "type": "object",
+        "required": [
+          "application_root"
+        ],
+        "properties": {
+          "application_root": {
+            "$ref": "#/components/schemas/Sha256Hex"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "examples": {
+      "RegisterApplicationDaProfileRequest": {
+        "summary": "Register a minimal social application DA profile",
+        "value": {
+          "method": "register_application_da_profile",
+          "params": {
+            "profile": {
+              "schema": "detta.da-application-profile.v1",
+              "schema_version": 1,
+              "application_id": "social.demo",
+              "profile_version": 1,
+              "profile_name": "Social Demo DA v1",
+              "da_profile": {
+                "schema": "detta.da-production-profile.v1",
+                "schema_version": 1,
+                "commitment_scheme": "MerkleSha256V1",
+                "erasure_scheme": "ReedSolomonV1",
+                "custody_mode": "DeterministicCustodyWithLightClientSampling",
+                "min_custody_share_count": 2,
+                "min_light_client_sample_count": 3,
+                "full_payload_required_for_rpc": true,
+                "receipts_are_payload_records": true,
+                "event_availability_mode": "RegeneratedFromExecutionRoots",
+                "validator_min_retention_blocks": 65536,
+                "archive_min_retention_blocks": 1048576,
+                "data_gas_bytes_per_unit": 1024,
+                "slashing_governance_mode": "TimelockedValidatorSetGovernance",
+                "archive_incentive_mode": "GovernanceRegisteredStorageProviders",
+                "mandatory_da_namespaces": [
+                  "detta.block",
+                  "detta.tx"
+                ]
+              },
+              "namespace_policies": [
+                {
+                  "namespace": "social.feed",
+                  "requirement": "Required",
+                  "allowed_record_schemas": [
+                    "social.post"
+                  ],
+                  "min_records": 1,
+                  "max_records": 10000,
+                  "retention_class": "Warm"
+                }
+              ],
+              "record_policies": [
+                {
+                  "schema": "social.post",
+                  "schema_version": 1,
+                  "allowed_namespaces": [
+                    "social.feed"
+                  ],
+                  "allowed_encodings": [
+                    "CanonicalJson"
+                  ],
+                  "max_record_bytes": 262144,
+                  "require_content_hash": true,
+                  "require_signer": true
+                }
+              ],
+              "coordinate_policy": {
+                "max_stream_id_bytes": 128,
+                "allow_epoch": true,
+                "require_parent_hash": false,
+                "require_subject_hash": false
+              },
+              "root_bindings": [
+                {
+                  "name": "social.event.log.root",
+                  "required": true
+                }
+              ],
+              "retention_policy": {
+                "default_class": "Warm",
+                "namespace_overrides": [],
+                "payload_kind_overrides": [
+                  {
+                    "payload_kind": "Batch",
+                    "retention_class": "Warm"
+                  }
+                ]
+              },
+              "validation_mode": "SchemaDecodableRecords",
+              "privacy_mode": "MixedExplicit",
+              "max_payload_bytes": 16777216,
+              "max_records_per_payload": 100000
+            }
+          }
+        }
+      },
+      "ProduceApplicationDaBatchRequest": {
+        "summary": "Submit a canonical application payload for DA production",
+        "value": {
+          "method": "produce_application_da_batch",
+          "params": {
+            "payload": {
+              "schema": "detta.application-da-payload.v1",
+              "schema_version": 1,
+              "application_id": "social.demo",
+              "profile_id": "1111111111111111111111111111111111111111111111111111111111111111",
+              "coordinate": {
+                "application_id": "social.demo",
+                "stream_id": "main",
+                "sequence": 1,
+                "epoch": 1,
+                "parent_hash": null,
+                "subject_hash": null
+              },
+              "payload_kind": "Batch",
+              "previous_payload_hash": null,
+              "application_roots": [
+                {
+                  "name": "social.event.log.root",
+                  "hash": "2222222222222222222222222222222222222222222222222222222222222222"
+                }
+              ],
+              "namespaces": [
+                {
+                  "namespace": "social.feed",
+                  "records": [
+                    {
+                      "schema": "social.post",
+                      "schema_version": 1,
+                      "content_type": "application/json",
+                      "encoding": "CanonicalJson",
+                      "bytes": [
+                        123,
+                        125
+                      ],
+                      "content_hash": "3333333333333333333333333333333333333333333333333333333333333333",
+                      "signer": "alice",
+                      "signature": "signature-1"
+                    }
+                  ]
+                }
+              ]
+            },
+            "data_share_count": 4,
+            "parity_share_count": 2,
+            "certificate_signers": [
+              "validator-1",
+              "validator-2"
+            ]
+          }
+        }
+      },
+      "GetApplicationDaRetentionAuditRequest": {
+        "summary": "Request application DA retention health",
+        "value": {
+          "method": "get_application_da_retention_audit"
+        }
+      },
+      "ApplicationDaStatusResponse": {
+        "summary": "Application DA status result",
+        "value": {
+          "status": "ok",
+          "body": {
+            "result": "application_da_status",
+            "data": {
+              "manifest_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "manifest_available": true,
+              "application_id": "social.demo",
+              "profile_id": "1111111111111111111111111111111111111111111111111111111111111111",
+              "coordinate": {
+                "application_id": "social.demo",
+                "stream_id": "main",
+                "sequence": 1,
+                "epoch": 1,
+                "parent_hash": null,
+                "subject_hash": null
+              },
+              "certificate_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "certificate_available": true,
+              "expected_share_count": 6,
+              "stored_share_count": 6,
+              "missing_share_indices": [],
+              "payload_reconstructable": true,
+              "payload_bytes": 512,
+              "namespace_count": 1,
+              "reconstruction_error": null
+            }
+          }
+        }
+      },
+      "ApplicationDaRetentionPrunePlanResponse": {
+        "summary": "Application DA prune candidates",
+        "value": {
+          "status": "ok",
+          "body": {
+            "result": "application_da_retention_prune_plan",
+            "data": {
+              "manifest_count": 2,
+              "candidate_manifest_count": 1,
+              "prunable_payload_count": 0,
+              "prunable_share_count": 6,
+              "prunable_payload_bytes": 0,
+              "prunable_share_bytes": 3072,
+              "entries": [
+                {
+                  "manifest_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "application_id": "social.demo",
+                  "profile_id": "1111111111111111111111111111111111111111111111111111111111111111",
+                  "coordinate": {
+                    "application_id": "social.demo",
+                    "stream_id": "main",
+                    "sequence": 1,
+                    "epoch": 1,
+                    "parent_hash": null,
+                    "subject_hash": null
+                  },
+                  "payload_kind": "Batch",
+                  "class": "Warm",
+                  "expired": false,
+                  "retention_expires_at_sequence": 262145,
+                  "payload_prunable": false,
+                  "prunable_payload_bytes": 0,
+                  "prunable_share_indices": [
+                    0,
+                    1,
+                    2,
+                    3,
+                    4,
+                    5
+                  ],
+                  "prunable_share_count": 6,
+                  "prunable_share_bytes": 3072
+                }
+              ]
+            }
+          }
+        }
       }
     }
   }

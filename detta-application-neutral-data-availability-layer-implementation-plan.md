@@ -904,16 +904,16 @@ Acceptance:
     retrieval RPCs.
   - [x] Add application namespace, status, sample-proof, and reconstruction
     retrieval RPCs.
-- [ ] Add request bounds and rate-limit hooks.
+- [x] Add request bounds and rate-limit hooks.
   - [x] Add request bounds for application profile ids, application ids, roots,
     and serialized coordinates.
   - [x] Add request bounds for application namespace, sampling, status, and
     reconstruction retrieval.
   - [x] Add method-specific rate-limit buckets for application DA submission and
     retrieval.
-- [ ] Extend OpenAPI schema.
+- [x] Extend OpenAPI schema.
   - [x] Add application DA method tags to the checked OpenAPI enum.
-  - [ ] Add full component schemas and endpoint examples for application DA
+  - [x] Add full component schemas and endpoint examples for application DA
     request/response bodies.
 - [x] Extend `detta-client`.
 - [x] Add social-demo client flow.
