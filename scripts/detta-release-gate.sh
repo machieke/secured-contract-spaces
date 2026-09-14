@@ -16,6 +16,7 @@ run_e2e_gate() {
       cargo test -p detta-e2e -- --test-threads=1
       ;;
     *)
+      cargo test -p detta-e2e --test application_da_client_flows -- --test-threads=1
       cargo test -p detta-e2e --test aspect_module_client_flows -- --test-threads=1
       cargo test -p detta-e2e --test aspect_amm_client_flows -- --test-threads=1
       cargo test -p detta-e2e --test full_client_flows -- --test-threads=1
@@ -92,6 +93,7 @@ scripts/detta-model-check.sh
   sha256sum -c detta-restricted-evaluator-resource-exhaustion.sha256
   sha256sum -c detta-restricted-evaluator-arithmetic-overflow.sha256
   sha256sum -c detta-restricted-evaluator-fixture-inventory.sha256
+  sha256sum -c detta-application-da-fixture-roots.sha256
   sha256sum DeTTaBlockExecution.tla
   sha256sum DeTTaBlockExecution.cfg
   sha256sum DeTTaDataAvailability.tla

@@ -1008,27 +1008,27 @@ Acceptance:
 
 Required E2E tests:
 
-- DeTTa DeFi block still finalizes with existing DA path;
-- DeTTa DeFi block can be exposed through the generic profile adapter;
-- social-demo app registers profile, submits a post payload, produces DA
+- [x] DeTTa DeFi block still finalizes with existing DA path;
+- [x] DeTTa DeFi block can be exposed through the generic profile adapter;
+- [x] social-demo app registers profile, submits a post payload, produces DA
   manifests and shares, collects DA certificate, retrieves payload, verifies
   namespace proofs, and reconstructs from threshold shares;
-- social-demo encrypted/private record is accepted only in encrypted or
+- [x] social-demo encrypted/private record is accepted only in encrypted or
   commitment-only mode;
-- social-demo public private-message record is rejected;
-- wrong profile id is rejected;
-- forbidden namespace is rejected;
-- malformed schema bytes are rejected in schema validation mode;
-- opaque payload mode accepts bytes but still enforces hash, size, namespace,
+- [x] social-demo public private-message record is rejected;
+- [x] wrong profile id is rejected;
+- [x] forbidden namespace is rejected;
+- [x] malformed schema bytes are rejected in schema validation mode;
+- [x] opaque payload mode accepts bytes but still enforces hash, size, namespace,
   and share commitments;
-- application indexes survive restart and backup/restore.
+- [x] application indexes survive restart and backup/restore.
 
 Acceptance:
 
-- generic DA can serve at least two applications in one node: `detta.defi` and
+- [x] generic DA can serve at least two applications in one node: `detta.defi` and
   `social.demo`;
-- DeTTa-specific DA tests remain green;
-- release gate includes at least one application-neutral DA flow.
+- [x] DeTTa-specific DA tests remain green;
+- [x] release gate includes at least one application-neutral DA flow.
 
 ## 17. Migration Strategy
 
