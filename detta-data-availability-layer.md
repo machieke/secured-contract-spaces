@@ -163,6 +163,41 @@ The enforced production block-payload validator rejects unsupported namespaces,
 records in the wrong namespace, multiple block headers, receipts without
 transactions, and transaction/receipt count mismatches.
 
+## External Blob Storage Adapters
+
+Application-neutral DA supports large-object integration through external blob
+reference records instead of putting bulk media bytes directly into DA payloads.
+The canonical record schema is `detta.external-blob-reference.v1`, represented
+by `DaExternalBlobReference`.
+
+The DA crate includes deterministic reference adapters for:
+
+- `IpfsAdapter`: canonical `ipfs://...` references;
+- `ArweaveAdapter`: canonical `ar://...` references;
+- `FilecoinAdapter`: canonical `filecoin://...` references.
+
+Each adapter can turn an already-uploaded blob locator plus local bytes into a
+hash-bound `ExternalContentAddress` DA record. The record commits:
+
+- backend;
+- canonical URI;
+- SHA-256 content hash of the external blob bytes;
+- MIME content type;
+- byte size;
+- optional provider/pinning/deal reference;
+- optional availability proof string.
+
+Retrieval is two-step. First, a client retrieves and verifies the DA manifest,
+payload, namespace proof, and external reference record. Then the client fetches
+the actual bytes from IPFS, Arweave, Filecoin, a gateway, or a provider API and
+calls `verify_external_blob_record` or the matching adapter's
+`verify_record_blob`. Verification rejects wrong backends, noncanonical record
+JSON, invalid URI schemes, size mismatches, and hash mismatches.
+
+This keeps DeTTa DA responsible for durable publication, indexing,
+certification, and audit commitments, while blob networks handle large-byte
+storage and serving.
+
 Fresh and restarted persistent nodes commit `DaRetentionPolicyConfig::production_default()`
 when no DA retention policy is already present. Operator-provided policies are
 left intact. `get_da_storage_stats` reports the active retention policy, its

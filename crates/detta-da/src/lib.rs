@@ -17,6 +17,7 @@ pub const DA_PRODUCTION_PROFILE_SCHEMA: &str = "detta.da-production-profile.v1";
 pub const DA_APPLICATION_PROFILE_SCHEMA: &str = "detta.da-application-profile.v1";
 pub const APPLICATION_DA_PAYLOAD_SCHEMA: &str = "detta.application-da-payload.v1";
 pub const APPLICATION_DA_MANIFEST_SCHEMA: &str = "detta.application-da-manifest.v1";
+pub const DA_EXTERNAL_BLOB_REFERENCE_SCHEMA: &str = "detta.external-blob-reference.v1";
 pub const DA_APPLICATION_VALIDATION_REPORT_SCHEMA: &str =
     "detta.da-application-validation-report.v1";
 pub const APPLICATION_DA_CODING_FRAUD_PROOF_SCHEMA: &str =
@@ -34,6 +35,10 @@ pub const DA_APPLICATION_PROFILE_NAME_MAX_BYTES: usize = 128;
 pub const DA_APPLICATION_ROOT_NAME_MAX_BYTES: usize = 128;
 pub const DA_RECORD_SCHEMA_ID_MAX_BYTES: usize = 128;
 pub const DA_RECORD_CONTENT_TYPE_MAX_BYTES: usize = 128;
+pub const DA_EXTERNAL_BLOB_URI_MAX_BYTES: usize = 2048;
+pub const DA_EXTERNAL_BLOB_PROVIDER_REFERENCE_MAX_BYTES: usize = 512;
+pub const DA_EXTERNAL_BLOB_AVAILABILITY_PROOF_MAX_BYTES: usize = 4096;
+pub const DA_EXTERNAL_BLOB_DEFAULT_MAX_BYTES: u64 = 128 * 1024 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub struct DaNamespace(pub String);
@@ -462,6 +467,375 @@ pub enum DaRecordEncoding {
     OpaqueBytes,
     EncryptedBytes,
     ExternalContentAddress,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+pub enum DaExternalBlobBackend {
+    Ipfs,
+    Arweave,
+    Filecoin,
+}
+
+impl DaExternalBlobBackend {
+    fn uri_prefix(&self) -> &'static str {
+        match self {
+            Self::Ipfs => "ipfs://",
+            Self::Arweave => "ar://",
+            Self::Filecoin => "filecoin://",
+        }
+    }
+
+    pub fn validate_uri(&self, uri: &str) -> Result<(), DaError> {
+        validate_external_blob_uri(self, uri)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaExternalBlobReference {
+    pub schema: String,
+    pub schema_version: u32,
+    pub backend: DaExternalBlobBackend,
+    pub uri: String,
+    pub content_hash: String,
+    pub content_type: String,
+    pub size_bytes: u64,
+    pub provider_reference: Option<String>,
+    pub availability_proof: Option<String>,
+}
+
+impl DaExternalBlobReference {
+    pub fn new(
+        backend: DaExternalBlobBackend,
+        uri: impl Into<String>,
+        content_hash: impl Into<String>,
+        content_type: impl Into<String>,
+        size_bytes: u64,
+        provider_reference: Option<String>,
+        availability_proof: Option<String>,
+    ) -> Result<Self, DaError> {
+        let reference = Self {
+            schema: DA_EXTERNAL_BLOB_REFERENCE_SCHEMA.into(),
+            schema_version: 1,
+            backend,
+            uri: uri.into(),
+            content_hash: content_hash.into(),
+            content_type: content_type.into(),
+            size_bytes,
+            provider_reference,
+            availability_proof,
+        };
+        reference.validate()?;
+        Ok(reference)
+    }
+
+    pub fn from_uploaded_blob(
+        backend: DaExternalBlobBackend,
+        uri: impl Into<String>,
+        content_type: impl Into<String>,
+        blob_bytes: &[u8],
+        provider_reference: Option<String>,
+        availability_proof: Option<String>,
+    ) -> Result<Self, DaError> {
+        validate_external_blob_size(DA_EXTERNAL_BLOB_DEFAULT_MAX_BYTES, blob_bytes)?;
+        Self::new(
+            backend,
+            uri,
+            hash_bytes(blob_bytes),
+            content_type,
+            u64::try_from(blob_bytes.len()).map_err(|_| {
+                DaError::InvalidPayload("external blob size does not fit u64".into())
+            })?,
+            provider_reference,
+            availability_proof,
+        )
+    }
+
+    pub fn validate(&self) -> Result<(), DaError> {
+        if self.schema != DA_EXTERNAL_BLOB_REFERENCE_SCHEMA {
+            return Err(DaError::InvalidPayload(format!(
+                "unexpected external blob reference schema {}",
+                self.schema
+            )));
+        }
+        if self.schema_version != 1 {
+            return Err(DaError::InvalidPayload(format!(
+                "unexpected external blob reference version {}",
+                self.schema_version
+            )));
+        }
+        self.backend.validate_uri(&self.uri)?;
+        validate_sha256_hex("external blob content_hash", &self.content_hash)?;
+        validate_label(
+            "external blob content_type",
+            &self.content_type,
+            DA_RECORD_CONTENT_TYPE_MAX_BYTES,
+        )?;
+        if self.size_bytes == 0 {
+            return Err(DaError::InvalidPayload(
+                "external blob size_bytes must be positive".into(),
+            ));
+        }
+        validate_optional_label(
+            "external blob provider_reference",
+            self.provider_reference.as_deref(),
+            DA_EXTERNAL_BLOB_PROVIDER_REFERENCE_MAX_BYTES,
+        )?;
+        validate_optional_label(
+            "external blob availability_proof",
+            self.availability_proof.as_deref(),
+            DA_EXTERNAL_BLOB_AVAILABILITY_PROOF_MAX_BYTES,
+        )?;
+        Ok(())
+    }
+
+    pub fn to_record_bytes(&self) -> Result<Vec<u8>, DaError> {
+        self.validate()?;
+        canonical_bytes(self)
+    }
+
+    pub fn from_record_bytes(bytes: &[u8]) -> Result<Self, DaError> {
+        let reference: Self = serde_json::from_slice(bytes).map_err(|_| DaError::DecodeFailed)?;
+        reference.validate()?;
+        if reference.to_record_bytes()? != bytes {
+            return Err(DaError::PayloadNotCanonical);
+        }
+        Ok(reference)
+    }
+
+    pub fn from_record_envelope(record: &DaRecordEnvelope) -> Result<Self, DaError> {
+        record.validate_structure()?;
+        if record.encoding != DaRecordEncoding::ExternalContentAddress {
+            return Err(DaError::InvalidPayload(format!(
+                "record envelope {} is not an external content address",
+                record.schema
+            )));
+        }
+        if record.content_type != "application/json" {
+            return Err(DaError::InvalidPayload(format!(
+                "external blob reference record {} must use application/json",
+                record.schema
+            )));
+        }
+        Self::from_record_bytes(&record.bytes)
+    }
+}
+
+pub trait DaExternalBlobAdapter {
+    fn backend(&self) -> DaExternalBlobBackend;
+    fn max_blob_bytes(&self) -> u64;
+    fn canonical_uri(&self, locator: &str) -> Result<String, DaError>;
+
+    fn commit_uploaded_blob(
+        &self,
+        locator: &str,
+        content_type: &str,
+        blob_bytes: &[u8],
+        provider_reference: Option<String>,
+        availability_proof: Option<String>,
+    ) -> Result<DaExternalBlobReference, DaError> {
+        validate_external_blob_size(self.max_blob_bytes(), blob_bytes)?;
+        DaExternalBlobReference::new(
+            self.backend(),
+            self.canonical_uri(locator)?,
+            hash_bytes(blob_bytes),
+            content_type,
+            u64::try_from(blob_bytes.len()).map_err(|_| {
+                DaError::InvalidPayload("external blob size does not fit u64".into())
+            })?,
+            provider_reference,
+            availability_proof,
+        )
+    }
+
+    fn reference_record(
+        &self,
+        record_schema: &str,
+        reference: &DaExternalBlobReference,
+        signer: Option<String>,
+        signature: Option<String>,
+    ) -> Result<DaRecordEnvelope, DaError> {
+        self.validate_reference(reference)?;
+        DaRecordEnvelope::new(
+            record_schema,
+            1,
+            "application/json",
+            DaRecordEncoding::ExternalContentAddress,
+            reference.to_record_bytes()?,
+            signer,
+            signature,
+        )
+    }
+
+    fn validate_reference(&self, reference: &DaExternalBlobReference) -> Result<(), DaError> {
+        reference.validate()?;
+        if reference.backend != self.backend() {
+            return Err(DaError::InvalidPayload(
+                "external blob reference backend does not match adapter".into(),
+            ));
+        }
+        if reference.size_bytes > self.max_blob_bytes() {
+            return Err(DaError::InvalidPayload(
+                "external blob reference exceeds adapter max_blob_bytes".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn verify_retrieved_blob(
+        &self,
+        reference: &DaExternalBlobReference,
+        blob_bytes: &[u8],
+    ) -> Result<(), DaError> {
+        self.validate_reference(reference)?;
+        validate_external_blob_size(self.max_blob_bytes(), blob_bytes)?;
+        let actual_size = u64::try_from(blob_bytes.len())
+            .map_err(|_| DaError::InvalidPayload("external blob size does not fit u64".into()))?;
+        if reference.size_bytes != actual_size {
+            return Err(DaError::InvalidPayload(format!(
+                "external blob size mismatch: expected {}, got {actual_size}",
+                reference.size_bytes
+            )));
+        }
+        let actual_hash = hash_bytes(blob_bytes);
+        if reference.content_hash != actual_hash {
+            return Err(DaError::PayloadHashMismatch {
+                expected: reference.content_hash.clone(),
+                actual: actual_hash,
+            });
+        }
+        Ok(())
+    }
+
+    fn verify_record_blob(
+        &self,
+        record: &DaRecordEnvelope,
+        blob_bytes: &[u8],
+    ) -> Result<DaExternalBlobReference, DaError> {
+        let reference = DaExternalBlobReference::from_record_envelope(record)?;
+        self.verify_retrieved_blob(&reference, blob_bytes)?;
+        Ok(reference)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IpfsAdapter {
+    max_blob_bytes: u64,
+}
+
+impl Default for IpfsAdapter {
+    fn default() -> Self {
+        Self {
+            max_blob_bytes: DA_EXTERNAL_BLOB_DEFAULT_MAX_BYTES,
+        }
+    }
+}
+
+impl IpfsAdapter {
+    pub fn new(max_blob_bytes: u64) -> Result<Self, DaError> {
+        validate_external_blob_max_bytes(max_blob_bytes)?;
+        Ok(Self { max_blob_bytes })
+    }
+}
+
+impl DaExternalBlobAdapter for IpfsAdapter {
+    fn backend(&self) -> DaExternalBlobBackend {
+        DaExternalBlobBackend::Ipfs
+    }
+
+    fn max_blob_bytes(&self) -> u64 {
+        self.max_blob_bytes
+    }
+
+    fn canonical_uri(&self, locator: &str) -> Result<String, DaError> {
+        canonical_external_blob_uri(DaExternalBlobBackend::Ipfs, locator)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ArweaveAdapter {
+    max_blob_bytes: u64,
+}
+
+impl Default for ArweaveAdapter {
+    fn default() -> Self {
+        Self {
+            max_blob_bytes: DA_EXTERNAL_BLOB_DEFAULT_MAX_BYTES,
+        }
+    }
+}
+
+impl ArweaveAdapter {
+    pub fn new(max_blob_bytes: u64) -> Result<Self, DaError> {
+        validate_external_blob_max_bytes(max_blob_bytes)?;
+        Ok(Self { max_blob_bytes })
+    }
+}
+
+impl DaExternalBlobAdapter for ArweaveAdapter {
+    fn backend(&self) -> DaExternalBlobBackend {
+        DaExternalBlobBackend::Arweave
+    }
+
+    fn max_blob_bytes(&self) -> u64 {
+        self.max_blob_bytes
+    }
+
+    fn canonical_uri(&self, locator: &str) -> Result<String, DaError> {
+        canonical_external_blob_uri(DaExternalBlobBackend::Arweave, locator)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FilecoinAdapter {
+    max_blob_bytes: u64,
+}
+
+impl Default for FilecoinAdapter {
+    fn default() -> Self {
+        Self {
+            max_blob_bytes: DA_EXTERNAL_BLOB_DEFAULT_MAX_BYTES,
+        }
+    }
+}
+
+impl FilecoinAdapter {
+    pub fn new(max_blob_bytes: u64) -> Result<Self, DaError> {
+        validate_external_blob_max_bytes(max_blob_bytes)?;
+        Ok(Self { max_blob_bytes })
+    }
+}
+
+impl DaExternalBlobAdapter for FilecoinAdapter {
+    fn backend(&self) -> DaExternalBlobBackend {
+        DaExternalBlobBackend::Filecoin
+    }
+
+    fn max_blob_bytes(&self) -> u64 {
+        self.max_blob_bytes
+    }
+
+    fn canonical_uri(&self, locator: &str) -> Result<String, DaError> {
+        canonical_external_blob_uri(DaExternalBlobBackend::Filecoin, locator)
+    }
+}
+
+pub fn verify_external_blob_record(
+    record: &DaRecordEnvelope,
+    blob_bytes: &[u8],
+) -> Result<DaExternalBlobReference, DaError> {
+    let reference = DaExternalBlobReference::from_record_envelope(record)?;
+    match reference.backend {
+        DaExternalBlobBackend::Ipfs => {
+            IpfsAdapter::default().verify_retrieved_blob(&reference, blob_bytes)?
+        }
+        DaExternalBlobBackend::Arweave => {
+            ArweaveAdapter::default().verify_retrieved_blob(&reference, blob_bytes)?
+        }
+        DaExternalBlobBackend::Filecoin => {
+            FilecoinAdapter::default().verify_retrieved_blob(&reference, blob_bytes)?
+        }
+    }
+    Ok(reference)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
@@ -5801,6 +6175,104 @@ fn validate_optional_sha256_hex(field: &str, value: Option<&str>) -> Result<(), 
     Ok(())
 }
 
+fn validate_external_blob_max_bytes(max_blob_bytes: u64) -> Result<(), DaError> {
+    if max_blob_bytes == 0 {
+        return Err(DaError::InvalidManifest(
+            "external blob adapter max_blob_bytes must be positive".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_external_blob_size(max_blob_bytes: u64, blob_bytes: &[u8]) -> Result<(), DaError> {
+    validate_external_blob_max_bytes(max_blob_bytes)?;
+    if blob_bytes.is_empty() {
+        return Err(DaError::InvalidPayload(
+            "external blob bytes must be nonempty".into(),
+        ));
+    }
+    let actual_size = u64::try_from(blob_bytes.len())
+        .map_err(|_| DaError::InvalidPayload("external blob size does not fit u64".into()))?;
+    if actual_size > max_blob_bytes {
+        return Err(DaError::InvalidPayload(format!(
+            "external blob size {actual_size} exceeds adapter max_blob_bytes {max_blob_bytes}"
+        )));
+    }
+    Ok(())
+}
+
+fn canonical_external_blob_uri(
+    backend: DaExternalBlobBackend,
+    locator: &str,
+) -> Result<String, DaError> {
+    let prefix = backend.uri_prefix();
+    if locator.starts_with(prefix) {
+        validate_external_blob_uri(&backend, locator)?;
+        return Ok(locator.to_string());
+    }
+    if locator.contains("://") {
+        return Err(DaError::InvalidPayload(format!(
+            "external blob locator must use {} URIs for {:?}",
+            prefix.trim_end_matches("://"),
+            backend
+        )));
+    }
+    validate_external_blob_locator("external blob locator", locator)?;
+    let uri = format!("{prefix}{locator}");
+    validate_external_blob_uri(&backend, &uri)?;
+    Ok(uri)
+}
+
+fn validate_external_blob_uri(backend: &DaExternalBlobBackend, uri: &str) -> Result<(), DaError> {
+    let prefix = backend.uri_prefix();
+    if !uri.starts_with(prefix) {
+        return Err(DaError::InvalidPayload(format!(
+            "external blob URI {uri} does not use required prefix {prefix}"
+        )));
+    }
+    validate_external_blob_uri_text("external blob URI", uri)?;
+    validate_external_blob_locator("external blob URI locator", &uri[prefix.len()..])
+}
+
+fn validate_external_blob_uri_text(field: &str, value: &str) -> Result<(), DaError> {
+    if value.is_empty()
+        || value.len() > DA_EXTERNAL_BLOB_URI_MAX_BYTES
+        || value.trim() != value
+        || value
+            .bytes()
+            .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
+        || value.contains("..")
+        || value.contains('?')
+        || value.contains('#')
+    {
+        return Err(DaError::InvalidPayload(format!(
+            "{field} must be a nonempty canonical URI without whitespace, traversal, query, or fragment"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_external_blob_locator(field: &str, value: &str) -> Result<(), DaError> {
+    if value.is_empty()
+        || value.len() > DA_EXTERNAL_BLOB_URI_MAX_BYTES
+        || value.trim() != value
+        || value
+            .bytes()
+            .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
+        || value.starts_with('/')
+        || value.ends_with('/')
+        || value.contains("//")
+        || value.contains("..")
+        || value.contains('?')
+        || value.contains('#')
+    {
+        return Err(DaError::InvalidPayload(format!(
+            "{field} must be a nonempty canonical URI/locator without whitespace, traversal, query, or fragment"
+        )));
+    }
+    Ok(())
+}
+
 fn validate_sorted_unique_schema_ids(field: &str, values: &[String]) -> Result<(), DaError> {
     if values.is_empty() {
         return Err(DaError::InvalidManifest(format!(
@@ -7105,6 +7577,213 @@ mod tests {
             DaApplicationId::new(oversized),
             Err(DaError::InvalidNamespace(_))
         ));
+    }
+
+    #[test]
+    fn external_blob_adapters_commit_reference_records_and_verify_retrieval() {
+        fn assert_adapter<A: DaExternalBlobAdapter>(
+            adapter: &A,
+            locator: &str,
+            expected_uri: &str,
+        ) {
+            let bytes = b"avatar-icon-webp-bytes";
+            let reference = adapter
+                .commit_uploaded_blob(
+                    locator,
+                    "image/webp",
+                    bytes,
+                    Some("provider.pin.1".into()),
+                    Some("availability-proof-1".into()),
+                )
+                .unwrap();
+            assert_eq!(reference.backend, adapter.backend());
+            assert_eq!(reference.uri, expected_uri);
+            assert_eq!(reference.content_hash, hash_bytes(bytes));
+            assert_eq!(reference.size_bytes, bytes.len() as u64);
+            adapter.verify_retrieved_blob(&reference, bytes).unwrap();
+
+            let record = adapter
+                .reference_record(
+                    "social.media.reference",
+                    &reference,
+                    Some("alice".into()),
+                    Some("sig-alice".into()),
+                )
+                .unwrap();
+            assert_eq!(record.encoding, DaRecordEncoding::ExternalContentAddress);
+            assert_eq!(record.content_type, "application/json");
+            assert_eq!(
+                DaExternalBlobReference::from_record_envelope(&record).unwrap(),
+                reference
+            );
+            assert_eq!(
+                adapter.verify_record_blob(&record, bytes).unwrap(),
+                reference
+            );
+            assert_eq!(
+                verify_external_blob_record(&record, bytes).unwrap(),
+                reference
+            );
+
+            let mut tampered = bytes.to_vec();
+            tampered.push(0);
+            assert!(matches!(
+                adapter.verify_retrieved_blob(&reference, &tampered),
+                Err(DaError::InvalidPayload(_)) | Err(DaError::PayloadHashMismatch { .. })
+            ));
+        }
+
+        assert_adapter(
+            &IpfsAdapter::default(),
+            "bafyavatarcid",
+            "ipfs://bafyavatarcid",
+        );
+        assert_adapter(
+            &IpfsAdapter::default(),
+            "ipfs://bafyavatarcid/path/avatar.webp",
+            "ipfs://bafyavatarcid/path/avatar.webp",
+        );
+        assert_adapter(
+            &ArweaveAdapter::default(),
+            "ar-avatar-tx",
+            "ar://ar-avatar-tx",
+        );
+        assert_adapter(
+            &FilecoinAdapter::default(),
+            "deal-1234/piece-bafyavatar",
+            "filecoin://deal-1234/piece-bafyavatar",
+        );
+    }
+
+    #[test]
+    fn external_blob_adapters_reject_wrong_schemes_limits_and_noncanonical_records() {
+        let bytes = b"avatar-icon";
+        assert!(matches!(
+            IpfsAdapter::default().commit_uploaded_blob(
+                "https://gateway.example/ipfs/bafyavatar",
+                "image/png",
+                bytes,
+                None,
+                None,
+            ),
+            Err(DaError::InvalidPayload(_))
+        ));
+        assert!(matches!(
+            IpfsAdapter::new(0),
+            Err(DaError::InvalidManifest(_))
+        ));
+        let tiny_adapter = IpfsAdapter::new(4).unwrap();
+        assert!(matches!(
+            tiny_adapter.commit_uploaded_blob("bafyavatar", "image/png", bytes, None, None),
+            Err(DaError::InvalidPayload(_))
+        ));
+
+        let reference = ArweaveAdapter::default()
+            .commit_uploaded_blob("ar-avatar-tx", "image/png", bytes, None, None)
+            .unwrap();
+        assert!(matches!(
+            IpfsAdapter::default().verify_retrieved_blob(&reference, bytes),
+            Err(DaError::InvalidPayload(_))
+        ));
+        assert!(matches!(
+            DaExternalBlobReference::new(
+                DaExternalBlobBackend::Filecoin,
+                "ipfs://bafyavatar",
+                hash_bytes(bytes),
+                "image/png",
+                bytes.len() as u64,
+                None,
+                None,
+            ),
+            Err(DaError::InvalidPayload(_))
+        ));
+
+        let noncanonical = br#"{
+            "schema":"detta.external-blob-reference.v1",
+            "schema_version":1,
+            "backend":"Ipfs",
+            "uri":"ipfs://bafyavatar",
+            "content_hash":"0000000000000000000000000000000000000000000000000000000000000000",
+            "content_type":"image/png",
+            "size_bytes":1,
+            "provider_reference":null,
+            "availability_proof":null
+        }"#;
+        assert!(matches!(
+            DaRecordEnvelope::new(
+                "social.media.reference",
+                1,
+                "application/json",
+                DaRecordEncoding::ExternalContentAddress,
+                noncanonical.to_vec(),
+                None,
+                None,
+            )
+            .and_then(|record| DaExternalBlobReference::from_record_envelope(&record)),
+            Err(DaError::PayloadNotCanonical)
+        ));
+    }
+
+    #[test]
+    fn social_media_payload_can_commit_ipfs_avatar_reference() {
+        let profile = DaApplicationProfile::social_demo_v1();
+        let avatar_bytes = b"small-avatar-icon";
+        let adapter = IpfsAdapter::default();
+        let avatar_reference = adapter
+            .commit_uploaded_blob(
+                "bafybeigdyrzt-avatar",
+                "image/png",
+                avatar_bytes,
+                Some("pinset.social.demo".into()),
+                Some("pinset-root-1".into()),
+            )
+            .unwrap();
+        let sections = vec![
+            application_section(
+                "social.feed",
+                vec![application_record(
+                    "social.post",
+                    DaRecordEncoding::CanonicalJson,
+                    br#"{"author":"alice","post_id":"avatar-1","text":"avatar updated"}"#,
+                    Some("alice"),
+                )],
+            ),
+            application_section(
+                "social.media",
+                vec![adapter
+                    .reference_record("social.media.reference", &avatar_reference, None, None)
+                    .unwrap()],
+            ),
+        ];
+        let event_log_root = application_event_log_root_for_sections(&sections).unwrap();
+        let payload = ApplicationDaPayload::new(
+            &profile,
+            social_coordinate(1),
+            DaPayloadKind::MediaManifest,
+            None,
+            vec![DaApplicationRoot::new("social.event.log.root", event_log_root).unwrap()],
+            sections,
+        )
+        .unwrap();
+        let report = SchemaApplicationValidator::new(&profile)
+            .unwrap()
+            .validate_payload(&profile, &payload, None)
+            .unwrap();
+        assert_eq!(report.payload_kind, DaPayloadKind::MediaManifest);
+
+        let canonical = payload.canonicalized();
+        let media_record = canonical
+            .namespaces
+            .iter()
+            .find(|section| section.namespace.0 == "social.media")
+            .unwrap()
+            .records
+            .first()
+            .unwrap();
+        assert_eq!(
+            verify_external_blob_record(media_record, avatar_bytes).unwrap(),
+            avatar_reference
+        );
     }
 
     #[test]

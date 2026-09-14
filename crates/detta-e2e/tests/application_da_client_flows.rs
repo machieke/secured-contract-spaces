@@ -1,9 +1,10 @@
 use detta_core::{Block, Method};
 use detta_da::{
-    verify_application_share_against_manifest, ApplicationDaNamespaceSection, ApplicationDaPayload,
-    DaApplicationCoordinate, DaApplicationId, DaApplicationPrivacyMode, DaApplicationProfile,
-    DaApplicationRetentionClass, DaApplicationRoot, DaApplicationValidationMode, DaNamespace,
-    DaNamespacePolicy, DaNamespaceRequirement, DaPayloadKind, DaRecordEncoding, DaRecordEnvelope,
+    verify_application_share_against_manifest, verify_external_blob_record,
+    ApplicationDaNamespaceSection, ApplicationDaPayload, DaApplicationCoordinate, DaApplicationId,
+    DaApplicationPrivacyMode, DaApplicationProfile, DaApplicationRetentionClass, DaApplicationRoot,
+    DaApplicationValidationMode, DaExternalBlobAdapter, DaNamespace, DaNamespacePolicy,
+    DaNamespaceRequirement, DaPayloadKind, DaRecordEncoding, DaRecordEnvelope, IpfsAdapter,
 };
 use detta_e2e::client::TcpRpcClient;
 use detta_e2e::fixtures::{
@@ -548,6 +549,46 @@ fn client_application_da_indexes_survive_restart_and_backup_restore() {
     restore_server.join().unwrap();
 }
 
+#[test]
+fn client_stores_social_avatar_reference_and_verifies_retrieved_ipfs_blob() {
+    let dir = temp_dir("application-da-avatar-reference");
+    let node = PersistentValidatorNode::bootstrap("validator-1", defi_genesis_state(), dir.path())
+        .unwrap();
+    let (addr, server) = spawn_tcp_persistent_node(node).unwrap();
+    let mut client = TcpRpcClient::connect(addr).unwrap();
+    let profile = DaApplicationProfile::social_demo_v1();
+    register_application_profile(&mut client, &profile);
+
+    let avatar_bytes = b"small-avatar-icon-webp";
+    let adapter = IpfsAdapter::default();
+    let payload = social_avatar_reference_payload(&profile, &adapter, avatar_bytes);
+    let report = produce_application_batch(&mut client, payload.clone());
+
+    let retrieved = application_payload(&mut client, &report.manifest_hash);
+    assert_eq!(retrieved, payload.canonicalized());
+    let media_record = retrieved
+        .namespaces
+        .iter()
+        .find(|section| section.namespace.0 == "social.media")
+        .unwrap()
+        .records
+        .first()
+        .unwrap();
+    let reference = verify_external_blob_record(media_record, avatar_bytes).unwrap();
+    assert_eq!(reference.backend, adapter.backend());
+    assert_eq!(reference.uri, "ipfs://bafyavatarcid");
+    assert_eq!(reference.content_type, "image/webp");
+    assert_eq!(reference.size_bytes, avatar_bytes.len() as u64);
+
+    let mut tampered_avatar = avatar_bytes.to_vec();
+    tampered_avatar.push(0x01);
+    assert!(verify_external_blob_record(media_record, &tampered_avatar).is_err());
+
+    client.close();
+    server.join().unwrap();
+    std::fs::remove_dir_all(dir.path()).unwrap();
+}
+
 fn social_demo_payload(profile: &DaApplicationProfile) -> ApplicationDaPayload {
     social_feed_payload(
         profile,
@@ -704,6 +745,47 @@ fn opaque_demo_payload(profile: &DaApplicationProfile, bytes: Vec<u8>) -> Applic
                 Some("alice"),
             )],
         )],
+    )
+    .unwrap()
+}
+
+fn social_avatar_reference_payload(
+    profile: &DaApplicationProfile,
+    adapter: &IpfsAdapter,
+    avatar_bytes: &[u8],
+) -> ApplicationDaPayload {
+    let avatar_reference = adapter
+        .commit_uploaded_blob(
+            "bafyavatarcid",
+            "image/webp",
+            avatar_bytes,
+            Some("pinset.social.demo".into()),
+            Some("pinset-root-1".into()),
+        )
+        .unwrap();
+    ApplicationDaPayload::new(
+        profile,
+        social_coordinate(profile, "user:alice.avatar", 1),
+        DaPayloadKind::MediaManifest,
+        None,
+        vec![DaApplicationRoot::new("social.event.log.root", "11".repeat(32)).unwrap()],
+        vec![
+            application_section(
+                "social.feed",
+                vec![application_record(
+                    "social.post",
+                    DaRecordEncoding::CanonicalJson,
+                    br#"{"author":"alice","post_id":"avatar-1","text":"avatar updated"}"#,
+                    Some("alice"),
+                )],
+            ),
+            application_section(
+                "social.media",
+                vec![adapter
+                    .reference_record("social.media.reference", &avatar_reference, None, None)
+                    .unwrap()],
+            ),
+        ],
     )
     .unwrap()
 }

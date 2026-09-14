@@ -120,6 +120,10 @@ The current implementation includes slices for:
   production finality mode, and DA
   retrieval/production RPCs on
   `experimental/data-availability-layer`.
+- application-neutral external blob reference adapters for IPFS, Arweave, and
+  Filecoin, where DeTTa DA commits the canonical URI, content hash, size, MIME
+  type, provider reference, and availability proof while external blob networks
+  serve the large bytes.
 
 The production roadmap and progress tracker live in
 `detta-production-implementation-plan.md`.
