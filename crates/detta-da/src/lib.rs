@@ -12,6 +12,7 @@ pub const DA_SAMPLE_PROOF_SCHEMA: &str = "detta.da-sample-proof.v1";
 pub const DA_CODING_FRAUD_PROOF_SCHEMA: &str = "detta.da-coding-fraud-proof.v1";
 pub const DA_PAYLOAD_SCHEMA: &str = "detta.da-payload.v1";
 pub const DA_PRODUCTION_PROFILE_SCHEMA: &str = "detta.da-production-profile.v1";
+pub const DA_APPLICATION_PROFILE_SCHEMA: &str = "detta.da-application-profile.v1";
 pub const DA_PAYLOAD_VERSION: u32 = 1;
 pub const REED_SOLOMON_MAX_SHARES: u32 = 256;
 pub const DA_V1_MIN_CUSTODY_SHARE_COUNT: u32 = 2;
@@ -19,6 +20,12 @@ pub const DA_V1_MIN_LIGHT_CLIENT_SAMPLE_COUNT: u32 = 3;
 pub const DA_V1_DATA_GAS_BYTES_PER_UNIT: u64 = 1024;
 pub const DA_V1_VALIDATOR_MIN_RETENTION_BLOCKS: u64 = 65_536;
 pub const DA_V1_ARCHIVE_MIN_RETENTION_BLOCKS: u64 = 1_048_576;
+pub const DA_APPLICATION_ID_MAX_BYTES: usize = 128;
+pub const DA_APPLICATION_STREAM_ID_MAX_BYTES: usize = 128;
+pub const DA_APPLICATION_PROFILE_NAME_MAX_BYTES: usize = 128;
+pub const DA_APPLICATION_ROOT_NAME_MAX_BYTES: usize = 128;
+pub const DA_RECORD_SCHEMA_ID_MAX_BYTES: usize = 128;
+pub const DA_RECORD_CONTENT_TYPE_MAX_BYTES: usize = 128;
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub struct DaNamespace(pub String);
@@ -37,6 +44,10 @@ impl DaNamespace {
             return Err(DaError::InvalidNamespace(value));
         }
         Ok(Self(value))
+    }
+
+    pub fn validate(&self) -> Result<(), DaError> {
+        DaNamespace::new(self.0.clone()).map(|_| ())
     }
 }
 
@@ -193,6 +204,7 @@ pub enum DaRecord {
         chunk_hash: String,
         bytes: Vec<u8>,
     },
+    Application(DaRecordEnvelope),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -352,6 +364,957 @@ impl DaProductionProfile {
     pub fn data_gas_for_bytes(&self, payload_bytes: u64) -> Result<u64, DaError> {
         self.validate()?;
         Ok(payload_bytes.div_ceil(self.data_gas_bytes_per_unit))
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+pub struct DaApplicationId(pub String);
+
+impl DaApplicationId {
+    pub fn new(value: impl Into<String>) -> Result<Self, DaError> {
+        let value = value.into();
+        validate_application_id(&value)?;
+        Ok(Self(value))
+    }
+
+    pub fn validate(&self) -> Result<(), DaError> {
+        validate_application_id(&self.0)
+    }
+}
+
+impl From<DaApplicationId> for String {
+    fn from(application_id: DaApplicationId) -> Self {
+        application_id.0
+    }
+}
+
+fn application_id_unchecked(value: &str) -> DaApplicationId {
+    DaApplicationId::new(value).expect("checked-in DA application ids must be valid")
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaApplicationCoordinate {
+    pub application_id: DaApplicationId,
+    pub stream_id: String,
+    pub sequence: u64,
+    pub epoch: Option<u64>,
+    pub parent_hash: Option<String>,
+    pub subject_hash: Option<String>,
+}
+
+impl DaApplicationCoordinate {
+    pub fn validate(&self, policy: &DaCoordinatePolicy) -> Result<(), DaError> {
+        self.application_id.validate()?;
+        validate_stream_id(&self.stream_id, policy.max_stream_id_bytes as usize)?;
+        if !policy.allow_epoch && self.epoch.is_some() {
+            return Err(DaError::InvalidManifest(
+                "application coordinate carries an epoch but the profile forbids epochs".into(),
+            ));
+        }
+        if policy.require_parent_hash && self.parent_hash.is_none() {
+            return Err(DaError::InvalidManifest(
+                "application coordinate is missing required parent_hash".into(),
+            ));
+        }
+        if policy.require_subject_hash && self.subject_hash.is_none() {
+            return Err(DaError::InvalidManifest(
+                "application coordinate is missing required subject_hash".into(),
+            ));
+        }
+        validate_optional_hash("parent_hash", self.parent_hash.as_deref())?;
+        validate_optional_hash("subject_hash", self.subject_hash.as_deref())?;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+pub enum DaPayloadKind {
+    Block,
+    Batch,
+    Checkpoint,
+    Snapshot,
+    MediaManifest,
+    ModerationLog,
+    IndexDelta,
+    ApplicationDefined(String),
+}
+
+impl DaPayloadKind {
+    pub fn validate(&self) -> Result<(), DaError> {
+        if let Self::ApplicationDefined(value) = self {
+            validate_schema_id("application payload kind", value)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+pub enum DaRecordEncoding {
+    CanonicalJson,
+    OpaqueBytes,
+    EncryptedBytes,
+    ExternalContentAddress,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+pub enum DaNamespaceRequirement {
+    Required,
+    Optional,
+    Forbidden,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+pub enum DaApplicationRetentionClass {
+    Hot,
+    Warm,
+    Cold,
+    Archive,
+    Checkpoint,
+    Custom(String),
+}
+
+impl DaApplicationRetentionClass {
+    pub fn validate(&self) -> Result<(), DaError> {
+        if let Self::Custom(value) = self {
+            validate_schema_id("application retention class", value)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum DaApplicationValidationMode {
+    OpaqueBytes,
+    SchemaDecodableRecords,
+    ApplicationAdapterVerified,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum DaApplicationPrivacyMode {
+    Public,
+    Encrypted,
+    CommitmentOnly,
+    MixedExplicit,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaNamespacePolicy {
+    pub namespace: DaNamespace,
+    pub requirement: DaNamespaceRequirement,
+    pub allowed_record_schemas: Vec<String>,
+    pub min_records: u32,
+    pub max_records: u32,
+    pub retention_class: DaApplicationRetentionClass,
+}
+
+impl DaNamespacePolicy {
+    pub fn validate(&self) -> Result<(), DaError> {
+        self.namespace.validate()?;
+        self.retention_class.validate()?;
+        match self.requirement {
+            DaNamespaceRequirement::Forbidden => {
+                if self.min_records != 0
+                    || self.max_records != 0
+                    || !self.allowed_record_schemas.is_empty()
+                {
+                    return Err(DaError::InvalidManifest(format!(
+                        "forbidden namespace {} cannot allow records",
+                        self.namespace.0
+                    )));
+                }
+            }
+            DaNamespaceRequirement::Required | DaNamespaceRequirement::Optional => {
+                if self.max_records == 0 || self.min_records > self.max_records {
+                    return Err(DaError::InvalidManifest(format!(
+                        "namespace {} has invalid record bounds",
+                        self.namespace.0
+                    )));
+                }
+                if self.requirement == DaNamespaceRequirement::Required && self.min_records == 0 {
+                    return Err(DaError::InvalidManifest(format!(
+                        "required namespace {} must require at least one record",
+                        self.namespace.0
+                    )));
+                }
+                validate_sorted_unique_schema_ids(
+                    "namespace allowed_record_schemas",
+                    &self.allowed_record_schemas,
+                )?;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaRecordPolicy {
+    pub schema: String,
+    pub schema_version: u32,
+    pub allowed_namespaces: Vec<DaNamespace>,
+    pub allowed_encodings: Vec<DaRecordEncoding>,
+    pub max_record_bytes: u64,
+    pub require_content_hash: bool,
+    pub require_signer: bool,
+}
+
+impl DaRecordPolicy {
+    pub fn validate(&self) -> Result<(), DaError> {
+        validate_schema_id("record schema", &self.schema)?;
+        if self.schema_version == 0 {
+            return Err(DaError::InvalidManifest(format!(
+                "record schema {} has version 0",
+                self.schema
+            )));
+        }
+        if self.max_record_bytes == 0 {
+            return Err(DaError::InvalidManifest(format!(
+                "record schema {} has max_record_bytes 0",
+                self.schema
+            )));
+        }
+        if self.allowed_namespaces.is_empty() {
+            return Err(DaError::InvalidManifest(format!(
+                "record schema {} has no allowed namespaces",
+                self.schema
+            )));
+        }
+        validate_sorted_unique_namespaces(&self.allowed_namespaces)?;
+        if self.allowed_encodings.is_empty() {
+            return Err(DaError::InvalidManifest(format!(
+                "record schema {} has no allowed encodings",
+                self.schema
+            )));
+        }
+        validate_sorted_unique_record_encodings(&self.allowed_encodings)?;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaCoordinatePolicy {
+    pub max_stream_id_bytes: u32,
+    pub allow_epoch: bool,
+    pub require_parent_hash: bool,
+    pub require_subject_hash: bool,
+}
+
+impl DaCoordinatePolicy {
+    pub fn validate(&self) -> Result<(), DaError> {
+        if self.max_stream_id_bytes == 0
+            || self.max_stream_id_bytes as usize > DA_APPLICATION_STREAM_ID_MAX_BYTES
+        {
+            return Err(DaError::InvalidManifest(
+                "coordinate max_stream_id_bytes is outside supported bounds".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaApplicationRootPolicy {
+    pub name: String,
+    pub required: bool,
+}
+
+impl DaApplicationRootPolicy {
+    pub fn validate(&self) -> Result<(), DaError> {
+        validate_root_name(&self.name)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaNamespaceRetentionPolicy {
+    pub namespace: DaNamespace,
+    pub retention_class: DaApplicationRetentionClass,
+}
+
+impl DaNamespaceRetentionPolicy {
+    pub fn validate(&self) -> Result<(), DaError> {
+        self.namespace.validate()?;
+        self.retention_class.validate()
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaPayloadKindRetentionPolicy {
+    pub payload_kind: DaPayloadKind,
+    pub retention_class: DaApplicationRetentionClass,
+}
+
+impl DaPayloadKindRetentionPolicy {
+    pub fn validate(&self) -> Result<(), DaError> {
+        self.payload_kind.validate()?;
+        self.retention_class.validate()
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaApplicationRetentionPolicy {
+    pub default_class: DaApplicationRetentionClass,
+    pub namespace_overrides: Vec<DaNamespaceRetentionPolicy>,
+    pub payload_kind_overrides: Vec<DaPayloadKindRetentionPolicy>,
+}
+
+impl DaApplicationRetentionPolicy {
+    pub fn validate(&self) -> Result<(), DaError> {
+        self.default_class.validate()?;
+        validate_sorted_unique_namespace_retention_policies(&self.namespace_overrides)?;
+        for override_policy in &self.namespace_overrides {
+            override_policy.validate()?;
+        }
+        validate_sorted_unique_payload_kind_retention_policies(&self.payload_kind_overrides)?;
+        for override_policy in &self.payload_kind_overrides {
+            override_policy.validate()?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaApplicationProfile {
+    pub schema: String,
+    pub schema_version: u32,
+    pub application_id: DaApplicationId,
+    pub profile_version: u32,
+    pub profile_name: String,
+    pub da_profile: DaProductionProfile,
+    pub namespace_policies: Vec<DaNamespacePolicy>,
+    pub record_policies: Vec<DaRecordPolicy>,
+    pub coordinate_policy: DaCoordinatePolicy,
+    pub root_bindings: Vec<DaApplicationRootPolicy>,
+    pub retention_policy: DaApplicationRetentionPolicy,
+    pub validation_mode: DaApplicationValidationMode,
+    pub privacy_mode: DaApplicationPrivacyMode,
+    pub max_payload_bytes: u64,
+    pub max_records_per_payload: u32,
+}
+
+impl DaApplicationProfile {
+    pub fn profile_hash(&self) -> Result<String, DaError> {
+        self.validate()?;
+        hash_canonical(self)
+    }
+
+    pub fn profile_id(&self) -> Result<String, DaError> {
+        self.profile_hash()
+    }
+
+    pub fn canonicalized(&self) -> Self {
+        let mut profile = self.clone();
+        profile
+            .namespace_policies
+            .sort_by(|left, right| left.namespace.cmp(&right.namespace));
+        for policy in &mut profile.namespace_policies {
+            policy.allowed_record_schemas.sort();
+        }
+        profile.record_policies.sort_by(|left, right| {
+            left.schema
+                .cmp(&right.schema)
+                .then(left.schema_version.cmp(&right.schema_version))
+        });
+        for policy in &mut profile.record_policies {
+            policy.allowed_namespaces.sort();
+            policy.allowed_encodings.sort();
+        }
+        profile
+            .root_bindings
+            .sort_by(|left, right| left.name.cmp(&right.name));
+        profile
+            .retention_policy
+            .namespace_overrides
+            .sort_by(|left, right| left.namespace.cmp(&right.namespace));
+        profile
+            .retention_policy
+            .payload_kind_overrides
+            .sort_by(|left, right| left.payload_kind.cmp(&right.payload_kind));
+        profile
+    }
+
+    pub fn validate(&self) -> Result<(), DaError> {
+        if self.schema != DA_APPLICATION_PROFILE_SCHEMA {
+            return Err(DaError::InvalidManifest(format!(
+                "unexpected application DA profile schema {}",
+                self.schema
+            )));
+        }
+        if self.schema_version != 1 {
+            return Err(DaError::InvalidManifest(format!(
+                "unexpected application DA profile version {}",
+                self.schema_version
+            )));
+        }
+        if &self.canonicalized() != self {
+            return Err(DaError::InvalidManifest(
+                "application DA profile must be canonicalized before hashing".into(),
+            ));
+        }
+        self.application_id.validate()?;
+        if self.profile_version == 0 {
+            return Err(DaError::InvalidManifest(
+                "application DA profile_version must be positive".into(),
+            ));
+        }
+        validate_label(
+            "application profile_name",
+            &self.profile_name,
+            DA_APPLICATION_PROFILE_NAME_MAX_BYTES,
+        )?;
+        self.da_profile.validate()?;
+        if self.max_payload_bytes == 0 || self.max_records_per_payload == 0 {
+            return Err(DaError::InvalidManifest(
+                "application DA payload bounds must be positive".into(),
+            ));
+        }
+        validate_sorted_unique_namespace_policies(&self.namespace_policies)?;
+        validate_sorted_unique_record_policies(&self.record_policies)?;
+        validate_sorted_unique_root_policies(&self.root_bindings)?;
+        self.coordinate_policy.validate()?;
+        self.retention_policy.validate()?;
+
+        let mut known_namespaces: BTreeMap<DaNamespace, DaNamespaceRequirement> = BTreeMap::new();
+        let mut referenced_schema_ids = BTreeSet::new();
+        let mut required_namespace_count = 0_u32;
+        for policy in &self.namespace_policies {
+            policy.validate()?;
+            if policy.requirement == DaNamespaceRequirement::Required {
+                required_namespace_count += 1;
+            }
+            if policy.requirement != DaNamespaceRequirement::Forbidden {
+                for schema in &policy.allowed_record_schemas {
+                    referenced_schema_ids.insert(schema.clone());
+                }
+            }
+            known_namespaces.insert(policy.namespace.clone(), policy.requirement.clone());
+        }
+        if required_namespace_count == 0 {
+            return Err(DaError::InvalidManifest(
+                "application DA profile must declare at least one required namespace".into(),
+            ));
+        }
+
+        let mut known_record_schema_ids = BTreeSet::new();
+        for policy in &self.record_policies {
+            policy.validate()?;
+            known_record_schema_ids.insert(policy.schema.clone());
+            for namespace in &policy.allowed_namespaces {
+                match known_namespaces.get(namespace) {
+                    Some(DaNamespaceRequirement::Required)
+                    | Some(DaNamespaceRequirement::Optional) => {}
+                    Some(DaNamespaceRequirement::Forbidden) => {
+                        return Err(DaError::InvalidManifest(format!(
+                            "record schema {} allows forbidden namespace {}",
+                            policy.schema, namespace.0
+                        )));
+                    }
+                    None => {
+                        return Err(DaError::InvalidManifest(format!(
+                            "record schema {} allows unknown namespace {}",
+                            policy.schema, namespace.0
+                        )));
+                    }
+                }
+            }
+        }
+        if self.validation_mode != DaApplicationValidationMode::OpaqueBytes
+            && known_record_schema_ids.is_empty()
+        {
+            return Err(DaError::InvalidManifest(
+                "non-opaque application DA profiles must declare record policies".into(),
+            ));
+        }
+        if self.validation_mode != DaApplicationValidationMode::OpaqueBytes {
+            for schema in &referenced_schema_ids {
+                if !known_record_schema_ids.contains(schema) {
+                    return Err(DaError::InvalidManifest(format!(
+                        "namespace policy references unknown record schema {schema}"
+                    )));
+                }
+            }
+            for schema in &known_record_schema_ids {
+                if !referenced_schema_ids.contains(schema) {
+                    return Err(DaError::InvalidManifest(format!(
+                        "record schema {schema} is not allowed by any namespace policy"
+                    )));
+                }
+            }
+        }
+
+        for policy in &self.record_policies {
+            for namespace in &policy.allowed_namespaces {
+                let namespace_policy = self
+                    .namespace_policies
+                    .iter()
+                    .find(|candidate| candidate.namespace == *namespace)
+                    .ok_or_else(|| {
+                        DaError::InvalidManifest(format!(
+                            "record schema {} allows unknown namespace {}",
+                            policy.schema, namespace.0
+                        ))
+                    })?;
+                if !namespace_policy
+                    .allowed_record_schemas
+                    .iter()
+                    .any(|schema| schema == &policy.schema)
+                {
+                    return Err(DaError::InvalidManifest(format!(
+                        "namespace {} does not allow record schema {}",
+                        namespace.0, policy.schema
+                    )));
+                }
+            }
+        }
+        for override_policy in &self.retention_policy.namespace_overrides {
+            if !matches!(
+                known_namespaces.get(&override_policy.namespace),
+                Some(DaNamespaceRequirement::Required) | Some(DaNamespaceRequirement::Optional)
+            ) {
+                return Err(DaError::InvalidManifest(format!(
+                    "retention override targets unknown or forbidden namespace {}",
+                    override_policy.namespace.0
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn detta_defi_v1() -> Self {
+        Self {
+            schema: DA_APPLICATION_PROFILE_SCHEMA.into(),
+            schema_version: 1,
+            application_id: application_id_unchecked("detta.defi"),
+            profile_version: 1,
+            profile_name: "DeTTa DeFi DA v1".into(),
+            da_profile: DaProductionProfile::v1(),
+            namespace_policies: vec![
+                namespace_policy(
+                    "detta.aspect",
+                    DaNamespaceRequirement::Optional,
+                    vec!["detta.aspect.artifact"],
+                    0,
+                    4096,
+                    DaApplicationRetentionClass::Archive,
+                ),
+                namespace_policy(
+                    "detta.block",
+                    DaNamespaceRequirement::Required,
+                    vec!["detta.block.header"],
+                    1,
+                    1,
+                    DaApplicationRetentionClass::Archive,
+                ),
+                namespace_policy(
+                    "detta.bridge",
+                    DaNamespaceRequirement::Optional,
+                    vec!["detta.bridge.proof"],
+                    0,
+                    4096,
+                    DaApplicationRetentionClass::Archive,
+                ),
+                namespace_policy(
+                    "detta.event",
+                    DaNamespaceRequirement::Optional,
+                    vec!["detta.event"],
+                    0,
+                    50_000,
+                    DaApplicationRetentionClass::Warm,
+                ),
+                namespace_policy(
+                    "detta.governance",
+                    DaNamespaceRequirement::Optional,
+                    vec!["detta.governance.payload"],
+                    0,
+                    4096,
+                    DaApplicationRetentionClass::Archive,
+                ),
+                namespace_policy(
+                    "detta.oracle",
+                    DaNamespaceRequirement::Optional,
+                    vec!["detta.oracle.evidence"],
+                    0,
+                    4096,
+                    DaApplicationRetentionClass::Archive,
+                ),
+                namespace_policy(
+                    "detta.receipt",
+                    DaNamespaceRequirement::Optional,
+                    vec!["detta.receipt"],
+                    0,
+                    50_000,
+                    DaApplicationRetentionClass::Archive,
+                ),
+                namespace_policy(
+                    "detta.tx",
+                    DaNamespaceRequirement::Optional,
+                    vec!["detta.tx.signed"],
+                    0,
+                    50_000,
+                    DaApplicationRetentionClass::Archive,
+                ),
+            ],
+            record_policies: vec![
+                record_policy(
+                    "detta.aspect.artifact",
+                    vec!["detta.aspect"],
+                    vec![DaRecordEncoding::CanonicalJson],
+                    512 * 1024,
+                    false,
+                ),
+                record_policy(
+                    "detta.block.header",
+                    vec!["detta.block"],
+                    vec![DaRecordEncoding::CanonicalJson],
+                    64 * 1024,
+                    false,
+                ),
+                record_policy(
+                    "detta.bridge.proof",
+                    vec!["detta.bridge"],
+                    vec![DaRecordEncoding::CanonicalJson],
+                    512 * 1024,
+                    false,
+                ),
+                record_policy(
+                    "detta.event",
+                    vec!["detta.event"],
+                    vec![DaRecordEncoding::CanonicalJson],
+                    128 * 1024,
+                    false,
+                ),
+                record_policy(
+                    "detta.governance.payload",
+                    vec!["detta.governance"],
+                    vec![DaRecordEncoding::CanonicalJson],
+                    512 * 1024,
+                    false,
+                ),
+                record_policy(
+                    "detta.oracle.evidence",
+                    vec!["detta.oracle"],
+                    vec![DaRecordEncoding::CanonicalJson],
+                    512 * 1024,
+                    false,
+                ),
+                record_policy(
+                    "detta.receipt",
+                    vec!["detta.receipt"],
+                    vec![DaRecordEncoding::CanonicalJson],
+                    128 * 1024,
+                    false,
+                ),
+                record_policy(
+                    "detta.tx.signed",
+                    vec!["detta.tx"],
+                    vec![DaRecordEncoding::CanonicalJson],
+                    128 * 1024,
+                    true,
+                ),
+            ],
+            coordinate_policy: DaCoordinatePolicy {
+                max_stream_id_bytes: DA_APPLICATION_STREAM_ID_MAX_BYTES as u32,
+                allow_epoch: true,
+                require_parent_hash: false,
+                require_subject_hash: false,
+            },
+            root_bindings: vec![
+                root_policy("detta.block.hash", true),
+                root_policy("detta.global.state.root", true),
+                root_policy("detta.receipt.root", true),
+                root_policy("detta.tx.root", true),
+            ],
+            retention_policy: DaApplicationRetentionPolicy {
+                default_class: DaApplicationRetentionClass::Archive,
+                namespace_overrides: vec![DaNamespaceRetentionPolicy {
+                    namespace: namespace_unchecked("detta.event"),
+                    retention_class: DaApplicationRetentionClass::Warm,
+                }],
+                payload_kind_overrides: vec![DaPayloadKindRetentionPolicy {
+                    payload_kind: DaPayloadKind::Block,
+                    retention_class: DaApplicationRetentionClass::Archive,
+                }],
+            },
+            validation_mode: DaApplicationValidationMode::ApplicationAdapterVerified,
+            privacy_mode: DaApplicationPrivacyMode::Public,
+            max_payload_bytes: 16 * 1024 * 1024,
+            max_records_per_payload: 150_000,
+        }
+    }
+
+    pub fn social_demo_v1() -> Self {
+        Self {
+            schema: DA_APPLICATION_PROFILE_SCHEMA.into(),
+            schema_version: 1,
+            application_id: application_id_unchecked("social.demo"),
+            profile_version: 1,
+            profile_name: "Social Demo DA v1".into(),
+            da_profile: DaProductionProfile::v1(),
+            namespace_policies: vec![
+                namespace_policy(
+                    "social.feed",
+                    DaNamespaceRequirement::Required,
+                    vec!["social.post"],
+                    1,
+                    10_000,
+                    DaApplicationRetentionClass::Warm,
+                ),
+                namespace_policy(
+                    "social.media",
+                    DaNamespaceRequirement::Optional,
+                    vec!["social.media.reference"],
+                    0,
+                    10_000,
+                    DaApplicationRetentionClass::Cold,
+                ),
+                namespace_policy(
+                    "social.moderation",
+                    DaNamespaceRequirement::Optional,
+                    vec!["social.moderation.action"],
+                    0,
+                    10_000,
+                    DaApplicationRetentionClass::Archive,
+                ),
+                namespace_policy(
+                    "social.private",
+                    DaNamespaceRequirement::Optional,
+                    vec!["social.private.message"],
+                    0,
+                    10_000,
+                    DaApplicationRetentionClass::Cold,
+                ),
+            ],
+            record_policies: vec![
+                record_policy(
+                    "social.media.reference",
+                    vec!["social.media"],
+                    vec![DaRecordEncoding::ExternalContentAddress],
+                    16 * 1024,
+                    false,
+                ),
+                record_policy(
+                    "social.moderation.action",
+                    vec!["social.moderation"],
+                    vec![DaRecordEncoding::CanonicalJson],
+                    64 * 1024,
+                    true,
+                ),
+                record_policy(
+                    "social.post",
+                    vec!["social.feed"],
+                    vec![DaRecordEncoding::CanonicalJson],
+                    256 * 1024,
+                    true,
+                ),
+                record_policy(
+                    "social.private.message",
+                    vec!["social.private"],
+                    vec![DaRecordEncoding::EncryptedBytes],
+                    256 * 1024,
+                    true,
+                ),
+            ],
+            coordinate_policy: DaCoordinatePolicy {
+                max_stream_id_bytes: DA_APPLICATION_STREAM_ID_MAX_BYTES as u32,
+                allow_epoch: true,
+                require_parent_hash: false,
+                require_subject_hash: false,
+            },
+            root_bindings: vec![root_policy("social.event.log.root", true)],
+            retention_policy: DaApplicationRetentionPolicy {
+                default_class: DaApplicationRetentionClass::Warm,
+                namespace_overrides: vec![
+                    DaNamespaceRetentionPolicy {
+                        namespace: namespace_unchecked("social.media"),
+                        retention_class: DaApplicationRetentionClass::Cold,
+                    },
+                    DaNamespaceRetentionPolicy {
+                        namespace: namespace_unchecked("social.moderation"),
+                        retention_class: DaApplicationRetentionClass::Archive,
+                    },
+                    DaNamespaceRetentionPolicy {
+                        namespace: namespace_unchecked("social.private"),
+                        retention_class: DaApplicationRetentionClass::Cold,
+                    },
+                ],
+                payload_kind_overrides: vec![
+                    DaPayloadKindRetentionPolicy {
+                        payload_kind: DaPayloadKind::Batch,
+                        retention_class: DaApplicationRetentionClass::Warm,
+                    },
+                    DaPayloadKindRetentionPolicy {
+                        payload_kind: DaPayloadKind::MediaManifest,
+                        retention_class: DaApplicationRetentionClass::Cold,
+                    },
+                    DaPayloadKindRetentionPolicy {
+                        payload_kind: DaPayloadKind::ModerationLog,
+                        retention_class: DaApplicationRetentionClass::Archive,
+                    },
+                ],
+            },
+            validation_mode: DaApplicationValidationMode::SchemaDecodableRecords,
+            privacy_mode: DaApplicationPrivacyMode::MixedExplicit,
+            max_payload_bytes: 16 * 1024 * 1024,
+            max_records_per_payload: 100_000,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaRecordEnvelope {
+    pub schema: String,
+    pub schema_version: u32,
+    pub content_type: String,
+    pub encoding: DaRecordEncoding,
+    pub bytes: Vec<u8>,
+    pub content_hash: String,
+    pub signer: Option<String>,
+    pub signature: Option<String>,
+}
+
+impl DaRecordEnvelope {
+    pub fn new(
+        schema: impl Into<String>,
+        schema_version: u32,
+        content_type: impl Into<String>,
+        encoding: DaRecordEncoding,
+        bytes: Vec<u8>,
+        signer: Option<String>,
+        signature: Option<String>,
+    ) -> Result<Self, DaError> {
+        let envelope = Self {
+            schema: schema.into(),
+            schema_version,
+            content_type: content_type.into(),
+            encoding,
+            content_hash: hash_bytes(&bytes),
+            bytes,
+            signer,
+            signature,
+        };
+        envelope.validate_structure()?;
+        Ok(envelope)
+    }
+
+    pub fn validate_structure(&self) -> Result<(), DaError> {
+        validate_schema_id("record envelope schema", &self.schema)?;
+        if self.schema_version == 0 {
+            return Err(DaError::InvalidPayload(format!(
+                "record envelope schema {} has version 0",
+                self.schema
+            )));
+        }
+        validate_label(
+            "record envelope content_type",
+            &self.content_type,
+            DA_RECORD_CONTENT_TYPE_MAX_BYTES,
+        )?;
+        if self.bytes.is_empty() {
+            return Err(DaError::InvalidPayload(format!(
+                "record envelope {} carries no bytes",
+                self.schema
+            )));
+        }
+        if self.content_hash != hash_bytes(&self.bytes) {
+            return Err(DaError::PayloadHashMismatch {
+                expected: hash_bytes(&self.bytes),
+                actual: self.content_hash.clone(),
+            });
+        }
+        validate_optional_label("record envelope signer", self.signer.as_deref(), 256)?;
+        validate_optional_label("record envelope signature", self.signature.as_deref(), 1024)?;
+        Ok(())
+    }
+
+    pub fn validate_against_policy(&self, policy: &DaRecordPolicy) -> Result<(), DaError> {
+        self.validate_structure()?;
+        policy.validate()?;
+        if self.schema != policy.schema || self.schema_version != policy.schema_version {
+            return Err(DaError::InvalidPayload(format!(
+                "record envelope {}@{} does not match policy {}@{}",
+                self.schema, self.schema_version, policy.schema, policy.schema_version
+            )));
+        }
+        if !policy
+            .allowed_encodings
+            .iter()
+            .any(|encoding| encoding == &self.encoding)
+        {
+            return Err(DaError::InvalidPayload(format!(
+                "record envelope {} uses unsupported encoding {:?}",
+                self.schema, self.encoding
+            )));
+        }
+        if self.bytes.len() as u64 > policy.max_record_bytes {
+            return Err(DaError::InvalidPayload(format!(
+                "record envelope {} exceeds max_record_bytes",
+                self.schema
+            )));
+        }
+        if policy.require_content_hash && self.content_hash.is_empty() {
+            return Err(DaError::InvalidPayload(format!(
+                "record envelope {} is missing content_hash",
+                self.schema
+            )));
+        }
+        if policy.require_signer
+            && (self.signer.as_deref().unwrap_or_default().is_empty()
+                || self.signature.as_deref().unwrap_or_default().is_empty())
+        {
+            return Err(DaError::InvalidPayload(format!(
+                "record envelope {} requires signer and signature",
+                self.schema
+            )));
+        }
+        Ok(())
+    }
+}
+
+fn namespace_policy(
+    namespace: &str,
+    requirement: DaNamespaceRequirement,
+    allowed_record_schemas: Vec<&str>,
+    min_records: u32,
+    max_records: u32,
+    retention_class: DaApplicationRetentionClass,
+) -> DaNamespacePolicy {
+    DaNamespacePolicy {
+        namespace: namespace_unchecked(namespace),
+        requirement,
+        allowed_record_schemas: allowed_record_schemas
+            .into_iter()
+            .map(String::from)
+            .collect(),
+        min_records,
+        max_records,
+        retention_class,
+    }
+}
+
+fn record_policy(
+    schema: &str,
+    allowed_namespaces: Vec<&str>,
+    allowed_encodings: Vec<DaRecordEncoding>,
+    max_record_bytes: u64,
+    require_signer: bool,
+) -> DaRecordPolicy {
+    DaRecordPolicy {
+        schema: schema.into(),
+        schema_version: 1,
+        allowed_namespaces: allowed_namespaces
+            .into_iter()
+            .map(namespace_unchecked)
+            .collect(),
+        allowed_encodings,
+        max_record_bytes,
+        require_content_hash: true,
+        require_signer,
+    }
+}
+
+fn root_policy(name: &str, required: bool) -> DaApplicationRootPolicy {
+    DaApplicationRootPolicy {
+        name: name.into(),
+        required,
     }
 }
 
@@ -2241,6 +3204,181 @@ fn validate_sorted_unique_namespaces(namespaces: &[DaNamespace]) -> Result<(), D
     Ok(())
 }
 
+fn validate_application_id(value: &str) -> Result<(), DaError> {
+    if is_bounded_segmented_identifier(value, DA_APPLICATION_ID_MAX_BYTES) {
+        Ok(())
+    } else {
+        Err(DaError::InvalidNamespace(value.into()))
+    }
+}
+
+fn validate_stream_id(value: &str, max_bytes: usize) -> Result<(), DaError> {
+    validate_label("application stream_id", value, max_bytes)
+}
+
+fn validate_schema_id(field: &str, value: &str) -> Result<(), DaError> {
+    if is_bounded_segmented_identifier(value, DA_RECORD_SCHEMA_ID_MAX_BYTES) {
+        Ok(())
+    } else {
+        Err(DaError::InvalidManifest(format!(
+            "{field} must be a lowercase dot/hyphen identifier"
+        )))
+    }
+}
+
+fn validate_root_name(value: &str) -> Result<(), DaError> {
+    if value.len() <= DA_APPLICATION_ROOT_NAME_MAX_BYTES
+        && is_bounded_segmented_identifier(value, DA_APPLICATION_ROOT_NAME_MAX_BYTES)
+    {
+        Ok(())
+    } else {
+        Err(DaError::InvalidManifest(format!(
+            "application root binding {value} is invalid"
+        )))
+    }
+}
+
+fn validate_label(field: &str, value: &str, max_bytes: usize) -> Result<(), DaError> {
+    if value.is_empty()
+        || value.len() > max_bytes
+        || value.trim() != value
+        || value.bytes().any(|byte| byte.is_ascii_control())
+    {
+        return Err(DaError::InvalidManifest(format!(
+            "{field} must be nonempty, bounded, and free of control characters"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_optional_label(
+    field: &str,
+    value: Option<&str>,
+    max_bytes: usize,
+) -> Result<(), DaError> {
+    if let Some(value) = value {
+        validate_label(field, value, max_bytes)?;
+    }
+    Ok(())
+}
+
+fn validate_optional_hash(field: &str, value: Option<&str>) -> Result<(), DaError> {
+    validate_optional_label(field, value, 256)
+}
+
+fn validate_sorted_unique_schema_ids(field: &str, values: &[String]) -> Result<(), DaError> {
+    if values.is_empty() {
+        return Err(DaError::InvalidManifest(format!(
+            "{field} must be nonempty"
+        )));
+    }
+    for value in values {
+        validate_schema_id(field, value)?;
+    }
+    if !values.windows(2).all(|window| window[0] < window[1]) {
+        return Err(DaError::InvalidManifest(format!(
+            "{field} must be sorted and unique"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_sorted_unique_record_encodings(encodings: &[DaRecordEncoding]) -> Result<(), DaError> {
+    if !encodings.windows(2).all(|window| window[0] < window[1]) {
+        return Err(DaError::InvalidManifest(
+            "record encodings must be sorted and unique".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_sorted_unique_namespace_policies(
+    policies: &[DaNamespacePolicy],
+) -> Result<(), DaError> {
+    if policies.is_empty() {
+        return Err(DaError::InvalidManifest(
+            "application DA profile must declare namespace policies".into(),
+        ));
+    }
+    if !policies
+        .windows(2)
+        .all(|window| window[0].namespace < window[1].namespace)
+    {
+        return Err(DaError::InvalidManifest(
+            "namespace policies must be sorted and unique".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_sorted_unique_record_policies(policies: &[DaRecordPolicy]) -> Result<(), DaError> {
+    if !policies
+        .windows(2)
+        .all(|window| window[0].schema < window[1].schema)
+    {
+        return Err(DaError::InvalidManifest(
+            "record policies must be sorted and unique by schema".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_sorted_unique_root_policies(
+    policies: &[DaApplicationRootPolicy],
+) -> Result<(), DaError> {
+    for policy in policies {
+        policy.validate()?;
+    }
+    if !policies
+        .windows(2)
+        .all(|window| window[0].name < window[1].name)
+    {
+        return Err(DaError::InvalidManifest(
+            "application root policies must be sorted and unique".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_sorted_unique_namespace_retention_policies(
+    policies: &[DaNamespaceRetentionPolicy],
+) -> Result<(), DaError> {
+    if !policies
+        .windows(2)
+        .all(|window| window[0].namespace < window[1].namespace)
+    {
+        return Err(DaError::InvalidManifest(
+            "namespace retention overrides must be sorted and unique".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_sorted_unique_payload_kind_retention_policies(
+    policies: &[DaPayloadKindRetentionPolicy],
+) -> Result<(), DaError> {
+    if !policies
+        .windows(2)
+        .all(|window| window[0].payload_kind < window[1].payload_kind)
+    {
+        return Err(DaError::InvalidManifest(
+            "payload kind retention overrides must be sorted and unique".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn is_bounded_segmented_identifier(value: &str, max_bytes: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= max_bytes
+        && !value.starts_with(['.', '-'])
+        && !value.ends_with(['.', '-'])
+        && !value.contains("..")
+        && value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'.' || byte == b'-'
+        })
+}
+
 fn validate_section_records(
     section: &DaNamespaceSection,
     allowed: impl Fn(&DaRecord) -> bool,
@@ -3093,6 +4231,173 @@ mod tests {
         assert!(matches!(
             DaNamespace::new("detta..tx"),
             Err(DaError::InvalidNamespace(_))
+        ));
+    }
+
+    #[test]
+    fn application_id_validation_rejects_invalid_values() {
+        assert!(DaApplicationId::new("social.demo").is_ok());
+        assert!(DaApplicationId::new("marketplace-orders.v1").is_ok());
+
+        for value in [
+            "",
+            ".social",
+            "social.",
+            "-social",
+            "social-",
+            "social..demo",
+            "Social.Demo",
+            "social_demo",
+        ] {
+            assert!(matches!(
+                DaApplicationId::new(value),
+                Err(DaError::InvalidNamespace(_))
+            ));
+        }
+
+        let oversized = "a".repeat(DA_APPLICATION_ID_MAX_BYTES + 1);
+        assert!(matches!(
+            DaApplicationId::new(oversized),
+            Err(DaError::InvalidNamespace(_))
+        ));
+    }
+
+    #[test]
+    fn application_profiles_validate_and_hash_stably() {
+        let defi = DaApplicationProfile::detta_defi_v1();
+        defi.validate().unwrap();
+        assert_eq!(defi.application_id, application_id_unchecked("detta.defi"));
+        assert_eq!(defi.da_profile, DaProductionProfile::v1());
+        assert_eq!(defi.profile_hash().unwrap(), defi.profile_id().unwrap());
+
+        let social = DaApplicationProfile::social_demo_v1();
+        social.validate().unwrap();
+        let social_hash = social.profile_hash().unwrap();
+        assert_eq!(social_hash.len(), 64);
+        assert_eq!(social_hash, social.clone().profile_hash().unwrap());
+
+        let mut reordered = social.clone();
+        reordered.namespace_policies.swap(0, 1);
+        assert!(matches!(
+            reordered.validate(),
+            Err(DaError::InvalidManifest(_))
+        ));
+        assert_eq!(reordered.canonicalized(), social);
+    }
+
+    #[test]
+    fn application_profile_rejects_duplicate_policy_keys() {
+        let mut duplicate_namespace = DaApplicationProfile::social_demo_v1();
+        duplicate_namespace
+            .namespace_policies
+            .insert(1, duplicate_namespace.namespace_policies[0].clone());
+        assert!(matches!(
+            duplicate_namespace.validate(),
+            Err(DaError::InvalidManifest(_))
+        ));
+
+        let mut duplicate_record = DaApplicationProfile::social_demo_v1();
+        duplicate_record
+            .record_policies
+            .insert(1, duplicate_record.record_policies[0].clone());
+        assert!(matches!(
+            duplicate_record.validate(),
+            Err(DaError::InvalidManifest(_))
+        ));
+    }
+
+    #[test]
+    fn application_profile_rejects_unknown_schema_and_forbidden_namespace() {
+        let mut unknown_schema = DaApplicationProfile::social_demo_v1();
+        unknown_schema.namespace_policies[0].allowed_record_schemas[0] = "social.unknown".into();
+        assert!(matches!(
+            unknown_schema.validate(),
+            Err(DaError::InvalidManifest(_))
+        ));
+
+        let mut forbidden_namespace = DaApplicationProfile::social_demo_v1();
+        forbidden_namespace
+            .namespace_policies
+            .push(namespace_policy(
+                "social.spam",
+                DaNamespaceRequirement::Forbidden,
+                vec![],
+                0,
+                0,
+                DaApplicationRetentionClass::Archive,
+            ));
+        forbidden_namespace.record_policies.push(record_policy(
+            "social.spam.record",
+            vec!["social.spam"],
+            vec![DaRecordEncoding::CanonicalJson],
+            1024,
+            false,
+        ));
+        assert!(matches!(
+            forbidden_namespace.validate(),
+            Err(DaError::InvalidManifest(_))
+        ));
+    }
+
+    #[test]
+    fn detta_application_profile_preserves_da_v1_payload_hashes() {
+        let profile = DaApplicationProfile::detta_defi_v1();
+        profile.validate().unwrap();
+
+        let payload = payload_with_sections(vec![
+            tx_section(
+                "detta.block",
+                vec![DaRecord::BlockHeader(Box::new(block_header()))],
+            ),
+            tx_section("detta.tx", vec![DaRecord::SignedTransaction(tx("tx-1", 1))]),
+            tx_section("detta.receipt", vec![DaRecord::Receipt(receipt("tx-1"))]),
+        ]);
+        let hash_before = payload.hash().unwrap();
+        validate_production_block_payload(&payload, &profile.da_profile).unwrap();
+        assert_eq!(payload.hash().unwrap(), hash_before);
+    }
+
+    #[test]
+    fn record_envelope_binds_content_hash_and_policy() {
+        let policy = record_policy(
+            "social.post",
+            vec!["social.feed"],
+            vec![DaRecordEncoding::CanonicalJson],
+            256 * 1024,
+            true,
+        );
+        let envelope = DaRecordEnvelope::new(
+            "social.post",
+            1,
+            "application/json",
+            DaRecordEncoding::CanonicalJson,
+            br#"{"author":"alice","text":"hello"}"#.to_vec(),
+            Some("alice".into()),
+            Some("sig-alice".into()),
+        )
+        .unwrap();
+        envelope.validate_against_policy(&policy).unwrap();
+
+        let mut tampered = envelope.clone();
+        tampered.content_hash = "bad-hash".into();
+        assert!(matches!(
+            tampered.validate_structure(),
+            Err(DaError::PayloadHashMismatch { .. })
+        ));
+
+        let unsigned = DaRecordEnvelope::new(
+            "social.post",
+            1,
+            "application/json",
+            DaRecordEncoding::CanonicalJson,
+            br#"{"author":"alice","text":"hello"}"#.to_vec(),
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(matches!(
+            unsigned.validate_against_policy(&policy),
+            Err(DaError::InvalidPayload(_))
         ));
     }
 

@@ -723,8 +723,20 @@ profile or node limits before erasure coding.
 
 - [x] Create `experimental/application-neutral-data-availability-layer`.
 - [x] Add this implementation plan.
-- [ ] Record current DeTTa DA v1 invariants that must remain stable.
-- [ ] Add a compatibility test inventory for existing DA fixture roots.
+- [x] Record current DeTTa DA v1 invariants that must remain stable.
+- [x] Add a compatibility test inventory for existing DA fixture roots.
+
+Current DeTTa DA v1 invariants now protected during the generalized DA work:
+
+- `DaPayload` remains `detta.da-payload.v1` and is not widened for generic
+  applications.
+- `DaProductionProfile::v1()` remains the DeTTa DeFi compatibility profile
+  used by consensus, node, RPC, storage, and E2E code.
+- existing golden payload, manifest, share, namespace-root, and certificate
+  hash tests remain unchanged.
+- the generalized `DaApplicationProfile::detta_defi_v1()` wraps the existing
+  production profile without mutating existing DA v1 payload serialization or
+  payload hashes.
 
 Acceptance:
 
@@ -734,22 +746,22 @@ Acceptance:
 
 ### Phase 1: Generic Identifiers And Policies
 
-- [ ] Add `DaApplicationId`.
-- [ ] Add `DaApplicationCoordinate`.
-- [ ] Add `DaPayloadKind`.
-- [ ] Add `DaRecordEncoding`.
-- [ ] Add `DaNamespacePolicy`.
-- [ ] Add `DaRecordPolicy`.
-- [ ] Add `DaApplicationProfile`.
-- [ ] Add canonical hash and validation helpers.
-- [ ] Add unit tests for invalid ids, duplicate policies, unknown schemas,
+- [x] Add `DaApplicationId`.
+- [x] Add `DaApplicationCoordinate`.
+- [x] Add `DaPayloadKind`.
+- [x] Add `DaRecordEncoding`.
+- [x] Add `DaNamespacePolicy`.
+- [x] Add `DaRecordPolicy`.
+- [x] Add `DaApplicationProfile`.
+- [x] Add canonical hash and validation helpers.
+- [x] Add unit tests for invalid ids, duplicate policies, unknown schemas,
   forbidden namespaces, and profile hash stability.
 
 Acceptance:
 
-- application profiles are canonical and hash-stable;
-- invalid profile policies are rejected;
-- DeTTa built-in profile can be represented without changing current DA v1
+- [x] application profiles are canonical and hash-stable;
+- [x] invalid profile policies are rejected;
+- [x] DeTTa built-in profile can be represented without changing current DA v1
   payload bytes.
 
 ### Phase 2: Application Payload Envelope
