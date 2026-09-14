@@ -1,0 +1,36 @@
+{
+  "schema": "detta.application-da-fixture-roots.v1",
+  "schema_version": 1,
+  "application_id": "social.demo",
+  "profile": {
+    "name": "social-demo-profile-v1",
+    "profile_id": "2308b7978a20f557aa664fdb623ee90a968791195bd2fcdbc5743bfac0fe9420",
+    "profile_hash": "2308b7978a20f557aa664fdb623ee90a968791195bd2fcdbc5743bfac0fe9420",
+    "profile_version": 1,
+    "profile_name": "Social Demo DA v1",
+    "validation_mode": "SchemaDecodableRecords",
+    "privacy_mode": "MixedExplicit",
+    "namespace_policy_count": 4,
+    "record_policy_count": 4,
+    "required_namespaces": [
+      "social.feed"
+    ],
+    "root_bindings": [
+      "social.event.log.root"
+    ]
+  },
+  "payload": {
+    "name": "social-demo-payload-v1",
+    "profile_id": "2308b7978a20f557aa664fdb623ee90a968791195bd2fcdbc5743bfac0fe9420",
+    "payload_hash": "a5908058f7142cb7c843007ac7be55b564a3bb39cdfb9d19341cfe78dd48b291",
+    "namespace_root": "8c8899bbfd003d4f945c883519edfa43bd3e862eba7df96bfac701e2cc9e6b92",
+    "application_root_name": "social.event.log.root",
+    "application_root_hash": "f9a10be49e4cabe6b5f675ae13f822891be37b4e87c46b4e2292a341420468b1",
+    "payload_kind": "Batch",
+    "stream_id": "global",
+    "sequence": 1,
+    "namespace_count": 2,
+    "record_count": 2,
+    "validation_report_hash": "0b30b40320a13fa64d84b4fb631c0cb0ff1e59a9231401776b5c531fc311049e"
+  }
+}

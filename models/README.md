@@ -11,8 +11,10 @@ This directory contains formal-model artifacts for the DeTTa runtime.
   block-execution model.
 - `DeTTaDataAvailability.tla` models the abstract DA finality boundary:
   custody-share validation before DA voting, quorum DA certificates for the
-  committed manifest, threshold-valid payload reconstruction, and replay-root
-  agreement before block finality.
+  committed manifest, threshold-valid payload reconstruction, replay-root
+  agreement before block finality, and application-neutral DA bindings for
+  application ids, profile ids, coordinates, profile deprecation, and
+  historical verification.
 - `DeTTaDataAvailability.cfg` is a bounded TLC configuration for the abstract
   data-availability model.
 - `detta-proof-artifact-manifest.json` is the stable proof-artifact manifest
@@ -51,6 +53,12 @@ This directory contains formal-model artifacts for the DeTTa runtime.
   trace-root attestation metadata.
 - `detta-restricted-evaluator-fixture-inventory.sha256` records the release
   attestation root for the fixture inventory.
+- `detta-application-da-fixture-roots.json` records deterministic
+  application-neutral DA fixture roots for the checked-in `social.demo`
+  profile and payload, including profile id, payload hash, namespace root,
+  application root, and validation-report root.
+- `detta-application-da-fixture-roots.sha256` records the release attestation
+  root for the application DA fixture roots.
 - `aspects/stdlib/minimal-transfer-token.artifact.json` records the
   root-authenticated standard-library aspect artifact used by release gates,
   including source, IR, ABI, policy, storage-schema, registry-schema, and
@@ -62,6 +70,12 @@ This directory contains formal-model artifacts for the DeTTa runtime.
 - `cargo run -p detta-verify --bin refresh_aspect_stdlib_artifacts` refreshes
   the standard-library aspect artifact, proof-obligation roots, and aspect
   checksum files after an intentional aspect-source change.
+- `cargo run -p detta-verify --bin refresh_application_da_fixture_roots`
+  refreshes the `social.demo` application DA fixture roots after an
+  intentional application DA profile or fixture-payload change.
+- `cargo run -p detta-verify --bin refresh_proof_artifact_manifest` refreshes
+  the proof-artifact manifest and its SHA-256 attestation after model,
+  theorem-coverage, or runtime proof-artifact changes.
 - `formal-model-checking-runbook.md` describes the repository checks, external
   model-checker preparation, and manifest refresh procedure.
 - `../detta-restricted-evaluator-subset.md` documents the implemented
@@ -83,9 +97,12 @@ Primary theorem mapping:
 - `ProgrammableModuleSoundness` corresponds to the programmable aspect module
   proof obligations in
   `aspects/stdlib/minimal-transfer-token.proof-obligations.json`.
-- `DASignatureCustodySoundness`, `DAQuorumCertificateSoundness`, and
-  `DAFinalityRequiresCertificate` correspond to `THM-017`.
-- `DAReconstructionSoundness` and `FinalizedPayloadReplaySoundness` correspond
-  to `THM-018`.
+- `DASignatureCustodySoundness`, `DAQuorumCertificateSoundness`,
+  `DAFinalityRequiresCertificate`, `ApplicationManifestIdentitySoundness`, and
+  `ApplicationCertificateIdentitySoundness` correspond to `THM-017`.
+- `DAReconstructionSoundness`, `FinalizedPayloadReplaySoundness`,
+  `ApplicationReconstructionIdentitySoundness`,
+  `ApplicationHistoricalProfileVerificationSoundness`, and
+  `ApplicationProfileValidationDeterminism` correspond to `THM-018`.
 - Deterministic replay is represented as a trace-comparison obligation and is
   exercised by the `detta-verify` differential replay harness.

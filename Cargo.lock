@@ -250,6 +250,7 @@ version = "0.1.0"
 dependencies = [
  "detta-aspects",
  "detta-core",
+ "detta-da",
  "serde",
  "serde_json",
  "sha2",

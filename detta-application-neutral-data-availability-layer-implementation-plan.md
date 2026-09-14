@@ -986,22 +986,23 @@ Acceptance:
 
 ### Phase 12: Formal And Verification Artifacts
 
-- [ ] Extend TLA+ DA model with application id/profile id/coordinate.
-- [ ] Add invariants:
+- [x] Extend TLA+ DA model with application id/profile id/coordinate.
+- [x] Add invariants:
   - manifest binds application id and profile id;
   - certificates bind exactly one application manifest;
   - reconstruction returns canonical payload for any threshold-valid shares;
   - profile validation is deterministic;
   - historical profile verification is stable after profile upgrades.
-- [ ] Add proof artifact manifest entries.
-- [ ] Add runtime theorem coverage for application-neutral DA.
-- [ ] Add fixture roots for social-demo payloads and profiles.
+- [x] Add proof artifact manifest entries.
+- [x] Add runtime theorem coverage for application-neutral DA.
+- [x] Add fixture roots for social-demo payloads and profiles.
 
 Acceptance:
 
-- proof artifacts cover generic DA certificate and reconstruction invariants;
-- verifier rejects missing application-neutral DA evidence;
-- DeTTa DeFi proof artifacts remain stable.
+- [x] proof artifacts cover generic DA certificate and reconstruction
+  invariants;
+- [x] verifier rejects missing application-neutral DA evidence;
+- [x] DeTTa DeFi proof artifacts remain stable.
 
 ### Phase 13: End-To-End Application Tests
 

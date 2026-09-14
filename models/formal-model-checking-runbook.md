@@ -36,6 +36,8 @@ scripts/detta-model-check.sh
   `models/DeTTaDataAvailability.tla` SHA-256 roots.
 - the manifest binds every checked-in restricted evaluator fixture JSON and
   evaluator fixture attestation file, including the fixture inventory.
+- the manifest binds the checked-in application-neutral DA fixture roots and
+  their attestation file.
 - each evaluator fixture inventory entry matches the corresponding manifest
   `runtime_artifacts` root.
 - runtime artifact paths are unique, so a duplicate path cannot shadow an
@@ -50,8 +52,8 @@ scripts/detta-model-check.sh
 - model artifact order is stable: each TLA+ module, then its TLC config.
 - model and runtime artifact path sets are disjoint.
 - runtime artifact order is stable: evaluator proof trace, its attestations,
-  forbidden primitive, resource exhaustion, arithmetic overflow, then fixture
-  inventory artifacts.
+  forbidden primitive, resource exhaustion, arithmetic overflow, fixture
+  inventory artifacts, then application DA fixture roots and attestation.
 - every release attestation file uses single-line `sha256sum` format with a
   lowercase SHA-256 root and expected basename.
 - every release attestation filename is bound to the target artifact basename
@@ -106,6 +108,9 @@ scripts/detta-model-check.sh
   exhaustion, and arithmetic overflow fixture schemas.
 - theorem fixture evidence covers all evaluator fixture inventory entry names.
 - theorem model evidence covers the expected TLA operator set.
+- theorem evidence includes application-neutral DA model/runtime anchors for
+  manifest identity, certificate identity, reconstruction identity, historical
+  profile verification, and profile-validation determinism.
 - theorem runtime-test evidence covers `detta_consensus`, `detta_core`,
   `detta_da`, `detta_e2e`, `detta_evaluator`, `detta_node`, and
   `detta_verify` test crates.
@@ -178,6 +183,14 @@ Restricted evaluator runtime artifacts include:
 - the dedicated proof trace root attestation for the compact JSON
   serialization of `report.trace`.
 
+Application-neutral DA runtime artifacts include:
+
+- `models/detta-application-da-fixture-roots.json`, which records the
+  deterministic `social.demo` profile id, payload hash, namespace root,
+  application root, and validation-report hash;
+- `models/detta-application-da-fixture-roots.sha256`, which binds the fixture
+  JSON as a release attestation.
+
 The manifest stores the SHA-256 of each artifact file. For fixture JSON files,
 that root authenticates the fixture document. For fixture `.sha256` files, that
 root authenticates the release attestation file itself. The evaluator crate also
@@ -197,12 +210,14 @@ Before accepting a release proof bundle, verify:
   `runtime_artifacts`;
 - the evaluator fixture inventory JSON and `.sha256` paths appear in
   `runtime_artifacts`;
+- the application DA fixture roots JSON and `.sha256` paths appear in
+  `runtime_artifacts`;
 - every `runtime_artifacts` path is unique;
 - every `model_artifacts` path is unique;
 - model artifact order is stable: each TLA+ module, then its TLC config;
 - runtime artifact order is stable: evaluator proof trace, its attestations,
-  forbidden primitive, resource exhaustion, arithmetic overflow, then fixture
-  inventory artifacts;
+  forbidden primitive, resource exhaustion, arithmetic overflow, fixture
+  inventory artifacts, then application DA fixture roots and attestation;
 - every model and runtime artifact root is lowercase SHA-256 hex;
 - every model and runtime artifact path stays under `models/`;
 - every model and runtime artifact path uses an allowed suffix;
@@ -269,6 +284,9 @@ Before accepting a release proof bundle, verify:
   exhaustion, and arithmetic overflow fixture schemas;
 - theorem fixture evidence covers all evaluator fixture inventory entry names;
 - theorem model evidence covers the expected TLA operator set;
+- theorem evidence includes application-neutral DA model/runtime anchors for
+  manifest identity, certificate identity, reconstruction identity, historical
+  profile verification, and profile-validation determinism;
 - theorem runtime-test evidence covers `detta_consensus`, `detta_core`,
   `detta_da`, `detta_e2e`, `detta_evaluator`, `detta_node`, and
   `detta_verify` test crates;
@@ -341,6 +359,11 @@ operators currently intended for model-checking or theorem mapping are:
 - `DAFinalityRequiresCertificate`
 - `DAReconstructionSoundness`
 - `FinalizedPayloadReplaySoundness`
+- `ApplicationManifestIdentitySoundness`
+- `ApplicationCertificateIdentitySoundness`
+- `ApplicationReconstructionIdentitySoundness`
+- `ApplicationHistoricalProfileVerificationSoundness`
+- `ApplicationProfileValidationDeterminism`
 
 The model intentionally abstracts over concrete cryptographic hashing,
 signatures, networking, and storage encodings. Rust tests cover those concrete
@@ -384,8 +407,9 @@ release artifact.
 When theorem coverage, model files, or runtime artifacts change:
 
 1. Update `detta_verify::scs_theorem_coverage()` or the model file.
-2. Update `models/detta-proof-artifact-manifest.json`.
-3. Recompute and update `models/detta-proof-artifact-manifest.sha256`.
+2. If application DA profile or fixture-payload roots changed, run
+   `cargo run -p detta-verify --bin refresh_application_da_fixture_roots`.
+3. Run `cargo run -p detta-verify --bin refresh_proof_artifact_manifest`.
 4. Run `cargo test -p detta-verify`.
 5. Run the full gate:
 

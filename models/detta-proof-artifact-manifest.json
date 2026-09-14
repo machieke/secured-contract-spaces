@@ -14,11 +14,11 @@
     },
     {
       "path": "models/DeTTaDataAvailability.tla",
-      "sha256": "1b282b8b236b8e4855b0b6ea032d976c29c26095b7bd77bf87f89a4bc4b4b73f"
+      "sha256": "b577cdb483e1f6494e5d9ed1f20c8d39fa5497138dacedca61f6ff9075ecdf5b"
     },
     {
       "path": "models/DeTTaDataAvailability.cfg",
-      "sha256": "cf33d78fa4cc1a89e46f2cab0594d1fb1a14fb672f3b26f30bef68c98074aaf0"
+      "sha256": "05080bf6006b48f9c143b54709143bf2383c2cb0ba1093dda8aae4e876d0f5c1"
     }
   ],
   "runtime_artifacts": [
@@ -65,6 +65,14 @@
     {
       "path": "models/detta-restricted-evaluator-fixture-inventory.sha256",
       "sha256": "40660cbc15f9d9b4a5b3081a0f9aa2c2a390b2043c26fef041333701b0da1a66"
+    },
+    {
+      "path": "models/detta-application-da-fixture-roots.json",
+      "sha256": "c01a4bc2b5474e3f64e97615bc0ae727ca96c3cdef7ab3a8acb4a4ae5a8d9a22"
+    },
+    {
+      "path": "models/detta-application-da-fixture-roots.sha256",
+      "sha256": "2cd3cdaaaa436d4a579b87c83b625a6327016ac05b7ebd6bf317917e358c882c"
     }
   ],
   "theorem_count": 18,
@@ -303,6 +311,10 @@
       "evidence": [
         {
           "kind": "RuntimeTest",
+          "reference": "detta_da::tests::application_manifest_hash_binds_application_metadata"
+        },
+        {
+          "kind": "RuntimeTest",
           "reference": "detta_consensus::tests::production_da_finality_requires_valid_da_certificate_before_replay"
         },
         {
@@ -320,6 +332,14 @@
         {
           "kind": "Model",
           "reference": "models/DeTTaDataAvailability.tla::DAFinalityRequiresCertificate"
+        },
+        {
+          "kind": "Model",
+          "reference": "models/DeTTaDataAvailability.tla::ApplicationManifestIdentitySoundness"
+        },
+        {
+          "kind": "Model",
+          "reference": "models/DeTTaDataAvailability.tla::ApplicationCertificateIdentitySoundness"
         }
       ]
     },
@@ -327,6 +347,10 @@
       "id": "THM-018",
       "name": "DA Reconstruction Replay Soundness",
       "evidence": [
+        {
+          "kind": "RuntimeTest",
+          "reference": "detta_da::tests::application_profile_registry_keeps_deprecated_versions_for_history"
+        },
         {
           "kind": "RuntimeTest",
           "reference": "detta_da::tests::reed_solomon_share_set_reconstructs_from_threshold_subset"
@@ -340,12 +364,28 @@
           "reference": "detta_node::tests::persistent_node_replays_da_certified_block_after_checkpoint_import"
         },
         {
+          "kind": "RuntimeTest",
+          "reference": "detta_node::tests::archive_node_reconstructs_application_checkpoint_payload_after_restart"
+        },
+        {
           "kind": "Model",
           "reference": "models/DeTTaDataAvailability.tla::DAReconstructionSoundness"
         },
         {
           "kind": "Model",
           "reference": "models/DeTTaDataAvailability.tla::FinalizedPayloadReplaySoundness"
+        },
+        {
+          "kind": "Model",
+          "reference": "models/DeTTaDataAvailability.tla::ApplicationReconstructionIdentitySoundness"
+        },
+        {
+          "kind": "Model",
+          "reference": "models/DeTTaDataAvailability.tla::ApplicationHistoricalProfileVerificationSoundness"
+        },
+        {
+          "kind": "Model",
+          "reference": "models/DeTTaDataAvailability.tla::ApplicationProfileValidationDeterminism"
         }
       ]
     }

@@ -2,6 +2,7 @@ use detta_core::{
     AmmParameters, Argument, Block, ChainId, ContractId, ContractKind, DeTTaState, ExecutionError,
     InvariantFailure, LendingRiskParameters, Method, StakingParameters, StateKey, Transaction,
 };
+use detta_da::DaApplicationValidator;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -219,17 +220,64 @@ pub struct ModelArtifactRoot {
     pub sha256: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ApplicationDaFixtureRootsManifest {
+    pub schema: String,
+    pub schema_version: u32,
+    pub application_id: String,
+    pub profile: ApplicationDaProfileFixtureRoot,
+    pub payload: ApplicationDaPayloadFixtureRoot,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ApplicationDaProfileFixtureRoot {
+    pub name: String,
+    pub profile_id: String,
+    pub profile_hash: String,
+    pub profile_version: u32,
+    pub profile_name: String,
+    pub validation_mode: String,
+    pub privacy_mode: String,
+    pub namespace_policy_count: usize,
+    pub record_policy_count: usize,
+    pub required_namespaces: Vec<String>,
+    pub root_bindings: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ApplicationDaPayloadFixtureRoot {
+    pub name: String,
+    pub profile_id: String,
+    pub payload_hash: String,
+    pub namespace_root: String,
+    pub application_root_name: String,
+    pub application_root_hash: String,
+    pub payload_kind: String,
+    pub stream_id: String,
+    pub sequence: u64,
+    pub namespace_count: usize,
+    pub record_count: usize,
+    pub validation_report_hash: String,
+}
+
 pub const PROOF_ARTIFACT_MANIFEST_SCHEMA: &str = "detta.proof-artifact-manifest.v2";
 pub const PROOF_ARTIFACT_MANIFEST_SCHEMA_VERSION: u32 = 2;
 pub const PROOF_ARTIFACT_MANIFEST_PROJECT: &str = "DeTTa";
 pub const PROOF_ARTIFACT_MANIFEST_SCOPE: &str =
     "Secured Contract Spaces runtime safety obligations";
 pub const PROOF_MODEL_ARTIFACT_COUNT: usize = 4;
-pub const PROOF_RUNTIME_ARTIFACT_COUNT: usize = 11;
-pub const PROOF_RELEASE_ATTESTATION_COUNT: usize = 7;
-pub const PROOF_RELEASE_JSON_TARGET_COUNT: usize = 6;
+pub const PROOF_RUNTIME_ARTIFACT_COUNT: usize = 13;
+pub const PROOF_RELEASE_ATTESTATION_COUNT: usize = 8;
+pub const PROOF_RELEASE_JSON_TARGET_COUNT: usize = 7;
 pub const PROOF_RELEASE_TRACE_TARGET_COUNT: usize = 1;
 pub const SHA256_HEX_LENGTH: usize = 64;
+pub const APPLICATION_DA_FIXTURE_ROOTS_SCHEMA: &str = "detta.application-da-fixture-roots.v1";
+pub const APPLICATION_DA_FIXTURE_ROOTS_SCHEMA_VERSION: u32 = 1;
+pub const APPLICATION_DA_FIXTURE_ROOTS_PATH: &str =
+    "models/detta-application-da-fixture-roots.json";
+pub const APPLICATION_DA_FIXTURE_ROOTS_SHA256_PATH: &str =
+    "models/detta-application-da-fixture-roots.sha256";
+const ZERO_SHA256_HEX: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 pub const AUDIT_FINDINGS_SCHEMA: &str = "detta.audit-findings.v1";
 pub const AUDIT_FINDINGS_SCHEMA_VERSION: u32 = 1;
 pub const AUDIT_FINDINGS_PROJECT: &str = "DeTTa";
@@ -1346,6 +1394,18 @@ pub fn proof_runtime_artifacts() -> Vec<ModelArtifactRoot> {
                 "../../../models/detta-restricted-evaluator-fixture-inventory.sha256"
             )),
         },
+        ModelArtifactRoot {
+            path: APPLICATION_DA_FIXTURE_ROOTS_PATH,
+            sha256: proof_artifact_manifest_root_bytes(include_bytes!(
+                "../../../models/detta-application-da-fixture-roots.json"
+            )),
+        },
+        ModelArtifactRoot {
+            path: APPLICATION_DA_FIXTURE_ROOTS_SHA256_PATH,
+            sha256: proof_artifact_manifest_root_bytes(include_bytes!(
+                "../../../models/detta-application-da-fixture-roots.sha256"
+            )),
+        },
     ]
 }
 
@@ -1357,6 +1417,164 @@ pub fn checked_in_proof_artifact_manifest_root() -> String {
     proof_artifact_manifest_root_bytes(include_bytes!(
         "../../../models/detta-proof-artifact-manifest.json"
     ))
+}
+
+pub fn application_da_fixture_roots_manifest() -> ApplicationDaFixtureRootsManifest {
+    let profile = detta_da::DaApplicationProfile::social_demo_v1();
+    let canonical_profile = profile.canonicalized();
+    let profile_id = canonical_profile
+        .profile_id()
+        .expect("checked-in social-demo profile must hash");
+    let payload = social_demo_application_fixture_payload(&canonical_profile);
+    let validation_report = detta_da::SocialDemoDaValidator::new()
+        .expect("checked-in social-demo validator must initialize")
+        .validate_payload(&canonical_profile, &payload, None)
+        .expect("checked-in social-demo payload must validate");
+    let application_root = payload
+        .application_roots
+        .iter()
+        .find(|root| root.name == "social.event.log.root")
+        .expect("checked-in social-demo payload must carry event log root");
+
+    ApplicationDaFixtureRootsManifest {
+        schema: APPLICATION_DA_FIXTURE_ROOTS_SCHEMA.into(),
+        schema_version: APPLICATION_DA_FIXTURE_ROOTS_SCHEMA_VERSION,
+        application_id: canonical_profile.application_id.0.clone(),
+        profile: ApplicationDaProfileFixtureRoot {
+            name: "social-demo-profile-v1".into(),
+            profile_id: profile_id.clone(),
+            profile_hash: canonical_profile
+                .profile_hash()
+                .expect("checked-in social-demo profile must hash"),
+            profile_version: canonical_profile.profile_version,
+            profile_name: canonical_profile.profile_name.clone(),
+            validation_mode: format!("{:?}", canonical_profile.validation_mode),
+            privacy_mode: format!("{:?}", canonical_profile.privacy_mode),
+            namespace_policy_count: canonical_profile.namespace_policies.len(),
+            record_policy_count: canonical_profile.record_policies.len(),
+            required_namespaces: canonical_profile
+                .namespace_policies
+                .iter()
+                .filter(|policy| policy.requirement == detta_da::DaNamespaceRequirement::Required)
+                .map(|policy| policy.namespace.0.clone())
+                .collect(),
+            root_bindings: canonical_profile
+                .root_bindings
+                .iter()
+                .map(|policy| policy.name.clone())
+                .collect(),
+        },
+        payload: ApplicationDaPayloadFixtureRoot {
+            name: "social-demo-payload-v1".into(),
+            profile_id,
+            payload_hash: detta_da::application_payload_hash(&payload)
+                .expect("checked-in social-demo payload must hash"),
+            namespace_root: payload
+                .namespace_root()
+                .expect("checked-in social-demo namespace root must hash"),
+            application_root_name: application_root.name.clone(),
+            application_root_hash: application_root.hash.clone(),
+            payload_kind: format!("{:?}", payload.payload_kind),
+            stream_id: payload.coordinate.stream_id.clone(),
+            sequence: payload.coordinate.sequence,
+            namespace_count: payload.namespaces.len(),
+            record_count: payload
+                .namespaces
+                .iter()
+                .map(|section| section.records.len())
+                .sum(),
+            validation_report_hash: validation_report
+                .report_hash()
+                .expect("checked-in social-demo validation report must hash"),
+        },
+    }
+}
+
+pub fn social_demo_application_fixture_payload(
+    profile: &detta_da::DaApplicationProfile,
+) -> detta_da::ApplicationDaPayload {
+    let sections = social_demo_application_fixture_sections();
+    let coordinate = detta_da::DaApplicationCoordinate {
+        application_id: detta_da::DaApplicationId::new("social.demo")
+            .expect("checked-in social-demo application id must be valid"),
+        stream_id: "global".into(),
+        sequence: 1,
+        epoch: None,
+        parent_hash: None,
+        subject_hash: None,
+    };
+    let provisional_payload = detta_da::ApplicationDaPayload::new(
+        profile,
+        coordinate.clone(),
+        detta_da::DaPayloadKind::Batch,
+        None,
+        vec![
+            detta_da::DaApplicationRoot::new("social.event.log.root", ZERO_SHA256_HEX)
+                .expect("checked-in social-demo placeholder root must be valid"),
+        ],
+        sections.clone(),
+    )
+    .expect("checked-in social-demo provisional payload must validate structurally");
+    let event_log_root = detta_da::social_demo_event_log_root(&provisional_payload)
+        .expect("checked-in social-demo event log root must hash");
+
+    detta_da::ApplicationDaPayload::new(
+        profile,
+        coordinate,
+        detta_da::DaPayloadKind::Batch,
+        None,
+        vec![
+            detta_da::DaApplicationRoot::new("social.event.log.root", event_log_root)
+                .expect("checked-in social-demo event log root must be valid"),
+        ],
+        sections,
+    )
+    .expect("checked-in social-demo fixture payload must validate")
+}
+
+fn social_demo_application_fixture_sections() -> Vec<detta_da::ApplicationDaNamespaceSection> {
+    vec![
+        detta_da::ApplicationDaNamespaceSection::new(
+            detta_da::DaNamespace::new("social.feed")
+                .expect("checked-in social-demo namespace must be valid"),
+            vec![social_demo_application_fixture_record(
+                "social.post",
+                detta_da::DaRecordEncoding::CanonicalJson,
+                br#"{"author":"alice","post_id":"post-1","text":"hello"}"#,
+                Some("alice"),
+            )],
+        )
+        .expect("checked-in social-demo feed section must be valid"),
+        detta_da::ApplicationDaNamespaceSection::new(
+            detta_da::DaNamespace::new("social.media")
+                .expect("checked-in social-demo namespace must be valid"),
+            vec![social_demo_application_fixture_record(
+                "social.media.reference",
+                detta_da::DaRecordEncoding::ExternalContentAddress,
+                br#"{"content_hash":"media-root","uri":"ipfs://example"}"#,
+                None,
+            )],
+        )
+        .expect("checked-in social-demo media section must be valid"),
+    ]
+}
+
+fn social_demo_application_fixture_record(
+    schema: &str,
+    encoding: detta_da::DaRecordEncoding,
+    bytes: &[u8],
+    signer: Option<&str>,
+) -> detta_da::DaRecordEnvelope {
+    detta_da::DaRecordEnvelope::new(
+        schema,
+        1,
+        "application/json",
+        encoding,
+        bytes.to_vec(),
+        signer.map(String::from),
+        signer.map(|value| format!("sig-{value}")),
+    )
+    .expect("checked-in social-demo record must be valid")
 }
 
 pub fn scs_theorem_coverage() -> Vec<SafetyTheoremCoverage> {
@@ -1589,6 +1807,10 @@ pub fn scs_theorem_coverage() -> Vec<SafetyTheoremCoverage> {
             evidence: vec![
                 TheoremEvidence {
                     kind: RuntimeTest,
+                    reference: "detta_da::tests::application_manifest_hash_binds_application_metadata",
+                },
+                TheoremEvidence {
+                    kind: RuntimeTest,
                     reference:
                         "detta_consensus::tests::production_da_finality_requires_valid_da_certificate_before_replay",
                 },
@@ -1609,12 +1831,27 @@ pub fn scs_theorem_coverage() -> Vec<SafetyTheoremCoverage> {
                     kind: Model,
                     reference: "models/DeTTaDataAvailability.tla::DAFinalityRequiresCertificate",
                 },
+                TheoremEvidence {
+                    kind: Model,
+                    reference:
+                        "models/DeTTaDataAvailability.tla::ApplicationManifestIdentitySoundness",
+                },
+                TheoremEvidence {
+                    kind: Model,
+                    reference:
+                        "models/DeTTaDataAvailability.tla::ApplicationCertificateIdentitySoundness",
+                },
             ],
         },
         SafetyTheoremCoverage {
             id: "THM-018",
             name: "DA Reconstruction Replay Soundness",
             evidence: vec![
+                TheoremEvidence {
+                    kind: RuntimeTest,
+                    reference:
+                        "detta_da::tests::application_profile_registry_keeps_deprecated_versions_for_history",
+                },
                 TheoremEvidence {
                     kind: RuntimeTest,
                     reference:
@@ -1631,12 +1868,32 @@ pub fn scs_theorem_coverage() -> Vec<SafetyTheoremCoverage> {
                         "detta_node::tests::persistent_node_replays_da_certified_block_after_checkpoint_import",
                 },
                 TheoremEvidence {
+                    kind: RuntimeTest,
+                    reference:
+                        "detta_node::tests::archive_node_reconstructs_application_checkpoint_payload_after_restart",
+                },
+                TheoremEvidence {
                     kind: Model,
                     reference: "models/DeTTaDataAvailability.tla::DAReconstructionSoundness",
                 },
                 TheoremEvidence {
                     kind: Model,
                     reference: "models/DeTTaDataAvailability.tla::FinalizedPayloadReplaySoundness",
+                },
+                TheoremEvidence {
+                    kind: Model,
+                    reference:
+                        "models/DeTTaDataAvailability.tla::ApplicationReconstructionIdentitySoundness",
+                },
+                TheoremEvidence {
+                    kind: Model,
+                    reference:
+                        "models/DeTTaDataAvailability.tla::ApplicationHistoricalProfileVerificationSoundness",
+                },
+                TheoremEvidence {
+                    kind: Model,
+                    reference:
+                        "models/DeTTaDataAvailability.tla::ApplicationProfileValidationDeterminism",
                 },
             ],
         },
@@ -2652,6 +2909,10 @@ mod tests {
                     vec![
                         (
                             RuntimeTest,
+                            "detta_da::tests::application_manifest_hash_binds_application_metadata",
+                        ),
+                        (
+                            RuntimeTest,
                             "detta_consensus::tests::production_da_finality_requires_valid_da_certificate_before_replay",
                         ),
                         (
@@ -2670,11 +2931,23 @@ mod tests {
                             Model,
                             "models/DeTTaDataAvailability.tla::DAFinalityRequiresCertificate",
                         ),
+                        (
+                            Model,
+                            "models/DeTTaDataAvailability.tla::ApplicationManifestIdentitySoundness",
+                        ),
+                        (
+                            Model,
+                            "models/DeTTaDataAvailability.tla::ApplicationCertificateIdentitySoundness",
+                        ),
                     ],
                 ),
                 (
                     "THM-018",
                     vec![
+                        (
+                            RuntimeTest,
+                            "detta_da::tests::application_profile_registry_keeps_deprecated_versions_for_history",
+                        ),
                         (
                             RuntimeTest,
                             "detta_da::tests::reed_solomon_share_set_reconstructs_from_threshold_subset",
@@ -2688,12 +2961,28 @@ mod tests {
                             "detta_node::tests::persistent_node_replays_da_certified_block_after_checkpoint_import",
                         ),
                         (
+                            RuntimeTest,
+                            "detta_node::tests::archive_node_reconstructs_application_checkpoint_payload_after_restart",
+                        ),
+                        (
                             Model,
                             "models/DeTTaDataAvailability.tla::DAReconstructionSoundness",
                         ),
                         (
                             Model,
                             "models/DeTTaDataAvailability.tla::FinalizedPayloadReplaySoundness",
+                        ),
+                        (
+                            Model,
+                            "models/DeTTaDataAvailability.tla::ApplicationReconstructionIdentitySoundness",
+                        ),
+                        (
+                            Model,
+                            "models/DeTTaDataAvailability.tla::ApplicationHistoricalProfileVerificationSoundness",
+                        ),
+                        (
+                            Model,
+                            "models/DeTTaDataAvailability.tla::ApplicationProfileValidationDeterminism",
                         ),
                     ],
                 ),
@@ -3227,6 +3516,13 @@ mod tests {
                 file_name: "detta-restricted-evaluator-fixture-inventory.json",
                 target_path: "models/detta-restricted-evaluator-fixture-inventory.json",
             },
+            ProofReleaseAttestationFixture {
+                attestation: include_str!(
+                    "../../../models/detta-application-da-fixture-roots.sha256"
+                ),
+                file_name: "detta-application-da-fixture-roots.json",
+                target_path: "models/detta-application-da-fixture-roots.json",
+            },
         ]
     }
 
@@ -3292,6 +3588,7 @@ mod tests {
             filenames,
             BTreeSet::from([
                 "detta-proof-artifact-manifest.json",
+                "detta-application-da-fixture-roots.json",
                 "detta-restricted-evaluator-arithmetic-overflow.json",
                 "detta-restricted-evaluator-fixture-inventory.json",
                 "detta-restricted-evaluator-forbidden-primitives.json",
@@ -3313,6 +3610,7 @@ mod tests {
             target_paths,
             BTreeSet::from([
                 "models/detta-proof-artifact-manifest.json",
+                "models/detta-application-da-fixture-roots.json",
                 "models/detta-restricted-evaluator-arithmetic-overflow.json",
                 "models/detta-restricted-evaluator-fixture-inventory.json",
                 "models/detta-restricted-evaluator-forbidden-primitives.json",
@@ -3493,6 +3791,10 @@ mod tests {
             include_str!("../../../models/detta-restricted-evaluator-fixture-inventory.sha256"),
             include_bytes!("../../../models/detta-restricted-evaluator-fixture-inventory.json"),
         );
+        assert_sha256sum_attestation_root_matches_bytes(
+            include_str!("../../../models/detta-application-da-fixture-roots.sha256"),
+            include_bytes!("../../../models/detta-application-da-fixture-roots.json"),
+        );
 
         let fixture: ProofTraceFixtureForTest = serde_json::from_str(include_str!(
             "../../../models/detta-restricted-evaluator-proof-trace.json"
@@ -3503,6 +3805,51 @@ mod tests {
             include_str!("../../../models/detta-restricted-evaluator-proof-trace-root.sha256"),
             &trace_bytes,
         );
+    }
+
+    #[test]
+    fn application_da_fixture_roots_match_checked_in_json() {
+        let expected: ApplicationDaFixtureRootsManifest = serde_json::from_str(include_str!(
+            "../../../models/detta-application-da-fixture-roots.json"
+        ))
+        .unwrap();
+
+        assert_eq!(application_da_fixture_roots_manifest(), expected);
+    }
+
+    #[test]
+    fn application_da_fixture_roots_are_stable() {
+        let fixture = application_da_fixture_roots_manifest();
+
+        assert_eq!(fixture.schema, APPLICATION_DA_FIXTURE_ROOTS_SCHEMA);
+        assert_eq!(
+            fixture.schema_version,
+            APPLICATION_DA_FIXTURE_ROOTS_SCHEMA_VERSION
+        );
+        assert_eq!(fixture.application_id, "social.demo");
+        assert_eq!(
+            fixture.profile.profile_id,
+            "2308b7978a20f557aa664fdb623ee90a968791195bd2fcdbc5743bfac0fe9420"
+        );
+        assert_eq!(fixture.profile.profile_id, fixture.profile.profile_hash);
+        assert_eq!(
+            fixture.payload.payload_hash,
+            "a5908058f7142cb7c843007ac7be55b564a3bb39cdfb9d19341cfe78dd48b291"
+        );
+        assert_eq!(
+            fixture.payload.namespace_root,
+            "8c8899bbfd003d4f945c883519edfa43bd3e862eba7df96bfac701e2cc9e6b92"
+        );
+        assert_eq!(
+            fixture.payload.application_root_name,
+            "social.event.log.root"
+        );
+        assert_eq!(
+            fixture.payload.application_root_hash,
+            "f9a10be49e4cabe6b5f675ae13f822891be37b4e87c46b4e2292a341420468b1"
+        );
+        assert_eq!(fixture.payload.namespace_count, 2);
+        assert_eq!(fixture.payload.record_count, 2);
     }
 
     fn assert_sha256sum_attestation_format(attestation: &str, expected_file_name: &str) {
@@ -3563,12 +3910,12 @@ mod tests {
                 },
                 ModelArtifactRoot {
                     path: "models/DeTTaDataAvailability.tla",
-                    sha256: "1b282b8b236b8e4855b0b6ea032d976c29c26095b7bd77bf87f89a4bc4b4b73f"
+                    sha256: "b577cdb483e1f6494e5d9ed1f20c8d39fa5497138dacedca61f6ff9075ecdf5b"
                         .into(),
                 },
                 ModelArtifactRoot {
                     path: "models/DeTTaDataAvailability.cfg",
-                    sha256: "cf33d78fa4cc1a89e46f2cab0594d1fb1a14fb672f3b26f30bef68c98074aaf0"
+                    sha256: "05080bf6006b48f9c143b54709143bf2383c2cb0ba1093dda8aae4e876d0f5c1"
                         .into(),
                 },
             ]
@@ -3653,6 +4000,16 @@ mod tests {
                     sha256: "40660cbc15f9d9b4a5b3081a0f9aa2c2a390b2043c26fef041333701b0da1a66"
                         .into(),
                 },
+                ModelArtifactRoot {
+                    path: "models/detta-application-da-fixture-roots.json",
+                    sha256: "c01a4bc2b5474e3f64e97615bc0ae727ca96c3cdef7ab3a8acb4a4ae5a8d9a22"
+                        .into(),
+                },
+                ModelArtifactRoot {
+                    path: "models/detta-application-da-fixture-roots.sha256",
+                    sha256: "2cd3cdaaaa436d4a579b87c83b625a6327016ac05b7ebd6bf317917e358c882c"
+                        .into(),
+                },
             ]
         );
     }
@@ -3678,6 +4035,8 @@ mod tests {
                 "models/detta-restricted-evaluator-arithmetic-overflow.sha256",
                 "models/detta-restricted-evaluator-fixture-inventory.json",
                 "models/detta-restricted-evaluator-fixture-inventory.sha256",
+                "models/detta-application-da-fixture-roots.json",
+                "models/detta-application-da-fixture-roots.sha256",
             ]
         );
     }
@@ -3824,6 +4183,17 @@ mod tests {
                 "{required} is not bound in the proof manifest runtime artifacts"
             );
         }
+    }
+
+    #[test]
+    fn proof_runtime_artifacts_bind_application_da_fixture_roots() {
+        let runtime_paths: BTreeSet<_> = proof_runtime_artifacts()
+            .into_iter()
+            .map(|artifact| artifact.path)
+            .collect();
+
+        assert!(runtime_paths.contains(APPLICATION_DA_FIXTURE_ROOTS_PATH));
+        assert!(runtime_paths.contains(APPLICATION_DA_FIXTURE_ROOTS_SHA256_PATH));
     }
 
     #[test]
@@ -4589,10 +4959,40 @@ mod tests {
                 "models/DeTTaDataAvailability.tla::DASignatureCustodySoundness",
                 "models/DeTTaDataAvailability.tla::DAQuorumCertificateSoundness",
                 "models/DeTTaDataAvailability.tla::DAFinalityRequiresCertificate",
+                "models/DeTTaDataAvailability.tla::ApplicationManifestIdentitySoundness",
+                "models/DeTTaDataAvailability.tla::ApplicationCertificateIdentitySoundness",
                 "models/DeTTaDataAvailability.tla::DAReconstructionSoundness",
                 "models/DeTTaDataAvailability.tla::FinalizedPayloadReplaySoundness",
+                "models/DeTTaDataAvailability.tla::ApplicationReconstructionIdentitySoundness",
+                "models/DeTTaDataAvailability.tla::ApplicationHistoricalProfileVerificationSoundness",
+                "models/DeTTaDataAvailability.tla::ApplicationProfileValidationDeterminism",
             ])
         );
+    }
+
+    #[test]
+    fn theorem_coverage_includes_application_neutral_da_evidence() {
+        let evidence: BTreeSet<_> = scs_theorem_coverage()
+            .into_iter()
+            .flat_map(|theorem| theorem.evidence)
+            .map(|evidence| evidence.reference)
+            .collect();
+
+        for required in [
+            "detta_da::tests::application_manifest_hash_binds_application_metadata",
+            "detta_da::tests::application_profile_registry_keeps_deprecated_versions_for_history",
+            "detta_node::tests::archive_node_reconstructs_application_checkpoint_payload_after_restart",
+            "models/DeTTaDataAvailability.tla::ApplicationManifestIdentitySoundness",
+            "models/DeTTaDataAvailability.tla::ApplicationCertificateIdentitySoundness",
+            "models/DeTTaDataAvailability.tla::ApplicationReconstructionIdentitySoundness",
+            "models/DeTTaDataAvailability.tla::ApplicationHistoricalProfileVerificationSoundness",
+            "models/DeTTaDataAvailability.tla::ApplicationProfileValidationDeterminism",
+        ] {
+            assert!(
+                evidence.contains(required),
+                "missing application-neutral DA theorem evidence: {required}"
+            );
+        }
     }
 
     fn tla_operator_names(source: &str) -> BTreeSet<String> {
