@@ -4036,6 +4036,41 @@ mod tests {
         .unwrap()
     }
 
+    fn checkpoint_application_payload(sequence: u64) -> ApplicationDaPayload {
+        let profile = DaApplicationProfile::checkpoint_demo_v1();
+        let state_root = "33".repeat(32);
+        let record = DaRecordEnvelope::new(
+            "checkpoint.state",
+            1,
+            "application/json",
+            DaRecordEncoding::CanonicalJson,
+            format!(r#"{{"height":{sequence},"state_root":"{state_root}"}}"#).into_bytes(),
+            Some("checkpoint-operator".into()),
+            Some("checkpoint-signature".into()),
+        )
+        .unwrap();
+        ApplicationDaPayload::new(
+            &profile,
+            DaApplicationCoordinate {
+                application_id: DaApplicationId::new("checkpoint.demo").unwrap(),
+                stream_id: "state".into(),
+                sequence,
+                epoch: Some(1),
+                parent_hash: None,
+                subject_hash: None,
+            },
+            DaPayloadKind::Checkpoint,
+            None,
+            vec![DaApplicationRoot::new("checkpoint.state.root", state_root).unwrap()],
+            vec![ApplicationDaNamespaceSection::new(
+                DaNamespace::new("checkpoint.state").unwrap(),
+                vec![record],
+            )
+            .unwrap()],
+        )
+        .unwrap()
+    }
+
     #[test]
     fn persists_and_verifies_snapshot() {
         let dir = temp_dir("snapshot");
@@ -4575,6 +4610,50 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
         fs::remove_dir_all(backup_dir).unwrap();
         fs::remove_dir_all(restore_dir).unwrap();
+    }
+
+    #[test]
+    fn checkpoint_application_da_manifest_indexes_checkpoint_retention() {
+        let dir = temp_dir("application-da-checkpoint-retention");
+        let storage = FileStorage::open(&dir).unwrap();
+        let profile = DaApplicationProfile::checkpoint_demo_v1();
+        let payload = checkpoint_application_payload(7);
+        let share_set =
+            ApplicationDaShareSet::from_payload_reed_solomon(&payload, &profile, 3, 2).unwrap();
+        let manifest_hash = storage
+            .commit_application_da_share_set(&share_set, &profile)
+            .unwrap();
+        let manifest_entry =
+            application_da_manifest_index_entry(&manifest_hash, &share_set.manifest, &profile)
+                .unwrap();
+
+        assert_eq!(manifest_entry.payload_kind, DaPayloadKind::Checkpoint);
+        assert_eq!(
+            manifest_entry.retention_class,
+            DaApplicationRetentionClass::Checkpoint
+        );
+        assert_eq!(
+            storage
+                .load_application_da_manifest_index_by_application_id("checkpoint.demo")
+                .unwrap(),
+            vec![manifest_entry.clone()]
+        );
+        assert_eq!(
+            storage
+                .load_application_da_manifest_index_by_namespace("checkpoint.state")
+                .unwrap(),
+            vec![manifest_entry.clone()]
+        );
+        assert_eq!(
+            storage
+                .load_application_da_manifest_index_by_retention_class(
+                    &DaApplicationRetentionClass::Checkpoint,
+                )
+                .unwrap(),
+            vec![manifest_entry]
+        );
+
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -722,8 +722,9 @@ fn builtin_application_da_profile(value: &str) -> Result<DaApplicationProfile, S
     match value.to_ascii_lowercase().as_str() {
         "detta.defi" | "detta-defi" => Ok(DaApplicationProfile::detta_defi_v1()),
         "social.demo" | "social-demo" => Ok(DaApplicationProfile::social_demo_v1()),
+        "checkpoint.demo" | "checkpoint-demo" => Ok(DaApplicationProfile::checkpoint_demo_v1()),
         _ => Err(format!(
-            "invalid --builtin: expected detta.defi or social.demo, got {value}"
+            "invalid --builtin: expected detta.defi, social.demo, or checkpoint.demo, got {value}"
         )),
     }
 }
@@ -787,7 +788,7 @@ fn usage() -> String {
   detta-client swap --pool <id> --input-asset <symbol> --amount-in <amount> --min-output <amount> --nonce <n> [--produce-height <h>]
   detta-client produce-block --height <h> [--timestamp <t>]
   detta-client produce-da-block --height <h> [--timestamp <t>] [--share-size <bytes>]
-  detta-client application-da-register-profile (--builtin <detta.defi|social.demo> | --profile-json <path>)
+  detta-client application-da-register-profile (--builtin <detta.defi|social.demo|checkpoint.demo> | --profile-json <path>)
   detta-client application-da-produce-batch --payload-json <path> --certificate-signers <csv> [--data-shares <n>] [--parity-shares <n>]
   detta-client application-da-profile --profile-id <hash>
   detta-client application-da-profile-index-by-application --application-id <id>
@@ -946,6 +947,13 @@ mod tests {
                 .application_id
                 .0,
             "social.demo"
+        );
+        assert_eq!(
+            builtin_application_da_profile("checkpoint-demo")
+                .unwrap()
+                .application_id
+                .0,
+            "checkpoint.demo"
         );
         assert!(builtin_application_da_profile("unknown").is_err());
     }

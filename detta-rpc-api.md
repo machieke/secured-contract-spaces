@@ -195,8 +195,8 @@ Persistent validator nodes additionally handle:
 - `get_da_certificate_index_by_block_hash`: return DA certificate index entries
   for an execution block hash.
 - `register_application_da_profile`: persist an active application DA profile
-  registration. Built-in clients can register `detta.defi` or `social.demo`;
-  arbitrary applications submit the typed profile JSON.
+  registration. Built-in clients can register `detta.defi`, `social.demo`, or
+  `checkpoint.demo`; arbitrary applications submit the typed profile JSON.
 - `produce_application_da_batch`: validate a submitted `ApplicationDaPayload`
   against its registered active profile, encode Reed-Solomon shares, persist
   payload/manifest/shares, create an application DA availability certificate,

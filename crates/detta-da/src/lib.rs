@@ -1165,6 +1165,54 @@ impl DaApplicationProfile {
             max_records_per_payload: 100_000,
         }
     }
+
+    pub fn checkpoint_demo_v1() -> Self {
+        Self {
+            schema: DA_APPLICATION_PROFILE_SCHEMA.into(),
+            schema_version: 1,
+            application_id: application_id_unchecked("checkpoint.demo"),
+            profile_version: 1,
+            profile_name: "Checkpoint Demo DA v1".into(),
+            da_profile: DaProductionProfile::v1(),
+            namespace_policies: vec![namespace_policy(
+                "checkpoint.state",
+                DaNamespaceRequirement::Required,
+                vec!["checkpoint.state"],
+                1,
+                1_000,
+                DaApplicationRetentionClass::Checkpoint,
+            )],
+            record_policies: vec![record_policy(
+                "checkpoint.state",
+                vec!["checkpoint.state"],
+                vec![
+                    DaRecordEncoding::CanonicalJson,
+                    DaRecordEncoding::OpaqueBytes,
+                ],
+                1024 * 1024,
+                true,
+            )],
+            coordinate_policy: DaCoordinatePolicy {
+                max_stream_id_bytes: DA_APPLICATION_STREAM_ID_MAX_BYTES as u32,
+                allow_epoch: true,
+                require_parent_hash: false,
+                require_subject_hash: false,
+            },
+            root_bindings: vec![root_policy("checkpoint.state.root", true)],
+            retention_policy: DaApplicationRetentionPolicy {
+                default_class: DaApplicationRetentionClass::Checkpoint,
+                namespace_overrides: Vec::new(),
+                payload_kind_overrides: vec![DaPayloadKindRetentionPolicy {
+                    payload_kind: DaPayloadKind::Checkpoint,
+                    retention_class: DaApplicationRetentionClass::Checkpoint,
+                }],
+            },
+            validation_mode: DaApplicationValidationMode::ApplicationAdapterVerified,
+            privacy_mode: DaApplicationPrivacyMode::Public,
+            max_payload_bytes: 16 * 1024 * 1024,
+            max_records_per_payload: 10_000,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1243,6 +1291,7 @@ impl DaApplicationProfileRegistry {
         let mut registry = Self::new();
         registry.register(DaApplicationProfile::detta_defi_v1())?;
         registry.register(DaApplicationProfile::social_demo_v1())?;
+        registry.register(DaApplicationProfile::checkpoint_demo_v1())?;
         Ok(registry)
     }
 
@@ -1999,6 +2048,52 @@ impl DaApplicationValidator for SocialDemoDaValidator {
         validate_application_schema_records(payload)?;
         validate_social_demo_signatures(profile, payload)?;
         validate_social_demo_event_log_root(payload)?;
+        Ok(report)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CheckpointDemoDaValidator {
+    profile_id: String,
+}
+
+impl CheckpointDemoDaValidator {
+    pub fn new() -> Result<Self, DaError> {
+        let profile = DaApplicationProfile::checkpoint_demo_v1();
+        Ok(Self {
+            profile_id: profile.profile_id()?,
+        })
+    }
+}
+
+impl DaApplicationValidator for CheckpointDemoDaValidator {
+    fn profile_id(&self) -> &str {
+        &self.profile_id
+    }
+
+    fn validate_payload(
+        &self,
+        profile: &DaApplicationProfile,
+        payload: &ApplicationDaPayload,
+        manifest: Option<&ApplicationDaManifest>,
+    ) -> Result<DaApplicationValidationReport, DaError> {
+        if profile.application_id != application_id_unchecked("checkpoint.demo") {
+            return Err(DaError::InvalidPayload(
+                "checkpoint-demo validator requires the checkpoint.demo profile".into(),
+            ));
+        }
+        if payload.payload_kind != DaPayloadKind::Checkpoint {
+            return Err(DaError::InvalidPayload(
+                "checkpoint-demo payloads must use checkpoint payload kind".into(),
+            ));
+        }
+        let report = validate_application_payload_with_optional_manifest(
+            self.profile_id(),
+            profile,
+            payload,
+            manifest,
+        )?;
+        validate_application_schema_records(payload)?;
         Ok(report)
     }
 }
@@ -6279,6 +6374,41 @@ mod tests {
         .unwrap()
     }
 
+    fn checkpoint_demo_payload(sequence: u64) -> ApplicationDaPayload {
+        let profile = DaApplicationProfile::checkpoint_demo_v1();
+        let state_root = hash_bytes(format!("checkpoint-state-{sequence}").as_bytes());
+        let record_bytes =
+            format!(r#"{{"height":{sequence},"state_root":"{state_root}"}}"#).into_bytes();
+        ApplicationDaPayload::new(
+            &profile,
+            DaApplicationCoordinate {
+                application_id: application_id_unchecked("checkpoint.demo"),
+                stream_id: "state".into(),
+                sequence,
+                epoch: Some(1),
+                parent_hash: None,
+                subject_hash: None,
+            },
+            DaPayloadKind::Checkpoint,
+            None,
+            vec![DaApplicationRoot::new("checkpoint.state.root", state_root).unwrap()],
+            vec![application_section(
+                "checkpoint.state",
+                vec![DaRecordEnvelope::new(
+                    "checkpoint.state",
+                    1,
+                    "application/json",
+                    DaRecordEncoding::CanonicalJson,
+                    record_bytes,
+                    Some("checkpoint-operator".into()),
+                    Some("checkpoint-signature".into()),
+                )
+                .unwrap()],
+            )],
+        )
+        .unwrap()
+    }
+
     fn forged_deterministic_share_set_from_payload_bytes(
         reference_payload: &DaPayload,
         payload_bytes: &[u8],
@@ -6900,6 +7030,17 @@ mod tests {
             Err(DaError::InvalidManifest(_))
         ));
         assert_eq!(reordered.canonicalized(), social);
+
+        let checkpoint = DaApplicationProfile::checkpoint_demo_v1();
+        checkpoint.validate().unwrap();
+        assert_eq!(
+            checkpoint.application_id,
+            application_id_unchecked("checkpoint.demo")
+        );
+        assert_eq!(
+            checkpoint.profile_hash().unwrap(),
+            checkpoint.profile_id().unwrap()
+        );
     }
 
     #[test]
@@ -6972,6 +7113,15 @@ mod tests {
         assert!(registry
             .get_profile(&DaApplicationProfile::detta_defi_v1().profile_id().unwrap())
             .is_ok());
+        let checkpoint_profile = DaApplicationProfile::checkpoint_demo_v1();
+        let checkpoint_id = checkpoint_profile.profile_id().unwrap();
+        assert_eq!(
+            registry.get_profile(&checkpoint_id).unwrap(),
+            &checkpoint_profile
+        );
+        registry
+            .validate_historical_payload(&checkpoint_demo_payload(1))
+            .unwrap();
 
         let empty_registry = DaApplicationProfileRegistry::new();
         assert!(matches!(
@@ -7288,6 +7438,33 @@ mod tests {
             namespace_root,
             "8c8899bbfd003d4f945c883519edfa43bd3e862eba7df96bfac701e2cc9e6b92"
         );
+    }
+
+    #[test]
+    fn checkpoint_demo_profile_accepts_checkpoint_payload_and_rejects_batch_payload() {
+        let profile = DaApplicationProfile::checkpoint_demo_v1();
+        let payload = checkpoint_demo_payload(1);
+        let share_set =
+            ApplicationDaShareSet::from_payload_reed_solomon(&payload, &profile, 3, 2).unwrap();
+        let validator = CheckpointDemoDaValidator::new().unwrap();
+        let report = validator
+            .validate_payload(&profile, &payload, Some(&share_set.manifest))
+            .unwrap();
+
+        assert_eq!(
+            report.application_id,
+            application_id_unchecked("checkpoint.demo")
+        );
+        assert_eq!(report.payload_kind, DaPayloadKind::Checkpoint);
+        assert_eq!(report.sequence, 1);
+        assert!(report.accepted);
+
+        let mut batch_payload = payload.clone();
+        batch_payload.payload_kind = DaPayloadKind::Batch;
+        assert!(matches!(
+            validator.validate_payload(&profile, &batch_payload, None),
+            Err(DaError::InvalidPayload(_))
+        ));
     }
 
     #[test]

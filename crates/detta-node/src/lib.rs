@@ -14,13 +14,13 @@ use detta_da::{
     verify_application_share_against_manifest, verify_light_client_samples,
     verify_share_against_manifest, ApplicationDaAvailabilityCertificate, ApplicationDaManifest,
     ApplicationDaNamespaceSection, ApplicationDaPayload, ApplicationDaSampleProofBundle,
-    ApplicationDaShareSet, DaApplicationProfile, DaApplicationProfileRegistration,
-    DaApplicationProfileStatus, DaApplicationValidationMode, DaApplicationValidator,
-    DaAvailabilityCertificate, DaAvailabilityVote, DaChallengeEvidence, DaChallengeRecord,
-    DaCodingFraudProof, DaError, DaManifest, DaNamespace, DaNamespaceSection, DaPayload,
-    DaProductionProfile, DaRecord, DaSampleProof, DaSampleProofBundle, DaShare, DaShareChallenge,
-    DaShareChallengeResponse, DaShareSet, DettaDefiDaValidator, OpaqueApplicationValidator,
-    SchemaApplicationValidator, SocialDemoDaValidator,
+    ApplicationDaShareSet, CheckpointDemoDaValidator, DaApplicationProfile,
+    DaApplicationProfileRegistration, DaApplicationProfileStatus, DaApplicationValidationMode,
+    DaApplicationValidator, DaAvailabilityCertificate, DaAvailabilityVote, DaChallengeEvidence,
+    DaChallengeRecord, DaCodingFraudProof, DaError, DaManifest, DaNamespace, DaNamespaceSection,
+    DaPayload, DaProductionProfile, DaRecord, DaSampleProof, DaSampleProofBundle, DaShare,
+    DaShareChallenge, DaShareChallengeResponse, DaShareSet, DettaDefiDaValidator,
+    OpaqueApplicationValidator, SchemaApplicationValidator, SocialDemoDaValidator,
 };
 use detta_network::{Envelope, InMemoryTransport, NetworkError, NetworkMessage, TcpProtocolStream};
 use detta_protocol::{
@@ -3208,6 +3208,9 @@ impl PersistentValidatorNode {
                     "social.demo" => SocialDemoDaValidator::new().and_then(|validator| {
                         validator.validate_payload(profile, payload, manifest)
                     }),
+                    "checkpoint.demo" => CheckpointDemoDaValidator::new().and_then(|validator| {
+                        validator.validate_payload(profile, payload, manifest)
+                    }),
                     application_id => Err(DaError::InvalidPayload(format!(
                         "no application DA adapter is registered for {application_id}"
                     ))),
@@ -5004,6 +5007,43 @@ mod tests {
             vec![detta_da::ApplicationDaNamespaceSection::new(
                 DaNamespace::new("social.feed").unwrap(),
                 vec![post],
+            )
+            .unwrap()],
+        )
+        .unwrap()
+    }
+
+    fn checkpoint_demo_application_payload(
+        profile: &detta_da::DaApplicationProfile,
+        sequence: u64,
+    ) -> detta_da::ApplicationDaPayload {
+        let state_root = "44".repeat(32);
+        let record = detta_da::DaRecordEnvelope::new(
+            "checkpoint.state",
+            1,
+            "application/json",
+            detta_da::DaRecordEncoding::CanonicalJson,
+            format!(r#"{{"height":{sequence},"state_root":"{state_root}"}}"#).into_bytes(),
+            Some("checkpoint-operator".into()),
+            Some("checkpoint-signature".into()),
+        )
+        .unwrap();
+        detta_da::ApplicationDaPayload::new(
+            profile,
+            detta_da::DaApplicationCoordinate {
+                application_id: detta_da::DaApplicationId::new("checkpoint.demo").unwrap(),
+                stream_id: "state".into(),
+                sequence,
+                epoch: Some(1),
+                parent_hash: None,
+                subject_hash: None,
+            },
+            detta_da::DaPayloadKind::Checkpoint,
+            None,
+            vec![detta_da::DaApplicationRoot::new("checkpoint.state.root", state_root).unwrap()],
+            vec![detta_da::ApplicationDaNamespaceSection::new(
+                DaNamespace::new("checkpoint.state").unwrap(),
+                vec![record],
             )
             .unwrap()],
         )
@@ -7052,6 +7092,82 @@ mod tests {
 
         fs::remove_dir_all(source_dir).unwrap();
         fs::remove_dir_all(sink_dir).unwrap();
+    }
+
+    #[test]
+    fn archive_node_reconstructs_application_checkpoint_payload_after_restart() {
+        let source_dir = temp_dir("application-checkpoint-source");
+        let archive_dir = temp_dir("application-checkpoint-archive");
+        let source =
+            PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &source_dir).unwrap();
+        let mut archive =
+            PersistentValidatorNode::bootstrap("validator-2", seeded_state(), &archive_dir)
+                .unwrap();
+        let profile = detta_da::DaApplicationProfile::checkpoint_demo_v1();
+        let payload = checkpoint_demo_application_payload(&profile, 9);
+        source.register_application_da_profile(&profile).unwrap();
+        archive.register_application_da_profile(&profile).unwrap();
+        let report = source
+            .produce_application_da_batch(&payload, 4, 2, vec!["validator-1".into()])
+            .unwrap();
+        let share_set = source
+            .storage
+            .load_application_da_share_set(&report.manifest_hash)
+            .unwrap();
+
+        assert_eq!(report.application_id.0, "checkpoint.demo");
+        assert_eq!(report.reconstruction_threshold, 4);
+        assert_eq!(
+            archive
+                .ingest_network_envelope(&Envelope {
+                    from: "validator-1".into(),
+                    to: "validator-2".into(),
+                    message: NetworkMessage::ApplicationDaManifest(Box::new(
+                        share_set.manifest.clone(),
+                    )),
+                })
+                .unwrap(),
+            NetworkIngestOutcome::DataAvailabilityStored
+        );
+        for share in share_set
+            .shares
+            .iter()
+            .take(share_set.manifest.reconstruction_threshold as usize)
+        {
+            assert_eq!(
+                archive
+                    .ingest_network_envelope(&Envelope {
+                        from: "validator-1".into(),
+                        to: "validator-2".into(),
+                        message: NetworkMessage::ApplicationDaShare(share.clone()),
+                    })
+                    .unwrap(),
+                NetworkIngestOutcome::DataAvailabilityStored
+            );
+        }
+
+        let restarted_archive =
+            PersistentValidatorNode::restart("validator-2", &archive_dir).unwrap();
+        assert_eq!(
+            restarted_archive
+                .load_application_da_payload(&report.manifest_hash)
+                .unwrap(),
+            payload.canonicalized()
+        );
+        let status = restarted_archive
+            .application_da_status(&report.manifest_hash)
+            .unwrap();
+        assert_eq!(
+            status.application_id.map(|id| id.0),
+            Some("checkpoint.demo".into())
+        );
+        assert_eq!(status.expected_share_count, 6);
+        assert_eq!(status.stored_share_count, 4);
+        assert_eq!(status.missing_share_indices, vec![4, 5]);
+        assert!(status.payload_reconstructable);
+
+        fs::remove_dir_all(source_dir).unwrap();
+        fs::remove_dir_all(archive_dir).unwrap();
     }
 
     #[test]

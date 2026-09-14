@@ -558,7 +558,7 @@ should require:
 CLI additions:
 
 ```text
-detta-client application-da-register-profile (--builtin <detta.defi|social.demo> | --profile-json <path>)
+detta-client application-da-register-profile (--builtin <detta.defi|social.demo|checkpoint.demo> | --profile-json <path>)
 detta-client application-da-produce-batch --payload-json <path> --certificate-signers <csv> [--data-shares <n>] [--parity-shares <n>]
 detta-client application-da-profile --profile-id <hash>
 detta-client application-da-profile-index-by-application --application-id <id>
@@ -923,8 +923,8 @@ Acceptance:
 
 - [x] Generalize DA share retrieval to application manifests.
 - [x] Generalize reconstruction metrics to application payloads.
-- [ ] Add application checkpoint payload support.
-- [ ] Add application archive reconstruction tests.
+- [x] Add application checkpoint payload support.
+- [x] Add application archive reconstruction tests.
 - [x] Add mixed DeTTa/social DA retrieval tests.
 
 Acceptance:
