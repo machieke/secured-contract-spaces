@@ -11,16 +11,16 @@ use detta_da::{
     derive_application_sample_schedule, derive_sample_schedule, prove_application_namespace,
     prove_application_share_inclusion, prove_namespace, prove_share_inclusion,
     validate_production_block_payload, verify_application_light_client_samples,
-    verify_light_client_samples, verify_share_against_manifest,
-    ApplicationDaAvailabilityCertificate, ApplicationDaManifest, ApplicationDaNamespaceSection,
-    ApplicationDaPayload, ApplicationDaSampleProofBundle, ApplicationDaShareSet,
-    DaApplicationProfile, DaApplicationProfileRegistration, DaApplicationProfileStatus,
-    DaApplicationValidationMode, DaApplicationValidator, DaAvailabilityCertificate,
-    DaAvailabilityVote, DaChallengeEvidence, DaChallengeRecord, DaCodingFraudProof, DaError,
-    DaManifest, DaNamespace, DaNamespaceSection, DaPayload, DaProductionProfile, DaRecord,
-    DaSampleProof, DaSampleProofBundle, DaShare, DaShareChallenge, DaShareChallengeResponse,
-    DaShareSet, DettaDefiDaValidator, OpaqueApplicationValidator, SchemaApplicationValidator,
-    SocialDemoDaValidator,
+    verify_application_share_against_manifest, verify_light_client_samples,
+    verify_share_against_manifest, ApplicationDaAvailabilityCertificate, ApplicationDaManifest,
+    ApplicationDaNamespaceSection, ApplicationDaPayload, ApplicationDaSampleProofBundle,
+    ApplicationDaShareSet, DaApplicationProfile, DaApplicationProfileRegistration,
+    DaApplicationProfileStatus, DaApplicationValidationMode, DaApplicationValidator,
+    DaAvailabilityCertificate, DaAvailabilityVote, DaChallengeEvidence, DaChallengeRecord,
+    DaCodingFraudProof, DaError, DaManifest, DaNamespace, DaNamespaceSection, DaPayload,
+    DaProductionProfile, DaRecord, DaSampleProof, DaSampleProofBundle, DaShare, DaShareChallenge,
+    DaShareChallengeResponse, DaShareSet, DettaDefiDaValidator, OpaqueApplicationValidator,
+    SchemaApplicationValidator, SocialDemoDaValidator,
 };
 use detta_network::{Envelope, InMemoryTransport, NetworkError, NetworkMessage, TcpProtocolStream};
 use detta_protocol::{
@@ -629,6 +629,153 @@ pub fn fetch_da_share_set_from_tcp_peers(
             continue;
         }
         if let Some(share_set) = reconstructable_da_share_set(manifest_ref, &shares)? {
+            metrics.payload_reconstructable = true;
+            return Ok((share_set, metrics));
+        }
+    }
+
+    let required = manifest
+        .as_ref()
+        .map_or(1, |manifest| manifest.reconstruction_threshold);
+    Err(NodeError::DataAvailability(DaError::InsufficientShares {
+        required,
+        actual: shares.len() as u32,
+    }))
+}
+
+pub fn fetch_application_da_share_set_from_tcp_peers(
+    mut connect_peer: impl FnMut(usize) -> Result<TcpProtocolStream, NetworkError>,
+    peer_count: usize,
+    manifest_hash: impl Into<String>,
+    profile: &DaApplicationProfile,
+    max_shares_per_request: u32,
+) -> Result<(ApplicationDaShareSet, DaShareSyncClientMetrics), NodeError> {
+    if peer_count == 0 {
+        return Err(NodeError::DataAvailability(DaError::InsufficientShares {
+            required: 1,
+            actual: 0,
+        }));
+    }
+    if max_shares_per_request == 0 {
+        return Err(NodeError::DataAvailability(DaError::InvalidChunkSize));
+    }
+    if max_shares_per_request > DEFAULT_MAX_DA_SHARES_PER_REQUEST {
+        return Err(NodeError::DataAvailability(DaError::InvalidPayload(
+            "DA share request exceeds maximum share count".into(),
+        )));
+    }
+    profile.validate().map_err(NodeError::DataAvailability)?;
+
+    let manifest_hash = manifest_hash.into();
+    let mut manifest = None;
+    let mut shares = BTreeMap::new();
+    let mut metrics = DaShareSyncClientMetrics::default();
+
+    for peer_index in 0..peer_count {
+        metrics.peer_attempts = metrics.peer_attempts.saturating_add(1);
+        da_peer_score_mut(&mut metrics, peer_index);
+        let mut stream = match connect_peer(peer_index) {
+            Ok(stream) => stream,
+            Err(_) => {
+                metrics.peer_failures = metrics.peer_failures.saturating_add(1);
+                record_da_peer_failure(&mut metrics, peer_index);
+                continue;
+            }
+        };
+        let start_index =
+            first_missing_application_da_share_index(manifest.as_ref(), &shares).unwrap_or(0);
+        let request = DaShareRequest {
+            manifest_hash: manifest_hash.clone(),
+            start_index,
+            max_shares: max_shares_per_request,
+        };
+        metrics.requests_sent = metrics.requests_sent.saturating_add(1);
+        if stream
+            .send(&NetworkMessage::ApplicationDaShareRequest(request))
+            .is_err()
+        {
+            metrics.peer_failures = metrics.peer_failures.saturating_add(1);
+            record_da_peer_failure(&mut metrics, peer_index);
+            continue;
+        }
+
+        let peer_manifest = match stream.receive() {
+            Ok(NetworkMessage::ApplicationDaManifest(peer_manifest)) => *peer_manifest,
+            Ok(_) => {
+                metrics.invalid_responses = metrics.invalid_responses.saturating_add(1);
+                record_da_peer_invalid_response(&mut metrics, peer_index);
+                continue;
+            }
+            Err(_) => {
+                metrics.peer_failures = metrics.peer_failures.saturating_add(1);
+                record_da_peer_failure(&mut metrics, peer_index);
+                continue;
+            }
+        };
+        let peer_manifest_hash = peer_manifest
+            .manifest_hash()
+            .map_err(NodeError::DataAvailability)?;
+        if peer_manifest_hash != manifest_hash || peer_manifest.validate(profile).is_err() {
+            metrics.invalid_responses = metrics.invalid_responses.saturating_add(1);
+            record_da_peer_invalid_response(&mut metrics, peer_index);
+            continue;
+        }
+        if let Some(expected_manifest) = &manifest {
+            if expected_manifest != &peer_manifest {
+                metrics.invalid_responses = metrics.invalid_responses.saturating_add(1);
+                record_da_peer_invalid_response(&mut metrics, peer_index);
+                continue;
+            }
+        } else {
+            manifest = Some(peer_manifest);
+        }
+        metrics.manifests_received = metrics.manifests_received.saturating_add(1);
+
+        let manifest_ref = manifest.as_ref().expect("manifest set above");
+        let expected_shares = manifest_ref
+            .encoded_share_count
+            .saturating_sub(start_index)
+            .min(max_shares_per_request);
+        let mut peer_valid = true;
+        for _ in 0..expected_shares {
+            let share = match stream.receive() {
+                Ok(NetworkMessage::ApplicationDaShare(share)) => share,
+                Ok(_) => {
+                    metrics.invalid_responses = metrics.invalid_responses.saturating_add(1);
+                    record_da_peer_invalid_response(&mut metrics, peer_index);
+                    peer_valid = false;
+                    break;
+                }
+                Err(_) => {
+                    metrics.peer_failures = metrics.peer_failures.saturating_add(1);
+                    record_da_peer_failure(&mut metrics, peer_index);
+                    peer_valid = false;
+                    break;
+                }
+            };
+            if verify_application_share_against_manifest(manifest_ref, &share).is_err() {
+                metrics.invalid_responses = metrics.invalid_responses.saturating_add(1);
+                record_da_peer_invalid_response(&mut metrics, peer_index);
+                peer_valid = false;
+                break;
+            }
+            record_da_peer_valid_response(&mut metrics, peer_index);
+            match shares.entry(share.index) {
+                Entry::Vacant(entry) => {
+                    metrics.shares_received = metrics.shares_received.saturating_add(1);
+                    entry.insert(share);
+                }
+                Entry::Occupied(_) => {
+                    metrics.duplicate_shares = metrics.duplicate_shares.saturating_add(1);
+                }
+            }
+        }
+        if !peer_valid {
+            continue;
+        }
+        if let Some(share_set) =
+            reconstructable_application_da_share_set(manifest_ref, profile, &shares)?
+        {
             metrics.payload_reconstructable = true;
             return Ok((share_set, metrics));
         }
@@ -2743,6 +2890,31 @@ impl PersistentValidatorNode {
                     .map_err(NodeError::Storage)?;
                 Ok(NetworkIngestOutcome::DataAvailabilityStored)
             }
+            NetworkMessage::ApplicationDaManifest(manifest) => {
+                let registration = self
+                    .storage
+                    .load_application_da_profile_registration(&manifest.profile_id)
+                    .map_err(NodeError::Storage)?;
+                self.storage
+                    .commit_application_da_manifest(manifest, &registration.profile)
+                    .map_err(NodeError::Storage)?;
+                self.storage
+                    .commit_application_da_profile_registration(&registration)
+                    .map_err(NodeError::Storage)?;
+                Ok(NetworkIngestOutcome::DataAvailabilityStored)
+            }
+            NetworkMessage::ApplicationDaShare(share) => {
+                self.storage
+                    .commit_application_da_share(share)
+                    .map_err(NodeError::Storage)?;
+                Ok(NetworkIngestOutcome::DataAvailabilityStored)
+            }
+            NetworkMessage::ApplicationDaAvailabilityCertificate(certificate) => {
+                self.storage
+                    .commit_application_da_certificate(certificate)
+                    .map_err(NodeError::Storage)?;
+                Ok(NetworkIngestOutcome::DataAvailabilityStored)
+            }
             NetworkMessage::DaShareChallenge(challenge) => {
                 self.persist_da_share_challenge(challenge.clone())?;
                 Ok(NetworkIngestOutcome::DataAvailabilityStored)
@@ -2786,6 +2958,7 @@ impl PersistentValidatorNode {
             | NetworkMessage::SnapshotChunkManifest(_)
             | NetworkMessage::SnapshotChunk(_)
             | NetworkMessage::DaShareRequest(_)
+            | NetworkMessage::ApplicationDaShareRequest(_)
             | NetworkMessage::DaAvailabilityVote(_) => {
                 Ok(NetworkIngestOutcome::IgnoredControlMessage)
             }
@@ -2848,6 +3021,51 @@ impl PersistentValidatorNode {
             .admit(peer_id)
             .map_err(NodeError::DataAvailability)?;
         self.serve_da_share_request(request)
+    }
+
+    pub fn serve_application_da_share_request(
+        &self,
+        request: &DaShareRequest,
+    ) -> Result<Vec<NetworkMessage>, NodeError> {
+        if request.max_shares == 0 {
+            return Err(NodeError::DataAvailability(DaError::InvalidChunkSize));
+        }
+        if request.max_shares > DEFAULT_MAX_DA_SHARES_PER_REQUEST {
+            return Err(NodeError::DataAvailability(DaError::InvalidPayload(
+                "DA share request exceeds maximum share count".into(),
+            )));
+        }
+        let manifest = self
+            .storage
+            .load_application_da_manifest(&request.manifest_hash)
+            .map_err(NodeError::Storage)?;
+        let end_index = request
+            .start_index
+            .saturating_add(request.max_shares)
+            .min(manifest.encoded_share_count);
+        let mut messages = vec![NetworkMessage::ApplicationDaManifest(Box::new(manifest))];
+        for index in request.start_index..end_index {
+            if let Some(share) = self
+                .storage
+                .maybe_load_application_da_share(&request.manifest_hash, index)
+                .map_err(NodeError::Storage)?
+            {
+                messages.push(NetworkMessage::ApplicationDaShare(share));
+            }
+        }
+        Ok(messages)
+    }
+
+    pub fn serve_application_da_share_request_with_rate_limit(
+        &self,
+        peer_id: &str,
+        request: &DaShareRequest,
+        rate_limiter: &mut DaShareRequestRateLimiter,
+    ) -> Result<Vec<NetworkMessage>, NodeError> {
+        rate_limiter
+            .admit(peer_id)
+            .map_err(NodeError::DataAvailability)?;
+        self.serve_application_da_share_request(request)
     }
 
     pub fn persist_da_certificate(
@@ -4462,6 +4680,33 @@ fn reconstructable_da_share_set(
         shares: shares.values().cloned().collect(),
     };
     match share_set.verify() {
+        Ok(()) => Ok(Some(share_set)),
+        Err(DaError::InsufficientShares { .. }) => Ok(None),
+        Err(error) => Err(NodeError::DataAvailability(error)),
+    }
+}
+
+fn first_missing_application_da_share_index(
+    manifest: Option<&ApplicationDaManifest>,
+    shares: &BTreeMap<u32, DaShare>,
+) -> Option<u32> {
+    let manifest = manifest?;
+    (0..manifest.encoded_share_count).find(|index| !shares.contains_key(index))
+}
+
+fn reconstructable_application_da_share_set(
+    manifest: &ApplicationDaManifest,
+    profile: &DaApplicationProfile,
+    shares: &BTreeMap<u32, DaShare>,
+) -> Result<Option<ApplicationDaShareSet>, NodeError> {
+    if shares.len() < manifest.reconstruction_threshold as usize {
+        return Ok(None);
+    }
+    let share_set = ApplicationDaShareSet {
+        manifest: manifest.clone(),
+        shares: shares.values().cloned().collect(),
+    };
+    match share_set.verify(profile) {
         Ok(()) => Ok(Some(share_set)),
         Err(DaError::InsufficientShares { .. }) => Ok(None),
         Err(error) => Err(NodeError::DataAvailability(error)),
@@ -6332,6 +6577,254 @@ mod tests {
     }
 
     #[test]
+    fn application_da_retrieval_recovers_with_offline_and_invalid_peers() {
+        let source_dir = temp_dir("application-da-retrieval-source");
+        let _source =
+            PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &source_dir).unwrap();
+        let profile = detta_da::DaApplicationProfile::social_demo_v1();
+        let payload = social_demo_application_payload(&profile, "tcp-retrieval");
+        let share_set =
+            detta_da::ApplicationDaShareSet::from_payload_reed_solomon(&payload, &profile, 3, 2)
+                .unwrap();
+        let manifest_hash = share_set.manifest.manifest_hash().unwrap();
+
+        let offline_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let offline_addr = offline_listener.local_addr().unwrap();
+        drop(offline_listener);
+        let mut addrs = vec![offline_addr];
+        let mut handles = Vec::new();
+
+        let bad_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        addrs.push(bad_listener.local_addr().unwrap());
+        let bad_manifest = share_set.manifest.clone();
+        let mut bad_share = share_set.shares[0].clone();
+        bad_share.bytes[0] ^= 0xff;
+        handles.push(thread::spawn(move || {
+            let (stream, _) = bad_listener.accept().unwrap();
+            let mut tcp = TcpProtocolStream::from_stream(stream);
+            match tcp.receive().unwrap() {
+                NetworkMessage::ApplicationDaShareRequest(_) => {
+                    tcp.send(&NetworkMessage::ApplicationDaManifest(Box::new(
+                        bad_manifest,
+                    )))
+                    .unwrap();
+                    tcp.send(&NetworkMessage::ApplicationDaShare(bad_share))
+                        .unwrap();
+                }
+                message => panic!("expected application DA share request, got {message:?}"),
+            }
+        }));
+
+        for peer_index in 0..3 {
+            let peer_dir = temp_dir(&format!("application-da-retrieval-peer-{peer_index}"));
+            let peer = PersistentValidatorNode::bootstrap(
+                format!("validator-{}", peer_index + 2),
+                seeded_state(),
+                &peer_dir,
+            )
+            .unwrap();
+            peer.storage
+                .commit_application_da_share_set(&share_set, &profile)
+                .unwrap();
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            addrs.push(listener.local_addr().unwrap());
+            handles.push(thread::spawn(move || {
+                let (stream, _) = listener.accept().unwrap();
+                let mut tcp = TcpProtocolStream::from_stream(stream);
+                match tcp.receive().unwrap() {
+                    NetworkMessage::ApplicationDaShareRequest(request) => {
+                        for response in peer.serve_application_da_share_request(&request).unwrap() {
+                            tcp.send(&response).unwrap();
+                        }
+                    }
+                    message => panic!("expected application DA share request, got {message:?}"),
+                }
+                fs::remove_dir_all(peer_dir).unwrap();
+            }));
+        }
+
+        let (fetched, metrics) = fetch_application_da_share_set_from_tcp_peers(
+            |peer_index| TcpProtocolStream::connect(addrs[peer_index]),
+            addrs.len(),
+            manifest_hash,
+            &profile,
+            1,
+        )
+        .unwrap();
+
+        assert_eq!(fetched.manifest, share_set.manifest);
+        assert_eq!(
+            fetched.shares.len() as u32,
+            fetched.manifest.reconstruction_threshold
+        );
+        assert_eq!(
+            fetched.reconstruct_payload(&profile).unwrap(),
+            payload.canonicalized()
+        );
+        assert_eq!(metrics.peer_attempts, 5);
+        assert_eq!(metrics.peer_failures, 1);
+        assert_eq!(metrics.invalid_responses, 1);
+        assert_eq!(metrics.shares_received, 3);
+        assert!(metrics.payload_reconstructable);
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        fs::remove_dir_all(source_dir).unwrap();
+    }
+
+    #[test]
+    fn mixed_detta_and_application_da_retrievals_share_tcp_peers() {
+        let source_dir = temp_dir("mixed-da-retrieval-source");
+        let mut source =
+            PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &source_dir).unwrap();
+        source.submit_transaction(transfer_tx()).unwrap();
+        source.produce_block(1, 1_000).unwrap();
+        let (_, detta_share_set) = source.build_snapshot_da_share_set(64, 3, 2).unwrap();
+        let detta_manifest_hash = detta_share_set.manifest.manifest_hash().unwrap();
+
+        let profile = detta_da::DaApplicationProfile::social_demo_v1();
+        let application_payload = social_demo_application_payload(&profile, "mixed-retrieval");
+        let application_share_set = detta_da::ApplicationDaShareSet::from_payload_reed_solomon(
+            &application_payload,
+            &profile,
+            3,
+            2,
+        )
+        .unwrap();
+        let application_manifest_hash = application_share_set.manifest.manifest_hash().unwrap();
+
+        let mut addrs = Vec::new();
+        let mut handles = Vec::new();
+        for peer_index in 0..3 {
+            let peer_dir = temp_dir(&format!("mixed-da-retrieval-peer-{peer_index}"));
+            let peer = PersistentValidatorNode::bootstrap(
+                format!("validator-{}", peer_index + 2),
+                seeded_state(),
+                &peer_dir,
+            )
+            .unwrap();
+            peer.storage.commit_da_share_set(&detta_share_set).unwrap();
+            peer.storage
+                .commit_application_da_share_set(&application_share_set, &profile)
+                .unwrap();
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            addrs.push(listener.local_addr().unwrap());
+            handles.push(thread::spawn(move || {
+                for _ in 0..2 {
+                    let (stream, _) = listener.accept().unwrap();
+                    let mut tcp = TcpProtocolStream::from_stream(stream);
+                    match tcp.receive().unwrap() {
+                        NetworkMessage::DaShareRequest(request) => {
+                            for response in peer.serve_da_share_request(&request).unwrap() {
+                                tcp.send(&response).unwrap();
+                            }
+                        }
+                        NetworkMessage::ApplicationDaShareRequest(request) => {
+                            for response in
+                                peer.serve_application_da_share_request(&request).unwrap()
+                            {
+                                tcp.send(&response).unwrap();
+                            }
+                        }
+                        message => panic!("expected DA share request, got {message:?}"),
+                    }
+                }
+                fs::remove_dir_all(peer_dir).unwrap();
+            }));
+        }
+
+        let (detta_fetched, detta_metrics) = fetch_da_share_set_from_tcp_peers(
+            |peer_index| TcpProtocolStream::connect(addrs[peer_index]),
+            addrs.len(),
+            detta_manifest_hash,
+            1,
+        )
+        .unwrap();
+        assert_eq!(
+            detta_fetched.reconstruct_payload().unwrap(),
+            detta_share_set.reconstruct_payload().unwrap()
+        );
+        assert_eq!(detta_metrics.peer_attempts, 3);
+        assert_eq!(detta_metrics.shares_received, 3);
+        assert!(detta_metrics.payload_reconstructable);
+
+        let (application_fetched, application_metrics) =
+            fetch_application_da_share_set_from_tcp_peers(
+                |peer_index| TcpProtocolStream::connect(addrs[peer_index]),
+                addrs.len(),
+                application_manifest_hash,
+                &profile,
+                1,
+            )
+            .unwrap();
+        assert_eq!(
+            application_fetched.reconstruct_payload(&profile).unwrap(),
+            application_payload.canonicalized()
+        );
+        assert_eq!(application_metrics.peer_attempts, 3);
+        assert_eq!(application_metrics.shares_received, 3);
+        assert!(application_metrics.payload_reconstructable);
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        fs::remove_dir_all(source_dir).unwrap();
+    }
+
+    #[test]
+    fn application_da_share_request_rate_limiter_blocks_excessive_peer_requests() {
+        let source_dir = temp_dir("application-da-share-rate-limit-source");
+        let source =
+            PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &source_dir).unwrap();
+        let profile = detta_da::DaApplicationProfile::social_demo_v1();
+        let payload = social_demo_application_payload(&profile, "rate-limit");
+        let share_set =
+            detta_da::ApplicationDaShareSet::from_payload_reed_solomon(&payload, &profile, 3, 2)
+                .unwrap();
+        let manifest_hash = source
+            .storage
+            .commit_application_da_share_set(&share_set, &profile)
+            .unwrap();
+        let request = DaShareRequest {
+            manifest_hash,
+            start_index: 0,
+            max_shares: 1,
+        };
+        let mut limiter = DaShareRequestRateLimiter::new(1).unwrap();
+
+        let first_response = source
+            .serve_application_da_share_request_with_rate_limit("peer-1", &request, &mut limiter)
+            .unwrap();
+        assert_eq!(limiter.request_count("peer-1"), 1);
+        assert!(matches!(
+            first_response[0],
+            NetworkMessage::ApplicationDaManifest(_)
+        ));
+        assert!(matches!(
+            first_response[1],
+            NetworkMessage::ApplicationDaShare(_)
+        ));
+
+        assert!(matches!(
+            source.serve_application_da_share_request_with_rate_limit(
+                "peer-1",
+                &request,
+                &mut limiter
+            ),
+            Err(NodeError::DataAvailability(DaError::InvalidPayload(_)))
+        ));
+        assert_eq!(limiter.request_count("peer-1"), 1);
+
+        source
+            .serve_application_da_share_request_with_rate_limit("peer-2", &request, &mut limiter)
+            .unwrap();
+        assert_eq!(limiter.request_count("peer-2"), 1);
+
+        fs::remove_dir_all(source_dir).unwrap();
+    }
+
+    #[test]
     fn persistent_node_replays_da_certified_block_after_checkpoint_import() {
         let source_dir = temp_dir("da-checkpoint-replay-source");
         let sink_dir = temp_dir("da-checkpoint-replay-sink");
@@ -6483,6 +6976,79 @@ mod tests {
             }),
             Err(NodeError::DataAvailability(DaError::InvalidPayload(_)))
         ));
+
+        fs::remove_dir_all(source_dir).unwrap();
+        fs::remove_dir_all(sink_dir).unwrap();
+    }
+
+    #[test]
+    fn persistent_node_stores_application_da_manifest_share_and_certificate_gossip() {
+        let source_dir = temp_dir("application-da-gossip-source");
+        let sink_dir = temp_dir("application-da-gossip-sink");
+        let source =
+            PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &source_dir).unwrap();
+        let mut sink =
+            PersistentValidatorNode::bootstrap("validator-2", seeded_state(), &sink_dir).unwrap();
+        let profile = detta_da::DaApplicationProfile::social_demo_v1();
+        let payload = social_demo_application_payload(&profile, "gossip");
+        let share_set =
+            detta_da::ApplicationDaShareSet::from_payload_reed_solomon(&payload, &profile, 3, 2)
+                .unwrap();
+        let manifest_hash = share_set.manifest.manifest_hash().unwrap();
+        let certificate = detta_da::ApplicationDaAvailabilityCertificate::from_manifest(
+            &share_set.manifest,
+            &profile,
+            vec!["validator-1".into(), "validator-2".into()],
+        )
+        .unwrap();
+        let certificate_hash = certificate.certificate_hash().unwrap();
+
+        source
+            .storage
+            .commit_application_da_share_set(&share_set, &profile)
+            .unwrap();
+        sink.register_application_da_profile(&profile).unwrap();
+
+        let mut messages = vec![NetworkMessage::ApplicationDaManifest(Box::new(
+            share_set.manifest.clone(),
+        ))];
+        messages.extend(
+            share_set
+                .shares
+                .iter()
+                .cloned()
+                .map(NetworkMessage::ApplicationDaShare),
+        );
+        messages.push(NetworkMessage::ApplicationDaAvailabilityCertificate(
+            Box::new(certificate.clone()),
+        ));
+
+        for message in messages {
+            assert_eq!(
+                sink.ingest_network_envelope(&Envelope {
+                    from: "validator-1".into(),
+                    to: "validator-2".into(),
+                    message,
+                })
+                .unwrap(),
+                NetworkIngestOutcome::DataAvailabilityStored
+            );
+        }
+
+        assert_eq!(
+            sink.storage
+                .load_application_da_share_set(&manifest_hash)
+                .unwrap()
+                .reconstruct_payload(&profile)
+                .unwrap(),
+            payload.canonicalized()
+        );
+        assert_eq!(
+            sink.storage
+                .load_application_da_certificate(&certificate_hash)
+                .unwrap(),
+            certificate
+        );
 
         fs::remove_dir_all(source_dir).unwrap();
         fs::remove_dir_all(sink_dir).unwrap();

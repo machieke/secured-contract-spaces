@@ -921,11 +921,11 @@ Acceptance:
 
 ### Phase 9: Application-Neutral State Sync And Retrieval
 
-- [ ] Generalize DA share retrieval to application manifests.
-- [ ] Generalize reconstruction metrics to application payloads.
+- [x] Generalize DA share retrieval to application manifests.
+- [x] Generalize reconstruction metrics to application payloads.
 - [ ] Add application checkpoint payload support.
 - [ ] Add application archive reconstruction tests.
-- [ ] Add mixed DeTTa/social DA retrieval tests.
+- [x] Add mixed DeTTa/social DA retrieval tests.
 
 Acceptance:
 

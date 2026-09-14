@@ -912,11 +912,11 @@ mod tests {
     use super::*;
     use detta_core::{Argument, DeTTaState, Method};
     use detta_da::{
-        ApplicationDaAvailabilityCertificate, ApplicationDaNamespaceSection,
-        ApplicationDaPayload, ApplicationDaShareSet, DaApplicationCoordinate, DaApplicationId,
-        DaApplicationProfile, DaApplicationRoot, DaChallengeEvidence, DaNamespace,
-        DaNamespaceSection, DaPayload, DaPayloadKind, DaRecord, DaRecordEncoding,
-        DaRecordEnvelope, DaShareChallenge, DaShareChallengeResponse, DaShareSet,
+        ApplicationDaAvailabilityCertificate, ApplicationDaNamespaceSection, ApplicationDaPayload,
+        ApplicationDaShareSet, DaApplicationCoordinate, DaApplicationId, DaApplicationProfile,
+        DaApplicationRoot, DaChallengeEvidence, DaNamespace, DaNamespaceSection, DaPayload,
+        DaPayloadKind, DaRecord, DaRecordEncoding, DaRecordEnvelope, DaShareChallenge,
+        DaShareChallengeResponse, DaShareSet,
     };
 
     const TX_ENVELOPE_HEX: &str = "445454410001000000f67b225472616e73616374696f6e223a7b22636861696e5f6964223a2264657474612d6c6f63616c222c2274785f68617368223a22747831222c2273656e646572223a22416c696365222c226e6f6e6365223a312c2276616c69645f756e74696c5f686569676874223a6e756c6c2c22746172676574223a22546f6b656e41222c226d6574686f64223a225472616e73666572222c2261726773223a5b7b225072696e636970616c223a22426f62227d2c7b224173736574223a2255534443227d2c7b22416d6f756e74223a31307d5d2c227369676e61747572655f6f6b223a747275652c22627564676574223a313030303030307d7d";
