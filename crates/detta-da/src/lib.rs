@@ -13,6 +13,7 @@ pub const DA_CODING_FRAUD_PROOF_SCHEMA: &str = "detta.da-coding-fraud-proof.v1";
 pub const DA_PAYLOAD_SCHEMA: &str = "detta.da-payload.v1";
 pub const DA_PRODUCTION_PROFILE_SCHEMA: &str = "detta.da-production-profile.v1";
 pub const DA_APPLICATION_PROFILE_SCHEMA: &str = "detta.da-application-profile.v1";
+pub const APPLICATION_DA_PAYLOAD_SCHEMA: &str = "detta.application-da-payload.v1";
 pub const DA_PAYLOAD_VERSION: u32 = 1;
 pub const REED_SOLOMON_MAX_SHARES: u32 = 256;
 pub const DA_V1_MIN_CUSTODY_SHARE_COUNT: u32 = 2;
@@ -1267,6 +1268,314 @@ impl DaRecordEnvelope {
         }
         Ok(())
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaApplicationRoot {
+    pub name: String,
+    pub hash: String,
+}
+
+impl DaApplicationRoot {
+    pub fn new(name: impl Into<String>, hash: impl Into<String>) -> Result<Self, DaError> {
+        let root = Self {
+            name: name.into(),
+            hash: hash.into(),
+        };
+        root.validate_structure()?;
+        Ok(root)
+    }
+
+    pub fn validate_structure(&self) -> Result<(), DaError> {
+        validate_root_name(&self.name)?;
+        validate_sha256_hex("application root hash", &self.hash)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ApplicationDaNamespaceSection {
+    pub namespace: DaNamespace,
+    pub records: Vec<DaRecordEnvelope>,
+}
+
+impl ApplicationDaNamespaceSection {
+    pub fn new(namespace: DaNamespace, records: Vec<DaRecordEnvelope>) -> Result<Self, DaError> {
+        let section = Self { namespace, records };
+        section.validate_structure()?;
+        Ok(section)
+    }
+
+    pub fn validate_structure(&self) -> Result<(), DaError> {
+        self.namespace.validate()?;
+        if self.records.is_empty() {
+            return Err(DaError::InvalidPayload(format!(
+                "application namespace {} has no records",
+                self.namespace.0
+            )));
+        }
+        for record in &self.records {
+            record.validate_structure()?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ApplicationDaPayload {
+    pub schema: String,
+    pub schema_version: u32,
+    pub application_id: DaApplicationId,
+    pub profile_id: String,
+    pub coordinate: DaApplicationCoordinate,
+    pub payload_kind: DaPayloadKind,
+    pub previous_payload_hash: Option<String>,
+    pub application_roots: Vec<DaApplicationRoot>,
+    pub namespaces: Vec<ApplicationDaNamespaceSection>,
+}
+
+impl ApplicationDaPayload {
+    pub fn new(
+        profile: &DaApplicationProfile,
+        coordinate: DaApplicationCoordinate,
+        payload_kind: DaPayloadKind,
+        previous_payload_hash: Option<String>,
+        application_roots: Vec<DaApplicationRoot>,
+        namespaces: Vec<ApplicationDaNamespaceSection>,
+    ) -> Result<Self, DaError> {
+        let payload = Self {
+            schema: APPLICATION_DA_PAYLOAD_SCHEMA.into(),
+            schema_version: 1,
+            application_id: profile.application_id.clone(),
+            profile_id: profile.profile_id()?,
+            coordinate,
+            payload_kind,
+            previous_payload_hash,
+            application_roots,
+            namespaces,
+        }
+        .canonicalized();
+        payload.validate(profile)?;
+        Ok(payload)
+    }
+
+    pub fn canonicalized(&self) -> Self {
+        let mut namespaces: BTreeMap<DaNamespace, Vec<DaRecordEnvelope>> = BTreeMap::new();
+        for section in &self.namespaces {
+            namespaces
+                .entry(section.namespace.clone())
+                .or_default()
+                .extend(section.records.clone());
+        }
+        let mut application_roots = self.application_roots.clone();
+        application_roots.sort_by(|left, right| left.name.cmp(&right.name));
+        Self {
+            schema: self.schema.clone(),
+            schema_version: self.schema_version,
+            application_id: self.application_id.clone(),
+            profile_id: self.profile_id.clone(),
+            coordinate: self.coordinate.clone(),
+            payload_kind: self.payload_kind.clone(),
+            previous_payload_hash: self.previous_payload_hash.clone(),
+            application_roots,
+            namespaces: namespaces
+                .into_iter()
+                .map(|(namespace, records)| ApplicationDaNamespaceSection { namespace, records })
+                .collect(),
+        }
+    }
+
+    pub fn validate_structure(&self) -> Result<(), DaError> {
+        if self.schema != APPLICATION_DA_PAYLOAD_SCHEMA {
+            return Err(DaError::InvalidPayload(format!(
+                "unexpected application DA payload schema {}",
+                self.schema
+            )));
+        }
+        if self.schema_version != 1 {
+            return Err(DaError::InvalidPayload(format!(
+                "unexpected application DA payload version {}",
+                self.schema_version
+            )));
+        }
+        self.application_id.validate()?;
+        validate_sha256_hex("application profile_id", &self.profile_id)?;
+        self.payload_kind.validate()?;
+        validate_optional_sha256_hex(
+            "previous_payload_hash",
+            self.previous_payload_hash.as_deref(),
+        )?;
+        validate_sorted_unique_application_roots(&self.application_roots)?;
+        if self.namespaces.is_empty() {
+            return Err(DaError::InvalidPayload(
+                "application DA payload must contain at least one namespace".into(),
+            ));
+        }
+        validate_sorted_unique_namespaces(
+            &self
+                .namespaces
+                .iter()
+                .map(|section| section.namespace.clone())
+                .collect::<Vec<_>>(),
+        )?;
+        for section in &self.namespaces {
+            section.validate_structure()?;
+        }
+        if &self.canonicalized() != self {
+            return Err(DaError::PayloadNotCanonical);
+        }
+        Ok(())
+    }
+
+    pub fn validate(&self, profile: &DaApplicationProfile) -> Result<(), DaError> {
+        profile.validate()?;
+        self.validate_structure()?;
+        if self.application_id != profile.application_id {
+            return Err(DaError::InvalidPayload(format!(
+                "payload application_id {} does not match profile application_id {}",
+                self.application_id.0, profile.application_id.0
+            )));
+        }
+        if self.profile_id != profile.profile_id()? {
+            return Err(DaError::InvalidPayload(
+                "payload profile_id does not match profile hash".into(),
+            ));
+        }
+        if self.coordinate.application_id != self.application_id {
+            return Err(DaError::InvalidPayload(
+                "payload coordinate application_id does not match payload application_id".into(),
+            ));
+        }
+        self.coordinate.validate(&profile.coordinate_policy)?;
+
+        let payload_bytes = canonical_bytes(&self.canonicalized())?;
+        if payload_bytes.len() as u64 > profile.max_payload_bytes {
+            return Err(DaError::InvalidPayload(
+                "application DA payload exceeds profile max_payload_bytes".into(),
+            ));
+        }
+
+        let namespace_policies = profile
+            .namespace_policies
+            .iter()
+            .map(|policy| (policy.namespace.clone(), policy))
+            .collect::<BTreeMap<_, _>>();
+        let record_policies = profile
+            .record_policies
+            .iter()
+            .map(|policy| (policy.schema.clone(), policy))
+            .collect::<BTreeMap<_, _>>();
+        let sections = self
+            .namespaces
+            .iter()
+            .map(|section| (section.namespace.clone(), section))
+            .collect::<BTreeMap<_, _>>();
+
+        let total_record_count: u64 = self
+            .namespaces
+            .iter()
+            .map(|section| section.records.len() as u64)
+            .sum();
+        if total_record_count > profile.max_records_per_payload as u64 {
+            return Err(DaError::InvalidPayload(
+                "application DA payload exceeds profile max_records_per_payload".into(),
+            ));
+        }
+
+        for policy in &profile.namespace_policies {
+            match policy.requirement {
+                DaNamespaceRequirement::Required => {
+                    let section = sections.get(&policy.namespace).ok_or_else(|| {
+                        DaError::InvalidPayload(format!(
+                            "application DA payload missing required namespace {}",
+                            policy.namespace.0
+                        ))
+                    })?;
+                    validate_application_namespace_record_count(policy, section.records.len())?;
+                }
+                DaNamespaceRequirement::Optional => {
+                    if let Some(section) = sections.get(&policy.namespace) {
+                        validate_application_namespace_record_count(policy, section.records.len())?;
+                    }
+                }
+                DaNamespaceRequirement::Forbidden => {
+                    if sections.contains_key(&policy.namespace) {
+                        return Err(DaError::InvalidPayload(format!(
+                            "application DA payload includes forbidden namespace {}",
+                            policy.namespace.0
+                        )));
+                    }
+                }
+            }
+        }
+
+        for section in &self.namespaces {
+            let namespace_policy = namespace_policies.get(&section.namespace).ok_or_else(|| {
+                DaError::InvalidPayload(format!(
+                    "application DA payload uses unknown namespace {}",
+                    section.namespace.0
+                ))
+            })?;
+            if namespace_policy.requirement == DaNamespaceRequirement::Forbidden {
+                return Err(DaError::InvalidPayload(format!(
+                    "application DA payload includes forbidden namespace {}",
+                    section.namespace.0
+                )));
+            }
+            validate_application_namespace_record_count(namespace_policy, section.records.len())?;
+            for record in &section.records {
+                if !namespace_policy
+                    .allowed_record_schemas
+                    .iter()
+                    .any(|schema| schema == &record.schema)
+                {
+                    return Err(DaError::InvalidPayload(format!(
+                        "namespace {} does not allow record schema {}",
+                        section.namespace.0, record.schema
+                    )));
+                }
+                if profile.validation_mode == DaApplicationValidationMode::OpaqueBytes {
+                    record.validate_structure()?;
+                    continue;
+                }
+                let record_policy = record_policies.get(&record.schema).ok_or_else(|| {
+                    DaError::InvalidPayload(format!(
+                        "application DA payload uses unknown record schema {}",
+                        record.schema
+                    ))
+                })?;
+                record.validate_against_policy(record_policy)?;
+                if !record_policy
+                    .allowed_namespaces
+                    .iter()
+                    .any(|namespace| namespace == &section.namespace)
+                {
+                    return Err(DaError::InvalidPayload(format!(
+                        "record schema {} is not allowed in namespace {}",
+                        record.schema, section.namespace.0
+                    )));
+                }
+            }
+        }
+
+        validate_application_roots_against_profile(self, profile)?;
+        Ok(())
+    }
+
+    pub fn hash(&self) -> Result<String, DaError> {
+        let canonical = self.canonicalized();
+        canonical.validate_structure()?;
+        hash_canonical(&canonical)
+    }
+
+    pub fn namespace_root(&self) -> Result<String, DaError> {
+        let canonical = self.canonicalized();
+        canonical.validate_structure()?;
+        namespace_root_for_ranges(&application_namespace_ranges(&canonical))
+    }
+}
+
+pub fn application_payload_hash(payload: &ApplicationDaPayload) -> Result<String, DaError> {
+    payload.hash()
 }
 
 fn namespace_policy(
@@ -3126,6 +3435,19 @@ fn namespace_ranges(payload: &DaPayload) -> Vec<DaNamespaceRange> {
         .collect()
 }
 
+fn application_namespace_ranges(payload: &ApplicationDaPayload) -> Vec<DaNamespaceRange> {
+    payload
+        .namespaces
+        .iter()
+        .enumerate()
+        .map(|(index, section)| DaNamespaceRange {
+            namespace: section.namespace.clone(),
+            section_index: index as u32,
+            record_count: section.records.len() as u32,
+        })
+        .collect()
+}
+
 fn validate_namespace_ranges(ranges: &[DaNamespaceRange]) -> Result<(), DaError> {
     let mut previous_namespace: Option<&DaNamespace> = None;
     for (position, range) in ranges.iter().enumerate() {
@@ -3266,6 +3588,27 @@ fn validate_optional_hash(field: &str, value: Option<&str>) -> Result<(), DaErro
     validate_optional_label(field, value, 256)
 }
 
+fn validate_sha256_hex(field: &str, value: &str) -> Result<(), DaError> {
+    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(DaError::InvalidManifest(format!(
+            "{field} must be a 32-byte hex hash"
+        )));
+    }
+    if value.bytes().any(|byte| byte.is_ascii_uppercase()) {
+        return Err(DaError::InvalidManifest(format!(
+            "{field} must use lowercase hex"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_optional_sha256_hex(field: &str, value: Option<&str>) -> Result<(), DaError> {
+    if let Some(value) = value {
+        validate_sha256_hex(field, value)?;
+    }
+    Ok(())
+}
+
 fn validate_sorted_unique_schema_ids(field: &str, values: &[String]) -> Result<(), DaError> {
     if values.is_empty() {
         return Err(DaError::InvalidManifest(format!(
@@ -3279,6 +3622,67 @@ fn validate_sorted_unique_schema_ids(field: &str, values: &[String]) -> Result<(
         return Err(DaError::InvalidManifest(format!(
             "{field} must be sorted and unique"
         )));
+    }
+    Ok(())
+}
+
+fn validate_sorted_unique_application_roots(roots: &[DaApplicationRoot]) -> Result<(), DaError> {
+    for root in roots {
+        root.validate_structure()?;
+    }
+    if !roots
+        .windows(2)
+        .all(|window| window[0].name < window[1].name)
+    {
+        return Err(DaError::InvalidPayload(
+            "application roots must be sorted and unique".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_application_namespace_record_count(
+    policy: &DaNamespacePolicy,
+    actual: usize,
+) -> Result<(), DaError> {
+    if actual < policy.min_records as usize || actual > policy.max_records as usize {
+        return Err(DaError::InvalidPayload(format!(
+            "namespace {} record count {actual} is outside profile bounds {}..={}",
+            policy.namespace.0, policy.min_records, policy.max_records
+        )));
+    }
+    Ok(())
+}
+
+fn validate_application_roots_against_profile(
+    payload: &ApplicationDaPayload,
+    profile: &DaApplicationProfile,
+) -> Result<(), DaError> {
+    let payload_roots = payload
+        .application_roots
+        .iter()
+        .map(|root| (&root.name, root))
+        .collect::<BTreeMap<_, _>>();
+    for policy in &profile.root_bindings {
+        let root = payload_roots.get(&policy.name);
+        if policy.required && root.is_none() {
+            return Err(DaError::InvalidPayload(format!(
+                "application DA payload is missing required root {}",
+                policy.name
+            )));
+        }
+    }
+    for root in &payload.application_roots {
+        if !profile
+            .root_bindings
+            .iter()
+            .any(|policy| policy.name == root.name)
+        {
+            return Err(DaError::InvalidPayload(format!(
+                "application DA payload carries unknown root {}",
+                root.name
+            )));
+        }
     }
     Ok(())
 }
@@ -3660,6 +4064,81 @@ mod tests {
                 amount: 1,
             },
         }
+    }
+
+    fn social_coordinate(sequence: u64) -> DaApplicationCoordinate {
+        DaApplicationCoordinate {
+            application_id: application_id_unchecked("social.demo"),
+            stream_id: "global".into(),
+            sequence,
+            epoch: None,
+            parent_hash: None,
+            subject_hash: None,
+        }
+    }
+
+    fn application_root(name: &str, seed: &[u8]) -> DaApplicationRoot {
+        DaApplicationRoot::new(name, hash_bytes(seed)).unwrap()
+    }
+
+    fn application_record(
+        schema: &str,
+        encoding: DaRecordEncoding,
+        bytes: &[u8],
+        signer: Option<&str>,
+    ) -> DaRecordEnvelope {
+        DaRecordEnvelope::new(
+            schema,
+            1,
+            "application/json",
+            encoding,
+            bytes.to_vec(),
+            signer.map(String::from),
+            signer.map(|value| format!("sig-{value}")),
+        )
+        .unwrap()
+    }
+
+    fn application_section(
+        namespace: &str,
+        records: Vec<DaRecordEnvelope>,
+    ) -> ApplicationDaNamespaceSection {
+        ApplicationDaNamespaceSection::new(DaNamespace::new(namespace).unwrap(), records).unwrap()
+    }
+
+    fn social_demo_payload() -> ApplicationDaPayload {
+        let profile = DaApplicationProfile::social_demo_v1();
+        ApplicationDaPayload::new(
+            &profile,
+            social_coordinate(1),
+            DaPayloadKind::Batch,
+            None,
+            vec![application_root(
+                "social.event.log.root",
+                b"social-event-log-root-1",
+            )],
+            vec![
+                application_section(
+                    "social.feed",
+                    vec![application_record(
+                        "social.post",
+                        DaRecordEncoding::CanonicalJson,
+                        br#"{"author":"alice","post_id":"post-1","text":"hello"}"#,
+                        Some("alice"),
+                    )],
+                ),
+                application_section(
+                    "social.media",
+                    vec![application_record(
+                        "social.media.reference",
+                        DaRecordEncoding::ExternalContentAddress,
+                        br#"{"content_hash":"media-root","uri":"ipfs://example"}"#,
+                        None,
+                    )],
+                ),
+            ],
+        )
+        .unwrap()
     }
 
     fn forged_deterministic_share_set_from_payload_bytes(
@@ -4399,6 +4878,185 @@ mod tests {
             unsigned.validate_against_policy(&policy),
             Err(DaError::InvalidPayload(_))
         ));
+    }
+
+    #[test]
+    fn application_payload_canonicalizes_reordered_namespaces() {
+        let profile = DaApplicationProfile::social_demo_v1();
+        let profile_id = profile.profile_id().unwrap();
+        let payload = ApplicationDaPayload {
+            schema: APPLICATION_DA_PAYLOAD_SCHEMA.into(),
+            schema_version: 1,
+            application_id: application_id_unchecked("social.demo"),
+            profile_id,
+            coordinate: social_coordinate(1),
+            payload_kind: DaPayloadKind::Batch,
+            previous_payload_hash: None,
+            application_roots: vec![application_root(
+                "social.event.log.root",
+                b"social-event-log-root-1",
+            )],
+            namespaces: vec![
+                application_section(
+                    "social.moderation",
+                    vec![application_record(
+                        "social.moderation.action",
+                        DaRecordEncoding::CanonicalJson,
+                        br#"{"action":"hide","post_id":"post-1"}"#,
+                        Some("moderator"),
+                    )],
+                ),
+                application_section(
+                    "social.feed",
+                    vec![application_record(
+                        "social.post",
+                        DaRecordEncoding::CanonicalJson,
+                        br#"{"author":"alice","post_id":"post-1","text":"hello"}"#,
+                        Some("alice"),
+                    )],
+                ),
+            ],
+        };
+
+        assert!(matches!(
+            payload.validate(&profile),
+            Err(DaError::InvalidPayload(_)) | Err(DaError::PayloadNotCanonical)
+        ));
+        let canonical = payload.canonicalized();
+        canonical.validate(&profile).unwrap();
+        assert_eq!(
+            canonical
+                .namespaces
+                .iter()
+                .map(|section| section.namespace.0.as_str())
+                .collect::<Vec<_>>(),
+            vec!["social.feed", "social.moderation"]
+        );
+    }
+
+    #[test]
+    fn application_payload_enforces_required_and_forbidden_namespaces() {
+        let profile = DaApplicationProfile::social_demo_v1();
+        let missing_required = ApplicationDaPayload::new(
+            &profile,
+            social_coordinate(1),
+            DaPayloadKind::Batch,
+            None,
+            vec![application_root(
+                "social.event.log.root",
+                b"social-event-log-root-1",
+            )],
+            vec![application_section(
+                "social.media",
+                vec![application_record(
+                    "social.media.reference",
+                    DaRecordEncoding::ExternalContentAddress,
+                    br#"{"uri":"ipfs://example"}"#,
+                    None,
+                )],
+            )],
+        );
+        assert!(matches!(missing_required, Err(DaError::InvalidPayload(_))));
+
+        let mut profile_with_forbidden = DaApplicationProfile::social_demo_v1();
+        profile_with_forbidden
+            .namespace_policies
+            .push(namespace_policy(
+                "social.spam",
+                DaNamespaceRequirement::Forbidden,
+                vec![],
+                0,
+                0,
+                DaApplicationRetentionClass::Archive,
+            ));
+        profile_with_forbidden.validate().unwrap();
+        let forbidden_payload = ApplicationDaPayload::new(
+            &profile_with_forbidden,
+            social_coordinate(1),
+            DaPayloadKind::Batch,
+            None,
+            vec![application_root(
+                "social.event.log.root",
+                b"social-event-log-root-1",
+            )],
+            vec![
+                application_section(
+                    "social.feed",
+                    vec![application_record(
+                        "social.post",
+                        DaRecordEncoding::CanonicalJson,
+                        br#"{"author":"alice","post_id":"post-1","text":"hello"}"#,
+                        Some("alice"),
+                    )],
+                ),
+                application_section(
+                    "social.spam",
+                    vec![application_record(
+                        "social.post",
+                        DaRecordEncoding::CanonicalJson,
+                        br#"{"author":"mallory","post_id":"spam-1"}"#,
+                        Some("mallory"),
+                    )],
+                ),
+            ],
+        );
+        assert!(matches!(forbidden_payload, Err(DaError::InvalidPayload(_))));
+    }
+
+    #[test]
+    fn application_payload_rejects_bad_content_hash_unknown_schema_and_size() {
+        let profile = DaApplicationProfile::social_demo_v1();
+        let mut tampered_hash = social_demo_payload();
+        tampered_hash.namespaces[0].records[0].content_hash = "bad-hash".into();
+        assert!(matches!(
+            tampered_hash.validate(&profile),
+            Err(DaError::PayloadHashMismatch { .. })
+        ));
+
+        let unknown_schema = ApplicationDaPayload::new(
+            &profile,
+            social_coordinate(1),
+            DaPayloadKind::Batch,
+            None,
+            vec![application_root(
+                "social.event.log.root",
+                b"social-event-log-root-1",
+            )],
+            vec![application_section(
+                "social.feed",
+                vec![application_record(
+                    "social.unknown",
+                    DaRecordEncoding::CanonicalJson,
+                    br#"{"author":"alice","post_id":"post-1"}"#,
+                    Some("alice"),
+                )],
+            )],
+        );
+        assert!(matches!(unknown_schema, Err(DaError::InvalidPayload(_))));
+
+        let mut tiny_payload_profile = DaApplicationProfile::social_demo_v1();
+        tiny_payload_profile.max_payload_bytes = 1;
+        let payload = social_demo_payload();
+        assert!(matches!(
+            payload.validate(&tiny_payload_profile),
+            Err(DaError::InvalidPayload(_))
+        ));
+    }
+
+    #[test]
+    fn social_demo_application_payload_fixture_hash_is_stable() {
+        let payload = social_demo_payload();
+        let payload_hash = application_payload_hash(&payload).unwrap();
+        let namespace_root = payload.namespace_root().unwrap();
+
+        assert_eq!(
+            payload_hash,
+            "0e2ec3add83d7fa033bad12491caf08b31101f6c5fe5285b635c6dd0ba2ef9f1"
+        );
+        assert_eq!(
+            namespace_root,
+            "8c8899bbfd003d4f945c883519edfa43bd3e862eba7df96bfac701e2cc9e6b92"
+        );
     }
 
     #[test]

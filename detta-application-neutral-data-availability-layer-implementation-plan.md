@@ -766,21 +766,21 @@ Acceptance:
 
 ### Phase 2: Application Payload Envelope
 
-- [ ] Add `ApplicationDaPayload`.
-- [ ] Add `ApplicationDaNamespaceSection`.
-- [ ] Add `DaRecordEnvelope`.
-- [ ] Add canonicalization for generic application payloads.
-- [ ] Add payload hash and namespace root helpers.
-- [ ] Add profile-based payload validation.
-- [ ] Add a social-demo payload fixture.
+- [x] Add `ApplicationDaPayload`.
+- [x] Add `ApplicationDaNamespaceSection`.
+- [x] Add `DaRecordEnvelope`.
+- [x] Add canonicalization for generic application payloads.
+- [x] Add payload hash and namespace root helpers.
+- [x] Add profile-based payload validation.
+- [x] Add a social-demo payload fixture.
 
 Acceptance:
 
-- payloads with reordered namespaces canonicalize deterministically;
-- content hashes bind record bytes;
-- required namespaces are enforced;
-- forbidden namespaces are rejected;
-- social-demo fixture hash is stable.
+- [x] payloads with reordered namespaces canonicalize deterministically;
+- [x] content hashes bind record bytes;
+- [x] required namespaces are enforced;
+- [x] forbidden namespaces are rejected;
+- [x] social-demo fixture hash is stable.
 
 ### Phase 3: Application Manifest And Share Set
 
