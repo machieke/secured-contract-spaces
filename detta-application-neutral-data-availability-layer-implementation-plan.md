@@ -806,7 +806,7 @@ Acceptance:
 - [x] Add in-memory `DaApplicationProfileRegistry`.
 - [x] Register built-in `detta.defi` profile.
 - [x] Register test `social.demo` profile.
-- [ ] Add durable profile storage.
+- [x] Add durable profile storage.
 - [x] Add profile indexes by application id, profile id, and profile version.
 - [x] Add profile activation/deprecation status.
 
@@ -815,7 +815,7 @@ Acceptance:
 - [x] unknown profile payloads are rejected;
 - [x] registered profile hashes are stable;
 - [x] old profile versions remain loadable for historical validation;
-- registry survives restart.
+- [x] registry survives restart.
 
 ### Phase 5: Application Validators
 
@@ -853,22 +853,22 @@ Acceptance:
 
 ### Phase 7: Storage And Indexes
 
-- [ ] Persist application profiles.
-- [ ] Persist application payloads.
-- [ ] Persist application manifests.
-- [ ] Persist application shares.
-- [ ] Persist application certificates.
-- [ ] Add application DA indexes.
-- [ ] Include application DA indexes in DA store root.
-- [ ] Add rebuild and corruption checks.
-- [ ] Add backup/restore coverage.
+- [x] Persist application profiles.
+- [x] Persist application payloads.
+- [x] Persist application manifests.
+- [x] Persist application shares.
+- [x] Persist application certificates.
+- [x] Add application DA indexes.
+- [x] Include application DA indexes in DA store root.
+- [x] Add rebuild and corruption checks.
+- [x] Add backup/restore coverage.
 
 Acceptance:
 
-- application DA data survives restart;
-- backup/restore preserves generic DA data and indexes;
-- corrupt index entries are rejected;
-- indexes can query by application id, profile id, coordinate, namespace,
+- [x] application DA data survives restart;
+- [x] backup/restore preserves generic DA data and indexes;
+- [x] corrupt index entries are rejected;
+- [x] indexes can query by application id, profile id, coordinate, namespace,
   retention class, and application root.
 
 ### Phase 8: RPC And CLI

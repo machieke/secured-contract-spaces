@@ -1,8 +1,13 @@
 use detta_consensus::{FinalityCertificate, SlashingRecord};
 use detta_core::{Block, DeTTaState, Receipt, SnapshotError, StateSnapshot, Transaction};
 use detta_da::{
-    payload_hash, DaAvailabilityCertificate, DaChallengeRecord, DaManifest, DaNamespace, DaPayload,
-    DaShare, DaShareSet, DA_V1_ARCHIVE_MIN_RETENTION_BLOCKS, DA_V1_VALIDATOR_MIN_RETENTION_BLOCKS,
+    application_payload_hash, payload_hash, verify_application_manifest_commits_payload,
+    ApplicationDaAvailabilityCertificate, ApplicationDaManifest, ApplicationDaPayload,
+    ApplicationDaShareSet, DaApplicationCoordinate, DaApplicationId, DaApplicationProfile,
+    DaApplicationProfileRegistration, DaApplicationProfileRegistry, DaApplicationProfileStatus,
+    DaApplicationRetentionClass, DaAvailabilityCertificate, DaChallengeRecord, DaManifest,
+    DaNamespace, DaPayload, DaPayloadKind, DaShare, DaShareSet, DA_V1_ARCHIVE_MIN_RETENTION_BLOCKS,
+    DA_V1_VALIDATOR_MIN_RETENTION_BLOCKS,
 };
 use detta_protocol::{SignedValidatorMessage, ValidatorSetMetadata, ValidatorSignatureDomain};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -261,6 +266,41 @@ pub struct DaCertificateIndexEntry {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaApplicationProfileIndexEntry {
+    pub profile_id: String,
+    pub application_id: DaApplicationId,
+    pub profile_version: u32,
+    pub status: DaApplicationProfileStatus,
+    pub activated_at_sequence: Option<u64>,
+    pub deprecated_at_sequence: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ApplicationDaManifestIndexEntry {
+    pub manifest_hash: String,
+    pub application_id: DaApplicationId,
+    pub profile_id: String,
+    pub coordinate: DaApplicationCoordinate,
+    pub payload_kind: DaPayloadKind,
+    pub payload_hash: String,
+    pub namespace_root: String,
+    pub application_root: Option<String>,
+    pub share_root: String,
+    pub retention_class: DaApplicationRetentionClass,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ApplicationDaCertificateIndexEntry {
+    pub certificate_hash: String,
+    pub application_id: DaApplicationId,
+    pub profile_id: String,
+    pub coordinate: DaApplicationCoordinate,
+    pub payload_kind: DaPayloadKind,
+    pub manifest_hash: String,
+    pub share_root: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DaStoreRoots {
     pub manifest_root: String,
     pub share_root: String,
@@ -269,6 +309,7 @@ pub struct DaStoreRoots {
     pub challenge_root: String,
     pub repair_root: String,
     pub index_root: String,
+    pub application_root: String,
     pub retention_policy_root: Option<String>,
     pub root: String,
 }
@@ -331,6 +372,100 @@ impl FileStorage {
             root.join("da")
                 .join("indexes")
                 .join("certificates_by_block_hash"),
+        )
+        .map_err(io_error)?;
+        fs::create_dir_all(root.join("da").join("applications").join("profiles"))
+            .map_err(io_error)?;
+        fs::create_dir_all(root.join("da").join("applications").join("manifests"))
+            .map_err(io_error)?;
+        fs::create_dir_all(root.join("da").join("applications").join("payloads"))
+            .map_err(io_error)?;
+        fs::create_dir_all(root.join("da").join("applications").join("shares"))
+            .map_err(io_error)?;
+        fs::create_dir_all(root.join("da").join("applications").join("certificates"))
+            .map_err(io_error)?;
+        fs::create_dir_all(
+            root.join("da")
+                .join("applications")
+                .join("indexes")
+                .join("profiles_by_application_id"),
+        )
+        .map_err(io_error)?;
+        fs::create_dir_all(
+            root.join("da")
+                .join("applications")
+                .join("indexes")
+                .join("profiles_by_application_version"),
+        )
+        .map_err(io_error)?;
+        fs::create_dir_all(
+            root.join("da")
+                .join("applications")
+                .join("indexes")
+                .join("manifests_by_application_id"),
+        )
+        .map_err(io_error)?;
+        fs::create_dir_all(
+            root.join("da")
+                .join("applications")
+                .join("indexes")
+                .join("manifests_by_profile_id"),
+        )
+        .map_err(io_error)?;
+        fs::create_dir_all(
+            root.join("da")
+                .join("applications")
+                .join("indexes")
+                .join("manifests_by_coordinate"),
+        )
+        .map_err(io_error)?;
+        fs::create_dir_all(
+            root.join("da")
+                .join("applications")
+                .join("indexes")
+                .join("manifests_by_namespace"),
+        )
+        .map_err(io_error)?;
+        fs::create_dir_all(
+            root.join("da")
+                .join("applications")
+                .join("indexes")
+                .join("manifests_by_retention_class"),
+        )
+        .map_err(io_error)?;
+        fs::create_dir_all(
+            root.join("da")
+                .join("applications")
+                .join("indexes")
+                .join("manifests_by_application_root"),
+        )
+        .map_err(io_error)?;
+        fs::create_dir_all(
+            root.join("da")
+                .join("applications")
+                .join("indexes")
+                .join("certificates_by_manifest"),
+        )
+        .map_err(io_error)?;
+        fs::create_dir_all(
+            root.join("da")
+                .join("applications")
+                .join("indexes")
+                .join("certificates_by_application_id"),
+        )
+        .map_err(io_error)?;
+        fs::create_dir_all(
+            root.join("da")
+                .join("applications")
+                .join("indexes")
+                .join("certificates_by_profile_id"),
+        )
+        .map_err(io_error)?;
+        fs::create_dir_all(
+            root.join("da")
+                .join("applications")
+                .join("indexes")
+                .join("certificates_by_coordinate"),
         )
         .map_err(io_error)?;
         Ok(Self { root })
@@ -1220,6 +1355,456 @@ impl FileStorage {
         )
     }
 
+    pub fn commit_application_da_profile(
+        &self,
+        profile: &DaApplicationProfile,
+    ) -> Result<String, StorageError> {
+        let registration =
+            DaApplicationProfileRegistration::active(profile.clone()).map_err(da_error)?;
+        self.commit_application_da_profile_registration(&registration)
+    }
+
+    pub fn commit_application_da_profile_registration(
+        &self,
+        registration: &DaApplicationProfileRegistration,
+    ) -> Result<String, StorageError> {
+        registration.validate().map_err(da_error)?;
+        let profile_id = registration.profile_id.clone();
+        write_json_atomic(&self.application_da_profile_path(&profile_id), registration)?;
+        self.upsert_application_da_profile_indexes(registration)?;
+        Ok(profile_id)
+    }
+
+    pub fn maybe_load_application_da_profile_registration(
+        &self,
+        profile_id: &str,
+    ) -> Result<Option<DaApplicationProfileRegistration>, StorageError> {
+        let path = self.application_da_profile_path(profile_id);
+        if !path.exists() {
+            return Ok(None);
+        }
+        self.load_application_da_profile_registration(profile_id)
+            .map(Some)
+    }
+
+    pub fn load_application_da_profile_registration(
+        &self,
+        profile_id: &str,
+    ) -> Result<DaApplicationProfileRegistration, StorageError> {
+        let registration: DaApplicationProfileRegistration =
+            read_json(&self.application_da_profile_path(profile_id))?;
+        registration.validate().map_err(da_error)?;
+        if registration.profile_id != profile_id {
+            return Err(StorageError::CorruptData(format!(
+                "application DA profile id mismatch: expected {profile_id}, got {}",
+                registration.profile_id
+            )));
+        }
+        Ok(registration)
+    }
+
+    pub fn load_application_da_profile_registry(
+        &self,
+    ) -> Result<DaApplicationProfileRegistry, StorageError> {
+        let mut registrations = Vec::new();
+        for path in sorted_bin_paths(&self.application_da_profiles_path())? {
+            let registration: DaApplicationProfileRegistration = read_json(&path)?;
+            registration.validate().map_err(da_error)?;
+            let expected_file_name = format!("{}.bin", file_safe_id(&registration.profile_id));
+            if path.file_name().and_then(|name| name.to_str()) != Some(expected_file_name.as_str())
+            {
+                return Err(StorageError::CorruptData(
+                    "application DA profile filename does not match profile id".into(),
+                ));
+            }
+            registrations.push(registration);
+        }
+        DaApplicationProfileRegistry::from_registrations(registrations).map_err(da_error)
+    }
+
+    pub fn load_application_da_profile_index_by_application_id(
+        &self,
+        application_id: &str,
+    ) -> Result<Vec<DaApplicationProfileIndexEntry>, StorageError> {
+        let application_id = DaApplicationId::new(application_id).map_err(da_error)?;
+        self.load_application_da_profile_index_entries(
+            &self.application_da_profiles_by_application_id_index_path(&application_id),
+            Some(&application_id),
+            None,
+        )
+    }
+
+    pub fn load_application_da_profile_index_by_application_version(
+        &self,
+        application_id: &str,
+        profile_version: u32,
+    ) -> Result<Vec<DaApplicationProfileIndexEntry>, StorageError> {
+        let application_id = DaApplicationId::new(application_id).map_err(da_error)?;
+        self.load_application_da_profile_index_entries(
+            &self.application_da_profiles_by_application_version_index_path(
+                &application_id,
+                profile_version,
+            )?,
+            Some(&application_id),
+            Some(profile_version),
+        )
+    }
+
+    pub fn commit_application_da_manifest(
+        &self,
+        manifest: &ApplicationDaManifest,
+        profile: &DaApplicationProfile,
+    ) -> Result<String, StorageError> {
+        self.commit_application_da_profile(profile)?;
+        manifest.validate(profile).map_err(da_error)?;
+        let manifest_hash = manifest.manifest_hash().map_err(da_error)?;
+        write_json_atomic(&self.application_da_manifest_path(&manifest_hash), manifest)?;
+        self.upsert_application_da_manifest_indexes(&manifest_hash, manifest, profile)?;
+        Ok(manifest_hash)
+    }
+
+    pub fn maybe_load_application_da_manifest(
+        &self,
+        manifest_hash: &str,
+    ) -> Result<Option<ApplicationDaManifest>, StorageError> {
+        let path = self.application_da_manifest_path(manifest_hash);
+        if !path.exists() {
+            return Ok(None);
+        }
+        self.load_application_da_manifest(manifest_hash).map(Some)
+    }
+
+    pub fn load_application_da_manifest(
+        &self,
+        manifest_hash: &str,
+    ) -> Result<ApplicationDaManifest, StorageError> {
+        let manifest: ApplicationDaManifest =
+            read_json(&self.application_da_manifest_path(manifest_hash))?;
+        manifest.validate_structure().map_err(da_error)?;
+        let actual_hash = manifest.manifest_hash().map_err(da_error)?;
+        if actual_hash != manifest_hash {
+            return Err(StorageError::CorruptData(format!(
+                "application DA manifest hash mismatch: expected {manifest_hash}, got {actual_hash}"
+            )));
+        }
+        let registration = self.load_application_da_profile_registration(&manifest.profile_id)?;
+        manifest.validate(&registration.profile).map_err(da_error)?;
+        Ok(manifest)
+    }
+
+    pub fn load_application_da_manifest_index_by_application_id(
+        &self,
+        application_id: &str,
+    ) -> Result<Vec<ApplicationDaManifestIndexEntry>, StorageError> {
+        let application_id = DaApplicationId::new(application_id).map_err(da_error)?;
+        self.load_application_da_manifest_index_entries(
+            &self.application_da_manifests_by_application_id_index_path(&application_id),
+            Some(&application_id),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+    }
+
+    pub fn load_application_da_manifest_index_by_profile_id(
+        &self,
+        profile_id: &str,
+    ) -> Result<Vec<ApplicationDaManifestIndexEntry>, StorageError> {
+        validate_sha256_storage_hex("application DA profile id", profile_id)?;
+        self.load_application_da_manifest_index_entries(
+            &self.application_da_manifests_by_profile_id_index_path(profile_id),
+            None,
+            Some(profile_id),
+            None,
+            None,
+            None,
+            None,
+        )
+    }
+
+    pub fn load_application_da_manifest_index_by_coordinate(
+        &self,
+        coordinate: &DaApplicationCoordinate,
+    ) -> Result<Vec<ApplicationDaManifestIndexEntry>, StorageError> {
+        self.load_application_da_manifest_index_entries(
+            &self.application_da_manifests_by_coordinate_index_path(coordinate)?,
+            None,
+            None,
+            Some(coordinate),
+            None,
+            None,
+            None,
+        )
+    }
+
+    pub fn load_application_da_manifest_index_by_namespace(
+        &self,
+        namespace: &str,
+    ) -> Result<Vec<ApplicationDaManifestIndexEntry>, StorageError> {
+        let namespace = DaNamespace::new(namespace).map_err(da_error)?;
+        self.load_application_da_manifest_index_entries(
+            &self.application_da_manifests_by_namespace_index_path(&namespace),
+            None,
+            None,
+            None,
+            Some(&namespace),
+            None,
+            None,
+        )
+    }
+
+    pub fn load_application_da_manifest_index_by_retention_class(
+        &self,
+        class: &DaApplicationRetentionClass,
+    ) -> Result<Vec<ApplicationDaManifestIndexEntry>, StorageError> {
+        class.validate().map_err(da_error)?;
+        self.load_application_da_manifest_index_entries(
+            &self.application_da_manifests_by_retention_class_index_path(class),
+            None,
+            None,
+            None,
+            None,
+            Some(class),
+            None,
+        )
+    }
+
+    pub fn load_application_da_manifest_index_by_application_root(
+        &self,
+        application_root: &str,
+    ) -> Result<Vec<ApplicationDaManifestIndexEntry>, StorageError> {
+        validate_sha256_storage_hex("application DA application root", application_root)?;
+        self.load_application_da_manifest_index_entries(
+            &self.application_da_manifests_by_application_root_index_path(application_root),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(application_root),
+        )
+    }
+
+    pub fn commit_application_da_payload(
+        &self,
+        manifest_hash: &str,
+        payload: &ApplicationDaPayload,
+    ) -> Result<(), StorageError> {
+        self.validate_application_da_payload(manifest_hash, payload)?;
+        write_json_atomic(
+            &self.application_da_payload_path(manifest_hash),
+            &payload.canonicalized(),
+        )
+    }
+
+    pub fn maybe_load_application_da_payload(
+        &self,
+        manifest_hash: &str,
+    ) -> Result<Option<ApplicationDaPayload>, StorageError> {
+        let path = self.application_da_payload_path(manifest_hash);
+        if !path.exists() {
+            return Ok(None);
+        }
+        self.load_application_da_payload(manifest_hash).map(Some)
+    }
+
+    pub fn load_application_da_payload(
+        &self,
+        manifest_hash: &str,
+    ) -> Result<ApplicationDaPayload, StorageError> {
+        let payload: ApplicationDaPayload =
+            read_json(&self.application_da_payload_path(manifest_hash))?;
+        self.validate_application_da_payload(manifest_hash, &payload)?;
+        Ok(payload.canonicalized())
+    }
+
+    pub fn commit_application_da_share(&self, share: &DaShare) -> Result<(), StorageError> {
+        let manifest = self.load_application_da_manifest(&share.manifest_hash)?;
+        validate_application_da_share_against_manifest(share, &manifest)?;
+        write_json_atomic(
+            &self.application_da_share_path(&share.manifest_hash, share.index),
+            share,
+        )
+    }
+
+    pub fn load_application_da_share(
+        &self,
+        manifest_hash: &str,
+        index: u32,
+    ) -> Result<DaShare, StorageError> {
+        let share: DaShare = read_json(&self.application_da_share_path(manifest_hash, index))?;
+        if share.manifest_hash != manifest_hash {
+            return Err(StorageError::CorruptData(format!(
+                "application DA share manifest hash mismatch for index {index}: expected {manifest_hash}, got {}",
+                share.manifest_hash
+            )));
+        }
+        if share.index != index {
+            return Err(StorageError::CorruptData(format!(
+                "application DA share index mismatch: expected {index}, got {}",
+                share.index
+            )));
+        }
+        let manifest = self.load_application_da_manifest(manifest_hash)?;
+        validate_application_da_share_against_manifest(&share, &manifest)?;
+        Ok(share)
+    }
+
+    pub fn maybe_load_application_da_share(
+        &self,
+        manifest_hash: &str,
+        index: u32,
+    ) -> Result<Option<DaShare>, StorageError> {
+        let path = self.application_da_share_path(manifest_hash, index);
+        if !path.exists() {
+            return Ok(None);
+        }
+        self.load_application_da_share(manifest_hash, index)
+            .map(Some)
+    }
+
+    pub fn commit_application_da_share_set(
+        &self,
+        share_set: &ApplicationDaShareSet,
+        profile: &DaApplicationProfile,
+    ) -> Result<String, StorageError> {
+        let payload = share_set.reconstruct_payload(profile).map_err(da_error)?;
+        let manifest_hash = self.commit_application_da_manifest(&share_set.manifest, profile)?;
+        for share in &share_set.shares {
+            if share.manifest_hash != manifest_hash {
+                return Err(StorageError::CorruptData(format!(
+                    "application DA share set manifest hash mismatch: expected {manifest_hash}, got {}",
+                    share.manifest_hash
+                )));
+            }
+            self.commit_application_da_share(share)?;
+        }
+        self.commit_application_da_payload(&manifest_hash, &payload)?;
+        Ok(manifest_hash)
+    }
+
+    pub fn load_application_da_share_set(
+        &self,
+        manifest_hash: &str,
+    ) -> Result<ApplicationDaShareSet, StorageError> {
+        let manifest = self.load_application_da_manifest(manifest_hash)?;
+        let registration = self.load_application_da_profile_registration(&manifest.profile_id)?;
+        let mut shares = Vec::new();
+        for index in 0..manifest.encoded_share_count {
+            shares.push(self.load_application_da_share(manifest_hash, index)?);
+        }
+        let share_set = ApplicationDaShareSet { manifest, shares };
+        share_set.verify(&registration.profile).map_err(da_error)?;
+        Ok(share_set)
+    }
+
+    pub fn commit_application_da_certificate(
+        &self,
+        certificate: &ApplicationDaAvailabilityCertificate,
+    ) -> Result<String, StorageError> {
+        let manifest = self.load_application_da_manifest(&certificate.manifest_hash)?;
+        let registration = self.load_application_da_profile_registration(&manifest.profile_id)?;
+        certificate
+            .validate(&manifest, &registration.profile)
+            .map_err(da_error)?;
+        let certificate_hash = certificate.certificate_hash().map_err(da_error)?;
+        write_json_atomic(
+            &self.application_da_certificate_path(&certificate_hash),
+            certificate,
+        )?;
+        self.upsert_application_da_certificate_indexes(&certificate_hash, certificate, &manifest)?;
+        Ok(certificate_hash)
+    }
+
+    pub fn maybe_load_application_da_certificate(
+        &self,
+        certificate_hash: &str,
+    ) -> Result<Option<ApplicationDaAvailabilityCertificate>, StorageError> {
+        let path = self.application_da_certificate_path(certificate_hash);
+        if !path.exists() {
+            return Ok(None);
+        }
+        self.load_application_da_certificate(certificate_hash)
+            .map(Some)
+    }
+
+    pub fn load_application_da_certificate(
+        &self,
+        certificate_hash: &str,
+    ) -> Result<ApplicationDaAvailabilityCertificate, StorageError> {
+        let certificate: ApplicationDaAvailabilityCertificate =
+            read_json(&self.application_da_certificate_path(certificate_hash))?;
+        certificate.validate_structure().map_err(da_error)?;
+        let actual_hash = certificate.certificate_hash().map_err(da_error)?;
+        if actual_hash != certificate_hash {
+            return Err(StorageError::CorruptData(format!(
+                "application DA certificate hash mismatch: expected {certificate_hash}, got {actual_hash}"
+            )));
+        }
+        let manifest = self.load_application_da_manifest(&certificate.manifest_hash)?;
+        let registration = self.load_application_da_profile_registration(&manifest.profile_id)?;
+        certificate
+            .validate(&manifest, &registration.profile)
+            .map_err(da_error)?;
+        Ok(certificate)
+    }
+
+    pub fn load_application_da_certificate_index_by_manifest_hash(
+        &self,
+        manifest_hash: &str,
+    ) -> Result<Vec<ApplicationDaCertificateIndexEntry>, StorageError> {
+        self.load_application_da_certificate_index_entries(
+            &self.application_da_certificates_by_manifest_index_path(manifest_hash),
+            Some(manifest_hash),
+            None,
+            None,
+            None,
+        )
+    }
+
+    pub fn load_application_da_certificate_index_by_application_id(
+        &self,
+        application_id: &str,
+    ) -> Result<Vec<ApplicationDaCertificateIndexEntry>, StorageError> {
+        let application_id = DaApplicationId::new(application_id).map_err(da_error)?;
+        self.load_application_da_certificate_index_entries(
+            &self.application_da_certificates_by_application_id_index_path(&application_id),
+            None,
+            Some(&application_id),
+            None,
+            None,
+        )
+    }
+
+    pub fn load_application_da_certificate_index_by_profile_id(
+        &self,
+        profile_id: &str,
+    ) -> Result<Vec<ApplicationDaCertificateIndexEntry>, StorageError> {
+        validate_sha256_storage_hex("application DA profile id", profile_id)?;
+        self.load_application_da_certificate_index_entries(
+            &self.application_da_certificates_by_profile_id_index_path(profile_id),
+            None,
+            None,
+            Some(profile_id),
+            None,
+        )
+    }
+
+    pub fn load_application_da_certificate_index_by_coordinate(
+        &self,
+        coordinate: &DaApplicationCoordinate,
+    ) -> Result<Vec<ApplicationDaCertificateIndexEntry>, StorageError> {
+        self.load_application_da_certificate_index_entries(
+            &self.application_da_certificates_by_coordinate_index_path(coordinate)?,
+            None,
+            None,
+            None,
+            Some(coordinate),
+        )
+    }
+
     pub fn rebuild_da_indexes(&self) -> Result<(), StorageError> {
         let indexes_path = self.da_indexes_path();
         if indexes_path.exists() {
@@ -1254,6 +1839,7 @@ impl FileStorage {
             }
             self.upsert_da_certificate_indexes(&certificate_hash, &certificate)?;
         }
+        self.rebuild_application_da_indexes()?;
         Ok(())
     }
 
@@ -1517,6 +2103,569 @@ impl FileStorage {
             {
                 return Err(StorageError::CorruptData(
                     "DA certificate index entry does not match stored certificate".into(),
+                ));
+            }
+        }
+        Ok(entries)
+    }
+
+    pub fn rebuild_application_da_indexes(&self) -> Result<(), StorageError> {
+        let indexes_path = self.application_da_indexes_path();
+        if indexes_path.exists() {
+            fs::remove_dir_all(&indexes_path).map_err(io_error)?;
+        }
+        self.create_application_da_index_dirs()?;
+
+        for path in sorted_bin_paths(&self.application_da_profiles_path())? {
+            let registration: DaApplicationProfileRegistration = read_json(&path)?;
+            registration.validate().map_err(da_error)?;
+            let expected_file_name = format!("{}.bin", file_safe_id(&registration.profile_id));
+            if path.file_name().and_then(|name| name.to_str()) != Some(expected_file_name.as_str())
+            {
+                return Err(StorageError::CorruptData(
+                    "application DA profile filename does not match profile id".into(),
+                ));
+            }
+            self.upsert_application_da_profile_indexes(&registration)?;
+        }
+
+        for path in sorted_bin_paths(&self.application_da_manifests_path())? {
+            let manifest: ApplicationDaManifest = read_json(&path)?;
+            manifest.validate_structure().map_err(da_error)?;
+            let manifest_hash = manifest.manifest_hash().map_err(da_error)?;
+            let expected_file_name = format!("{}.bin", file_safe_id(&manifest_hash));
+            if path.file_name().and_then(|name| name.to_str()) != Some(expected_file_name.as_str())
+            {
+                return Err(StorageError::CorruptData(
+                    "application DA manifest filename does not match manifest hash".into(),
+                ));
+            }
+            let registration =
+                self.load_application_da_profile_registration(&manifest.profile_id)?;
+            manifest.validate(&registration.profile).map_err(da_error)?;
+            self.upsert_application_da_manifest_indexes(
+                &manifest_hash,
+                &manifest,
+                &registration.profile,
+            )?;
+        }
+
+        for path in sorted_bin_paths(&self.application_da_certificates_path())? {
+            let certificate: ApplicationDaAvailabilityCertificate = read_json(&path)?;
+            certificate.validate_structure().map_err(da_error)?;
+            let certificate_hash = certificate.certificate_hash().map_err(da_error)?;
+            let expected_file_name = format!("{}.bin", file_safe_id(&certificate_hash));
+            if path.file_name().and_then(|name| name.to_str()) != Some(expected_file_name.as_str())
+            {
+                return Err(StorageError::CorruptData(
+                    "application DA certificate filename does not match certificate hash".into(),
+                ));
+            }
+            let manifest = self.load_application_da_manifest(&certificate.manifest_hash)?;
+            let registration =
+                self.load_application_da_profile_registration(&manifest.profile_id)?;
+            certificate
+                .validate(&manifest, &registration.profile)
+                .map_err(da_error)?;
+            self.upsert_application_da_certificate_indexes(
+                &certificate_hash,
+                &certificate,
+                &manifest,
+            )?;
+        }
+
+        Ok(())
+    }
+
+    fn upsert_application_da_profile_indexes(
+        &self,
+        registration: &DaApplicationProfileRegistration,
+    ) -> Result<(), StorageError> {
+        let entry = application_da_profile_index_entry(registration);
+        self.upsert_application_da_profile_index_entry(
+            &self.application_da_profiles_by_application_id_index_path(
+                &registration.profile.application_id,
+            ),
+            Some(&registration.profile.application_id),
+            None,
+            &entry,
+        )?;
+        self.upsert_application_da_profile_index_entry(
+            &self.application_da_profiles_by_application_version_index_path(
+                &registration.profile.application_id,
+                registration.profile.profile_version,
+            )?,
+            Some(&registration.profile.application_id),
+            Some(registration.profile.profile_version),
+            &entry,
+        )
+    }
+
+    fn upsert_application_da_profile_index_entry(
+        &self,
+        path: &Path,
+        expected_application_id: Option<&DaApplicationId>,
+        expected_profile_version: Option<u32>,
+        entry: &DaApplicationProfileIndexEntry,
+    ) -> Result<(), StorageError> {
+        let mut entries = self.load_application_da_profile_index_entries(
+            path,
+            expected_application_id,
+            expected_profile_version,
+        )?;
+        entries.retain(|existing| existing.profile_id != entry.profile_id);
+        entries.push(entry.clone());
+        entries.sort_by(|left, right| left.profile_id.cmp(&right.profile_id));
+        write_json_atomic(path, &entries)
+    }
+
+    fn load_application_da_profile_index_entries(
+        &self,
+        path: &Path,
+        expected_application_id: Option<&DaApplicationId>,
+        expected_profile_version: Option<u32>,
+    ) -> Result<Vec<DaApplicationProfileIndexEntry>, StorageError> {
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let entries: Vec<DaApplicationProfileIndexEntry> = read_json(path)?;
+        let mut previous_profile_id: Option<&str> = None;
+        for entry in &entries {
+            validate_sha256_storage_hex(
+                "application DA profile index profile_id",
+                &entry.profile_id,
+            )?;
+            entry.application_id.validate().map_err(da_error)?;
+            if entry.profile_version == 0 {
+                return Err(StorageError::CorruptData(
+                    "application DA profile index profile_version must be positive".into(),
+                ));
+            }
+            if let Some(previous) = previous_profile_id {
+                if previous >= entry.profile_id.as_str() {
+                    return Err(StorageError::CorruptData(
+                        "application DA profile index entries must be sorted and unique".into(),
+                    ));
+                }
+            }
+            previous_profile_id = Some(entry.profile_id.as_str());
+            if expected_application_id
+                .is_some_and(|application_id| &entry.application_id != application_id)
+            {
+                return Err(StorageError::CorruptData(
+                    "application DA profile index application id does not match index path".into(),
+                ));
+            }
+            if expected_profile_version
+                .is_some_and(|profile_version| entry.profile_version != profile_version)
+            {
+                return Err(StorageError::CorruptData(
+                    "application DA profile index version does not match index path".into(),
+                ));
+            }
+            let registration = self.load_application_da_profile_registration(&entry.profile_id)?;
+            if application_da_profile_index_entry(&registration) != *entry {
+                return Err(StorageError::CorruptData(
+                    "application DA profile index entry does not match stored profile".into(),
+                ));
+            }
+        }
+        Ok(entries)
+    }
+
+    fn upsert_application_da_manifest_indexes(
+        &self,
+        manifest_hash: &str,
+        manifest: &ApplicationDaManifest,
+        profile: &DaApplicationProfile,
+    ) -> Result<(), StorageError> {
+        let entry = application_da_manifest_index_entry(manifest_hash, manifest, profile)?;
+        self.upsert_application_da_manifest_index_entry(
+            &self.application_da_manifests_by_application_id_index_path(&manifest.application_id),
+            Some(&manifest.application_id),
+            None,
+            None,
+            None,
+            None,
+            None,
+            &entry,
+        )?;
+        self.upsert_application_da_manifest_index_entry(
+            &self.application_da_manifests_by_profile_id_index_path(&manifest.profile_id),
+            None,
+            Some(&manifest.profile_id),
+            None,
+            None,
+            None,
+            None,
+            &entry,
+        )?;
+        self.upsert_application_da_manifest_index_entry(
+            &self.application_da_manifests_by_coordinate_index_path(&manifest.coordinate)?,
+            None,
+            None,
+            Some(&manifest.coordinate),
+            None,
+            None,
+            None,
+            &entry,
+        )?;
+        for range in &manifest.namespace_ranges {
+            self.upsert_application_da_manifest_index_entry(
+                &self.application_da_manifests_by_namespace_index_path(&range.namespace),
+                None,
+                None,
+                None,
+                Some(&range.namespace),
+                None,
+                None,
+                &entry,
+            )?;
+        }
+        let retention_class = application_da_manifest_retention_class(manifest, profile)?;
+        self.upsert_application_da_manifest_index_entry(
+            &self.application_da_manifests_by_retention_class_index_path(&retention_class),
+            None,
+            None,
+            None,
+            None,
+            Some(&retention_class),
+            None,
+            &entry,
+        )?;
+        if let Some(application_root) = manifest.application_root.as_deref() {
+            self.upsert_application_da_manifest_index_entry(
+                &self.application_da_manifests_by_application_root_index_path(application_root),
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(application_root),
+                &entry,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn upsert_application_da_manifest_index_entry(
+        &self,
+        path: &Path,
+        expected_application_id: Option<&DaApplicationId>,
+        expected_profile_id: Option<&str>,
+        expected_coordinate: Option<&DaApplicationCoordinate>,
+        expected_namespace: Option<&DaNamespace>,
+        expected_retention_class: Option<&DaApplicationRetentionClass>,
+        expected_application_root: Option<&str>,
+        entry: &ApplicationDaManifestIndexEntry,
+    ) -> Result<(), StorageError> {
+        let mut entries = self.load_application_da_manifest_index_entries(
+            path,
+            expected_application_id,
+            expected_profile_id,
+            expected_coordinate,
+            expected_namespace,
+            expected_retention_class,
+            expected_application_root,
+        )?;
+        entries.retain(|existing| existing.manifest_hash != entry.manifest_hash);
+        entries.push(entry.clone());
+        entries.sort_by(|left, right| left.manifest_hash.cmp(&right.manifest_hash));
+        write_json_atomic(path, &entries)
+    }
+
+    fn load_application_da_manifest_index_entries(
+        &self,
+        path: &Path,
+        expected_application_id: Option<&DaApplicationId>,
+        expected_profile_id: Option<&str>,
+        expected_coordinate: Option<&DaApplicationCoordinate>,
+        expected_namespace: Option<&DaNamespace>,
+        expected_retention_class: Option<&DaApplicationRetentionClass>,
+        expected_application_root: Option<&str>,
+    ) -> Result<Vec<ApplicationDaManifestIndexEntry>, StorageError> {
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let entries: Vec<ApplicationDaManifestIndexEntry> = read_json(path)?;
+        let mut previous_manifest_hash: Option<&str> = None;
+        for entry in &entries {
+            validate_sha256_storage_hex(
+                "application DA manifest index manifest_hash",
+                &entry.manifest_hash,
+            )?;
+            entry.application_id.validate().map_err(da_error)?;
+            validate_sha256_storage_hex(
+                "application DA manifest index profile_id",
+                &entry.profile_id,
+            )?;
+            entry.payload_kind.validate().map_err(da_error)?;
+            validate_sha256_storage_hex(
+                "application DA manifest index payload_hash",
+                &entry.payload_hash,
+            )?;
+            validate_sha256_storage_hex(
+                "application DA manifest index namespace_root",
+                &entry.namespace_root,
+            )?;
+            if let Some(application_root) = entry.application_root.as_deref() {
+                validate_sha256_storage_hex(
+                    "application DA manifest index application_root",
+                    application_root,
+                )?;
+            }
+            validate_sha256_storage_hex(
+                "application DA manifest index share_root",
+                &entry.share_root,
+            )?;
+            entry.retention_class.validate().map_err(da_error)?;
+            if let Some(previous) = previous_manifest_hash {
+                if previous >= entry.manifest_hash.as_str() {
+                    return Err(StorageError::CorruptData(
+                        "application DA manifest index entries must be sorted and unique".into(),
+                    ));
+                }
+            }
+            previous_manifest_hash = Some(entry.manifest_hash.as_str());
+            if expected_application_id
+                .is_some_and(|application_id| &entry.application_id != application_id)
+            {
+                return Err(StorageError::CorruptData(
+                    "application DA manifest index application id does not match index path".into(),
+                ));
+            }
+            if expected_profile_id.is_some_and(|profile_id| entry.profile_id.as_str() != profile_id)
+            {
+                return Err(StorageError::CorruptData(
+                    "application DA manifest index profile id does not match index path".into(),
+                ));
+            }
+            if expected_coordinate.is_some_and(|coordinate| &entry.coordinate != coordinate) {
+                return Err(StorageError::CorruptData(
+                    "application DA manifest index coordinate does not match index path".into(),
+                ));
+            }
+            if expected_application_root.is_some_and(|application_root| {
+                entry.application_root.as_deref() != Some(application_root)
+            }) {
+                return Err(StorageError::CorruptData(
+                    "application DA manifest index application root does not match index path"
+                        .into(),
+                ));
+            }
+
+            let manifest = self.load_application_da_manifest(&entry.manifest_hash)?;
+            let registration =
+                self.load_application_da_profile_registration(&manifest.profile_id)?;
+            if application_da_manifest_index_entry(
+                &entry.manifest_hash,
+                &manifest,
+                &registration.profile,
+            )? != *entry
+            {
+                return Err(StorageError::CorruptData(
+                    "application DA manifest index entry does not match stored manifest".into(),
+                ));
+            }
+            if expected_namespace.is_some_and(|namespace| {
+                !manifest
+                    .namespace_ranges
+                    .iter()
+                    .any(|range| &range.namespace == namespace)
+            }) {
+                return Err(StorageError::CorruptData(
+                    "application DA manifest index namespace does not match stored manifest".into(),
+                ));
+            }
+            if expected_retention_class.is_some_and(|class| &entry.retention_class != class) {
+                return Err(StorageError::CorruptData(
+                    "application DA manifest index retention class does not match stored manifest"
+                        .into(),
+                ));
+            }
+        }
+        Ok(entries)
+    }
+
+    fn validate_application_da_payload(
+        &self,
+        manifest_hash: &str,
+        payload: &ApplicationDaPayload,
+    ) -> Result<(), StorageError> {
+        let manifest = self.load_application_da_manifest(manifest_hash)?;
+        let registration = self.load_application_da_profile_registration(&manifest.profile_id)?;
+        let actual_payload_hash = application_payload_hash(payload).map_err(da_error)?;
+        if actual_payload_hash != manifest.payload_hash {
+            return Err(StorageError::CorruptData(format!(
+                "application DA payload hash mismatch: expected {}, got {actual_payload_hash}",
+                manifest.payload_hash
+            )));
+        }
+        let actual_namespace_root = payload.namespace_root().map_err(da_error)?;
+        if actual_namespace_root != manifest.namespace_root {
+            return Err(StorageError::CorruptData(format!(
+                "application DA payload namespace root mismatch: expected {}, got {actual_namespace_root}",
+                manifest.namespace_root
+            )));
+        }
+        verify_application_manifest_commits_payload(&manifest, payload, &registration.profile)
+            .map_err(da_error)
+    }
+
+    fn upsert_application_da_certificate_indexes(
+        &self,
+        certificate_hash: &str,
+        certificate: &ApplicationDaAvailabilityCertificate,
+        manifest: &ApplicationDaManifest,
+    ) -> Result<(), StorageError> {
+        let entry = ApplicationDaCertificateIndexEntry {
+            certificate_hash: certificate_hash.into(),
+            application_id: certificate.application_id.clone(),
+            profile_id: certificate.profile_id.clone(),
+            coordinate: certificate.coordinate.clone(),
+            payload_kind: certificate.payload_kind.clone(),
+            manifest_hash: certificate.manifest_hash.clone(),
+            share_root: certificate.share_root.clone(),
+        };
+        self.upsert_application_da_certificate_index_entry(
+            &self.application_da_certificates_by_manifest_index_path(&certificate.manifest_hash),
+            Some(&certificate.manifest_hash),
+            None,
+            None,
+            None,
+            &entry,
+        )?;
+        self.upsert_application_da_certificate_index_entry(
+            &self.application_da_certificates_by_application_id_index_path(
+                &certificate.application_id,
+            ),
+            None,
+            Some(&certificate.application_id),
+            None,
+            None,
+            &entry,
+        )?;
+        self.upsert_application_da_certificate_index_entry(
+            &self.application_da_certificates_by_profile_id_index_path(&certificate.profile_id),
+            None,
+            None,
+            Some(&certificate.profile_id),
+            None,
+            &entry,
+        )?;
+        self.upsert_application_da_certificate_index_entry(
+            &self.application_da_certificates_by_coordinate_index_path(&manifest.coordinate)?,
+            None,
+            None,
+            None,
+            Some(&manifest.coordinate),
+            &entry,
+        )
+    }
+
+    fn upsert_application_da_certificate_index_entry(
+        &self,
+        path: &Path,
+        expected_manifest_hash: Option<&str>,
+        expected_application_id: Option<&DaApplicationId>,
+        expected_profile_id: Option<&str>,
+        expected_coordinate: Option<&DaApplicationCoordinate>,
+        entry: &ApplicationDaCertificateIndexEntry,
+    ) -> Result<(), StorageError> {
+        let mut entries = self.load_application_da_certificate_index_entries(
+            path,
+            expected_manifest_hash,
+            expected_application_id,
+            expected_profile_id,
+            expected_coordinate,
+        )?;
+        entries.retain(|existing| existing.certificate_hash != entry.certificate_hash);
+        entries.push(entry.clone());
+        entries.sort_by(|left, right| left.certificate_hash.cmp(&right.certificate_hash));
+        write_json_atomic(path, &entries)
+    }
+
+    fn load_application_da_certificate_index_entries(
+        &self,
+        path: &Path,
+        expected_manifest_hash: Option<&str>,
+        expected_application_id: Option<&DaApplicationId>,
+        expected_profile_id: Option<&str>,
+        expected_coordinate: Option<&DaApplicationCoordinate>,
+    ) -> Result<Vec<ApplicationDaCertificateIndexEntry>, StorageError> {
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let entries: Vec<ApplicationDaCertificateIndexEntry> = read_json(path)?;
+        let mut previous_certificate_hash: Option<&str> = None;
+        for entry in &entries {
+            validate_sha256_storage_hex(
+                "application DA certificate index certificate_hash",
+                &entry.certificate_hash,
+            )?;
+            entry.application_id.validate().map_err(da_error)?;
+            validate_sha256_storage_hex(
+                "application DA certificate index profile_id",
+                &entry.profile_id,
+            )?;
+            entry.payload_kind.validate().map_err(da_error)?;
+            validate_sha256_storage_hex(
+                "application DA certificate index manifest_hash",
+                &entry.manifest_hash,
+            )?;
+            validate_sha256_storage_hex(
+                "application DA certificate index share_root",
+                &entry.share_root,
+            )?;
+            if let Some(previous) = previous_certificate_hash {
+                if previous >= entry.certificate_hash.as_str() {
+                    return Err(StorageError::CorruptData(
+                        "application DA certificate index entries must be sorted and unique".into(),
+                    ));
+                }
+            }
+            previous_certificate_hash = Some(entry.certificate_hash.as_str());
+            if expected_manifest_hash
+                .is_some_and(|manifest_hash| entry.manifest_hash.as_str() != manifest_hash)
+            {
+                return Err(StorageError::CorruptData(
+                    "application DA certificate index manifest hash does not match index path"
+                        .into(),
+                ));
+            }
+            if expected_application_id
+                .is_some_and(|application_id| &entry.application_id != application_id)
+            {
+                return Err(StorageError::CorruptData(
+                    "application DA certificate index application id does not match index path"
+                        .into(),
+                ));
+            }
+            if expected_profile_id.is_some_and(|profile_id| entry.profile_id.as_str() != profile_id)
+            {
+                return Err(StorageError::CorruptData(
+                    "application DA certificate index profile id does not match index path".into(),
+                ));
+            }
+            if expected_coordinate.is_some_and(|coordinate| &entry.coordinate != coordinate) {
+                return Err(StorageError::CorruptData(
+                    "application DA certificate index coordinate does not match index path".into(),
+                ));
+            }
+            let certificate = self.load_application_da_certificate(&entry.certificate_hash)?;
+            let expected_entry = ApplicationDaCertificateIndexEntry {
+                certificate_hash: entry.certificate_hash.clone(),
+                application_id: certificate.application_id.clone(),
+                profile_id: certificate.profile_id.clone(),
+                coordinate: certificate.coordinate.clone(),
+                payload_kind: certificate.payload_kind.clone(),
+                manifest_hash: certificate.manifest_hash.clone(),
+                share_root: certificate.share_root.clone(),
+            };
+            if expected_entry != *entry {
+                return Err(StorageError::CorruptData(
+                    "application DA certificate index entry does not match stored certificate"
+                        .into(),
                 ));
             }
         }
@@ -1790,6 +2939,7 @@ impl FileStorage {
         let challenge_root = directory_content_root(&self.root.join("da").join("challenges"))?;
         let repair_root = directory_content_root(&self.root.join("da").join("repairs"))?;
         let index_root = directory_content_root(&self.da_indexes_path())?;
+        let application_root = directory_content_root(&self.root.join("da").join("applications"))?;
         let retention_policy_root = self
             .maybe_load_da_retention_policy()?
             .map(|config| hash_canonical_json(&config))
@@ -1802,6 +2952,7 @@ impl FileStorage {
             &challenge_root,
             &repair_root,
             &index_root,
+            &application_root,
             &retention_policy_root,
         ))?;
         Ok(DaStoreRoots {
@@ -1812,6 +2963,7 @@ impl FileStorage {
             challenge_root,
             repair_root,
             index_root,
+            application_root,
             retention_policy_root,
             root,
         })
@@ -1969,6 +3121,54 @@ impl FileStorage {
             .join(format!("{index}.bin"))
     }
 
+    fn application_da_path(&self) -> PathBuf {
+        self.root.join("da").join("applications")
+    }
+
+    fn application_da_profiles_path(&self) -> PathBuf {
+        self.application_da_path().join("profiles")
+    }
+
+    fn application_da_manifests_path(&self) -> PathBuf {
+        self.application_da_path().join("manifests")
+    }
+
+    fn application_da_certificates_path(&self) -> PathBuf {
+        self.application_da_path().join("certificates")
+    }
+
+    fn application_da_profile_path(&self, profile_id: &str) -> PathBuf {
+        self.application_da_profiles_path()
+            .join(format!("{}.bin", file_safe_id(profile_id)))
+    }
+
+    fn application_da_manifest_path(&self, manifest_hash: &str) -> PathBuf {
+        self.application_da_manifests_path()
+            .join(format!("{}.bin", file_safe_id(manifest_hash)))
+    }
+
+    fn application_da_certificate_path(&self, certificate_hash: &str) -> PathBuf {
+        self.application_da_certificates_path()
+            .join(format!("{}.bin", file_safe_id(certificate_hash)))
+    }
+
+    fn application_da_payload_path(&self, manifest_hash: &str) -> PathBuf {
+        self.application_da_path()
+            .join("payloads")
+            .join(format!("{}.bin", file_safe_id(manifest_hash)))
+    }
+
+    fn application_da_share_path(&self, manifest_hash: &str, index: u32) -> PathBuf {
+        self.application_da_path()
+            .join("shares")
+            .join(file_safe_id(manifest_hash))
+            .join(format!("{index}.bin"))
+    }
+
+    fn application_da_indexes_path(&self) -> PathBuf {
+        self.application_da_path().join("indexes")
+    }
+
     fn da_indexes_path(&self) -> PathBuf {
         self.root.join("da").join("indexes")
     }
@@ -1987,6 +3187,69 @@ impl FileStorage {
             .map_err(io_error)?;
         fs::create_dir_all(self.da_indexes_path().join("certificates_by_block_hash"))
             .map_err(io_error)
+    }
+
+    fn create_application_da_index_dirs(&self) -> Result<(), StorageError> {
+        fs::create_dir_all(
+            self.application_da_indexes_path()
+                .join("profiles_by_application_id"),
+        )
+        .map_err(io_error)?;
+        fs::create_dir_all(
+            self.application_da_indexes_path()
+                .join("profiles_by_application_version"),
+        )
+        .map_err(io_error)?;
+        fs::create_dir_all(
+            self.application_da_indexes_path()
+                .join("manifests_by_application_id"),
+        )
+        .map_err(io_error)?;
+        fs::create_dir_all(
+            self.application_da_indexes_path()
+                .join("manifests_by_profile_id"),
+        )
+        .map_err(io_error)?;
+        fs::create_dir_all(
+            self.application_da_indexes_path()
+                .join("manifests_by_coordinate"),
+        )
+        .map_err(io_error)?;
+        fs::create_dir_all(
+            self.application_da_indexes_path()
+                .join("manifests_by_namespace"),
+        )
+        .map_err(io_error)?;
+        fs::create_dir_all(
+            self.application_da_indexes_path()
+                .join("manifests_by_retention_class"),
+        )
+        .map_err(io_error)?;
+        fs::create_dir_all(
+            self.application_da_indexes_path()
+                .join("manifests_by_application_root"),
+        )
+        .map_err(io_error)?;
+        fs::create_dir_all(
+            self.application_da_indexes_path()
+                .join("certificates_by_manifest"),
+        )
+        .map_err(io_error)?;
+        fs::create_dir_all(
+            self.application_da_indexes_path()
+                .join("certificates_by_application_id"),
+        )
+        .map_err(io_error)?;
+        fs::create_dir_all(
+            self.application_da_indexes_path()
+                .join("certificates_by_profile_id"),
+        )
+        .map_err(io_error)?;
+        fs::create_dir_all(
+            self.application_da_indexes_path()
+                .join("certificates_by_coordinate"),
+        )
+        .map_err(io_error)
     }
 
     fn da_manifests_by_height_index_path(&self, height: u64) -> PathBuf {
@@ -2030,6 +3293,118 @@ impl FileStorage {
             .join("certificates_by_block_hash")
             .join(format!("{}.bin", file_safe_id(block_hash)))
     }
+
+    fn application_da_profiles_by_application_id_index_path(
+        &self,
+        application_id: &DaApplicationId,
+    ) -> PathBuf {
+        self.application_da_indexes_path()
+            .join("profiles_by_application_id")
+            .join(format!("{}.bin", file_safe_id(&application_id.0)))
+    }
+
+    fn application_da_profiles_by_application_version_index_path(
+        &self,
+        application_id: &DaApplicationId,
+        profile_version: u32,
+    ) -> Result<PathBuf, StorageError> {
+        Ok(self
+            .application_da_indexes_path()
+            .join("profiles_by_application_version")
+            .join(format!(
+                "{}.bin",
+                file_safe_id(&hash_canonical_json(&(application_id, profile_version))?)
+            )))
+    }
+
+    fn application_da_manifests_by_application_id_index_path(
+        &self,
+        application_id: &DaApplicationId,
+    ) -> PathBuf {
+        self.application_da_indexes_path()
+            .join("manifests_by_application_id")
+            .join(format!("{}.bin", file_safe_id(&application_id.0)))
+    }
+
+    fn application_da_manifests_by_profile_id_index_path(&self, profile_id: &str) -> PathBuf {
+        self.application_da_indexes_path()
+            .join("manifests_by_profile_id")
+            .join(format!("{}.bin", file_safe_id(profile_id)))
+    }
+
+    fn application_da_manifests_by_coordinate_index_path(
+        &self,
+        coordinate: &DaApplicationCoordinate,
+    ) -> Result<PathBuf, StorageError> {
+        Ok(self
+            .application_da_indexes_path()
+            .join("manifests_by_coordinate")
+            .join(format!(
+                "{}.bin",
+                file_safe_id(&hash_canonical_json(coordinate)?)
+            )))
+    }
+
+    fn application_da_manifests_by_namespace_index_path(&self, namespace: &DaNamespace) -> PathBuf {
+        self.application_da_indexes_path()
+            .join("manifests_by_namespace")
+            .join(format!("{}.bin", file_safe_id(&namespace.0)))
+    }
+
+    fn application_da_manifests_by_retention_class_index_path(
+        &self,
+        class: &DaApplicationRetentionClass,
+    ) -> PathBuf {
+        self.application_da_indexes_path()
+            .join("manifests_by_retention_class")
+            .join(format!(
+                "{}.bin",
+                file_safe_id(&application_da_retention_class_path_fragment(class))
+            ))
+    }
+
+    fn application_da_manifests_by_application_root_index_path(
+        &self,
+        application_root: &str,
+    ) -> PathBuf {
+        self.application_da_indexes_path()
+            .join("manifests_by_application_root")
+            .join(format!("{}.bin", file_safe_id(application_root)))
+    }
+
+    fn application_da_certificates_by_manifest_index_path(&self, manifest_hash: &str) -> PathBuf {
+        self.application_da_indexes_path()
+            .join("certificates_by_manifest")
+            .join(format!("{}.bin", file_safe_id(manifest_hash)))
+    }
+
+    fn application_da_certificates_by_application_id_index_path(
+        &self,
+        application_id: &DaApplicationId,
+    ) -> PathBuf {
+        self.application_da_indexes_path()
+            .join("certificates_by_application_id")
+            .join(format!("{}.bin", file_safe_id(&application_id.0)))
+    }
+
+    fn application_da_certificates_by_profile_id_index_path(&self, profile_id: &str) -> PathBuf {
+        self.application_da_indexes_path()
+            .join("certificates_by_profile_id")
+            .join(format!("{}.bin", file_safe_id(profile_id)))
+    }
+
+    fn application_da_certificates_by_coordinate_index_path(
+        &self,
+        coordinate: &DaApplicationCoordinate,
+    ) -> Result<PathBuf, StorageError> {
+        Ok(self
+            .application_da_indexes_path()
+            .join("certificates_by_coordinate")
+            .join(format!(
+                "{}.bin",
+                file_safe_id(&hash_canonical_json(coordinate)?)
+            )))
+    }
 }
 
 fn validate_da_retention_policy(config: &DaRetentionPolicyConfig) -> Result<(), StorageError> {
@@ -2068,6 +3443,132 @@ fn validate_da_retention_policy(config: &DaRetentionPolicyConfig) -> Result<(), 
     Ok(())
 }
 
+fn application_da_profile_index_entry(
+    registration: &DaApplicationProfileRegistration,
+) -> DaApplicationProfileIndexEntry {
+    DaApplicationProfileIndexEntry {
+        profile_id: registration.profile_id.clone(),
+        application_id: registration.profile.application_id.clone(),
+        profile_version: registration.profile.profile_version,
+        status: registration.status.clone(),
+        activated_at_sequence: registration.activated_at_sequence,
+        deprecated_at_sequence: registration.deprecated_at_sequence,
+    }
+}
+
+fn application_da_manifest_index_entry(
+    manifest_hash: &str,
+    manifest: &ApplicationDaManifest,
+    profile: &DaApplicationProfile,
+) -> Result<ApplicationDaManifestIndexEntry, StorageError> {
+    Ok(ApplicationDaManifestIndexEntry {
+        manifest_hash: manifest_hash.into(),
+        application_id: manifest.application_id.clone(),
+        profile_id: manifest.profile_id.clone(),
+        coordinate: manifest.coordinate.clone(),
+        payload_kind: manifest.payload_kind.clone(),
+        payload_hash: manifest.payload_hash.clone(),
+        namespace_root: manifest.namespace_root.clone(),
+        application_root: manifest.application_root.clone(),
+        share_root: manifest.share_root.clone(),
+        retention_class: application_da_manifest_retention_class(manifest, profile)?,
+    })
+}
+
+fn application_da_manifest_retention_class(
+    manifest: &ApplicationDaManifest,
+    profile: &DaApplicationProfile,
+) -> Result<DaApplicationRetentionClass, StorageError> {
+    manifest.validate(profile).map_err(da_error)?;
+    let mut class = profile.retention_policy.default_class.clone();
+    if let Some(override_policy) = profile
+        .retention_policy
+        .payload_kind_overrides
+        .iter()
+        .find(|policy| policy.payload_kind == manifest.payload_kind)
+    {
+        class = std::cmp::max(class, override_policy.retention_class.clone());
+    }
+
+    for range in &manifest.namespace_ranges {
+        if let Some(override_policy) = profile
+            .retention_policy
+            .namespace_overrides
+            .iter()
+            .find(|policy| policy.namespace == range.namespace)
+        {
+            class = std::cmp::max(class, override_policy.retention_class.clone());
+            continue;
+        }
+        if let Some(namespace_policy) = profile
+            .namespace_policies
+            .iter()
+            .find(|policy| policy.namespace == range.namespace)
+        {
+            class = std::cmp::max(class, namespace_policy.retention_class.clone());
+        }
+    }
+    Ok(class)
+}
+
+fn validate_application_da_share_against_manifest(
+    share: &DaShare,
+    manifest: &ApplicationDaManifest,
+) -> Result<(), StorageError> {
+    if share.manifest_hash != manifest.manifest_hash().map_err(da_error)? {
+        return Err(StorageError::CorruptData(format!(
+            "application DA share manifest hash mismatch: expected {}, got {}",
+            manifest.manifest_hash().map_err(da_error)?,
+            share.manifest_hash
+        )));
+    }
+    if share.index >= manifest.encoded_share_count {
+        return Err(StorageError::CorruptData(format!(
+            "application DA share index {} is outside encoded share count {}",
+            share.index, manifest.encoded_share_count
+        )));
+    }
+    let actual_hash = detta_da::hash_share_bytes(&share.bytes);
+    if actual_hash != share.share_hash {
+        return Err(StorageError::CorruptData(format!(
+            "application DA share hash mismatch for index {}: expected {}, got {actual_hash}",
+            share.index, share.share_hash
+        )));
+    }
+    let expected_hash = manifest
+        .share_hashes
+        .get(share.index as usize)
+        .ok_or_else(|| {
+            StorageError::CorruptData(format!(
+                "application DA manifest is missing hash for share index {}",
+                share.index
+            ))
+        })?;
+    if expected_hash != &share.share_hash {
+        return Err(StorageError::CorruptData(format!(
+            "application DA share hash does not match manifest at index {}",
+            share.index
+        )));
+    }
+    Ok(())
+}
+
+fn validate_sha256_storage_hex(field: &str, value: &str) -> Result<(), StorageError> {
+    if !is_sha256_storage_hex(value) {
+        return Err(StorageError::CorruptData(format!(
+            "{field} must be a lowercase sha256 hex string"
+        )));
+    }
+    Ok(())
+}
+
+fn is_sha256_storage_hex(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 fn da_manifest_retention_class(manifest: &DaManifest) -> DaRetentionClass {
     if manifest
         .namespace_ranges
@@ -2086,6 +3587,17 @@ fn da_retention_class_path_fragment(class: DaRetentionClass) -> &'static str {
         DaRetentionClass::Warm => "warm",
         DaRetentionClass::Cold => "cold",
         DaRetentionClass::Checkpoint => "checkpoint",
+    }
+}
+
+fn application_da_retention_class_path_fragment(class: &DaApplicationRetentionClass) -> String {
+    match class {
+        DaApplicationRetentionClass::Hot => "hot".into(),
+        DaApplicationRetentionClass::Warm => "warm".into(),
+        DaApplicationRetentionClass::Cold => "cold".into(),
+        DaApplicationRetentionClass::Archive => "archive".into(),
+        DaApplicationRetentionClass::Checkpoint => "checkpoint".into(),
+        DaApplicationRetentionClass::Custom(value) => format!("custom-{value}"),
     }
 }
 
@@ -2365,8 +3877,10 @@ mod tests {
     use detta_consensus::{EquivocationEvidence, SlashingEvidence};
     use detta_core::{Argument, Method, Transaction, ValidatorNode};
     use detta_da::{
-        DaAvailabilityVote, DaChallengeEvidence, DaNamespace, DaNamespaceSection, DaPayload,
-        DaRecord, DaShareChallenge, DaShareChallengeResponse,
+        ApplicationDaAvailabilityCertificate, ApplicationDaNamespaceSection, ApplicationDaPayload,
+        ApplicationDaShareSet, DaApplicationRoot, DaAvailabilityVote, DaChallengeEvidence,
+        DaNamespace, DaNamespaceSection, DaPayload, DaRecord, DaRecordEncoding, DaRecordEnvelope,
+        DaShareChallenge, DaShareChallengeResponse,
     };
     use detta_protocol::{
         ProtocolMessage, ValidatorPublicKey, ValidatorSetMetadataUpdate, ValidatorSignatureDomain,
@@ -2443,6 +3957,45 @@ mod tests {
                     chunk_hashes: vec!["chunk-hash".into()],
                     chunk_root: "chunk-root".into(),
                 }],
+            )
+            .unwrap()],
+        )
+        .unwrap()
+    }
+
+    fn application_coordinate(sequence: u64) -> DaApplicationCoordinate {
+        DaApplicationCoordinate {
+            application_id: DaApplicationId::new("social.demo").unwrap(),
+            stream_id: "main".into(),
+            sequence,
+            epoch: Some(1),
+            parent_hash: None,
+            subject_hash: None,
+        }
+    }
+
+    fn application_payload(sequence: u64, text: &str) -> ApplicationDaPayload {
+        let profile = DaApplicationProfile::social_demo_v1();
+        let record = DaRecordEnvelope::new(
+            "social.post",
+            1,
+            "application/json",
+            DaRecordEncoding::CanonicalJson,
+            format!(r#"{{"author":"alice","post_id":"post-{sequence}","text":"{text}"}}"#)
+                .into_bytes(),
+            Some("alice".into()),
+            Some(format!("signature-{sequence}")),
+        )
+        .unwrap();
+        ApplicationDaPayload::new(
+            &profile,
+            application_coordinate(sequence),
+            DaPayloadKind::Batch,
+            None,
+            vec![DaApplicationRoot::new("social.event.log.root", "11".repeat(32)).unwrap()],
+            vec![ApplicationDaNamespaceSection::new(
+                DaNamespace::new("social.feed").unwrap(),
+                vec![record],
             )
             .unwrap()],
         )
@@ -2745,6 +4298,359 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
         fs::remove_dir_all(backup_dir).unwrap();
         fs::remove_dir_all(restore_dir).unwrap();
+    }
+
+    #[test]
+    fn persists_and_loads_application_da_share_set_certificate_and_indexes() {
+        let dir = temp_dir("application-da-share-set");
+        let backup_dir = temp_dir("application-da-share-set-backup");
+        let restore_dir = temp_dir("application-da-share-set-restore");
+        let storage = FileStorage::open(&dir).unwrap();
+        let roots_before = storage.da_store_roots().unwrap();
+        let profile = DaApplicationProfile::social_demo_v1();
+        let profile_id = profile.profile_id().unwrap();
+        let payload = application_payload(1, "hello");
+        let share_set =
+            ApplicationDaShareSet::from_payload_reed_solomon(&payload, &profile, 4, 2).unwrap();
+        let manifest_hash = share_set.manifest.manifest_hash().unwrap();
+        let manifest_entry =
+            application_da_manifest_index_entry(&manifest_hash, &share_set.manifest, &profile)
+                .unwrap();
+
+        assert_eq!(
+            storage
+                .maybe_load_application_da_manifest(&manifest_hash)
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            storage
+                .maybe_load_application_da_profile_registration(&profile_id)
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            storage
+                .commit_application_da_share_set(&share_set, &profile)
+                .unwrap(),
+            manifest_hash
+        );
+
+        let loaded_profile = storage
+            .load_application_da_profile_registration(&profile_id)
+            .unwrap();
+        assert_eq!(loaded_profile.profile, profile);
+        assert!(loaded_profile.is_active());
+        assert_eq!(
+            storage
+                .load_application_da_profile_registry()
+                .unwrap()
+                .get_profile(&profile_id)
+                .unwrap(),
+            &profile
+        );
+        assert_eq!(
+            storage
+                .load_application_da_profile_index_by_application_id("social.demo")
+                .unwrap(),
+            vec![application_da_profile_index_entry(&loaded_profile)]
+        );
+        assert_eq!(
+            storage
+                .load_application_da_profile_index_by_application_version("social.demo", 1)
+                .unwrap(),
+            vec![application_da_profile_index_entry(&loaded_profile)]
+        );
+        assert_eq!(
+            storage
+                .load_application_da_manifest(&manifest_hash)
+                .unwrap(),
+            share_set.manifest
+        );
+        assert_eq!(
+            storage.load_application_da_payload(&manifest_hash).unwrap(),
+            payload.canonicalized()
+        );
+        assert_eq!(
+            storage
+                .maybe_load_application_da_payload(&manifest_hash)
+                .unwrap(),
+            Some(payload.canonicalized())
+        );
+        assert_eq!(
+            storage
+                .load_application_da_share(&manifest_hash, 0)
+                .unwrap(),
+            share_set.shares[0]
+        );
+        assert_eq!(
+            storage
+                .maybe_load_application_da_share(&manifest_hash, 0)
+                .unwrap(),
+            Some(share_set.shares[0].clone())
+        );
+        assert_eq!(
+            storage
+                .load_application_da_share_set(&manifest_hash)
+                .unwrap(),
+            share_set
+        );
+        assert_eq!(
+            storage
+                .load_application_da_manifest_index_by_application_id("social.demo")
+                .unwrap(),
+            vec![manifest_entry.clone()]
+        );
+        assert_eq!(
+            storage
+                .load_application_da_manifest_index_by_profile_id(&profile_id)
+                .unwrap(),
+            vec![manifest_entry.clone()]
+        );
+        assert_eq!(
+            storage
+                .load_application_da_manifest_index_by_coordinate(&payload.coordinate)
+                .unwrap(),
+            vec![manifest_entry.clone()]
+        );
+        assert_eq!(
+            storage
+                .load_application_da_manifest_index_by_namespace("social.feed")
+                .unwrap(),
+            vec![manifest_entry.clone()]
+        );
+        assert_eq!(
+            storage
+                .load_application_da_manifest_index_by_retention_class(
+                    &DaApplicationRetentionClass::Warm,
+                )
+                .unwrap(),
+            vec![manifest_entry.clone()]
+        );
+        let application_root = share_set.manifest.application_root.clone().unwrap();
+        assert_eq!(
+            storage
+                .load_application_da_manifest_index_by_application_root(&application_root)
+                .unwrap(),
+            vec![manifest_entry.clone()]
+        );
+
+        let certificate = ApplicationDaAvailabilityCertificate::from_manifest(
+            &share_set.manifest,
+            &profile,
+            vec!["validator-2".into(), "validator-1".into()],
+        )
+        .unwrap();
+        let certificate_hash = certificate.certificate_hash().unwrap();
+        assert_eq!(
+            storage
+                .maybe_load_application_da_certificate(&certificate_hash)
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            storage
+                .commit_application_da_certificate(&certificate)
+                .unwrap(),
+            certificate_hash
+        );
+        assert_eq!(
+            storage
+                .load_application_da_certificate(&certificate_hash)
+                .unwrap(),
+            certificate
+        );
+        let certificate_entry = ApplicationDaCertificateIndexEntry {
+            certificate_hash: certificate_hash.clone(),
+            application_id: certificate.application_id.clone(),
+            profile_id: certificate.profile_id.clone(),
+            coordinate: certificate.coordinate.clone(),
+            payload_kind: certificate.payload_kind.clone(),
+            manifest_hash: manifest_hash.clone(),
+            share_root: certificate.share_root.clone(),
+        };
+        assert_eq!(
+            storage
+                .load_application_da_certificate_index_by_manifest_hash(&manifest_hash)
+                .unwrap(),
+            vec![certificate_entry.clone()]
+        );
+        assert_eq!(
+            storage
+                .load_application_da_certificate_index_by_application_id("social.demo")
+                .unwrap(),
+            vec![certificate_entry.clone()]
+        );
+        assert_eq!(
+            storage
+                .load_application_da_certificate_index_by_profile_id(&profile_id)
+                .unwrap(),
+            vec![certificate_entry.clone()]
+        );
+        assert_eq!(
+            storage
+                .load_application_da_certificate_index_by_coordinate(&payload.coordinate)
+                .unwrap(),
+            vec![certificate_entry]
+        );
+
+        let roots_after = storage.da_store_roots().unwrap();
+        assert_ne!(roots_after.application_root, roots_before.application_root);
+        assert_ne!(roots_after.root, roots_before.root);
+
+        let reopened = FileStorage::open(&dir).unwrap();
+        assert_eq!(
+            reopened
+                .load_application_da_share_set(&manifest_hash)
+                .unwrap(),
+            share_set
+        );
+        assert_eq!(
+            reopened
+                .load_application_da_manifest_index_by_namespace("social.feed")
+                .unwrap(),
+            vec![manifest_entry.clone()]
+        );
+        assert_eq!(
+            reopened
+                .load_application_da_certificate(&certificate_hash)
+                .unwrap(),
+            certificate
+        );
+
+        let backup = storage.backup_to(&backup_dir).unwrap();
+        assert!(backup.file_count > share_set.shares.len());
+        let restored = FileStorage::restore_from_backup(&backup_dir, &restore_dir).unwrap();
+        assert_eq!(
+            restored
+                .load_application_da_payload(&manifest_hash)
+                .unwrap(),
+            payload.canonicalized()
+        );
+        assert_eq!(
+            restored
+                .load_application_da_manifest_index_by_application_root(&application_root)
+                .unwrap(),
+            vec![manifest_entry]
+        );
+        assert_eq!(
+            restored.da_store_roots().unwrap().application_root,
+            storage.da_store_roots().unwrap().application_root
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+        fs::remove_dir_all(backup_dir).unwrap();
+        fs::remove_dir_all(restore_dir).unwrap();
+    }
+
+    #[test]
+    fn rebuilds_application_da_indexes_and_rejects_corrupt_entries() {
+        let dir = temp_dir("application-da-index-rebuild");
+        let storage = FileStorage::open(&dir).unwrap();
+        let profile = DaApplicationProfile::social_demo_v1();
+        let profile_id = profile.profile_id().unwrap();
+        let payload = application_payload(1, "indexed");
+        let share_set =
+            ApplicationDaShareSet::from_payload_reed_solomon(&payload, &profile, 4, 2).unwrap();
+        let manifest_hash = storage
+            .commit_application_da_share_set(&share_set, &profile)
+            .unwrap();
+        let manifest_entry =
+            application_da_manifest_index_entry(&manifest_hash, &share_set.manifest, &profile)
+                .unwrap();
+        let certificate = ApplicationDaAvailabilityCertificate::from_manifest(
+            &share_set.manifest,
+            &profile,
+            vec!["validator-1".into()],
+        )
+        .unwrap();
+        let certificate_hash = storage
+            .commit_application_da_certificate(&certificate)
+            .unwrap();
+
+        fs::remove_dir_all(storage.application_da_indexes_path()).unwrap();
+        storage.rebuild_application_da_indexes().unwrap();
+        assert_eq!(
+            storage
+                .load_application_da_manifest_index_by_profile_id(&profile_id)
+                .unwrap(),
+            vec![manifest_entry.clone()]
+        );
+        assert_eq!(
+            storage
+                .load_application_da_certificate_index_by_manifest_hash(&manifest_hash)
+                .unwrap()[0]
+                .certificate_hash,
+            certificate_hash
+        );
+
+        let wrong_namespace = DaNamespace::new("social.moderation").unwrap();
+        write_json_atomic(
+            &storage.application_da_manifests_by_namespace_index_path(&wrong_namespace),
+            &[manifest_entry.clone()],
+        )
+        .unwrap();
+        assert!(matches!(
+            storage.load_application_da_manifest_index_by_namespace("social.moderation"),
+            Err(StorageError::CorruptData(_))
+        ));
+
+        let mut corrupt_entries = vec![manifest_entry];
+        corrupt_entries[0].payload_hash = "22".repeat(32);
+        write_json_atomic(
+            &storage.application_da_manifests_by_profile_id_index_path(&profile_id),
+            &corrupt_entries,
+        )
+        .unwrap();
+        assert!(matches!(
+            storage.load_application_da_manifest_index_by_profile_id(&profile_id),
+            Err(StorageError::CorruptData(_))
+        ));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn rejects_corrupt_application_da_payload_and_share_on_load() {
+        let dir = temp_dir("application-da-corrupt-objects");
+        let storage = FileStorage::open(&dir).unwrap();
+        let profile = DaApplicationProfile::social_demo_v1();
+        let payload = application_payload(1, "corruption");
+        let share_set =
+            ApplicationDaShareSet::from_payload_reed_solomon(&payload, &profile, 4, 2).unwrap();
+        let manifest_hash = storage
+            .commit_application_da_share_set(&share_set, &profile)
+            .unwrap();
+
+        let mut corrupt_payload = storage.load_application_da_payload(&manifest_hash).unwrap();
+        corrupt_payload.namespaces[0].records[0].bytes[0] ^= 0x01;
+        write_json_atomic(
+            &storage.application_da_payload_path(&manifest_hash),
+            &corrupt_payload,
+        )
+        .unwrap();
+        assert!(matches!(
+            storage.load_application_da_payload(&manifest_hash),
+            Err(StorageError::CorruptData(_))
+        ));
+
+        let mut corrupt_share = share_set.shares[0].clone();
+        corrupt_share.bytes[0] ^= 0x01;
+        write_json_atomic(
+            &storage.application_da_share_path(&manifest_hash, 0),
+            &corrupt_share,
+        )
+        .unwrap();
+        assert!(matches!(
+            storage.load_application_da_share(&manifest_hash, 0),
+            Err(StorageError::CorruptData(_))
+        ));
+        assert!(matches!(
+            storage.load_application_da_share_set(&manifest_hash),
+            Err(StorageError::CorruptData(_))
+        ));
+
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
