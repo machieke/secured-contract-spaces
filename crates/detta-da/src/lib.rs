@@ -2768,6 +2768,39 @@ pub struct DaSampleProofBundle {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ApplicationDaSamplingSchedule {
+    pub manifest_hash: String,
+    pub application_id: DaApplicationId,
+    pub profile_id: String,
+    pub coordinate: DaApplicationCoordinate,
+    pub client_randomness_hash: String,
+    pub requested_sample_count: u32,
+    pub share_indices: Vec<u32>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ApplicationDaLightClientSamplingReport {
+    pub manifest_hash: String,
+    pub application_id: DaApplicationId,
+    pub profile_id: String,
+    pub coordinate: DaApplicationCoordinate,
+    pub client_randomness_hash: String,
+    pub requested_sample_count: u32,
+    pub sampled_share_indices: Vec<u32>,
+    pub verified_share_count: u32,
+    pub namespace_proof_count: u32,
+    pub valid: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ApplicationDaSampleProofBundle {
+    pub schedule: ApplicationDaSamplingSchedule,
+    pub sample_proofs: Vec<DaSampleProof>,
+    pub namespace_proofs: Vec<ApplicationDaNamespaceProof>,
+    pub verification: ApplicationDaLightClientSamplingReport,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DaAvailabilityVote {
     pub chain_id: ChainId,
     pub height: u64,
@@ -4998,6 +5031,162 @@ pub fn verify_share_inclusion_proof(
     Ok(())
 }
 
+pub fn derive_application_sample_schedule(
+    manifest: &ApplicationDaManifest,
+    profile: &DaApplicationProfile,
+    client_randomness: &[u8],
+    sample_count: u32,
+) -> Result<ApplicationDaSamplingSchedule, DaError> {
+    manifest.validate(profile)?;
+    if client_randomness.is_empty() {
+        return Err(DaError::InvalidSampling(
+            "client randomness must be nonempty".into(),
+        ));
+    }
+    if sample_count == 0 {
+        return Err(DaError::InvalidSampling(
+            "sample_count must be positive".into(),
+        ));
+    }
+
+    let manifest_hash = manifest.manifest_hash()?;
+    let coordinate_hash = hash_canonical(&manifest.coordinate)?;
+    let target = sample_count.min(manifest.encoded_share_count);
+    let mut sampled = BTreeSet::new();
+    let mut counter = 0_u64;
+    while sampled.len() < target as usize {
+        let mut hasher = Sha256::new();
+        hasher.update(b"detta.application-da.sampling.v1");
+        hasher.update((manifest_hash.len() as u64).to_be_bytes());
+        hasher.update(manifest_hash.as_bytes());
+        hasher.update((manifest.application_id.0.len() as u64).to_be_bytes());
+        hasher.update(manifest.application_id.0.as_bytes());
+        hasher.update((manifest.profile_id.len() as u64).to_be_bytes());
+        hasher.update(manifest.profile_id.as_bytes());
+        hasher.update((coordinate_hash.len() as u64).to_be_bytes());
+        hasher.update(coordinate_hash.as_bytes());
+        hasher.update((client_randomness.len() as u64).to_be_bytes());
+        hasher.update(client_randomness);
+        hasher.update(counter.to_be_bytes());
+        let digest = hasher.finalize();
+        let mut bytes = [0_u8; 8];
+        bytes.copy_from_slice(&digest[..8]);
+        sampled.insert((u64::from_be_bytes(bytes) % manifest.encoded_share_count as u64) as u32);
+        counter = counter.saturating_add(1);
+    }
+
+    Ok(ApplicationDaSamplingSchedule {
+        manifest_hash,
+        application_id: manifest.application_id.clone(),
+        profile_id: manifest.profile_id.clone(),
+        coordinate: manifest.coordinate.clone(),
+        client_randomness_hash: hash_bytes(client_randomness),
+        requested_sample_count: sample_count,
+        share_indices: sampled.into_iter().collect(),
+    })
+}
+
+pub fn prove_application_share_inclusion(
+    manifest: &ApplicationDaManifest,
+    profile: &DaApplicationProfile,
+    share_index: u32,
+) -> Result<DaShareInclusionProof, DaError> {
+    manifest.validate(profile)?;
+    if share_index >= manifest.encoded_share_count {
+        return Err(DaError::UnexpectedShare {
+            index: share_index,
+            share_count: manifest.encoded_share_count,
+        });
+    }
+
+    let leaves = manifest
+        .share_hashes
+        .iter()
+        .map(merkle_leaf)
+        .collect::<Result<Vec<_>, _>>()?;
+    let siblings = merkle_inclusion_siblings(leaves, share_index as usize)?;
+    Ok(DaShareInclusionProof {
+        schema: DA_SAMPLE_PROOF_SCHEMA.into(),
+        schema_version: 1,
+        manifest_hash: manifest.manifest_hash()?,
+        share_root: manifest.share_root.clone(),
+        share_index,
+        share_hash: manifest.share_hashes[share_index as usize].clone(),
+        leaf_count: manifest.encoded_share_count,
+        siblings,
+    })
+}
+
+pub fn verify_application_share_inclusion_proof(
+    manifest: &ApplicationDaManifest,
+    profile: &DaApplicationProfile,
+    share: &DaShare,
+    proof: &DaShareInclusionProof,
+) -> Result<(), DaError> {
+    manifest.validate(profile)?;
+    if proof.schema != DA_SAMPLE_PROOF_SCHEMA {
+        return Err(DaError::InvalidSampling(format!(
+            "unexpected sample proof schema {}",
+            proof.schema
+        )));
+    }
+    if proof.schema_version != 1 {
+        return Err(DaError::InvalidSampling(format!(
+            "unexpected sample proof schema version {}",
+            proof.schema_version
+        )));
+    }
+    let manifest_hash = manifest.manifest_hash()?;
+    if proof.manifest_hash != manifest_hash {
+        return Err(DaError::ManifestHashMismatch {
+            expected: manifest_hash.clone(),
+            actual: proof.manifest_hash.clone(),
+        });
+    }
+    if proof.share_root != manifest.share_root {
+        return Err(DaError::ShareRootMismatch {
+            expected: manifest.share_root.clone(),
+            actual: proof.share_root.clone(),
+        });
+    }
+    if proof.leaf_count != manifest.encoded_share_count {
+        return Err(DaError::ManifestShareCountMismatch {
+            declared: manifest.encoded_share_count,
+            actual: proof.leaf_count,
+        });
+    }
+    if proof.share_index >= manifest.encoded_share_count || share.index != proof.share_index {
+        return Err(DaError::UnexpectedShare {
+            index: share.index,
+            share_count: manifest.encoded_share_count,
+        });
+    }
+    verify_application_share_against_manifest(manifest, share)?;
+    let expected_share_hash = &manifest.share_hashes[proof.share_index as usize];
+    if &proof.share_hash != expected_share_hash || share.share_hash != proof.share_hash {
+        return Err(DaError::ShareHashMismatch {
+            index: proof.share_index,
+        });
+    }
+
+    let mut current = merkle_leaf(&proof.share_hash)?;
+    for sibling in &proof.siblings {
+        let sibling_hash = decode_hex_hash(&sibling.hash)?;
+        current = match sibling.side {
+            DaMerkleSiblingSide::Left => merkle_parent(&sibling_hash, &current),
+            DaMerkleSiblingSide::Right => merkle_parent(&current, &sibling_hash),
+        };
+    }
+    let actual_root = hex_lower(&current);
+    if actual_root != proof.share_root {
+        return Err(DaError::ShareRootMismatch {
+            expected: proof.share_root.clone(),
+            actual: actual_root,
+        });
+    }
+    Ok(())
+}
+
 pub fn prove_namespace(
     manifest: &DaManifest,
     namespace: &DaNamespace,
@@ -5169,6 +5358,52 @@ pub fn verify_light_client_samples(
     Ok(DaLightClientSamplingReport {
         manifest_hash: schedule.manifest_hash,
         block_hash: schedule.block_hash,
+        client_randomness_hash: schedule.client_randomness_hash,
+        requested_sample_count: schedule.requested_sample_count,
+        sampled_share_indices: schedule.share_indices,
+        verified_share_count: actual_indices.len() as u32,
+        namespace_proof_count: namespace_proofs.len() as u32,
+        valid: true,
+    })
+}
+
+pub fn verify_application_light_client_samples(
+    manifest: &ApplicationDaManifest,
+    profile: &DaApplicationProfile,
+    client_randomness: &[u8],
+    sample_count: u32,
+    sample_proofs: &[DaSampleProof],
+    namespace_proofs: &[ApplicationDaNamespaceProof],
+) -> Result<ApplicationDaLightClientSamplingReport, DaError> {
+    let schedule =
+        derive_application_sample_schedule(manifest, profile, client_randomness, sample_count)?;
+    let expected_indices = &schedule.share_indices;
+    let actual_indices = sample_proofs
+        .iter()
+        .map(|proof| proof.share.index)
+        .collect::<Vec<_>>();
+    if &actual_indices != expected_indices {
+        return Err(DaError::InvalidSampling(format!(
+            "application sample proof indices {actual_indices:?} do not match schedule {expected_indices:?}"
+        )));
+    }
+    for proof in sample_proofs {
+        verify_application_share_inclusion_proof(
+            manifest,
+            profile,
+            &proof.share,
+            &proof.inclusion_proof,
+        )?;
+    }
+    for proof in namespace_proofs {
+        verify_application_namespace_proof(manifest, profile, proof)?;
+    }
+
+    Ok(ApplicationDaLightClientSamplingReport {
+        manifest_hash: schedule.manifest_hash,
+        application_id: schedule.application_id,
+        profile_id: schedule.profile_id,
+        coordinate: schedule.coordinate,
         client_randomness_hash: schedule.client_randomness_hash,
         requested_sample_count: schedule.requested_sample_count,
         sampled_share_indices: schedule.share_indices,
@@ -7180,6 +7415,110 @@ mod tests {
         assert!(matches!(
             verify_application_namespace_proof(&share_set.manifest, &profile, &tampered_proof),
             Err(DaError::NamespaceRootMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn application_light_client_sampling_schedule_and_proofs_verify() {
+        let profile = DaApplicationProfile::social_demo_v1();
+        let payload = social_demo_payload();
+        let share_set =
+            ApplicationDaShareSet::from_payload_reed_solomon(&payload, &profile, 4, 2).unwrap();
+        let schedule =
+            derive_application_sample_schedule(&share_set.manifest, &profile, b"app-random", 3)
+                .unwrap();
+        let repeated =
+            derive_application_sample_schedule(&share_set.manifest, &profile, b"app-random", 3)
+                .unwrap();
+        let different = derive_application_sample_schedule(
+            &share_set.manifest,
+            &profile,
+            b"different-app-random",
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(schedule, repeated);
+        assert_ne!(
+            schedule.client_randomness_hash,
+            different.client_randomness_hash
+        );
+        assert_eq!(schedule.application_id, profile.application_id);
+        assert_eq!(schedule.profile_id, profile.profile_id().unwrap());
+        assert_eq!(schedule.coordinate, payload.coordinate);
+        assert_eq!(schedule.share_indices.len(), 3);
+        assert!(schedule
+            .share_indices
+            .windows(2)
+            .all(|pair| pair[0] < pair[1]));
+
+        let sample_proofs = schedule
+            .share_indices
+            .iter()
+            .map(|index| DaSampleProof {
+                share: share_set
+                    .shares
+                    .iter()
+                    .find(|share| share.index == *index)
+                    .unwrap()
+                    .clone(),
+                inclusion_proof: prove_application_share_inclusion(
+                    &share_set.manifest,
+                    &profile,
+                    *index,
+                )
+                .unwrap(),
+            })
+            .collect::<Vec<_>>();
+        let namespace_proof = prove_application_namespace(
+            &share_set.manifest,
+            &profile,
+            &DaNamespace::new("social.feed").unwrap(),
+        )
+        .unwrap();
+
+        let report = verify_application_light_client_samples(
+            &share_set.manifest,
+            &profile,
+            b"app-random",
+            3,
+            &sample_proofs,
+            std::slice::from_ref(&namespace_proof),
+        )
+        .unwrap();
+
+        assert!(report.valid);
+        assert_eq!(report.sampled_share_indices, schedule.share_indices);
+        assert_eq!(report.verified_share_count, 3);
+        assert_eq!(report.namespace_proof_count, 1);
+        assert_eq!(
+            verify_application_namespace_proof(&share_set.manifest, &profile, &namespace_proof)
+                .unwrap()
+                .unwrap()
+                .namespace,
+            DaNamespace::new("social.feed").unwrap()
+        );
+
+        let bundle = ApplicationDaSampleProofBundle {
+            schedule,
+            sample_proofs: sample_proofs.clone(),
+            namespace_proofs: vec![namespace_proof],
+            verification: report,
+        };
+        assert!(bundle.verification.valid);
+
+        let mut wrong_order = sample_proofs;
+        wrong_order.swap(0, 1);
+        assert!(matches!(
+            verify_application_light_client_samples(
+                &share_set.manifest,
+                &profile,
+                b"app-random",
+                3,
+                &wrong_order,
+                &[]
+            ),
+            Err(DaError::InvalidSampling(_))
         ));
     }
 
