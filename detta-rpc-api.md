@@ -197,10 +197,20 @@ Persistent validator nodes additionally handle:
 - `register_application_da_profile`: persist an active application DA profile
   registration. Built-in clients can register `detta.defi`, `social.demo`, or
   `checkpoint.demo`; arbitrary applications submit the typed profile JSON.
+  Once an application id has an owner record, profile changes should use the
+  governed lifecycle methods below rather than direct registration.
+- `claim_application_da_id`: claim a non-reserved application id for an owner
+  principal and optional delegated profile-governance principals. Reserved
+  `detta.*` ids cannot be claimed through this method.
+- `update_application_da_id_owner`: replace the owner/delegate set for a
+  claimed application id. The requester must be the current owner or a current
+  delegated profile-governance principal.
 - `plan_application_da_profile_registration`: persist a pending application DA
   profile registration plus a lifecycle record with requester, reason, request
   height, and timelock execution height. Profiles under reserved `detta.*`
   application ids are rejected unless they match the built-in DeTTa profile.
+  Non-reserved application ids with owner records require the requester to be
+  the owner or a delegated profile-governance principal.
 - `activate_application_da_profile`: activate a pending profile after its
   timelock height has elapsed and append an activation lifecycle record.
 - `deprecate_application_da_profile`: mark an active profile inactive for new
@@ -214,6 +224,9 @@ Persistent validator nodes additionally handle:
   and return manifest/certificate hashes plus payload/share commitments.
 - `get_application_da_profile`: fetch an application DA profile registration by
   profile id.
+- `get_application_da_id_owner`: fetch the owner/delegate record for a claimed
+  application id.
+- `get_application_da_id_owners`: list claimed application id owner records.
 - `get_application_da_profile_lifecycle_records`: list deterministic lifecycle
   records for planned, activated, deprecated, and migrated application DA
   profiles.

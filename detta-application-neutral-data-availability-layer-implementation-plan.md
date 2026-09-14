@@ -966,7 +966,7 @@ Acceptance:
 - [x] Add profile deprecation rules.
 - [x] Add profile migration evidence records.
 - [x] Add policy for reserved application ids.
-- [ ] Add application-id ownership authorization outside reserved prefixes.
+- [x] Add application-id ownership authorization outside reserved prefixes.
 - [ ] DA-cover profile lifecycle events with application DA manifests,
   certificates, and retention evidence.
 
@@ -977,8 +977,8 @@ Acceptance:
   id, and deprecated profiles remain loadable for historical verification;
 - deprecated profiles remain verifiable;
 - reserved `detta.*` prefixes are enforced for built-in profiles;
-- application id ownership outside reserved prefixes still needs an owner
-  registry or governance-authorized profile namespace;
+- application id ownership outside reserved prefixes is enforced by owner
+  records plus delegated profile-governance principals on lifecycle operations;
 - profile lifecycle records are durable and RPC-visible, but the lifecycle
   event stream still needs DA manifests and certificates before governance
   events are fully DA-covered.

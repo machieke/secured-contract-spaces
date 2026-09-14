@@ -20,12 +20,12 @@ use detta_evaluator::{
 };
 use detta_protocol::SignedValidatorMessage;
 use detta_storage::{
-    ApplicationDaCertificateIndexEntry, ApplicationDaManifestIndexEntry,
-    ApplicationDaProfileLifecycleRecord, ApplicationDaRetentionAuditReport,
-    ApplicationDaRetentionPrunePlanReport, DaApplicationProfileIndexEntry, DaCertificateIndexEntry,
-    DaManifestIndexEntry, DaRetentionAuditReport, DaRetentionClass, DaRetentionPrunePlanReport,
-    DaStorageStats, SnapshotImportAuditConfig, SnapshotImportAuditRecord,
-    ValidatorSetMetadataAuditRecord,
+    ApplicationDaCertificateIndexEntry, ApplicationDaIdOwnerRecord,
+    ApplicationDaManifestIndexEntry, ApplicationDaProfileLifecycleRecord,
+    ApplicationDaRetentionAuditReport, ApplicationDaRetentionPrunePlanReport,
+    DaApplicationProfileIndexEntry, DaCertificateIndexEntry, DaManifestIndexEntry,
+    DaRetentionAuditReport, DaRetentionClass, DaRetentionPrunePlanReport, DaStorageStats,
+    SnapshotImportAuditConfig, SnapshotImportAuditRecord, ValidatorSetMetadataAuditRecord,
 };
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
@@ -52,6 +52,7 @@ pub const DEFAULT_MAX_APPLICATION_DA_RPC_PAYLOAD_BYTES: usize = DEFAULT_MAX_RPC_
 pub const DEFAULT_MAX_APPLICATION_DA_RPC_TOTAL_SHARES: u32 = 4096;
 pub const DEFAULT_MAX_APPLICATION_DA_RPC_CERTIFICATE_SIGNERS: usize = 256;
 pub const DEFAULT_MAX_APPLICATION_DA_RPC_LIFECYCLE_REASON_BYTES: usize = 4096;
+pub const DEFAULT_MAX_APPLICATION_DA_RPC_OWNER_DELEGATES: usize = 64;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RpcError {
@@ -79,6 +80,9 @@ pub enum RpcError {
     ApplicationDaProfileAlreadyRegistered,
     ApplicationDaProfileTimelockNotReady,
     ApplicationDaReservedApplicationId,
+    ApplicationDaIdAlreadyClaimed,
+    ApplicationDaIdOwnerNotFound,
+    ApplicationDaIdUnauthorized,
     ProofNotFound,
     SubscriptionNotFound,
     Execution(ExecutionError),
@@ -237,6 +241,19 @@ pub enum RpcRequest {
     RegisterApplicationDaProfile {
         profile: Box<DaApplicationProfile>,
     },
+    ClaimApplicationDaId {
+        application_id: String,
+        owner: String,
+        delegated_profile_governance: Vec<String>,
+        reason: String,
+    },
+    UpdateApplicationDaIdOwner {
+        application_id: String,
+        owner: String,
+        delegated_profile_governance: Vec<String>,
+        requested_by: String,
+        reason: String,
+    },
     PlanApplicationDaProfileRegistration {
         profile: Box<DaApplicationProfile>,
         execute_after_sequence: u64,
@@ -352,6 +369,10 @@ pub enum RpcRequest {
     GetApplicationDaProfile {
         profile_id: String,
     },
+    GetApplicationDaIdOwner {
+        application_id: String,
+    },
+    GetApplicationDaIdOwners,
     GetApplicationDaProfileLifecycleRecords,
     GetApplicationDaProfileIndexByApplicationId {
         application_id: String,
@@ -532,6 +553,36 @@ impl RpcRequest {
             RpcRequest::RegisterApplicationDaProfile { profile } => {
                 validate_rpc_serialized_value(profile, DEFAULT_MAX_APPLICATION_DA_RPC_PROFILE_BYTES)
             }
+            RpcRequest::ClaimApplicationDaId {
+                application_id,
+                owner,
+                delegated_profile_governance,
+                reason,
+            } => {
+                validate_da_rpc_namespace(application_id)?;
+                validate_lifecycle_text(owner, DEFAULT_MAX_DA_RPC_ID_BYTES)?;
+                validate_owner_delegates(delegated_profile_governance)?;
+                validate_lifecycle_text(
+                    reason,
+                    DEFAULT_MAX_APPLICATION_DA_RPC_LIFECYCLE_REASON_BYTES,
+                )
+            }
+            RpcRequest::UpdateApplicationDaIdOwner {
+                application_id,
+                owner,
+                delegated_profile_governance,
+                requested_by,
+                reason,
+            } => {
+                validate_da_rpc_namespace(application_id)?;
+                validate_lifecycle_text(owner, DEFAULT_MAX_DA_RPC_ID_BYTES)?;
+                validate_owner_delegates(delegated_profile_governance)?;
+                validate_lifecycle_text(requested_by, DEFAULT_MAX_DA_RPC_ID_BYTES)?;
+                validate_lifecycle_text(
+                    reason,
+                    DEFAULT_MAX_APPLICATION_DA_RPC_LIFECYCLE_REASON_BYTES,
+                )
+            }
             RpcRequest::PlanApplicationDaProfileRegistration {
                 profile,
                 requested_by,
@@ -638,6 +689,9 @@ impl RpcRequest {
             | RpcRequest::GetApplicationDaCertificateIndexByProfileId { profile_id } => {
                 validate_da_rpc_id(profile_id)
             }
+            RpcRequest::GetApplicationDaIdOwner { application_id } => {
+                validate_da_rpc_namespace(application_id)
+            }
             RpcRequest::GetApplicationDaManifest { manifest_hash }
             | RpcRequest::GetApplicationDaPayload { manifest_hash }
             | RpcRequest::GetApplicationDaReconstructedPayload { manifest_hash }
@@ -711,6 +765,8 @@ impl RpcRequest {
     pub fn rate_limit_bucket(&self) -> Option<RpcRateLimitBucket> {
         match self {
             RpcRequest::RegisterApplicationDaProfile { .. }
+            | RpcRequest::ClaimApplicationDaId { .. }
+            | RpcRequest::UpdateApplicationDaIdOwner { .. }
             | RpcRequest::PlanApplicationDaProfileRegistration { .. }
             | RpcRequest::ActivateApplicationDaProfile { .. }
             | RpcRequest::DeprecateApplicationDaProfile { .. }
@@ -719,6 +775,8 @@ impl RpcRequest {
                 Some(RpcRateLimitBucket::ApplicationDaSubmission)
             }
             RpcRequest::GetApplicationDaProfile { .. }
+            | RpcRequest::GetApplicationDaIdOwner { .. }
+            | RpcRequest::GetApplicationDaIdOwners
             | RpcRequest::GetApplicationDaProfileLifecycleRecords
             | RpcRequest::GetApplicationDaProfileIndexByApplicationId { .. }
             | RpcRequest::GetApplicationDaProfileIndexByApplicationVersion { .. }
@@ -767,6 +825,16 @@ fn validate_da_rpc_namespace(value: &str) -> Result<(), RpcError> {
 fn validate_lifecycle_text(value: &str, max_bytes: usize) -> Result<(), RpcError> {
     if value.is_empty() || value.len() > max_bytes {
         return Err(RpcError::RequestBoundsExceeded);
+    }
+    Ok(())
+}
+
+fn validate_owner_delegates(values: &[String]) -> Result<(), RpcError> {
+    if values.len() > DEFAULT_MAX_APPLICATION_DA_RPC_OWNER_DELEGATES {
+        return Err(RpcError::RequestBoundsExceeded);
+    }
+    for value in values {
+        validate_lifecycle_text(value, DEFAULT_MAX_DA_RPC_ID_BYTES)?;
     }
     Ok(())
 }
@@ -1177,6 +1245,8 @@ pub enum RpcResult {
     Submitted,
     Imported,
     ApplicationDaProduction(Box<ApplicationDaProductionReport>),
+    ApplicationDaIdOwner(Box<ApplicationDaIdOwnerRecord>),
+    ApplicationDaIdOwners(Vec<ApplicationDaIdOwnerRecord>),
     ApplicationDaProfileLifecycleRecord(Box<ApplicationDaProfileLifecycleRecord>),
     ApplicationDaProfileLifecycleRecords(Vec<ApplicationDaProfileLifecycleRecord>),
     Block(Box<Block>),
@@ -1937,6 +2007,8 @@ impl RpcService {
                 .into(),
             RpcRequest::ProduceDaBlock { .. }
             | RpcRequest::RegisterApplicationDaProfile { .. }
+            | RpcRequest::ClaimApplicationDaId { .. }
+            | RpcRequest::UpdateApplicationDaIdOwner { .. }
             | RpcRequest::PlanApplicationDaProfileRegistration { .. }
             | RpcRequest::ActivateApplicationDaProfile { .. }
             | RpcRequest::DeprecateApplicationDaProfile { .. }
@@ -2095,6 +2167,8 @@ impl RpcService {
             | RpcRequest::GetDaCertificateIndexByHeight { .. }
             | RpcRequest::GetDaCertificateIndexByBlockHash { .. }
             | RpcRequest::GetApplicationDaProfile { .. }
+            | RpcRequest::GetApplicationDaIdOwner { .. }
+            | RpcRequest::GetApplicationDaIdOwners
             | RpcRequest::GetApplicationDaProfileLifecycleRecords
             | RpcRequest::GetApplicationDaProfileIndexByApplicationId { .. }
             | RpcRequest::GetApplicationDaProfileIndexByApplicationVersion { .. }
@@ -2477,6 +2551,9 @@ fn rpc_error_code(error: &RpcError) -> &'static str {
         RpcError::ApplicationDaReservedApplicationId => {
             "rpc.application_da_reserved_application_id"
         }
+        RpcError::ApplicationDaIdAlreadyClaimed => "rpc.application_da_id_already_claimed",
+        RpcError::ApplicationDaIdOwnerNotFound => "rpc.application_da_id_owner_not_found",
+        RpcError::ApplicationDaIdUnauthorized => "rpc.application_da_id_unauthorized",
         RpcError::ProofNotFound => "rpc.proof_not_found",
         RpcError::SubscriptionNotFound => "rpc.subscription_not_found",
         RpcError::Execution(ExecutionError::UpgradeNotFound) => "execution.upgrade_not_found",
@@ -2579,6 +2656,9 @@ fn rpc_error_message(error: &RpcError) -> &'static str {
         RpcError::ApplicationDaReservedApplicationId => {
             "application DA profile uses a reserved application id"
         }
+        RpcError::ApplicationDaIdAlreadyClaimed => "application DA id is already claimed",
+        RpcError::ApplicationDaIdOwnerNotFound => "application DA id owner was not found",
+        RpcError::ApplicationDaIdUnauthorized => "caller is not authorized for application DA id",
         RpcError::ProofNotFound => "proof was not found",
         RpcError::SubscriptionNotFound => "subscription was not found",
         RpcError::Execution(ExecutionError::UpgradeNotFound) => "upgrade was not found",
@@ -2804,6 +2884,8 @@ mod tests {
             "produce_block",
             "produce_da_block",
             "register_application_da_profile",
+            "claim_application_da_id",
+            "update_application_da_id_owner",
             "plan_application_da_profile_registration",
             "activate_application_da_profile",
             "deprecate_application_da_profile",
@@ -2838,6 +2920,8 @@ mod tests {
             "get_da_certificate_index_by_height",
             "get_da_certificate_index_by_block_hash",
             "get_application_da_profile",
+            "get_application_da_id_owner",
+            "get_application_da_id_owners",
             "get_application_da_profile_lifecycle_records",
             "get_application_da_profile_index_by_application_id",
             "get_application_da_profile_index_by_application_version",
@@ -4382,6 +4466,19 @@ mod tests {
             RpcRequest::RegisterApplicationDaProfile {
                 profile: Box::new(DaApplicationProfile::social_demo_v1()),
             },
+            RpcRequest::ClaimApplicationDaId {
+                application_id: "a".repeat(DEFAULT_MAX_DA_RPC_NAMESPACE_BYTES),
+                owner: "o".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES),
+                delegated_profile_governance: vec!["d".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES)],
+                reason: "r".repeat(DEFAULT_MAX_APPLICATION_DA_RPC_LIFECYCLE_REASON_BYTES),
+            },
+            RpcRequest::UpdateApplicationDaIdOwner {
+                application_id: "b".repeat(DEFAULT_MAX_DA_RPC_NAMESPACE_BYTES),
+                owner: "o".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES),
+                delegated_profile_governance: vec!["d".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES)],
+                requested_by: "r".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES),
+                reason: "r".repeat(DEFAULT_MAX_APPLICATION_DA_RPC_LIFECYCLE_REASON_BYTES),
+            },
             RpcRequest::PlanApplicationDaProfileRegistration {
                 profile: Box::new(DaApplicationProfile::social_demo_v1()),
                 execute_after_sequence: u64::MAX,
@@ -4412,6 +4509,10 @@ mod tests {
             RpcRequest::GetApplicationDaProfile {
                 profile_id: "e".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES),
             },
+            RpcRequest::GetApplicationDaIdOwner {
+                application_id: "a".repeat(DEFAULT_MAX_DA_RPC_NAMESPACE_BYTES),
+            },
+            RpcRequest::GetApplicationDaIdOwners,
             RpcRequest::GetApplicationDaProfileLifecycleRecords,
             RpcRequest::GetApplicationDaReconstructedPayload {
                 manifest_hash: "f".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES),
@@ -4507,6 +4608,35 @@ mod tests {
             },
             RpcRequest::RegisterApplicationDaProfile {
                 profile: Box::new(oversized_profile),
+            },
+            RpcRequest::ClaimApplicationDaId {
+                application_id: "a".repeat(DEFAULT_MAX_DA_RPC_NAMESPACE_BYTES + 1),
+                owner: "owner".into(),
+                delegated_profile_governance: Vec::new(),
+                reason: "claim".into(),
+            },
+            RpcRequest::ClaimApplicationDaId {
+                application_id: "social.demo".into(),
+                owner: "o".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES + 1),
+                delegated_profile_governance: Vec::new(),
+                reason: "claim".into(),
+            },
+            RpcRequest::ClaimApplicationDaId {
+                application_id: "social.demo".into(),
+                owner: "owner".into(),
+                delegated_profile_governance: vec![
+                    "delegate".into();
+                    DEFAULT_MAX_APPLICATION_DA_RPC_OWNER_DELEGATES
+                        + 1
+                ],
+                reason: "claim".into(),
+            },
+            RpcRequest::UpdateApplicationDaIdOwner {
+                application_id: "social.demo".into(),
+                owner: "owner".into(),
+                delegated_profile_governance: Vec::new(),
+                requested_by: String::new(),
+                reason: "update".into(),
             },
             RpcRequest::PlanApplicationDaProfileRegistration {
                 profile: Box::new(DaApplicationProfile::social_demo_v1()),

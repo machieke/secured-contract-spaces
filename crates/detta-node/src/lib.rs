@@ -14,7 +14,7 @@ use detta_da::{
     verify_application_share_against_manifest, verify_light_client_samples,
     verify_share_against_manifest, ApplicationDaAvailabilityCertificate, ApplicationDaManifest,
     ApplicationDaNamespaceSection, ApplicationDaPayload, ApplicationDaSampleProofBundle,
-    ApplicationDaShareSet, CheckpointDemoDaValidator, DaApplicationProfile,
+    ApplicationDaShareSet, CheckpointDemoDaValidator, DaApplicationId, DaApplicationProfile,
     DaApplicationProfileRegistration, DaApplicationProfileStatus, DaApplicationValidationMode,
     DaApplicationValidator, DaAvailabilityCertificate, DaAvailabilityVote, DaChallengeEvidence,
     DaChallengeRecord, DaCodingFraudProof, DaError, DaManifest, DaNamespace, DaNamespaceSection,
@@ -43,11 +43,12 @@ use detta_rpc::{
     SnapshotSyncClientMetricsReport, ValidatorSetMetadataUpdateStatus, DEFAULT_MAX_BLOCK_PAGE_SIZE,
 };
 use detta_storage::{
-    ApplicationDaProfileLifecycleAction, ApplicationDaProfileLifecycleRecord,
-    ApplicationDaRetentionAuditReport, ApplicationDaRetentionPrunePlanReport,
-    ConsensusSigningRecord, DaRetentionAuditReport, DaRetentionPolicyConfig,
-    DaRetentionPrunePlanReport, FileStorage, SnapshotImportAuditConfig, SnapshotImportAuditRecord,
-    StorageError, ValidatorSetMetadataAuditOutcome, ValidatorSetMetadataAuditRecord,
+    ApplicationDaIdOwnerRecord, ApplicationDaProfileLifecycleAction,
+    ApplicationDaProfileLifecycleRecord, ApplicationDaRetentionAuditReport,
+    ApplicationDaRetentionPrunePlanReport, ConsensusSigningRecord, DaRetentionAuditReport,
+    DaRetentionPolicyConfig, DaRetentionPrunePlanReport, FileStorage, SnapshotImportAuditConfig,
+    SnapshotImportAuditRecord, StorageError, ValidatorSetMetadataAuditOutcome,
+    ValidatorSetMetadataAuditRecord,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{btree_map::Entry, BTreeMap, BTreeSet};
@@ -1248,6 +1249,38 @@ impl PersistentValidatorNode {
                 .map(|registration| RpcResult::ApplicationDaProfile(Box::new(registration)))
                 .map(RpcResponse::Ok)
                 .unwrap_or_else(node_rpc_error_response),
+            RpcRequest::ClaimApplicationDaId {
+                application_id,
+                owner,
+                delegated_profile_governance,
+                reason,
+            } => self
+                .claim_application_da_id(
+                    &application_id,
+                    &owner,
+                    delegated_profile_governance,
+                    &reason,
+                )
+                .map(|record| RpcResult::ApplicationDaIdOwner(Box::new(record)))
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(node_rpc_error_response),
+            RpcRequest::UpdateApplicationDaIdOwner {
+                application_id,
+                owner,
+                delegated_profile_governance,
+                requested_by,
+                reason,
+            } => self
+                .update_application_da_id_owner(
+                    &application_id,
+                    &owner,
+                    delegated_profile_governance,
+                    &requested_by,
+                    &reason,
+                )
+                .map(|record| RpcResult::ApplicationDaIdOwner(Box::new(record)))
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(node_rpc_error_response),
             RpcRequest::PlanApplicationDaProfileRegistration {
                 profile,
                 execute_after_sequence,
@@ -1537,6 +1570,22 @@ impl PersistentValidatorNode {
                     }
                     None => Err(RpcError::ApplicationDaProfileNotFound).into(),
                 })
+                .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
+            RpcRequest::GetApplicationDaIdOwner { application_id } => self
+                .storage
+                .maybe_load_application_da_id_owner_record(&application_id)
+                .map(|record| match record {
+                    Some(record) => {
+                        RpcResponse::Ok(RpcResult::ApplicationDaIdOwner(Box::new(record)))
+                    }
+                    None => Err(RpcError::ApplicationDaIdOwnerNotFound).into(),
+                })
+                .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
+            RpcRequest::GetApplicationDaIdOwners => self
+                .storage
+                .load_application_da_id_owner_records()
+                .map(RpcResult::ApplicationDaIdOwners)
+                .map(RpcResponse::Ok)
                 .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
             RpcRequest::GetApplicationDaProfileLifecycleRecords => self
                 .storage
@@ -3204,12 +3253,92 @@ impl PersistentValidatorNode {
         profile: &DaApplicationProfile,
     ) -> Result<DaApplicationProfileRegistration, NodeError> {
         self.ensure_application_da_profile_id_allowed(profile)?;
+        if !profile.application_id.0.starts_with("detta.")
+            && self
+                .storage
+                .maybe_load_application_da_id_owner_record(&profile.application_id.0)
+                .map_err(NodeError::Storage)?
+                .is_some()
+        {
+            return Err(NodeError::Rpc(RpcError::ApplicationDaIdUnauthorized));
+        }
         let registration = DaApplicationProfileRegistration::active(profile.clone())
             .map_err(NodeError::DataAvailability)?;
         self.storage
             .commit_application_da_profile_registration(&registration)
             .map_err(NodeError::Storage)?;
         Ok(registration)
+    }
+
+    pub fn claim_application_da_id(
+        &self,
+        application_id: &str,
+        owner: &str,
+        delegated_profile_governance: Vec<String>,
+        reason: &str,
+    ) -> Result<ApplicationDaIdOwnerRecord, NodeError> {
+        let application_id =
+            DaApplicationId::new(application_id).map_err(NodeError::DataAvailability)?;
+        self.ensure_application_da_id_claimable(&application_id)?;
+        if self
+            .storage
+            .maybe_load_application_da_id_owner_record(&application_id.0)
+            .map_err(NodeError::Storage)?
+            .is_some()
+        {
+            return Err(NodeError::Rpc(RpcError::ApplicationDaIdAlreadyClaimed));
+        }
+        let record = ApplicationDaIdOwnerRecord {
+            application_id,
+            owner: owner.into(),
+            delegated_profile_governance: canonical_profile_governance_delegates(
+                delegated_profile_governance,
+            ),
+            claimed_at_sequence: self.current_height(),
+            updated_at_sequence: self.current_height(),
+            updated_by: owner.into(),
+            reason: reason.into(),
+        };
+        self.storage
+            .commit_application_da_id_owner_record(&record)
+            .map_err(NodeError::Storage)?;
+        Ok(record)
+    }
+
+    pub fn update_application_da_id_owner(
+        &self,
+        application_id: &str,
+        owner: &str,
+        delegated_profile_governance: Vec<String>,
+        requested_by: &str,
+        reason: &str,
+    ) -> Result<ApplicationDaIdOwnerRecord, NodeError> {
+        let application_id =
+            DaApplicationId::new(application_id).map_err(NodeError::DataAvailability)?;
+        self.ensure_application_da_id_claimable(&application_id)?;
+        let current = self
+            .storage
+            .maybe_load_application_da_id_owner_record(&application_id.0)
+            .map_err(NodeError::Storage)?
+            .ok_or(NodeError::Rpc(RpcError::ApplicationDaIdOwnerNotFound))?;
+        if !current.authorizes(requested_by) {
+            return Err(NodeError::Rpc(RpcError::ApplicationDaIdUnauthorized));
+        }
+        let record = ApplicationDaIdOwnerRecord {
+            application_id,
+            owner: owner.into(),
+            delegated_profile_governance: canonical_profile_governance_delegates(
+                delegated_profile_governance,
+            ),
+            claimed_at_sequence: current.claimed_at_sequence,
+            updated_at_sequence: self.current_height(),
+            updated_by: requested_by.into(),
+            reason: reason.into(),
+        };
+        self.storage
+            .commit_application_da_id_owner_record(&record)
+            .map_err(NodeError::Storage)?;
+        Ok(record)
     }
 
     pub fn plan_application_da_profile_registration(
@@ -3220,6 +3349,7 @@ impl PersistentValidatorNode {
         reason: &str,
     ) -> Result<ApplicationDaProfileLifecycleRecord, NodeError> {
         self.ensure_application_da_profile_id_allowed(profile)?;
+        self.ensure_application_da_profile_lifecycle_authorized(profile, requested_by)?;
         let profile_id = profile.profile_id().map_err(NodeError::DataAvailability)?;
         if self
             .storage
@@ -3287,6 +3417,10 @@ impl PersistentValidatorNode {
             ));
         }
         let plan = self.application_da_profile_registration_plan(profile_id)?;
+        self.ensure_application_da_profile_lifecycle_authorized(
+            &registration.profile,
+            &plan.requested_by,
+        )?;
         registration.status = DaApplicationProfileStatus::Active;
         registration.activated_at_sequence = Some(current_sequence);
         self.storage
@@ -3322,6 +3456,10 @@ impl PersistentValidatorNode {
             .maybe_load_application_da_profile_registration(profile_id)
             .map_err(NodeError::Storage)?
             .ok_or(NodeError::Rpc(RpcError::ApplicationDaProfileNotFound))?;
+        self.ensure_application_da_profile_lifecycle_authorized(
+            &registration.profile,
+            requested_by,
+        )?;
         if registration.status != DaApplicationProfileStatus::Active {
             return Err(NodeError::Rpc(RpcError::ApplicationDaProfileInactive));
         }
@@ -3363,6 +3501,10 @@ impl PersistentValidatorNode {
             .maybe_load_application_da_profile_registration(profile_id)
             .map_err(NodeError::Storage)?
             .ok_or(NodeError::Rpc(RpcError::ApplicationDaProfileNotFound))?;
+        self.ensure_application_da_profile_lifecycle_authorized(
+            &registration.profile,
+            requested_by,
+        )?;
         self.storage
             .maybe_load_application_da_profile_registration(supersedes_profile_id)
             .map_err(NodeError::Storage)?
@@ -3419,6 +3561,35 @@ impl PersistentValidatorNode {
             return Ok(());
         }
         Err(NodeError::Rpc(RpcError::ApplicationDaReservedApplicationId))
+    }
+
+    fn ensure_application_da_id_claimable(
+        &self,
+        application_id: &DaApplicationId,
+    ) -> Result<(), NodeError> {
+        if application_id.0.starts_with("detta.") {
+            return Err(NodeError::Rpc(RpcError::ApplicationDaReservedApplicationId));
+        }
+        Ok(())
+    }
+
+    fn ensure_application_da_profile_lifecycle_authorized(
+        &self,
+        profile: &DaApplicationProfile,
+        requested_by: &str,
+    ) -> Result<(), NodeError> {
+        if profile.application_id.0.starts_with("detta.") {
+            return Ok(());
+        }
+        let owner_record = self
+            .storage
+            .maybe_load_application_da_id_owner_record(&profile.application_id.0)
+            .map_err(NodeError::Storage)?
+            .ok_or(NodeError::Rpc(RpcError::ApplicationDaIdOwnerNotFound))?;
+        if owner_record.authorizes(requested_by) {
+            return Ok(());
+        }
+        Err(NodeError::Rpc(RpcError::ApplicationDaIdUnauthorized))
     }
 
     pub fn produce_application_da_batch(
@@ -4540,6 +4711,12 @@ fn consensus_signing_commitment(
 
 fn da_vote_signing_commitment(vote: &DaAvailabilityVote) -> String {
     format!("{}:{}", vote.block_hash, vote.manifest_hash)
+}
+
+fn canonical_profile_governance_delegates(mut delegates: Vec<String>) -> Vec<String> {
+    delegates.sort();
+    delegates.dedup();
+    delegates
 }
 
 fn da_payload_for_block(block: &Block) -> Result<DaPayload, NodeError> {
@@ -6482,6 +6659,29 @@ mod tests {
         };
         assert_eq!(v1_registration.profile_id, profile_v1_id);
 
+        let claim_response = node.handle_rpc_request(RpcRequest::ClaimApplicationDaId {
+            application_id: "social.demo".into(),
+            owner: "governance".into(),
+            delegated_profile_governance: Vec::new(),
+            reason: "claim social demo governance".into(),
+        });
+        let RpcResponse::Ok(RpcResult::ApplicationDaIdOwner(owner_record)) = claim_response else {
+            panic!("expected application id owner record, got {claim_response:?}");
+        };
+        assert_eq!(owner_record.owner, "governance");
+        assert_eq!(
+            node.handle_rpc_request(RpcRequest::PlanApplicationDaProfileRegistration {
+                profile: Box::new(profile_v2.clone()),
+                execute_after_sequence: 1,
+                requested_by: "intruder".into(),
+                reason: "unauthorized v2 plan".into(),
+            }),
+            RpcResponse::Error(RpcErrorBody {
+                code: "rpc.application_da_id_unauthorized".into(),
+                message: "caller is not authorized for application DA id".into(),
+            })
+        );
+
         let plan_response =
             node.handle_rpc_request(RpcRequest::PlanApplicationDaProfileRegistration {
                 profile: Box::new(profile_v2.clone()),
@@ -6499,6 +6699,22 @@ mod tests {
             ApplicationDaProfileLifecycleAction::Register
         );
         assert_eq!(plan_record.profile_id, profile_v2_id);
+
+        let update_owner_response =
+            node.handle_rpc_request(RpcRequest::UpdateApplicationDaIdOwner {
+                application_id: "social.demo".into(),
+                owner: "social-council".into(),
+                delegated_profile_governance: vec!["governance".into()],
+                requested_by: "governance".into(),
+                reason: "delegate profile lifecycle governance".into(),
+            });
+        let RpcResponse::Ok(RpcResult::ApplicationDaIdOwner(updated_owner_record)) =
+            update_owner_response
+        else {
+            panic!("expected updated owner record, got {update_owner_response:?}");
+        };
+        assert_eq!(updated_owner_record.owner, "social-council");
+        assert!(updated_owner_record.authorizes("governance"));
 
         let pending_response = node.handle_rpc_request(RpcRequest::GetApplicationDaProfile {
             profile_id: profile_v2_id.clone(),

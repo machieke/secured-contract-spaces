@@ -12,7 +12,7 @@ use detta_da::{
 use detta_protocol::{SignedValidatorMessage, ValidatorSetMetadata, ValidatorSignatureDomain};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -105,6 +105,7 @@ pub struct DaStorageStats {
     pub application_payload_count: u64,
     pub application_certificate_count: u64,
     pub application_repair_record_count: u64,
+    pub application_id_owner_count: u64,
     pub application_profile_lifecycle_record_count: u64,
     pub application_profile_bytes: u64,
     pub application_manifest_bytes: u64,
@@ -112,6 +113,7 @@ pub struct DaStorageStats {
     pub application_payload_bytes: u64,
     pub application_certificate_bytes: u64,
     pub application_repair_record_bytes: u64,
+    pub application_id_owner_bytes: u64,
     pub application_profile_lifecycle_record_bytes: u64,
     pub application_index_file_count: u64,
     pub application_index_bytes: u64,
@@ -341,6 +343,27 @@ pub struct ApplicationDaRepairRecord {
     pub completed: bool,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ApplicationDaIdOwnerRecord {
+    pub application_id: DaApplicationId,
+    pub owner: String,
+    pub delegated_profile_governance: Vec<String>,
+    pub claimed_at_sequence: u64,
+    pub updated_at_sequence: u64,
+    pub updated_by: String,
+    pub reason: String,
+}
+
+impl ApplicationDaIdOwnerRecord {
+    pub fn authorizes(&self, principal: &str) -> bool {
+        self.owner == principal
+            || self
+                .delegated_profile_governance
+                .iter()
+                .any(|delegate| delegate == principal)
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub enum ApplicationDaProfileLifecycleAction {
     Register,
@@ -511,6 +534,8 @@ impl FileStorage {
                 .join("profile_lifecycle"),
         )
         .map_err(io_error)?;
+        fs::create_dir_all(root.join("da").join("applications").join("id_owners"))
+            .map_err(io_error)?;
         fs::create_dir_all(
             root.join("da")
                 .join("applications")
@@ -621,6 +646,7 @@ impl FileStorage {
         let application_payloads_dir = self.application_da_path().join("payloads");
         let application_certificates_dir = self.application_da_certificates_path();
         let application_repairs_dir = self.application_da_repairs_path();
+        let application_id_owners_dir = self.application_da_id_owners_path();
         let application_profile_lifecycle_dir = self.application_da_profile_lifecycle_path();
         let application_indexes_dir = self.application_da_indexes_path();
 
@@ -710,6 +736,9 @@ impl FileStorage {
         let application_repair_file_stats = directory_file_stats(&application_repairs_dir)?;
         stats.application_repair_record_count = application_repair_file_stats.file_count;
         stats.application_repair_record_bytes = application_repair_file_stats.total_bytes;
+        let application_id_owner_file_stats = directory_file_stats(&application_id_owners_dir)?;
+        stats.application_id_owner_count = application_id_owner_file_stats.file_count;
+        stats.application_id_owner_bytes = application_id_owner_file_stats.total_bytes;
         let application_profile_lifecycle_file_stats =
             directory_file_stats(&application_profile_lifecycle_dir)?;
         stats.application_profile_lifecycle_record_count =
@@ -742,6 +771,7 @@ impl FileStorage {
             .saturating_add(stats.application_payload_bytes)
             .saturating_add(stats.application_certificate_bytes)
             .saturating_add(stats.application_repair_record_bytes)
+            .saturating_add(stats.application_id_owner_bytes)
             .saturating_add(stats.application_profile_lifecycle_record_bytes)
             .saturating_add(stats.application_index_bytes)
             .saturating_add(stats.retention_policy_bytes);
@@ -1866,6 +1896,68 @@ impl FileStorage {
             Some(&application_id),
             Some(profile_version),
         )
+    }
+
+    pub fn commit_application_da_id_owner_record(
+        &self,
+        record: &ApplicationDaIdOwnerRecord,
+    ) -> Result<String, StorageError> {
+        validate_application_da_id_owner_record(record)?;
+        write_json_atomic(
+            &self.application_da_id_owner_path(&record.application_id),
+            record,
+        )?;
+        Ok(record.application_id.0.clone())
+    }
+
+    pub fn maybe_load_application_da_id_owner_record(
+        &self,
+        application_id: &str,
+    ) -> Result<Option<ApplicationDaIdOwnerRecord>, StorageError> {
+        let application_id = DaApplicationId::new(application_id).map_err(da_error)?;
+        let path = self.application_da_id_owner_path(&application_id);
+        if !path.exists() {
+            return Ok(None);
+        }
+        self.load_application_da_id_owner_record(&application_id.0)
+            .map(Some)
+    }
+
+    pub fn load_application_da_id_owner_record(
+        &self,
+        application_id: &str,
+    ) -> Result<ApplicationDaIdOwnerRecord, StorageError> {
+        let application_id = DaApplicationId::new(application_id).map_err(da_error)?;
+        let record: ApplicationDaIdOwnerRecord =
+            read_json(&self.application_da_id_owner_path(&application_id))?;
+        validate_application_da_id_owner_record(&record)?;
+        if record.application_id != application_id {
+            return Err(StorageError::CorruptData(format!(
+                "application DA id owner mismatch: expected {application_id:?}, got {:?}",
+                record.application_id
+            )));
+        }
+        Ok(record)
+    }
+
+    pub fn load_application_da_id_owner_records(
+        &self,
+    ) -> Result<Vec<ApplicationDaIdOwnerRecord>, StorageError> {
+        let mut records = Vec::new();
+        for path in sorted_bin_paths(&self.application_da_id_owners_path())? {
+            let record: ApplicationDaIdOwnerRecord = read_json(&path)?;
+            validate_application_da_id_owner_record(&record)?;
+            let expected_file_name = format!("{}.bin", file_safe_id(&record.application_id.0));
+            if path.file_name().and_then(|name| name.to_str()) != Some(expected_file_name.as_str())
+            {
+                return Err(StorageError::CorruptData(
+                    "application DA id owner filename does not match application id".into(),
+                ));
+            }
+            records.push(record);
+        }
+        records.sort_by(|left, right| left.application_id.cmp(&right.application_id));
+        Ok(records)
     }
 
     pub fn commit_application_da_profile_lifecycle_record(
@@ -3801,6 +3893,10 @@ impl FileStorage {
         self.application_da_path().join("repairs")
     }
 
+    fn application_da_id_owners_path(&self) -> PathBuf {
+        self.application_da_path().join("id_owners")
+    }
+
     fn application_da_profile_lifecycle_path(&self) -> PathBuf {
         self.application_da_path().join("profile_lifecycle")
     }
@@ -3836,6 +3932,11 @@ impl FileStorage {
     fn application_da_repair_record_path(&self, record_id: &str) -> PathBuf {
         self.application_da_repairs_path()
             .join(format!("{}.bin", file_safe_id(record_id)))
+    }
+
+    fn application_da_id_owner_path(&self, application_id: &DaApplicationId) -> PathBuf {
+        self.application_da_id_owners_path()
+            .join(format!("{}.bin", file_safe_id(&application_id.0)))
     }
 
     fn application_da_profile_lifecycle_record_path(&self, record_id: &str) -> PathBuf {
@@ -4297,6 +4398,55 @@ fn validate_application_da_repair_record_against_manifest(
         return Err(StorageError::CorruptData(
             "application DA repair record reason must be nonempty".into(),
         ));
+    }
+    Ok(())
+}
+
+fn validate_application_da_id_owner_record(
+    record: &ApplicationDaIdOwnerRecord,
+) -> Result<(), StorageError> {
+    record.application_id.validate().map_err(da_error)?;
+    validate_principal_text("application DA id owner", &record.owner)?;
+    validate_principal_text("application DA id owner updated_by", &record.updated_by)?;
+    if record.reason.is_empty() {
+        return Err(StorageError::CorruptData(
+            "application DA id owner reason must be nonempty".into(),
+        ));
+    }
+    if record.updated_at_sequence < record.claimed_at_sequence {
+        return Err(StorageError::CorruptData(
+            "application DA id owner update sequence precedes claim sequence".into(),
+        ));
+    }
+    let mut delegates = BTreeSet::new();
+    let mut previous: Option<&str> = None;
+    for delegate in &record.delegated_profile_governance {
+        validate_principal_text("application DA id owner delegate", delegate)?;
+        if previous.is_some_and(|value| value >= delegate.as_str()) {
+            return Err(StorageError::CorruptData(
+                "application DA id owner delegates must be sorted and unique".into(),
+            ));
+        }
+        if !delegates.insert(delegate.as_str()) {
+            return Err(StorageError::CorruptData(
+                "application DA id owner delegates must be unique".into(),
+            ));
+        }
+        previous = Some(delegate);
+    }
+    Ok(())
+}
+
+fn validate_principal_text(field: &str, value: &str) -> Result<(), StorageError> {
+    if value.is_empty() {
+        return Err(StorageError::CorruptData(format!(
+            "{field} must be nonempty"
+        )));
+    }
+    if value.len() > 256 {
+        return Err(StorageError::CorruptData(format!(
+            "{field} exceeds 256 bytes"
+        )));
     }
     Ok(())
 }
@@ -5473,6 +5623,7 @@ mod tests {
         assert_eq!(stats.application_payload_count, 1);
         assert_eq!(stats.application_certificate_count, 0);
         assert_eq!(stats.application_repair_record_count, 1);
+        assert_eq!(stats.application_id_owner_count, 0);
         assert_eq!(stats.application_profile_lifecycle_record_count, 0);
         assert!(stats.application_profile_bytes > 0);
         assert!(stats.application_manifest_bytes > 0);
@@ -5480,6 +5631,7 @@ mod tests {
         assert!(stats.application_payload_bytes > 0);
         assert_eq!(stats.application_certificate_bytes, 0);
         assert!(stats.application_repair_record_bytes > 0);
+        assert_eq!(stats.application_id_owner_bytes, 0);
         assert_eq!(stats.application_profile_lifecycle_record_bytes, 0);
         assert!(stats.application_index_file_count > 0);
         assert!(stats.application_index_bytes > 0);
@@ -5778,6 +5930,63 @@ mod tests {
         let stats = storage.da_storage_stats().unwrap();
         assert_eq!(stats.application_profile_lifecycle_record_count, 3);
         assert!(stats.application_profile_lifecycle_record_bytes > 0);
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn persists_application_da_id_owner_records() {
+        let dir = temp_dir("application-da-id-owners");
+        let storage = FileStorage::open(&dir).unwrap();
+        let owner = ApplicationDaIdOwnerRecord {
+            application_id: DaApplicationId::new("social.demo").unwrap(),
+            owner: "social-dao".into(),
+            delegated_profile_governance: vec!["profile-council".into()],
+            claimed_at_sequence: 3,
+            updated_at_sequence: 5,
+            updated_by: "social-dao".into(),
+            reason: "claim social demo namespace".into(),
+        };
+        assert_eq!(
+            storage
+                .commit_application_da_id_owner_record(&owner)
+                .unwrap(),
+            "social.demo"
+        );
+        assert_eq!(
+            storage
+                .load_application_da_id_owner_record("social.demo")
+                .unwrap(),
+            owner
+        );
+        assert!(storage
+            .maybe_load_application_da_id_owner_record("unknown.demo")
+            .unwrap()
+            .is_none());
+        let records = storage.load_application_da_id_owner_records().unwrap();
+        assert_eq!(records.len(), 1);
+        assert!(records[0].authorizes("social-dao"));
+        assert!(records[0].authorizes("profile-council"));
+        assert!(!records[0].authorizes("intruder"));
+
+        let mut unsorted = records[0].clone();
+        unsorted.delegated_profile_governance =
+            vec!["z-profile-council".into(), "a-profile-council".into()];
+        assert!(matches!(
+            storage.commit_application_da_id_owner_record(&unsorted),
+            Err(StorageError::CorruptData(_))
+        ));
+
+        let mut backwards = records[0].clone();
+        backwards.updated_at_sequence = 2;
+        assert!(matches!(
+            storage.commit_application_da_id_owner_record(&backwards),
+            Err(StorageError::CorruptData(_))
+        ));
+
+        let stats = storage.da_storage_stats().unwrap();
+        assert_eq!(stats.application_id_owner_count, 1);
+        assert!(stats.application_id_owner_bytes > 0);
 
         fs::remove_dir_all(dir).unwrap();
     }
@@ -6258,6 +6467,7 @@ mod tests {
                 + stats.application_payload_bytes
                 + stats.application_certificate_bytes
                 + stats.application_repair_record_bytes
+                + stats.application_id_owner_bytes
                 + stats.application_profile_lifecycle_record_bytes
                 + stats.application_index_bytes
                 + stats.retention_policy_bytes

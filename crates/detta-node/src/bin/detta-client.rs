@@ -86,6 +86,29 @@ fn run(args: Vec<String>) -> Result<(), String> {
             })?;
             print_json(&result)
         }
+        "application-da-claim-id" => {
+            let result = client.ok(RpcRequest::ClaimApplicationDaId {
+                application_id: options.required("application-id")?,
+                owner: options.required("owner")?,
+                delegated_profile_governance: parse_csv_option(
+                    options.optional("delegated-profile-governance"),
+                ),
+                reason: options.required("reason")?,
+            })?;
+            print_json(&result)
+        }
+        "application-da-update-id-owner" => {
+            let result = client.ok(RpcRequest::UpdateApplicationDaIdOwner {
+                application_id: options.required("application-id")?,
+                owner: options.required("owner")?,
+                delegated_profile_governance: parse_csv_option(
+                    options.optional("delegated-profile-governance"),
+                ),
+                requested_by: options.required("requested-by")?,
+                reason: options.required("reason")?,
+            })?;
+            print_json(&result)
+        }
         "application-da-plan-profile" => {
             let result = client.ok(RpcRequest::PlanApplicationDaProfileRegistration {
                 profile: Box::new(application_da_profile_from_options(&options)?),
@@ -130,6 +153,16 @@ fn run(args: Vec<String>) -> Result<(), String> {
             let result = client.ok(RpcRequest::GetApplicationDaProfile {
                 profile_id: options.required("profile-id")?,
             })?;
+            print_json(&result)
+        }
+        "application-da-id-owner" => {
+            let result = client.ok(RpcRequest::GetApplicationDaIdOwner {
+                application_id: options.required("application-id")?,
+            })?;
+            print_json(&result)
+        }
+        "application-da-id-owners" => {
+            let result = client.ok(RpcRequest::GetApplicationDaIdOwners)?;
             print_json(&result)
         }
         "application-da-profile-lifecycle-records" => {
@@ -843,12 +876,16 @@ fn usage() -> String {
   detta-client produce-block --height <h> [--timestamp <t>]
   detta-client produce-da-block --height <h> [--timestamp <t>] [--share-size <bytes>]
   detta-client application-da-register-profile (--builtin <detta.defi|social.demo|checkpoint.demo> | --profile-json <path>)
+  detta-client application-da-claim-id --application-id <id> --owner <principal> [--delegated-profile-governance <csv>] --reason <text>
+  detta-client application-da-update-id-owner --application-id <id> --owner <principal> [--delegated-profile-governance <csv>] --requested-by <principal> --reason <text>
   detta-client application-da-plan-profile (--builtin <detta.defi|social.demo|checkpoint.demo> | --profile-json <path>) --execute-after-sequence <n> --requested-by <id> --reason <text>
   detta-client application-da-activate-profile --profile-id <hash>
   detta-client application-da-deprecate-profile --profile-id <hash> --requested-by <id> --reason <text>
   detta-client application-da-record-profile-migration --profile-id <hash> --supersedes-profile-id <hash> --migration-evidence-hash <hash> --requested-by <id> --reason <text>
   detta-client application-da-produce-batch --payload-json <path> --certificate-signers <csv> [--data-shares <n>] [--parity-shares <n>]
   detta-client application-da-profile --profile-id <hash>
+  detta-client application-da-id-owner --application-id <id>
+  detta-client application-da-id-owners
   detta-client application-da-profile-lifecycle-records
   detta-client application-da-profile-index-by-application --application-id <id>
   detta-client application-da-profile-index-by-version --application-id <id> --profile-version <n>

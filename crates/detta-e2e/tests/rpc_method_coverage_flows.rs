@@ -285,6 +285,39 @@ fn public_rpc_method_coverage_guard_calls_every_openapi_method() {
     call_ok(
         &mut client,
         &mut covered,
+        RpcRequest::ClaimApplicationDaId {
+            application_id: "social.demo".into(),
+            owner: "coverage-governance".into(),
+            delegated_profile_governance: Vec::new(),
+            reason: "coverage application id claim".into(),
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::UpdateApplicationDaIdOwner {
+            application_id: "social.demo".into(),
+            owner: "coverage-council".into(),
+            delegated_profile_governance: vec!["coverage-governance".into()],
+            requested_by: "coverage-governance".into(),
+            reason: "coverage owner update".into(),
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetApplicationDaIdOwner {
+            application_id: "social.demo".into(),
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetApplicationDaIdOwners,
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
         RpcRequest::PlanApplicationDaProfileRegistration {
             profile: Box::new(app_profile_v2),
             execute_after_sequence: 5,
