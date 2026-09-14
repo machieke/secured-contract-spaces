@@ -633,6 +633,42 @@ impl RpcRequest {
             _ => Ok(()),
         }
     }
+
+    pub fn rate_limit_bucket(&self) -> Option<RpcRateLimitBucket> {
+        match self {
+            RpcRequest::RegisterApplicationDaProfile { .. }
+            | RpcRequest::ProduceApplicationDaBatch { .. } => {
+                Some(RpcRateLimitBucket::ApplicationDaSubmission)
+            }
+            RpcRequest::GetApplicationDaProfile { .. }
+            | RpcRequest::GetApplicationDaProfileIndexByApplicationId { .. }
+            | RpcRequest::GetApplicationDaProfileIndexByApplicationVersion { .. }
+            | RpcRequest::GetApplicationDaManifest { .. }
+            | RpcRequest::GetApplicationDaShare { .. }
+            | RpcRequest::GetApplicationDaCertificate { .. }
+            | RpcRequest::GetApplicationDaPayload { .. }
+            | RpcRequest::GetApplicationDaReconstructedPayload { .. }
+            | RpcRequest::GetApplicationDaNamespace { .. }
+            | RpcRequest::GetApplicationDaSampleProofs { .. }
+            | RpcRequest::GetApplicationDaStatus { .. }
+            | RpcRequest::GetApplicationDaRepairStatus { .. }
+            | RpcRequest::GetApplicationDaRetentionAudit
+            | RpcRequest::GetApplicationDaRetentionPrunePlan
+            | RpcRequest::GetApplicationDaManifestIndexByApplicationId { .. }
+            | RpcRequest::GetApplicationDaManifestIndexByProfileId { .. }
+            | RpcRequest::GetApplicationDaManifestIndexByCoordinate { .. }
+            | RpcRequest::GetApplicationDaManifestIndexByNamespace { .. }
+            | RpcRequest::GetApplicationDaManifestIndexByRetentionClass { .. }
+            | RpcRequest::GetApplicationDaManifestIndexByApplicationRoot { .. }
+            | RpcRequest::GetApplicationDaCertificateIndexByManifest { .. }
+            | RpcRequest::GetApplicationDaCertificateIndexByApplicationId { .. }
+            | RpcRequest::GetApplicationDaCertificateIndexByProfileId { .. }
+            | RpcRequest::GetApplicationDaCertificateIndexByCoordinate { .. } => {
+                Some(RpcRateLimitBucket::ApplicationDaRetrieval)
+            }
+            _ => None,
+        }
+    }
 }
 
 fn validate_da_rpc_id(value: &str) -> Result<(), RpcError> {
@@ -1238,6 +1274,21 @@ pub trait JsonRpcHandler {
     fn handle_json_request(&mut self, request: &[u8]) -> Result<Vec<u8>, RpcTransportError>;
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+pub enum RpcRateLimitBucket {
+    ApplicationDaSubmission,
+    ApplicationDaRetrieval,
+}
+
+impl RpcRateLimitBucket {
+    fn label(self) -> &'static str {
+        match self {
+            RpcRateLimitBucket::ApplicationDaSubmission => "application DA submission",
+            RpcRateLimitBucket::ApplicationDaRetrieval => "application DA retrieval",
+        }
+    }
+}
+
 pub struct AuthenticatedJsonRpcHandler<'a, H> {
     inner: &'a mut H,
     bearer_token: String,
@@ -1285,6 +1336,8 @@ pub struct RateLimitedJsonRpcHandler<'a, H> {
     inner: &'a mut H,
     max_requests: usize,
     served_requests: usize,
+    method_limits: BTreeMap<RpcRateLimitBucket, usize>,
+    served_by_bucket: BTreeMap<RpcRateLimitBucket, usize>,
 }
 
 impl<'a, H: JsonRpcHandler> RateLimitedJsonRpcHandler<'a, H> {
@@ -1293,6 +1346,22 @@ impl<'a, H: JsonRpcHandler> RateLimitedJsonRpcHandler<'a, H> {
             inner,
             max_requests,
             served_requests: 0,
+            method_limits: BTreeMap::new(),
+            served_by_bucket: BTreeMap::new(),
+        }
+    }
+
+    pub fn new_with_method_limits(
+        inner: &'a mut H,
+        max_requests: usize,
+        method_limits: impl IntoIterator<Item = (RpcRateLimitBucket, usize)>,
+    ) -> Self {
+        Self {
+            inner,
+            max_requests,
+            served_requests: 0,
+            method_limits: method_limits.into_iter().collect(),
+            served_by_bucket: BTreeMap::new(),
         }
     }
 }
@@ -1305,7 +1374,27 @@ impl<H: JsonRpcHandler> JsonRpcHandler for RateLimitedJsonRpcHandler<'_, H> {
                 "operator endpoint request limit exceeded",
             );
         }
+        let bucket = serde_json::from_slice::<RpcRequest>(request)
+            .ok()
+            .and_then(|request| request.rate_limit_bucket());
+        if let Some(bucket) = bucket {
+            if let Some(max_requests) = self.method_limits.get(&bucket) {
+                let served_requests = self.served_by_bucket.get(&bucket).copied().unwrap_or(0);
+                if served_requests >= *max_requests {
+                    return rpc_error_response_bytes(
+                        "rpc.rate_limited",
+                        format!(
+                            "operator endpoint {} request limit exceeded",
+                            bucket.label()
+                        ),
+                    );
+                }
+            }
+        }
         self.served_requests += 1;
+        if let Some(bucket) = bucket {
+            *self.served_by_bucket.entry(bucket).or_insert(0) += 1;
+        }
         self.inner.handle_json_request(request)
     }
 }
@@ -2792,6 +2881,83 @@ mod tests {
                 message: "operator endpoint request limit exceeded".into(),
             })
         );
+    }
+
+    #[test]
+    fn rate_limited_json_rpc_handler_enforces_application_da_method_buckets() {
+        let mut rpc = seeded_rpc();
+        let mut handler = RateLimitedJsonRpcHandler::new_with_method_limits(
+            &mut rpc,
+            10,
+            [
+                (RpcRateLimitBucket::ApplicationDaSubmission, 1),
+                (RpcRateLimitBucket::ApplicationDaRetrieval, 1),
+            ],
+        );
+        let submission_request = serde_json::to_vec(&RpcRequest::RegisterApplicationDaProfile {
+            profile: Box::new(DaApplicationProfile::social_demo_v1()),
+        })
+        .unwrap();
+
+        let first_submission: RpcResponse =
+            serde_json::from_slice(&handler.handle_json_request(&submission_request).unwrap())
+                .unwrap();
+        assert_eq!(
+            first_submission,
+            RpcResponse::Error(RpcErrorBody {
+                code: "rpc.unsupported_node_method".into(),
+                message: "method must be handled by a persistent validator node".into(),
+            })
+        );
+
+        let second_submission: RpcResponse =
+            serde_json::from_slice(&handler.handle_json_request(&submission_request).unwrap())
+                .unwrap();
+        assert_eq!(
+            second_submission,
+            RpcResponse::Error(RpcErrorBody {
+                code: "rpc.rate_limited".into(),
+                message: "operator endpoint application DA submission request limit exceeded"
+                    .into(),
+            })
+        );
+
+        let retrieval_request =
+            serde_json::to_vec(&RpcRequest::GetApplicationDaRetentionAudit).unwrap();
+        let first_retrieval: RpcResponse =
+            serde_json::from_slice(&handler.handle_json_request(&retrieval_request).unwrap())
+                .unwrap();
+        assert_eq!(
+            first_retrieval,
+            RpcResponse::Error(RpcErrorBody {
+                code: "rpc.unsupported_node_method".into(),
+                message: "method must be handled by a persistent validator node".into(),
+            })
+        );
+
+        let second_retrieval_request =
+            serde_json::to_vec(&RpcRequest::GetApplicationDaRetentionPrunePlan).unwrap();
+        let second_retrieval: RpcResponse = serde_json::from_slice(
+            &handler
+                .handle_json_request(&second_retrieval_request)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            second_retrieval,
+            RpcResponse::Error(RpcErrorBody {
+                code: "rpc.rate_limited".into(),
+                message: "operator endpoint application DA retrieval request limit exceeded".into(),
+            })
+        );
+
+        let global_request = serde_json::to_vec(&RpcRequest::GetStateRoot).unwrap();
+        let global_response: RpcResponse =
+            serde_json::from_slice(&handler.handle_json_request(&global_request).unwrap()).unwrap();
+        match global_response {
+            RpcResponse::Ok(RpcResult::StateRoot(root)) => assert_eq!(root.len(), 64),
+            response => panic!("expected state root after bucket limit, got {response:?}"),
+        }
     }
 
     #[test]

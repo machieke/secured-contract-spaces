@@ -909,7 +909,7 @@ Acceptance:
     and serialized coordinates.
   - [x] Add request bounds for application namespace, sampling, status, and
     reconstruction retrieval.
-  - [ ] Add method-specific rate-limit buckets for application DA submission and
+  - [x] Add method-specific rate-limit buckets for application DA submission and
     retrieval.
 - [ ] Extend OpenAPI schema.
   - [x] Add application DA method tags to the checked OpenAPI enum.
