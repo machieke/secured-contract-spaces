@@ -1515,7 +1515,7 @@ impl PersistentValidatorNode {
             RpcRequest::GetDaStorageStats => self
                 .storage
                 .da_storage_stats()
-                .map(RpcResult::DaStorageStats)
+                .map(|stats| RpcResult::DaStorageStats(Box::new(stats)))
                 .map(RpcResponse::Ok)
                 .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
             RpcRequest::GetDaRetentionAudit => self

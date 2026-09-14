@@ -1459,7 +1459,7 @@ impl DaApplicationProfileRegistry {
             .filter(|((candidate, _), _)| candidate == application_id)
             .filter_map(|(_, profile_id)| self.profiles_by_id.get(profile_id))
             .filter(|registration| registration.is_active())
-            .last()
+            .next_back()
     }
 
     pub fn profiles_for_application(

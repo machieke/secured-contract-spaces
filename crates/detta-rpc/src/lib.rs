@@ -1303,7 +1303,7 @@ pub enum RpcResult {
     DaStatus(Box<DaStatusReport>),
     DaRepairStatus(Box<DaRepairStatusReport>),
     DaCodingFraud(Box<DaCodingFraudReport>),
-    DaStorageStats(DaStorageStats),
+    DaStorageStats(Box<DaStorageStats>),
     DaRetentionAudit(Box<DaRetentionAuditReport>),
     DaRetentionPrunePlan(Box<DaRetentionPrunePlanReport>),
     DaManifestIndex(Vec<DaManifestIndexEntry>),

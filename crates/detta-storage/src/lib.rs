@@ -431,6 +431,16 @@ pub struct ApplicationDaManifestIndexEntry {
     pub retention_class: DaApplicationRetentionClass,
 }
 
+#[derive(Clone, Copy, Default)]
+struct ApplicationDaManifestIndexCriteria<'a> {
+    application_id: Option<&'a DaApplicationId>,
+    profile_id: Option<&'a str>,
+    coordinate: Option<&'a DaApplicationCoordinate>,
+    namespace: Option<&'a DaNamespace>,
+    retention_class: Option<&'a DaApplicationRetentionClass>,
+    application_root: Option<&'a str>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ApplicationDaCertificateIndexEntry {
     pub certificate_hash: String,
@@ -2167,12 +2177,10 @@ impl FileStorage {
         let application_id = DaApplicationId::new(application_id).map_err(da_error)?;
         self.load_application_da_manifest_index_entries(
             &self.application_da_manifests_by_application_id_index_path(&application_id),
-            Some(&application_id),
-            None,
-            None,
-            None,
-            None,
-            None,
+            ApplicationDaManifestIndexCriteria {
+                application_id: Some(&application_id),
+                ..Default::default()
+            },
         )
     }
 
@@ -2183,12 +2191,10 @@ impl FileStorage {
         validate_sha256_storage_hex("application DA profile id", profile_id)?;
         self.load_application_da_manifest_index_entries(
             &self.application_da_manifests_by_profile_id_index_path(profile_id),
-            None,
-            Some(profile_id),
-            None,
-            None,
-            None,
-            None,
+            ApplicationDaManifestIndexCriteria {
+                profile_id: Some(profile_id),
+                ..Default::default()
+            },
         )
     }
 
@@ -2198,12 +2204,10 @@ impl FileStorage {
     ) -> Result<Vec<ApplicationDaManifestIndexEntry>, StorageError> {
         self.load_application_da_manifest_index_entries(
             &self.application_da_manifests_by_coordinate_index_path(coordinate)?,
-            None,
-            None,
-            Some(coordinate),
-            None,
-            None,
-            None,
+            ApplicationDaManifestIndexCriteria {
+                coordinate: Some(coordinate),
+                ..Default::default()
+            },
         )
     }
 
@@ -2214,12 +2218,10 @@ impl FileStorage {
         let namespace = DaNamespace::new(namespace).map_err(da_error)?;
         self.load_application_da_manifest_index_entries(
             &self.application_da_manifests_by_namespace_index_path(&namespace),
-            None,
-            None,
-            None,
-            Some(&namespace),
-            None,
-            None,
+            ApplicationDaManifestIndexCriteria {
+                namespace: Some(&namespace),
+                ..Default::default()
+            },
         )
     }
 
@@ -2230,12 +2232,10 @@ impl FileStorage {
         class.validate().map_err(da_error)?;
         self.load_application_da_manifest_index_entries(
             &self.application_da_manifests_by_retention_class_index_path(class),
-            None,
-            None,
-            None,
-            None,
-            Some(class),
-            None,
+            ApplicationDaManifestIndexCriteria {
+                retention_class: Some(class),
+                ..Default::default()
+            },
         )
     }
 
@@ -2246,12 +2246,10 @@ impl FileStorage {
         validate_sha256_storage_hex("application DA application root", application_root)?;
         self.load_application_da_manifest_index_entries(
             &self.application_da_manifests_by_application_root_index_path(application_root),
-            None,
-            None,
-            None,
-            None,
-            None,
-            Some(application_root),
+            ApplicationDaManifestIndexCriteria {
+                application_root: Some(application_root),
+                ..Default::default()
+            },
         )
     }
 
@@ -3034,66 +3032,54 @@ impl FileStorage {
         let entry = application_da_manifest_index_entry(manifest_hash, manifest, profile)?;
         self.upsert_application_da_manifest_index_entry(
             &self.application_da_manifests_by_application_id_index_path(&manifest.application_id),
-            Some(&manifest.application_id),
-            None,
-            None,
-            None,
-            None,
-            None,
+            ApplicationDaManifestIndexCriteria {
+                application_id: Some(&manifest.application_id),
+                ..Default::default()
+            },
             &entry,
         )?;
         self.upsert_application_da_manifest_index_entry(
             &self.application_da_manifests_by_profile_id_index_path(&manifest.profile_id),
-            None,
-            Some(&manifest.profile_id),
-            None,
-            None,
-            None,
-            None,
+            ApplicationDaManifestIndexCriteria {
+                profile_id: Some(&manifest.profile_id),
+                ..Default::default()
+            },
             &entry,
         )?;
         self.upsert_application_da_manifest_index_entry(
             &self.application_da_manifests_by_coordinate_index_path(&manifest.coordinate)?,
-            None,
-            None,
-            Some(&manifest.coordinate),
-            None,
-            None,
-            None,
+            ApplicationDaManifestIndexCriteria {
+                coordinate: Some(&manifest.coordinate),
+                ..Default::default()
+            },
             &entry,
         )?;
         for range in &manifest.namespace_ranges {
             self.upsert_application_da_manifest_index_entry(
                 &self.application_da_manifests_by_namespace_index_path(&range.namespace),
-                None,
-                None,
-                None,
-                Some(&range.namespace),
-                None,
-                None,
+                ApplicationDaManifestIndexCriteria {
+                    namespace: Some(&range.namespace),
+                    ..Default::default()
+                },
                 &entry,
             )?;
         }
         let retention_class = application_da_manifest_retention_class(manifest, profile)?;
         self.upsert_application_da_manifest_index_entry(
             &self.application_da_manifests_by_retention_class_index_path(&retention_class),
-            None,
-            None,
-            None,
-            None,
-            Some(&retention_class),
-            None,
+            ApplicationDaManifestIndexCriteria {
+                retention_class: Some(&retention_class),
+                ..Default::default()
+            },
             &entry,
         )?;
         if let Some(application_root) = manifest.application_root.as_deref() {
             self.upsert_application_da_manifest_index_entry(
                 &self.application_da_manifests_by_application_root_index_path(application_root),
-                None,
-                None,
-                None,
-                None,
-                None,
-                Some(application_root),
+                ApplicationDaManifestIndexCriteria {
+                    application_root: Some(application_root),
+                    ..Default::default()
+                },
                 &entry,
             )?;
         }
@@ -3103,23 +3089,10 @@ impl FileStorage {
     fn upsert_application_da_manifest_index_entry(
         &self,
         path: &Path,
-        expected_application_id: Option<&DaApplicationId>,
-        expected_profile_id: Option<&str>,
-        expected_coordinate: Option<&DaApplicationCoordinate>,
-        expected_namespace: Option<&DaNamespace>,
-        expected_retention_class: Option<&DaApplicationRetentionClass>,
-        expected_application_root: Option<&str>,
+        criteria: ApplicationDaManifestIndexCriteria<'_>,
         entry: &ApplicationDaManifestIndexEntry,
     ) -> Result<(), StorageError> {
-        let mut entries = self.load_application_da_manifest_index_entries(
-            path,
-            expected_application_id,
-            expected_profile_id,
-            expected_coordinate,
-            expected_namespace,
-            expected_retention_class,
-            expected_application_root,
-        )?;
+        let mut entries = self.load_application_da_manifest_index_entries(path, criteria)?;
         entries.retain(|existing| existing.manifest_hash != entry.manifest_hash);
         entries.push(entry.clone());
         entries.sort_by(|left, right| left.manifest_hash.cmp(&right.manifest_hash));
@@ -3129,12 +3102,7 @@ impl FileStorage {
     fn load_application_da_manifest_index_entries(
         &self,
         path: &Path,
-        expected_application_id: Option<&DaApplicationId>,
-        expected_profile_id: Option<&str>,
-        expected_coordinate: Option<&DaApplicationCoordinate>,
-        expected_namespace: Option<&DaNamespace>,
-        expected_retention_class: Option<&DaApplicationRetentionClass>,
-        expected_application_root: Option<&str>,
+        criteria: ApplicationDaManifestIndexCriteria<'_>,
     ) -> Result<Vec<ApplicationDaManifestIndexEntry>, StorageError> {
         if !path.exists() {
             return Ok(Vec::new());
@@ -3179,25 +3147,31 @@ impl FileStorage {
                 }
             }
             previous_manifest_hash = Some(entry.manifest_hash.as_str());
-            if expected_application_id
+            if criteria
+                .application_id
                 .is_some_and(|application_id| &entry.application_id != application_id)
             {
                 return Err(StorageError::CorruptData(
                     "application DA manifest index application id does not match index path".into(),
                 ));
             }
-            if expected_profile_id.is_some_and(|profile_id| entry.profile_id.as_str() != profile_id)
+            if criteria
+                .profile_id
+                .is_some_and(|profile_id| entry.profile_id.as_str() != profile_id)
             {
                 return Err(StorageError::CorruptData(
                     "application DA manifest index profile id does not match index path".into(),
                 ));
             }
-            if expected_coordinate.is_some_and(|coordinate| &entry.coordinate != coordinate) {
+            if criteria
+                .coordinate
+                .is_some_and(|coordinate| &entry.coordinate != coordinate)
+            {
                 return Err(StorageError::CorruptData(
                     "application DA manifest index coordinate does not match index path".into(),
                 ));
             }
-            if expected_application_root.is_some_and(|application_root| {
+            if criteria.application_root.is_some_and(|application_root| {
                 entry.application_root.as_deref() != Some(application_root)
             }) {
                 return Err(StorageError::CorruptData(
@@ -3219,7 +3193,7 @@ impl FileStorage {
                     "application DA manifest index entry does not match stored manifest".into(),
                 ));
             }
-            if expected_namespace.is_some_and(|namespace| {
+            if criteria.namespace.is_some_and(|namespace| {
                 !manifest
                     .namespace_ranges
                     .iter()
@@ -3229,7 +3203,10 @@ impl FileStorage {
                     "application DA manifest index namespace does not match stored manifest".into(),
                 ));
             }
-            if expected_retention_class.is_some_and(|class| &entry.retention_class != class) {
+            if criteria
+                .retention_class
+                .is_some_and(|class| &entry.retention_class != class)
+            {
                 return Err(StorageError::CorruptData(
                     "application DA manifest index retention class does not match stored manifest"
                         .into(),
@@ -4894,7 +4871,7 @@ mod tests {
         )
         .unwrap();
         ApplicationDaPayload::new(
-            &profile,
+            profile,
             application_coordinate(sequence),
             DaPayloadKind::Batch,
             None,
