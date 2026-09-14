@@ -808,10 +808,13 @@ fn application_da_profile_from_options(
 fn builtin_application_da_profile(value: &str) -> Result<DaApplicationProfile, String> {
     match value.to_ascii_lowercase().as_str() {
         "detta.defi" | "detta-defi" => Ok(DaApplicationProfile::detta_defi_v1()),
+        "detta.application.governance" | "detta-application-governance" => {
+            Ok(DaApplicationProfile::detta_application_governance_v1())
+        }
         "social.demo" | "social-demo" => Ok(DaApplicationProfile::social_demo_v1()),
         "checkpoint.demo" | "checkpoint-demo" => Ok(DaApplicationProfile::checkpoint_demo_v1()),
         _ => Err(format!(
-            "invalid --builtin: expected detta.defi, social.demo, or checkpoint.demo, got {value}"
+            "invalid --builtin: expected detta.defi, detta.application.governance, social.demo, or checkpoint.demo, got {value}"
         )),
     }
 }
@@ -875,10 +878,10 @@ fn usage() -> String {
   detta-client swap --pool <id> --input-asset <symbol> --amount-in <amount> --min-output <amount> --nonce <n> [--produce-height <h>]
   detta-client produce-block --height <h> [--timestamp <t>]
   detta-client produce-da-block --height <h> [--timestamp <t>] [--share-size <bytes>]
-  detta-client application-da-register-profile (--builtin <detta.defi|social.demo|checkpoint.demo> | --profile-json <path>)
+  detta-client application-da-register-profile (--builtin <detta.defi|detta.application.governance|social.demo|checkpoint.demo> | --profile-json <path>)
   detta-client application-da-claim-id --application-id <id> --owner <principal> [--delegated-profile-governance <csv>] --reason <text>
   detta-client application-da-update-id-owner --application-id <id> --owner <principal> [--delegated-profile-governance <csv>] --requested-by <principal> --reason <text>
-  detta-client application-da-plan-profile (--builtin <detta.defi|social.demo|checkpoint.demo> | --profile-json <path>) --execute-after-sequence <n> --requested-by <id> --reason <text>
+  detta-client application-da-plan-profile (--builtin <detta.defi|detta.application.governance|social.demo|checkpoint.demo> | --profile-json <path>) --execute-after-sequence <n> --requested-by <id> --reason <text>
   detta-client application-da-activate-profile --profile-id <hash>
   detta-client application-da-deprecate-profile --profile-id <hash> --requested-by <id> --reason <text>
   detta-client application-da-record-profile-migration --profile-id <hash> --supersedes-profile-id <hash> --migration-evidence-hash <hash> --requested-by <id> --reason <text>
@@ -1053,6 +1056,13 @@ mod tests {
                 .application_id
                 .0,
             "checkpoint.demo"
+        );
+        assert_eq!(
+            builtin_application_da_profile("detta-application-governance")
+                .unwrap()
+                .application_id
+                .0,
+            "detta.application.governance"
         );
         assert!(builtin_application_da_profile("unknown").is_err());
     }

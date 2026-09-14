@@ -201,10 +201,13 @@ Persistent validator nodes additionally handle:
   governed lifecycle methods below rather than direct registration.
 - `claim_application_da_id`: claim a non-reserved application id for an owner
   principal and optional delegated profile-governance principals. Reserved
-  `detta.*` ids cannot be claimed through this method.
+  `detta.*` ids cannot be claimed through this method. Successful changes are
+  also emitted as `detta.application.id.owner` records under the built-in
+  `detta.application.governance` application DA profile.
 - `update_application_da_id_owner`: replace the owner/delegate set for a
   claimed application id. The requester must be the current owner or a current
-  delegated profile-governance principal.
+  delegated profile-governance principal. Successful changes are DA-covered by
+  the same governance profile.
 - `plan_application_da_profile_registration`: persist a pending application DA
   profile registration plus a lifecycle record with requester, reason, request
   height, and timelock execution height. Profiles under reserved `detta.*`
@@ -229,7 +232,11 @@ Persistent validator nodes additionally handle:
 - `get_application_da_id_owners`: list claimed application id owner records.
 - `get_application_da_profile_lifecycle_records`: list deterministic lifecycle
   records for planned, activated, deprecated, and migrated application DA
-  profiles.
+  profiles. These records are also emitted as
+  `detta.application.profile.lifecycle` records under
+  `detta.application.governance`, where normal application DA manifest,
+  certificate, namespace, sampling, reconstruction, retention, and index RPCs
+  apply.
 - `get_application_da_profile_index_by_application_id`: list profile
   registrations for an application id.
 - `get_application_da_profile_index_by_application_version`: list profile

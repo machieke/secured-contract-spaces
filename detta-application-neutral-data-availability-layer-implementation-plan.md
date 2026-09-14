@@ -967,7 +967,7 @@ Acceptance:
 - [x] Add profile migration evidence records.
 - [x] Add policy for reserved application ids.
 - [x] Add application-id ownership authorization outside reserved prefixes.
-- [ ] DA-cover profile lifecycle events with application DA manifests,
+- [x] DA-cover profile lifecycle events with application DA manifests,
   certificates, and retention evidence.
 
 Acceptance:
@@ -979,9 +979,10 @@ Acceptance:
 - reserved `detta.*` prefixes are enforced for built-in profiles;
 - application id ownership outside reserved prefixes is enforced by owner
   records plus delegated profile-governance principals on lifecycle operations;
-- profile lifecycle records are durable and RPC-visible, but the lifecycle
-  event stream still needs DA manifests and certificates before governance
-  events are fully DA-covered.
+- application-id owner changes and profile lifecycle records are emitted under
+  the built-in `detta.application.governance` application DA profile with
+  manifests, shares, certificates, archive retention, and manifest/certificate
+  indexes.
 
 ### Phase 12: Formal And Verification Artifacts
 

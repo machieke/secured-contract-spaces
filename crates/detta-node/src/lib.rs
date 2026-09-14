@@ -15,10 +15,11 @@ use detta_da::{
     verify_share_against_manifest, ApplicationDaAvailabilityCertificate, ApplicationDaManifest,
     ApplicationDaNamespaceSection, ApplicationDaPayload, ApplicationDaSampleProofBundle,
     ApplicationDaShareSet, CheckpointDemoDaValidator, DaApplicationId, DaApplicationProfile,
-    DaApplicationProfileRegistration, DaApplicationProfileStatus, DaApplicationValidationMode,
-    DaApplicationValidator, DaAvailabilityCertificate, DaAvailabilityVote, DaChallengeEvidence,
-    DaChallengeRecord, DaCodingFraudProof, DaError, DaManifest, DaNamespace, DaNamespaceSection,
-    DaPayload, DaProductionProfile, DaRecord, DaSampleProof, DaSampleProofBundle, DaShare,
+    DaApplicationProfileRegistration, DaApplicationProfileStatus, DaApplicationRoot,
+    DaApplicationValidationMode, DaApplicationValidator, DaAvailabilityCertificate,
+    DaAvailabilityVote, DaChallengeEvidence, DaChallengeRecord, DaCodingFraudProof, DaError,
+    DaManifest, DaNamespace, DaNamespaceSection, DaPayload, DaPayloadKind, DaProductionProfile,
+    DaRecord, DaRecordEncoding, DaRecordEnvelope, DaSampleProof, DaSampleProofBundle, DaShare,
     DaShareChallenge, DaShareChallengeResponse, DaShareSet, DettaDefiDaValidator,
     OpaqueApplicationValidator, SchemaApplicationValidator, SocialDemoDaValidator,
 };
@@ -51,6 +52,7 @@ use detta_storage::{
     ValidatorSetMetadataAuditRecord,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{btree_map::Entry, BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -64,6 +66,13 @@ pub const DEFAULT_MAX_SNAPSHOT_IMPORT_AUDIT_RECORDS: usize = 4_096;
 pub const DEFAULT_MAX_SNAPSHOT_IMPORT_AUDIT_PAGE_SIZE: usize = 100;
 pub const DEFAULT_MAX_DA_SHARES_PER_REQUEST: u32 = 128;
 pub const DEFAULT_MAX_DA_SHARE_REQUESTS_PER_PEER: u32 = 64;
+const APPLICATION_DA_GOVERNANCE_NAMESPACE: &str = "detta.application.governance";
+const APPLICATION_DA_ID_OWNER_SCHEMA: &str = "detta.application.id.owner";
+const APPLICATION_DA_PROFILE_LIFECYCLE_SCHEMA: &str = "detta.application.profile.lifecycle";
+const APPLICATION_DA_GOVERNANCE_ROOT: &str = "detta.application.governance.root";
+const APPLICATION_DA_GOVERNANCE_STREAM: &str = "profile-lifecycle";
+const APPLICATION_DA_GOVERNANCE_DATA_SHARES: u32 = 2;
+const APPLICATION_DA_GOVERNANCE_PARITY_SHARES: u32 = 1;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NodeError {
@@ -3299,9 +3308,7 @@ impl PersistentValidatorNode {
             updated_by: owner.into(),
             reason: reason.into(),
         };
-        self.storage
-            .commit_application_da_id_owner_record(&record)
-            .map_err(NodeError::Storage)?;
+        self.commit_application_da_id_owner_record_with_da_event(&record)?;
         Ok(record)
     }
 
@@ -3335,9 +3342,7 @@ impl PersistentValidatorNode {
             updated_by: requested_by.into(),
             reason: reason.into(),
         };
-        self.storage
-            .commit_application_da_id_owner_record(&record)
-            .map_err(NodeError::Storage)?;
+        self.commit_application_da_id_owner_record_with_da_event(&record)?;
         Ok(record)
     }
 
@@ -3386,9 +3391,7 @@ impl PersistentValidatorNode {
             migration_evidence_hash: None,
             reason: reason.into(),
         };
-        self.storage
-            .commit_application_da_profile_lifecycle_record(&record)
-            .map_err(NodeError::Storage)?;
+        self.commit_application_da_profile_lifecycle_record_with_da_event(&record)?;
         Ok(record)
     }
 
@@ -3439,9 +3442,7 @@ impl PersistentValidatorNode {
             migration_evidence_hash: None,
             reason: "application profile timelock elapsed".into(),
         };
-        self.storage
-            .commit_application_da_profile_lifecycle_record(&record)
-            .map_err(NodeError::Storage)?;
+        self.commit_application_da_profile_lifecycle_record_with_da_event(&record)?;
         Ok(record)
     }
 
@@ -3482,9 +3483,7 @@ impl PersistentValidatorNode {
             migration_evidence_hash: None,
             reason: reason.into(),
         };
-        self.storage
-            .commit_application_da_profile_lifecycle_record(&record)
-            .map_err(NodeError::Storage)?;
+        self.commit_application_da_profile_lifecycle_record_with_da_event(&record)?;
         Ok(record)
     }
 
@@ -3523,9 +3522,7 @@ impl PersistentValidatorNode {
             migration_evidence_hash: Some(migration_evidence_hash.into()),
             reason: reason.into(),
         };
-        self.storage
-            .commit_application_da_profile_lifecycle_record(&record)
-            .map_err(NodeError::Storage)?;
+        self.commit_application_da_profile_lifecycle_record_with_da_event(&record)?;
         Ok(record)
     }
 
@@ -3554,10 +3551,18 @@ impl PersistentValidatorNode {
             return Ok(());
         }
         let profile_id = profile.profile_id().map_err(NodeError::DataAvailability)?;
-        let detta_defi_profile_id = DaApplicationProfile::detta_defi_v1()
-            .profile_id()
-            .map_err(NodeError::DataAvailability)?;
-        if profile_id == detta_defi_profile_id {
+        let allowed_profile_ids = [
+            DaApplicationProfile::detta_defi_v1()
+                .profile_id()
+                .map_err(NodeError::DataAvailability)?,
+            DaApplicationProfile::detta_application_governance_v1()
+                .profile_id()
+                .map_err(NodeError::DataAvailability)?,
+        ];
+        if allowed_profile_ids
+            .iter()
+            .any(|allowed_profile_id| allowed_profile_id == &profile_id)
+        {
             return Ok(());
         }
         Err(NodeError::Rpc(RpcError::ApplicationDaReservedApplicationId))
@@ -3590,6 +3595,131 @@ impl PersistentValidatorNode {
             return Ok(());
         }
         Err(NodeError::Rpc(RpcError::ApplicationDaIdUnauthorized))
+    }
+
+    fn commit_application_da_id_owner_record_with_da_event(
+        &self,
+        record: &ApplicationDaIdOwnerRecord,
+    ) -> Result<(), NodeError> {
+        self.storage
+            .commit_application_da_id_owner_record(record)
+            .map_err(NodeError::Storage)?;
+        let bytes = serde_json::to_vec(record)
+            .map_err(|error| NodeError::Storage(StorageError::CorruptData(error.to_string())))?;
+        let event_hash =
+            application_da_governance_event_hash(APPLICATION_DA_ID_OWNER_SCHEMA, &bytes);
+        self.produce_application_da_governance_event(
+            APPLICATION_DA_ID_OWNER_SCHEMA,
+            bytes,
+            &record.updated_by,
+            &event_hash,
+            record.updated_at_sequence,
+        )?;
+        Ok(())
+    }
+
+    fn commit_application_da_profile_lifecycle_record_with_da_event(
+        &self,
+        record: &ApplicationDaProfileLifecycleRecord,
+    ) -> Result<(), NodeError> {
+        let record_id = self
+            .storage
+            .commit_application_da_profile_lifecycle_record(record)
+            .map_err(NodeError::Storage)?;
+        let bytes = serde_json::to_vec(record)
+            .map_err(|error| NodeError::Storage(StorageError::CorruptData(error.to_string())))?;
+        self.produce_application_da_governance_event(
+            APPLICATION_DA_PROFILE_LIFECYCLE_SCHEMA,
+            bytes,
+            &record.requested_by,
+            &record_id,
+            record
+                .executed_at_sequence
+                .unwrap_or(record.execute_after_sequence),
+        )?;
+        Ok(())
+    }
+
+    fn produce_application_da_governance_event(
+        &self,
+        record_schema: &str,
+        record_bytes: Vec<u8>,
+        signer: &str,
+        event_hash: &str,
+        sequence: u64,
+    ) -> Result<ApplicationDaProductionReport, NodeError> {
+        let profile = self.ensure_application_da_governance_profile_registered()?;
+        let event = DaRecordEnvelope::new(
+            record_schema,
+            1,
+            "application/json",
+            DaRecordEncoding::CanonicalJson,
+            record_bytes,
+            Some(signer.into()),
+            Some(event_hash.into()),
+        )
+        .map_err(NodeError::DataAvailability)?;
+        let payload = ApplicationDaPayload::new(
+            &profile,
+            detta_da::DaApplicationCoordinate {
+                application_id: profile.application_id.clone(),
+                stream_id: APPLICATION_DA_GOVERNANCE_STREAM.into(),
+                sequence: sequence.max(1),
+                epoch: Some(self.current_height()),
+                parent_hash: None,
+                subject_hash: Some(event_hash.into()),
+            },
+            DaPayloadKind::ApplicationDefined(APPLICATION_DA_GOVERNANCE_NAMESPACE.into()),
+            None,
+            vec![
+                DaApplicationRoot::new(APPLICATION_DA_GOVERNANCE_ROOT, event_hash)
+                    .map_err(NodeError::DataAvailability)?,
+            ],
+            vec![ApplicationDaNamespaceSection::new(
+                DaNamespace::new(APPLICATION_DA_GOVERNANCE_NAMESPACE)
+                    .map_err(NodeError::DataAvailability)?,
+                vec![event],
+            )
+            .map_err(NodeError::DataAvailability)?],
+        )
+        .map_err(NodeError::DataAvailability)?;
+        self.produce_application_da_batch(
+            &payload,
+            APPLICATION_DA_GOVERNANCE_DATA_SHARES,
+            APPLICATION_DA_GOVERNANCE_PARITY_SHARES,
+            vec![self.validator_id.clone()],
+        )
+    }
+
+    fn ensure_application_da_governance_profile_registered(
+        &self,
+    ) -> Result<DaApplicationProfile, NodeError> {
+        let profile = DaApplicationProfile::detta_application_governance_v1();
+        let profile_id = profile.profile_id().map_err(NodeError::DataAvailability)?;
+        match self
+            .storage
+            .maybe_load_application_da_profile_registration(&profile_id)
+            .map_err(NodeError::Storage)?
+        {
+            Some(registration)
+                if registration.status == DaApplicationProfileStatus::Active
+                    && registration.profile == profile =>
+            {
+                Ok(profile)
+            }
+            Some(_) => Err(NodeError::DataAvailability(DaError::InvalidManifest(
+                "application DA governance profile registration is not the built-in active profile"
+                    .into(),
+            ))),
+            None => {
+                let registration = DaApplicationProfileRegistration::active(profile.clone())
+                    .map_err(NodeError::DataAvailability)?;
+                self.storage
+                    .commit_application_da_profile_registration(&registration)
+                    .map_err(NodeError::Storage)?;
+                Ok(profile)
+            }
+        }
     }
 
     pub fn produce_application_da_batch(
@@ -4717,6 +4847,26 @@ fn canonical_profile_governance_delegates(mut delegates: Vec<String>) -> Vec<Str
     delegates.sort();
     delegates.dedup();
     delegates
+}
+
+fn application_da_governance_event_hash(record_schema: &str, bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"detta-application-da-governance-event-v1");
+    hasher.update((record_schema.len() as u64).to_be_bytes());
+    hasher.update(record_schema.as_bytes());
+    hasher.update((bytes.len() as u64).to_be_bytes());
+    hasher.update(bytes);
+    hex_lower(&hasher.finalize())
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
 }
 
 fn da_payload_for_block(block: &Block) -> Result<DaPayload, NodeError> {
@@ -6848,6 +6998,27 @@ mod tests {
         assert!(records
             .iter()
             .any(|record| record.action == ApplicationDaProfileLifecycleAction::Deprecate));
+        let governance_profile_id =
+            detta_da::DaApplicationProfile::detta_application_governance_v1()
+                .profile_id()
+                .unwrap();
+        let governance_manifests = node
+            .storage
+            .load_application_da_manifest_index_by_application_id(
+                APPLICATION_DA_GOVERNANCE_NAMESPACE,
+            )
+            .unwrap();
+        assert_eq!(governance_manifests.len(), 6);
+        assert!(governance_manifests
+            .iter()
+            .all(|entry| entry.profile_id == governance_profile_id));
+        let governance_certificates = node
+            .storage
+            .load_application_da_certificate_index_by_application_id(
+                APPLICATION_DA_GOVERNANCE_NAMESPACE,
+            )
+            .unwrap();
+        assert_eq!(governance_certificates.len(), 6);
 
         let mut reserved_profile = detta_da::DaApplicationProfile::social_demo_v1();
         reserved_profile.application_id = detta_da::DaApplicationId::new("detta.social").unwrap();

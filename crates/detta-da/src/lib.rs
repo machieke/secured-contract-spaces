@@ -1049,6 +1049,65 @@ impl DaApplicationProfile {
         }
     }
 
+    pub fn detta_application_governance_v1() -> Self {
+        Self {
+            schema: DA_APPLICATION_PROFILE_SCHEMA.into(),
+            schema_version: 1,
+            application_id: application_id_unchecked("detta.application.governance"),
+            profile_version: 1,
+            profile_name: "DeTTa Application DA Governance v1".into(),
+            da_profile: DaProductionProfile::v1(),
+            namespace_policies: vec![namespace_policy(
+                "detta.application.governance",
+                DaNamespaceRequirement::Required,
+                vec![
+                    "detta.application.id.owner",
+                    "detta.application.profile.lifecycle",
+                ],
+                1,
+                1024,
+                DaApplicationRetentionClass::Archive,
+            )],
+            record_policies: vec![
+                record_policy(
+                    "detta.application.id.owner",
+                    vec!["detta.application.governance"],
+                    vec![DaRecordEncoding::CanonicalJson],
+                    512 * 1024,
+                    true,
+                ),
+                record_policy(
+                    "detta.application.profile.lifecycle",
+                    vec!["detta.application.governance"],
+                    vec![DaRecordEncoding::CanonicalJson],
+                    512 * 1024,
+                    true,
+                ),
+            ],
+            coordinate_policy: DaCoordinatePolicy {
+                max_stream_id_bytes: DA_APPLICATION_STREAM_ID_MAX_BYTES as u32,
+                allow_epoch: true,
+                require_parent_hash: false,
+                require_subject_hash: true,
+            },
+            root_bindings: vec![root_policy("detta.application.governance.root", true)],
+            retention_policy: DaApplicationRetentionPolicy {
+                default_class: DaApplicationRetentionClass::Archive,
+                namespace_overrides: Vec::new(),
+                payload_kind_overrides: vec![DaPayloadKindRetentionPolicy {
+                    payload_kind: DaPayloadKind::ApplicationDefined(
+                        "detta.application.governance".into(),
+                    ),
+                    retention_class: DaApplicationRetentionClass::Archive,
+                }],
+            },
+            validation_mode: DaApplicationValidationMode::SchemaDecodableRecords,
+            privacy_mode: DaApplicationPrivacyMode::Public,
+            max_payload_bytes: 8 * 1024 * 1024,
+            max_records_per_payload: 1024,
+        }
+    }
+
     pub fn social_demo_v1() -> Self {
         Self {
             schema: DA_APPLICATION_PROFILE_SCHEMA.into(),
@@ -1328,6 +1387,7 @@ impl DaApplicationProfileRegistry {
     pub fn with_builtin_profiles() -> Result<Self, DaError> {
         let mut registry = Self::new();
         registry.register(DaApplicationProfile::detta_defi_v1())?;
+        registry.register(DaApplicationProfile::detta_application_governance_v1())?;
         registry.register(DaApplicationProfile::social_demo_v1())?;
         registry.register(DaApplicationProfile::checkpoint_demo_v1())?;
         Ok(registry)
@@ -7055,6 +7115,17 @@ mod tests {
         assert_eq!(defi.da_profile, DaProductionProfile::v1());
         assert_eq!(defi.profile_hash().unwrap(), defi.profile_id().unwrap());
 
+        let governance = DaApplicationProfile::detta_application_governance_v1();
+        governance.validate().unwrap();
+        assert_eq!(
+            governance.application_id,
+            application_id_unchecked("detta.application.governance")
+        );
+        assert_eq!(
+            governance.profile_hash().unwrap(),
+            governance.profile_id().unwrap()
+        );
+
         let social = DaApplicationProfile::social_demo_v1();
         social.validate().unwrap();
         let social_hash = social.profile_hash().unwrap();
@@ -7150,6 +7221,13 @@ mod tests {
         );
         assert!(registry
             .get_profile(&DaApplicationProfile::detta_defi_v1().profile_id().unwrap())
+            .is_ok());
+        assert!(registry
+            .get_profile(
+                &DaApplicationProfile::detta_application_governance_v1()
+                    .profile_id()
+                    .unwrap()
+            )
             .is_ok());
         let checkpoint_profile = DaApplicationProfile::checkpoint_demo_v1();
         let checkpoint_id = checkpoint_profile.profile_id().unwrap();
