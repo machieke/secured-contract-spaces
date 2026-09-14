@@ -123,7 +123,10 @@ The current implementation includes slices for:
 - application-neutral external blob reference adapters for IPFS, Arweave, and
   Filecoin, where DeTTa DA commits the canonical URI, content hash, size, MIME
   type, provider reference, and availability proof while external blob networks
-  serve the large bytes.
+  serve the large bytes; plus canonical external blob lifecycle, provider
+  health, repair-job, retrieval-verification, multi-backend replication-policy,
+  and unavailable-blob challenge-evidence records exposed through persistent
+  node RPC.
 
 The production roadmap and progress tracker live in
 `detta-production-implementation-plan.md`.

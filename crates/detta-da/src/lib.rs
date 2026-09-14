@@ -18,6 +18,18 @@ pub const DA_APPLICATION_PROFILE_SCHEMA: &str = "detta.da-application-profile.v1
 pub const APPLICATION_DA_PAYLOAD_SCHEMA: &str = "detta.application-da-payload.v1";
 pub const APPLICATION_DA_MANIFEST_SCHEMA: &str = "detta.application-da-manifest.v1";
 pub const DA_EXTERNAL_BLOB_REFERENCE_SCHEMA: &str = "detta.external-blob-reference.v1";
+pub const DA_EXTERNAL_BLOB_LIFECYCLE_SCHEMA: &str = "detta.external-blob-lifecycle.v1";
+pub const DA_EXTERNAL_BLOB_PROVIDER_HEALTH_SCHEMA: &str = "detta.external-blob-provider-health.v1";
+pub const DA_EXTERNAL_BLOB_REPAIR_JOB_SCHEMA: &str = "detta.external-blob-repair-job.v1";
+pub const DA_EXTERNAL_BLOB_RETRIEVAL_VERIFICATION_SCHEMA: &str =
+    "detta.external-blob-retrieval-verification.v1";
+pub const DA_EXTERNAL_BLOB_REPLICATION_POLICY_SCHEMA: &str =
+    "detta.external-blob-replication-policy.v1";
+pub const DA_EXTERNAL_BLOB_REPLICATION_REPORT_SCHEMA: &str =
+    "detta.external-blob-replication-report.v1";
+pub const DA_EXTERNAL_BLOB_CHALLENGE_SCHEMA: &str = "detta.external-blob-challenge.v1";
+pub const DA_EXTERNAL_BLOB_CHALLENGE_EVIDENCE_SCHEMA: &str =
+    "detta.external-blob-challenge-evidence.v1";
 pub const DA_APPLICATION_VALIDATION_REPORT_SCHEMA: &str =
     "detta.da-application-validation-report.v1";
 pub const APPLICATION_DA_CODING_FRAUD_PROOF_SCHEMA: &str =
@@ -39,6 +51,9 @@ pub const DA_EXTERNAL_BLOB_URI_MAX_BYTES: usize = 2048;
 pub const DA_EXTERNAL_BLOB_PROVIDER_REFERENCE_MAX_BYTES: usize = 512;
 pub const DA_EXTERNAL_BLOB_AVAILABILITY_PROOF_MAX_BYTES: usize = 4096;
 pub const DA_EXTERNAL_BLOB_DEFAULT_MAX_BYTES: u64 = 128 * 1024 * 1024;
+pub const DA_EXTERNAL_BLOB_OPERATION_NOTE_MAX_BYTES: usize = 4096;
+pub const DA_EXTERNAL_BLOB_MAX_REPLICATION_BACKENDS: usize = 8;
+pub const DA_EXTERNAL_BLOB_MAX_EVIDENCE_REPORTS: usize = 32;
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub struct DaNamespace(pub String);
@@ -588,6 +603,11 @@ impl DaExternalBlobReference {
         Ok(())
     }
 
+    pub fn reference_hash(&self) -> Result<String, DaError> {
+        self.validate()?;
+        hash_canonical(self)
+    }
+
     pub fn to_record_bytes(&self) -> Result<Vec<u8>, DaError> {
         self.validate()?;
         canonical_bytes(self)
@@ -617,6 +637,1210 @@ impl DaExternalBlobReference {
             )));
         }
         Self::from_record_bytes(&record.bytes)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+pub enum DaExternalBlobLifecycleStage {
+    Uploaded,
+    Pinned,
+    StorageDealProposed,
+    StorageDealActive,
+    Archived,
+    Repairing,
+    Deprecated,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+pub enum DaExternalBlobLifecycleStatus {
+    Pending,
+    Active,
+    Failed,
+    Expired,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaExternalBlobLifecycleRecord {
+    pub schema: String,
+    pub schema_version: u32,
+    pub reference: DaExternalBlobReference,
+    pub reference_hash: String,
+    pub lifecycle_stage: DaExternalBlobLifecycleStage,
+    pub status: DaExternalBlobLifecycleStatus,
+    pub provider: Option<String>,
+    pub operation_reference: Option<String>,
+    pub observed_at_height: u64,
+    pub observed_by: String,
+    pub note: Option<String>,
+}
+
+impl DaExternalBlobLifecycleRecord {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        reference: DaExternalBlobReference,
+        lifecycle_stage: DaExternalBlobLifecycleStage,
+        status: DaExternalBlobLifecycleStatus,
+        provider: Option<String>,
+        operation_reference: Option<String>,
+        observed_at_height: u64,
+        observed_by: impl Into<String>,
+        note: Option<String>,
+    ) -> Result<Self, DaError> {
+        let reference_hash = reference.reference_hash()?;
+        let record = Self {
+            schema: DA_EXTERNAL_BLOB_LIFECYCLE_SCHEMA.into(),
+            schema_version: 1,
+            reference,
+            reference_hash,
+            lifecycle_stage,
+            status,
+            provider,
+            operation_reference,
+            observed_at_height,
+            observed_by: observed_by.into(),
+            note,
+        };
+        record.validate()?;
+        Ok(record)
+    }
+
+    pub fn record_hash(&self) -> Result<String, DaError> {
+        self.validate()?;
+        hash_canonical(self)
+    }
+
+    pub fn validate(&self) -> Result<(), DaError> {
+        if self.schema != DA_EXTERNAL_BLOB_LIFECYCLE_SCHEMA {
+            return Err(DaError::InvalidManifest(format!(
+                "unexpected external blob lifecycle schema {}",
+                self.schema
+            )));
+        }
+        if self.schema_version != 1 {
+            return Err(DaError::InvalidManifest(format!(
+                "unexpected external blob lifecycle version {}",
+                self.schema_version
+            )));
+        }
+        self.reference.validate()?;
+        let actual_reference_hash = self.reference.reference_hash()?;
+        if self.reference_hash != actual_reference_hash {
+            return Err(DaError::InvalidManifest(format!(
+                "external blob lifecycle reference hash mismatch: expected {}, got {}",
+                self.reference_hash, actual_reference_hash
+            )));
+        }
+        validate_optional_label(
+            "external blob lifecycle provider",
+            self.provider.as_deref(),
+            DA_EXTERNAL_BLOB_PROVIDER_REFERENCE_MAX_BYTES,
+        )?;
+        validate_optional_label(
+            "external blob lifecycle operation_reference",
+            self.operation_reference.as_deref(),
+            DA_EXTERNAL_BLOB_PROVIDER_REFERENCE_MAX_BYTES,
+        )?;
+        validate_label(
+            "external blob lifecycle observed_by",
+            &self.observed_by,
+            DA_EXTERNAL_BLOB_PROVIDER_REFERENCE_MAX_BYTES,
+        )?;
+        validate_optional_label(
+            "external blob lifecycle note",
+            self.note.as_deref(),
+            DA_EXTERNAL_BLOB_OPERATION_NOTE_MAX_BYTES,
+        )?;
+        match self.lifecycle_stage {
+            DaExternalBlobLifecycleStage::StorageDealProposed
+            | DaExternalBlobLifecycleStage::StorageDealActive => {
+                if self.reference.backend != DaExternalBlobBackend::Filecoin {
+                    return Err(DaError::InvalidManifest(
+                        "external blob storage deal lifecycle records require Filecoin references"
+                            .into(),
+                    ));
+                }
+                if self.provider.is_none() && self.operation_reference.is_none() {
+                    return Err(DaError::InvalidManifest(
+                        "external blob storage deal lifecycle records require a provider or deal reference"
+                            .into(),
+                    ));
+                }
+            }
+            DaExternalBlobLifecycleStage::Archived => {
+                if !matches!(
+                    self.reference.backend,
+                    DaExternalBlobBackend::Arweave | DaExternalBlobBackend::Filecoin
+                ) {
+                    return Err(DaError::InvalidManifest(
+                        "external blob archived lifecycle records require an archive-capable backend"
+                            .into(),
+                    ));
+                }
+            }
+            _ => {}
+        }
+        if self.status == DaExternalBlobLifecycleStatus::Active
+            && self.lifecycle_stage == DaExternalBlobLifecycleStage::Repairing
+        {
+            return Err(DaError::InvalidManifest(
+                "external blob repairing lifecycle records cannot be active".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+pub enum DaExternalBlobProviderHealthStatus {
+    Healthy,
+    Degraded,
+    Unavailable,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaExternalBlobProviderHealthRecord {
+    pub schema: String,
+    pub schema_version: u32,
+    pub backend: DaExternalBlobBackend,
+    pub provider: String,
+    pub checked_at_height: u64,
+    pub status: DaExternalBlobProviderHealthStatus,
+    pub reachable: bool,
+    pub latency_ms: Option<u32>,
+    pub failure_reason: Option<String>,
+    pub observed_by: String,
+}
+
+impl DaExternalBlobProviderHealthRecord {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        backend: DaExternalBlobBackend,
+        provider: impl Into<String>,
+        checked_at_height: u64,
+        status: DaExternalBlobProviderHealthStatus,
+        reachable: bool,
+        latency_ms: Option<u32>,
+        failure_reason: Option<String>,
+        observed_by: impl Into<String>,
+    ) -> Result<Self, DaError> {
+        let record = Self {
+            schema: DA_EXTERNAL_BLOB_PROVIDER_HEALTH_SCHEMA.into(),
+            schema_version: 1,
+            backend,
+            provider: provider.into(),
+            checked_at_height,
+            status,
+            reachable,
+            latency_ms,
+            failure_reason,
+            observed_by: observed_by.into(),
+        };
+        record.validate()?;
+        Ok(record)
+    }
+
+    pub fn record_hash(&self) -> Result<String, DaError> {
+        self.validate()?;
+        hash_canonical(self)
+    }
+
+    pub fn validate(&self) -> Result<(), DaError> {
+        if self.schema != DA_EXTERNAL_BLOB_PROVIDER_HEALTH_SCHEMA {
+            return Err(DaError::InvalidManifest(format!(
+                "unexpected external blob provider health schema {}",
+                self.schema
+            )));
+        }
+        if self.schema_version != 1 {
+            return Err(DaError::InvalidManifest(format!(
+                "unexpected external blob provider health version {}",
+                self.schema_version
+            )));
+        }
+        validate_label(
+            "external blob provider",
+            &self.provider,
+            DA_EXTERNAL_BLOB_PROVIDER_REFERENCE_MAX_BYTES,
+        )?;
+        validate_label(
+            "external blob provider health observed_by",
+            &self.observed_by,
+            DA_EXTERNAL_BLOB_PROVIDER_REFERENCE_MAX_BYTES,
+        )?;
+        validate_optional_label(
+            "external blob provider health failure_reason",
+            self.failure_reason.as_deref(),
+            DA_EXTERNAL_BLOB_OPERATION_NOTE_MAX_BYTES,
+        )?;
+        if matches!(
+            self.status,
+            DaExternalBlobProviderHealthStatus::Healthy
+                | DaExternalBlobProviderHealthStatus::Degraded
+        ) && !self.reachable
+        {
+            return Err(DaError::InvalidManifest(
+                "healthy or degraded external blob providers must be reachable".into(),
+            ));
+        }
+        if self.status == DaExternalBlobProviderHealthStatus::Healthy
+            && self.failure_reason.is_some()
+        {
+            return Err(DaError::InvalidManifest(
+                "healthy external blob provider records cannot include a failure reason".into(),
+            ));
+        }
+        if self.status == DaExternalBlobProviderHealthStatus::Unavailable
+            && self.failure_reason.is_none()
+        {
+            return Err(DaError::InvalidManifest(
+                "unavailable external blob provider records require a failure reason".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+pub enum DaExternalBlobRepairJobStatus {
+    Open,
+    InProgress,
+    Completed,
+    Failed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+pub enum DaExternalBlobRepairAction {
+    Repin {
+        backend: DaExternalBlobBackend,
+        provider: String,
+    },
+    MirrorToBackend {
+        backend: DaExternalBlobBackend,
+        provider: Option<String>,
+    },
+    RenewDeal {
+        provider: String,
+    },
+    ReplaceProvider {
+        backend: DaExternalBlobBackend,
+        from_provider: String,
+        to_provider: String,
+    },
+}
+
+impl DaExternalBlobRepairAction {
+    pub fn validate(&self) -> Result<(), DaError> {
+        match self {
+            Self::Repin { provider, .. } | Self::RenewDeal { provider } => validate_label(
+                "external blob repair provider",
+                provider,
+                DA_EXTERNAL_BLOB_PROVIDER_REFERENCE_MAX_BYTES,
+            ),
+            Self::MirrorToBackend { provider, .. } => validate_optional_label(
+                "external blob repair provider",
+                provider.as_deref(),
+                DA_EXTERNAL_BLOB_PROVIDER_REFERENCE_MAX_BYTES,
+            ),
+            Self::ReplaceProvider {
+                from_provider,
+                to_provider,
+                ..
+            } => {
+                validate_label(
+                    "external blob repair from_provider",
+                    from_provider,
+                    DA_EXTERNAL_BLOB_PROVIDER_REFERENCE_MAX_BYTES,
+                )?;
+                validate_label(
+                    "external blob repair to_provider",
+                    to_provider,
+                    DA_EXTERNAL_BLOB_PROVIDER_REFERENCE_MAX_BYTES,
+                )
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaExternalBlobRepairJob {
+    pub schema: String,
+    pub schema_version: u32,
+    pub reference: DaExternalBlobReference,
+    pub reference_hash: String,
+    pub source_backend: DaExternalBlobBackend,
+    pub target_backends: Vec<DaExternalBlobBackend>,
+    pub status: DaExternalBlobRepairJobStatus,
+    pub reason: String,
+    pub opened_at_height: u64,
+    pub updated_at_height: u64,
+    pub assigned_to: Option<String>,
+    pub evidence_hashes: Vec<String>,
+    pub actions: Vec<DaExternalBlobRepairAction>,
+}
+
+impl DaExternalBlobRepairJob {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        reference: DaExternalBlobReference,
+        target_backends: Vec<DaExternalBlobBackend>,
+        status: DaExternalBlobRepairJobStatus,
+        reason: impl Into<String>,
+        opened_at_height: u64,
+        updated_at_height: u64,
+        assigned_to: Option<String>,
+        evidence_hashes: Vec<String>,
+        actions: Vec<DaExternalBlobRepairAction>,
+    ) -> Result<Self, DaError> {
+        let reference_hash = reference.reference_hash()?;
+        let source_backend = reference.backend.clone();
+        let job = Self {
+            schema: DA_EXTERNAL_BLOB_REPAIR_JOB_SCHEMA.into(),
+            schema_version: 1,
+            reference,
+            reference_hash,
+            source_backend,
+            target_backends,
+            status,
+            reason: reason.into(),
+            opened_at_height,
+            updated_at_height,
+            assigned_to,
+            evidence_hashes,
+            actions,
+        };
+        job.validate()?;
+        Ok(job)
+    }
+
+    pub fn job_hash(&self) -> Result<String, DaError> {
+        self.validate()?;
+        hash_canonical(self)
+    }
+
+    pub fn validate(&self) -> Result<(), DaError> {
+        if self.schema != DA_EXTERNAL_BLOB_REPAIR_JOB_SCHEMA {
+            return Err(DaError::InvalidManifest(format!(
+                "unexpected external blob repair job schema {}",
+                self.schema
+            )));
+        }
+        if self.schema_version != 1 {
+            return Err(DaError::InvalidManifest(format!(
+                "unexpected external blob repair job version {}",
+                self.schema_version
+            )));
+        }
+        self.reference.validate()?;
+        let actual_reference_hash = self.reference.reference_hash()?;
+        if self.reference_hash != actual_reference_hash {
+            return Err(DaError::InvalidManifest(format!(
+                "external blob repair reference hash mismatch: expected {}, got {}",
+                self.reference_hash, actual_reference_hash
+            )));
+        }
+        if self.source_backend != self.reference.backend {
+            return Err(DaError::InvalidManifest(
+                "external blob repair source backend must match the reference backend".into(),
+            ));
+        }
+        validate_sorted_unique_blob_backends(
+            "external blob repair target_backends",
+            &self.target_backends,
+        )?;
+        validate_label(
+            "external blob repair reason",
+            &self.reason,
+            DA_EXTERNAL_BLOB_OPERATION_NOTE_MAX_BYTES,
+        )?;
+        if self.updated_at_height < self.opened_at_height {
+            return Err(DaError::InvalidManifest(
+                "external blob repair updated_at_height cannot be before opened_at_height".into(),
+            ));
+        }
+        validate_optional_label(
+            "external blob repair assigned_to",
+            self.assigned_to.as_deref(),
+            DA_EXTERNAL_BLOB_PROVIDER_REFERENCE_MAX_BYTES,
+        )?;
+        for hash in &self.evidence_hashes {
+            validate_sha256_hex("external blob repair evidence_hash", hash)?;
+        }
+        if !self
+            .evidence_hashes
+            .windows(2)
+            .all(|window| window[0] < window[1])
+        {
+            return Err(DaError::InvalidManifest(
+                "external blob repair evidence_hashes must be sorted and unique".into(),
+            ));
+        }
+        if self.actions.is_empty() {
+            return Err(DaError::InvalidManifest(
+                "external blob repair job requires at least one repair action".into(),
+            ));
+        }
+        for action in &self.actions {
+            action.validate()?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaExternalBlobRetrievalVerification {
+    pub schema: String,
+    pub schema_version: u32,
+    pub reference: DaExternalBlobReference,
+    pub reference_hash: String,
+    pub provider: Option<String>,
+    pub verifier: String,
+    pub verified_at_height: u64,
+    pub bytes_returned: bool,
+    pub size_verified: bool,
+    pub hash_verified: bool,
+    pub available: bool,
+    pub actual_size_bytes: Option<u64>,
+    pub actual_content_hash: Option<String>,
+    pub failure_reason: Option<String>,
+}
+
+impl DaExternalBlobRetrievalVerification {
+    pub fn from_retrieval(
+        reference: DaExternalBlobReference,
+        blob_bytes: Option<&[u8]>,
+        verifier: impl Into<String>,
+        provider: Option<String>,
+        verified_at_height: u64,
+    ) -> Result<Self, DaError> {
+        reference.validate()?;
+        let reference_hash = reference.reference_hash()?;
+        let (bytes_returned, actual_size_bytes, actual_content_hash) = match blob_bytes {
+            Some(bytes) if !bytes.is_empty() => (
+                true,
+                Some(u64::try_from(bytes.len()).map_err(|_| {
+                    DaError::InvalidPayload("external blob size does not fit u64".into())
+                })?),
+                Some(hash_bytes(bytes)),
+            ),
+            Some(_) | None => (false, None, None),
+        };
+        let size_verified = actual_size_bytes == Some(reference.size_bytes);
+        let hash_verified = actual_content_hash
+            .as_deref()
+            .is_some_and(|hash| hash == reference.content_hash);
+        let available = bytes_returned && size_verified && hash_verified;
+        let failure_reason = if available {
+            None
+        } else if !bytes_returned {
+            Some("external blob retrieval returned no bytes".into())
+        } else if !size_verified {
+            Some("external blob retrieval returned the wrong byte length".into())
+        } else {
+            Some("external blob retrieval returned the wrong content hash".into())
+        };
+        let report = Self {
+            schema: DA_EXTERNAL_BLOB_RETRIEVAL_VERIFICATION_SCHEMA.into(),
+            schema_version: 1,
+            reference,
+            reference_hash,
+            provider,
+            verifier: verifier.into(),
+            verified_at_height,
+            bytes_returned,
+            size_verified,
+            hash_verified,
+            available,
+            actual_size_bytes,
+            actual_content_hash,
+            failure_reason,
+        };
+        report.validate()?;
+        Ok(report)
+    }
+
+    pub fn report_hash(&self) -> Result<String, DaError> {
+        self.validate()?;
+        hash_canonical(self)
+    }
+
+    pub fn validate(&self) -> Result<(), DaError> {
+        if self.schema != DA_EXTERNAL_BLOB_RETRIEVAL_VERIFICATION_SCHEMA {
+            return Err(DaError::InvalidManifest(format!(
+                "unexpected external blob retrieval verification schema {}",
+                self.schema
+            )));
+        }
+        if self.schema_version != 1 {
+            return Err(DaError::InvalidManifest(format!(
+                "unexpected external blob retrieval verification version {}",
+                self.schema_version
+            )));
+        }
+        self.reference.validate()?;
+        let actual_reference_hash = self.reference.reference_hash()?;
+        if self.reference_hash != actual_reference_hash {
+            return Err(DaError::InvalidManifest(format!(
+                "external blob retrieval reference hash mismatch: expected {}, got {}",
+                self.reference_hash, actual_reference_hash
+            )));
+        }
+        validate_optional_label(
+            "external blob retrieval provider",
+            self.provider.as_deref(),
+            DA_EXTERNAL_BLOB_PROVIDER_REFERENCE_MAX_BYTES,
+        )?;
+        validate_label(
+            "external blob retrieval verifier",
+            &self.verifier,
+            DA_EXTERNAL_BLOB_PROVIDER_REFERENCE_MAX_BYTES,
+        )?;
+        validate_optional_label(
+            "external blob retrieval failure_reason",
+            self.failure_reason.as_deref(),
+            DA_EXTERNAL_BLOB_OPERATION_NOTE_MAX_BYTES,
+        )?;
+        validate_optional_sha256_hex(
+            "external blob retrieval actual_content_hash",
+            self.actual_content_hash.as_deref(),
+        )?;
+        if self.available != (self.bytes_returned && self.size_verified && self.hash_verified) {
+            return Err(DaError::InvalidManifest(
+                "external blob retrieval availability must equal bytes+size+hash verification"
+                    .into(),
+            ));
+        }
+        if self.available && self.failure_reason.is_some() {
+            return Err(DaError::InvalidManifest(
+                "available external blob retrieval reports cannot include a failure reason".into(),
+            ));
+        }
+        if !self.available && self.failure_reason.is_none() {
+            return Err(DaError::InvalidManifest(
+                "unavailable external blob retrieval reports require a failure reason".into(),
+            ));
+        }
+        if self.bytes_returned {
+            if self.actual_size_bytes.is_none() || self.actual_content_hash.is_none() {
+                return Err(DaError::InvalidManifest(
+                    "external blob retrieval reports with bytes must include actual size and hash"
+                        .into(),
+                ));
+            }
+        } else if self.actual_size_bytes.is_some() || self.actual_content_hash.is_some() {
+            return Err(DaError::InvalidManifest(
+                "external blob retrieval reports without bytes cannot include actual size or hash"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+pub fn verify_external_blob_retrieval(
+    reference: &DaExternalBlobReference,
+    blob_bytes: Option<&[u8]>,
+    verifier: impl Into<String>,
+    provider: Option<String>,
+    verified_at_height: u64,
+) -> Result<DaExternalBlobRetrievalVerification, DaError> {
+    DaExternalBlobRetrievalVerification::from_retrieval(
+        reference.clone(),
+        blob_bytes,
+        verifier,
+        provider,
+        verified_at_height,
+    )
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaExternalBlobReplicationRequirement {
+    pub backend: DaExternalBlobBackend,
+    pub min_provider_copies: u16,
+    pub archive: bool,
+}
+
+impl DaExternalBlobReplicationRequirement {
+    pub fn validate(&self) -> Result<(), DaError> {
+        if self.min_provider_copies == 0 {
+            return Err(DaError::InvalidManifest(
+                "external blob replication min_provider_copies must be positive".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaExternalBlobReplicationPolicy {
+    pub schema: String,
+    pub schema_version: u32,
+    pub policy_name: String,
+    pub min_distinct_backends: u16,
+    pub requirements: Vec<DaExternalBlobReplicationRequirement>,
+}
+
+impl DaExternalBlobReplicationPolicy {
+    pub fn new(
+        policy_name: impl Into<String>,
+        min_distinct_backends: u16,
+        requirements: Vec<DaExternalBlobReplicationRequirement>,
+    ) -> Result<Self, DaError> {
+        let policy = Self {
+            schema: DA_EXTERNAL_BLOB_REPLICATION_POLICY_SCHEMA.into(),
+            schema_version: 1,
+            policy_name: policy_name.into(),
+            min_distinct_backends,
+            requirements,
+        };
+        policy.validate()?;
+        Ok(policy)
+    }
+
+    pub fn ipfs_plus_arweave_archive() -> Self {
+        Self {
+            schema: DA_EXTERNAL_BLOB_REPLICATION_POLICY_SCHEMA.into(),
+            schema_version: 1,
+            policy_name: "ipfs-plus-arweave-archive".into(),
+            min_distinct_backends: 2,
+            requirements: vec![
+                DaExternalBlobReplicationRequirement {
+                    backend: DaExternalBlobBackend::Ipfs,
+                    min_provider_copies: 1,
+                    archive: false,
+                },
+                DaExternalBlobReplicationRequirement {
+                    backend: DaExternalBlobBackend::Arweave,
+                    min_provider_copies: 1,
+                    archive: true,
+                },
+            ],
+        }
+    }
+
+    pub fn policy_hash(&self) -> Result<String, DaError> {
+        self.validate()?;
+        hash_canonical(self)
+    }
+
+    pub fn validate(&self) -> Result<(), DaError> {
+        if self.schema != DA_EXTERNAL_BLOB_REPLICATION_POLICY_SCHEMA {
+            return Err(DaError::InvalidManifest(format!(
+                "unexpected external blob replication policy schema {}",
+                self.schema
+            )));
+        }
+        if self.schema_version != 1 {
+            return Err(DaError::InvalidManifest(format!(
+                "unexpected external blob replication policy version {}",
+                self.schema_version
+            )));
+        }
+        validate_schema_id("external blob replication policy_name", &self.policy_name)?;
+        if self.requirements.is_empty()
+            || self.requirements.len() > DA_EXTERNAL_BLOB_MAX_REPLICATION_BACKENDS
+        {
+            return Err(DaError::InvalidManifest(
+                "external blob replication requirements must be nonempty and bounded".into(),
+            ));
+        }
+        if self.min_distinct_backends == 0
+            || self.min_distinct_backends as usize > self.requirements.len()
+        {
+            return Err(DaError::InvalidManifest(
+                "external blob replication min_distinct_backends is outside requirement bounds"
+                    .into(),
+            ));
+        }
+        let mut previous_backend: Option<&DaExternalBlobBackend> = None;
+        for requirement in &self.requirements {
+            requirement.validate()?;
+            if let Some(previous_backend) = previous_backend {
+                if previous_backend >= &requirement.backend {
+                    return Err(DaError::InvalidManifest(
+                        "external blob replication requirements must be sorted and unique".into(),
+                    ));
+                }
+            }
+            previous_backend = Some(&requirement.backend);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaExternalBlobReplicationReport {
+    pub schema: String,
+    pub schema_version: u32,
+    pub policy_hash: String,
+    pub reference_hashes: Vec<String>,
+    pub content_hash: String,
+    pub size_bytes: u64,
+    pub satisfied_backends: Vec<DaExternalBlobBackend>,
+    pub missing_backends: Vec<DaExternalBlobBackend>,
+    pub compliant: bool,
+}
+
+impl DaExternalBlobReplicationReport {
+    pub fn report_hash(&self) -> Result<String, DaError> {
+        self.validate()?;
+        hash_canonical(self)
+    }
+
+    pub fn validate(&self) -> Result<(), DaError> {
+        if self.schema != DA_EXTERNAL_BLOB_REPLICATION_REPORT_SCHEMA {
+            return Err(DaError::InvalidManifest(format!(
+                "unexpected external blob replication report schema {}",
+                self.schema
+            )));
+        }
+        if self.schema_version != 1 {
+            return Err(DaError::InvalidManifest(format!(
+                "unexpected external blob replication report version {}",
+                self.schema_version
+            )));
+        }
+        validate_sha256_hex("external blob replication policy_hash", &self.policy_hash)?;
+        validate_sha256_hex("external blob replication content_hash", &self.content_hash)?;
+        validate_sorted_unique_hashes(
+            "external blob replication reference_hashes",
+            &self.reference_hashes,
+        )?;
+        if !self.satisfied_backends.is_empty() {
+            validate_sorted_unique_blob_backends(
+                "external blob replication satisfied_backends",
+                &self.satisfied_backends,
+            )?;
+        }
+        if !self.missing_backends.is_empty() {
+            validate_sorted_unique_blob_backends(
+                "external blob replication missing_backends",
+                &self.missing_backends,
+            )?;
+        }
+        if self.size_bytes == 0 {
+            return Err(DaError::InvalidManifest(
+                "external blob replication size_bytes must be positive".into(),
+            ));
+        }
+        if self.compliant != self.missing_backends.is_empty() {
+            return Err(DaError::InvalidManifest(
+                "external blob replication compliant flag must match missing_backends".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+pub fn verify_external_blob_replication_policy(
+    references: &[DaExternalBlobReference],
+    policy: &DaExternalBlobReplicationPolicy,
+) -> Result<DaExternalBlobReplicationReport, DaError> {
+    policy.validate()?;
+    if references.is_empty() {
+        return Err(DaError::InvalidPayload(
+            "external blob replication verification requires at least one reference".into(),
+        ));
+    }
+    let content_hash = references[0].content_hash.clone();
+    let size_bytes = references[0].size_bytes;
+    let mut reference_hashes = BTreeSet::new();
+    let mut backend_providers: BTreeMap<DaExternalBlobBackend, BTreeSet<String>> = BTreeMap::new();
+    for reference in references {
+        reference.validate()?;
+        if reference.content_hash != content_hash || reference.size_bytes != size_bytes {
+            return Err(DaError::InvalidPayload(
+                "external blob replication references must bind the same content hash and size"
+                    .into(),
+            ));
+        }
+        reference_hashes.insert(reference.reference_hash()?);
+        let provider = reference
+            .provider_reference
+            .clone()
+            .unwrap_or_else(|| reference.uri.clone());
+        backend_providers
+            .entry(reference.backend.clone())
+            .or_default()
+            .insert(provider);
+    }
+    let mut satisfied_backends = Vec::new();
+    let mut missing_backends = Vec::new();
+    for requirement in &policy.requirements {
+        let provider_count = backend_providers
+            .get(&requirement.backend)
+            .map_or(0, BTreeSet::len);
+        if provider_count >= requirement.min_provider_copies as usize {
+            satisfied_backends.push(requirement.backend.clone());
+        } else {
+            missing_backends.push(requirement.backend.clone());
+        }
+    }
+    if satisfied_backends.len() < policy.min_distinct_backends as usize {
+        for requirement in &policy.requirements {
+            if !satisfied_backends.contains(&requirement.backend)
+                && !missing_backends.contains(&requirement.backend)
+            {
+                missing_backends.push(requirement.backend.clone());
+            }
+        }
+    }
+    let report = DaExternalBlobReplicationReport {
+        schema: DA_EXTERNAL_BLOB_REPLICATION_REPORT_SCHEMA.into(),
+        schema_version: 1,
+        policy_hash: policy.policy_hash()?,
+        reference_hashes: reference_hashes.into_iter().collect(),
+        content_hash,
+        size_bytes,
+        satisfied_backends,
+        missing_backends,
+        compliant: false,
+    };
+    let mut report = report;
+    report.compliant = report.missing_backends.is_empty();
+    report.validate()?;
+    Ok(report)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaExternalBlobAvailabilityChallenge {
+    pub schema: String,
+    pub schema_version: u32,
+    pub reference: DaExternalBlobReference,
+    pub reference_hash: String,
+    pub challenged_provider: Option<String>,
+    pub challenger: String,
+    pub challenge_height: u64,
+    pub expires_at_height: u64,
+    pub reason: String,
+}
+
+impl DaExternalBlobAvailabilityChallenge {
+    pub fn new(
+        reference: DaExternalBlobReference,
+        challenged_provider: Option<String>,
+        challenger: impl Into<String>,
+        challenge_height: u64,
+        expires_at_height: u64,
+        reason: impl Into<String>,
+    ) -> Result<Self, DaError> {
+        let reference_hash = reference.reference_hash()?;
+        let challenge = Self {
+            schema: DA_EXTERNAL_BLOB_CHALLENGE_SCHEMA.into(),
+            schema_version: 1,
+            reference,
+            reference_hash,
+            challenged_provider,
+            challenger: challenger.into(),
+            challenge_height,
+            expires_at_height,
+            reason: reason.into(),
+        };
+        challenge.validate()?;
+        Ok(challenge)
+    }
+
+    pub fn challenge_hash(&self) -> Result<String, DaError> {
+        self.validate()?;
+        hash_canonical(self)
+    }
+
+    pub fn validate(&self) -> Result<(), DaError> {
+        if self.schema != DA_EXTERNAL_BLOB_CHALLENGE_SCHEMA {
+            return Err(DaError::InvalidChallenge(format!(
+                "unexpected external blob challenge schema {}",
+                self.schema
+            )));
+        }
+        if self.schema_version != 1 {
+            return Err(DaError::InvalidChallenge(format!(
+                "unexpected external blob challenge version {}",
+                self.schema_version
+            )));
+        }
+        self.reference.validate()?;
+        let actual_reference_hash = self.reference.reference_hash()?;
+        if self.reference_hash != actual_reference_hash {
+            return Err(DaError::InvalidChallenge(format!(
+                "external blob challenge reference hash mismatch: expected {}, got {}",
+                self.reference_hash, actual_reference_hash
+            )));
+        }
+        validate_optional_label(
+            "external blob challenged_provider",
+            self.challenged_provider.as_deref(),
+            DA_EXTERNAL_BLOB_PROVIDER_REFERENCE_MAX_BYTES,
+        )?;
+        validate_label(
+            "external blob challenger",
+            &self.challenger,
+            DA_EXTERNAL_BLOB_PROVIDER_REFERENCE_MAX_BYTES,
+        )?;
+        validate_label(
+            "external blob challenge reason",
+            &self.reason,
+            DA_EXTERNAL_BLOB_OPERATION_NOTE_MAX_BYTES,
+        )?;
+        if self.expires_at_height <= self.challenge_height {
+            return Err(DaError::InvalidChallenge(
+                "external blob challenge expiry must be after challenge height".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum DaExternalBlobChallengeFault {
+    Unavailable,
+    InvalidContent {
+        expected_hash: String,
+        actual_hash: Option<String>,
+    },
+    InsufficientReplication {
+        policy_hash: String,
+        missing_backends: Vec<DaExternalBlobBackend>,
+    },
+}
+
+impl DaExternalBlobChallengeFault {
+    pub fn validate(&self) -> Result<(), DaError> {
+        match self {
+            Self::Unavailable => Ok(()),
+            Self::InvalidContent {
+                expected_hash,
+                actual_hash,
+            } => {
+                validate_sha256_hex("external blob invalid content expected_hash", expected_hash)?;
+                validate_optional_sha256_hex(
+                    "external blob invalid content actual_hash",
+                    actual_hash.as_deref(),
+                )
+            }
+            Self::InsufficientReplication {
+                policy_hash,
+                missing_backends,
+            } => {
+                validate_sha256_hex(
+                    "external blob insufficient replication policy_hash",
+                    policy_hash,
+                )?;
+                validate_sorted_unique_blob_backends(
+                    "external blob insufficient replication missing_backends",
+                    missing_backends,
+                )
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DaExternalBlobChallengeEvidence {
+    pub schema: String,
+    pub schema_version: u32,
+    pub challenge: DaExternalBlobAvailabilityChallenge,
+    pub challenge_hash: String,
+    pub reporter: String,
+    pub observed_at_height: u64,
+    pub retrieval_reports: Vec<DaExternalBlobRetrievalVerification>,
+    pub provider_health: Vec<DaExternalBlobProviderHealthRecord>,
+    pub repair_job: Option<DaExternalBlobRepairJob>,
+    pub fault: DaExternalBlobChallengeFault,
+}
+
+impl DaExternalBlobChallengeEvidence {
+    pub fn new(
+        challenge: DaExternalBlobAvailabilityChallenge,
+        reporter: impl Into<String>,
+        observed_at_height: u64,
+        retrieval_reports: Vec<DaExternalBlobRetrievalVerification>,
+        provider_health: Vec<DaExternalBlobProviderHealthRecord>,
+        repair_job: Option<DaExternalBlobRepairJob>,
+        fault: DaExternalBlobChallengeFault,
+    ) -> Result<Self, DaError> {
+        let challenge_hash = challenge.challenge_hash()?;
+        let evidence = Self {
+            schema: DA_EXTERNAL_BLOB_CHALLENGE_EVIDENCE_SCHEMA.into(),
+            schema_version: 1,
+            challenge,
+            challenge_hash,
+            reporter: reporter.into(),
+            observed_at_height,
+            retrieval_reports,
+            provider_health,
+            repair_job,
+            fault,
+        };
+        evidence.validate()?;
+        Ok(evidence)
+    }
+
+    pub fn unavailable(
+        challenge: DaExternalBlobAvailabilityChallenge,
+        reporter: impl Into<String>,
+        observed_at_height: u64,
+        retrieval_reports: Vec<DaExternalBlobRetrievalVerification>,
+        provider_health: Vec<DaExternalBlobProviderHealthRecord>,
+        repair_job: Option<DaExternalBlobRepairJob>,
+    ) -> Result<Self, DaError> {
+        Self::new(
+            challenge,
+            reporter,
+            observed_at_height,
+            retrieval_reports,
+            provider_health,
+            repair_job,
+            DaExternalBlobChallengeFault::Unavailable,
+        )
+    }
+
+    pub fn evidence_hash(&self) -> Result<String, DaError> {
+        self.validate()?;
+        hash_canonical(self)
+    }
+
+    pub fn validate(&self) -> Result<(), DaError> {
+        if self.schema != DA_EXTERNAL_BLOB_CHALLENGE_EVIDENCE_SCHEMA {
+            return Err(DaError::InvalidChallenge(format!(
+                "unexpected external blob challenge evidence schema {}",
+                self.schema
+            )));
+        }
+        if self.schema_version != 1 {
+            return Err(DaError::InvalidChallenge(format!(
+                "unexpected external blob challenge evidence version {}",
+                self.schema_version
+            )));
+        }
+        self.challenge.validate()?;
+        let actual_challenge_hash = self.challenge.challenge_hash()?;
+        if self.challenge_hash != actual_challenge_hash {
+            return Err(DaError::InvalidChallenge(format!(
+                "external blob challenge evidence hash mismatch: expected {}, got {}",
+                self.challenge_hash, actual_challenge_hash
+            )));
+        }
+        validate_label(
+            "external blob challenge evidence reporter",
+            &self.reporter,
+            DA_EXTERNAL_BLOB_PROVIDER_REFERENCE_MAX_BYTES,
+        )?;
+        if self.observed_at_height < self.challenge.challenge_height {
+            return Err(DaError::InvalidChallenge(
+                "external blob challenge evidence cannot predate the challenge".into(),
+            ));
+        }
+        if self.retrieval_reports.is_empty() && self.provider_health.is_empty() {
+            return Err(DaError::InvalidChallenge(
+                "external blob challenge evidence requires retrieval or provider health evidence"
+                    .into(),
+            ));
+        }
+        if self.retrieval_reports.len() > DA_EXTERNAL_BLOB_MAX_EVIDENCE_REPORTS
+            || self.provider_health.len() > DA_EXTERNAL_BLOB_MAX_EVIDENCE_REPORTS
+        {
+            return Err(DaError::InvalidChallenge(
+                "external blob challenge evidence report count exceeds bounds".into(),
+            ));
+        }
+        let challenge_reference_hash = &self.challenge.reference_hash;
+        let mut has_failed_retrieval = false;
+        let mut has_unavailable_provider = false;
+        for report in &self.retrieval_reports {
+            report.validate()?;
+            if &report.reference_hash != challenge_reference_hash {
+                return Err(DaError::InvalidChallenge(
+                    "external blob retrieval evidence does not match challenged reference".into(),
+                ));
+            }
+            if !report.available {
+                has_failed_retrieval = true;
+            }
+        }
+        for health in &self.provider_health {
+            health.validate()?;
+            if health.backend != self.challenge.reference.backend {
+                return Err(DaError::InvalidChallenge(
+                    "external blob provider health evidence backend does not match challenge"
+                        .into(),
+                ));
+            }
+            if self
+                .challenge
+                .challenged_provider
+                .as_deref()
+                .is_some_and(|provider| provider != health.provider)
+            {
+                return Err(DaError::InvalidChallenge(
+                    "external blob provider health evidence provider does not match challenge"
+                        .into(),
+                ));
+            }
+            if health.status == DaExternalBlobProviderHealthStatus::Unavailable {
+                has_unavailable_provider = true;
+            }
+        }
+        if let Some(repair_job) = &self.repair_job {
+            repair_job.validate()?;
+            if repair_job.reference_hash != *challenge_reference_hash {
+                return Err(DaError::InvalidChallenge(
+                    "external blob challenge repair job does not match challenged reference".into(),
+                ));
+            }
+        }
+        self.fault.validate()?;
+        match &self.fault {
+            DaExternalBlobChallengeFault::Unavailable => {
+                if !has_failed_retrieval && !has_unavailable_provider {
+                    return Err(DaError::InvalidChallenge(
+                        "external blob unavailable evidence requires a failed retrieval or unavailable provider"
+                            .into(),
+                    ));
+                }
+            }
+            DaExternalBlobChallengeFault::InvalidContent {
+                expected_hash,
+                actual_hash,
+            } => {
+                if expected_hash != &self.challenge.reference.content_hash {
+                    return Err(DaError::InvalidChallenge(
+                        "external blob invalid-content expected hash must match challenged reference"
+                            .into(),
+                    ));
+                }
+                let has_matching_invalid_content_report =
+                    self.retrieval_reports.iter().any(|report| {
+                        report.bytes_returned
+                            && !report.hash_verified
+                            && report.actual_content_hash.as_ref() == actual_hash.as_ref()
+                    });
+                if !has_matching_invalid_content_report {
+                    return Err(DaError::InvalidChallenge(
+                        "external blob invalid-content evidence requires a matching retrieval report"
+                            .into(),
+                    ));
+                }
+            }
+            DaExternalBlobChallengeFault::InsufficientReplication {
+                policy_hash,
+                missing_backends,
+            } => {
+                validate_sha256_hex(
+                    "external blob insufficient replication evidence policy_hash",
+                    policy_hash,
+                )?;
+                validate_sorted_unique_blob_backends(
+                    "external blob insufficient replication evidence missing_backends",
+                    missing_backends,
+                )?;
+                if missing_backends.is_empty() {
+                    return Err(DaError::InvalidChallenge(
+                        "external blob insufficient-replication evidence requires missing backends"
+                            .into(),
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -6273,6 +7497,45 @@ fn validate_external_blob_locator(field: &str, value: &str) -> Result<(), DaErro
     Ok(())
 }
 
+fn validate_sorted_unique_hashes(field: &str, values: &[String]) -> Result<(), DaError> {
+    if values.is_empty() {
+        return Err(DaError::InvalidManifest(format!(
+            "{field} must be nonempty"
+        )));
+    }
+    for value in values {
+        validate_sha256_hex(field, value)?;
+    }
+    if !values.windows(2).all(|window| window[0] < window[1]) {
+        return Err(DaError::InvalidManifest(format!(
+            "{field} must be sorted and unique"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_sorted_unique_blob_backends(
+    field: &str,
+    values: &[DaExternalBlobBackend],
+) -> Result<(), DaError> {
+    if values.is_empty() {
+        return Err(DaError::InvalidManifest(format!(
+            "{field} must be nonempty"
+        )));
+    }
+    if values.len() > DA_EXTERNAL_BLOB_MAX_REPLICATION_BACKENDS {
+        return Err(DaError::InvalidManifest(format!(
+            "{field} exceeds backend count bounds"
+        )));
+    }
+    if !values.windows(2).all(|window| window[0] < window[1]) {
+        return Err(DaError::InvalidManifest(format!(
+            "{field} must be sorted and unique"
+        )));
+    }
+    Ok(())
+}
+
 fn validate_sorted_unique_schema_ids(field: &str, values: &[String]) -> Result<(), DaError> {
     if values.is_empty() {
         return Err(DaError::InvalidManifest(format!(
@@ -7784,6 +9047,272 @@ mod tests {
             verify_external_blob_record(media_record, avatar_bytes).unwrap(),
             avatar_reference
         );
+    }
+
+    #[test]
+    fn external_blob_lifecycle_health_and_repair_records_are_hash_bound() {
+        let bytes = b"piece-bytes";
+        let reference = FilecoinAdapter::default()
+            .commit_uploaded_blob(
+                "deal-123/piece-bafy",
+                "application/octet-stream",
+                bytes,
+                Some("miner.f01234".into()),
+                Some("deal-proof-1".into()),
+            )
+            .unwrap();
+        let lifecycle = DaExternalBlobLifecycleRecord::new(
+            reference.clone(),
+            DaExternalBlobLifecycleStage::StorageDealActive,
+            DaExternalBlobLifecycleStatus::Active,
+            Some("miner.f01234".into()),
+            Some("deal-123".into()),
+            12,
+            "validator-1",
+            Some("deal active".into()),
+        )
+        .unwrap();
+        assert_eq!(
+            lifecycle.reference_hash,
+            reference.reference_hash().unwrap()
+        );
+        assert_eq!(
+            lifecycle.record_hash().unwrap(),
+            lifecycle.record_hash().unwrap()
+        );
+
+        let mut bad_lifecycle = lifecycle.clone();
+        bad_lifecycle.reference_hash =
+            "0000000000000000000000000000000000000000000000000000000000000000".into();
+        assert!(matches!(
+            bad_lifecycle.validate(),
+            Err(DaError::InvalidManifest(_))
+        ));
+
+        let unavailable_health = DaExternalBlobProviderHealthRecord::new(
+            DaExternalBlobBackend::Filecoin,
+            "miner.f01234",
+            13,
+            DaExternalBlobProviderHealthStatus::Unavailable,
+            false,
+            None,
+            Some("retrieval timeout".into()),
+            "validator-1",
+        )
+        .unwrap();
+        assert_eq!(
+            unavailable_health.status,
+            DaExternalBlobProviderHealthStatus::Unavailable
+        );
+        assert!(DaExternalBlobProviderHealthRecord::new(
+            DaExternalBlobBackend::Ipfs,
+            "pin.provider",
+            1,
+            DaExternalBlobProviderHealthStatus::Healthy,
+            false,
+            None,
+            None,
+            "validator-1",
+        )
+        .is_err());
+
+        let repair = DaExternalBlobRepairJob::new(
+            reference,
+            vec![
+                DaExternalBlobBackend::Arweave,
+                DaExternalBlobBackend::Filecoin,
+            ],
+            DaExternalBlobRepairJobStatus::Open,
+            "mirror Filecoin piece to archival backend",
+            14,
+            14,
+            Some("operator-1".into()),
+            Vec::new(),
+            vec![DaExternalBlobRepairAction::MirrorToBackend {
+                backend: DaExternalBlobBackend::Arweave,
+                provider: Some("arweave.gateway".into()),
+            }],
+        )
+        .unwrap();
+        assert_eq!(repair.job_hash().unwrap(), repair.job_hash().unwrap());
+
+        let mut duplicate_targets = repair.clone();
+        duplicate_targets.target_backends = vec![
+            DaExternalBlobBackend::Arweave,
+            DaExternalBlobBackend::Arweave,
+        ];
+        assert!(matches!(
+            duplicate_targets.validate(),
+            Err(DaError::InvalidManifest(_))
+        ));
+    }
+
+    #[test]
+    fn external_blob_replication_policy_tracks_multi_backend_requirements() {
+        let bytes = b"avatar archive bytes";
+        let ipfs = IpfsAdapter::default()
+            .commit_uploaded_blob(
+                "bafyavatar",
+                "image/png",
+                bytes,
+                Some("pin.provider".into()),
+                None,
+            )
+            .unwrap();
+        let arweave = ArweaveAdapter::default()
+            .commit_uploaded_blob(
+                "ar-avatar",
+                "image/png",
+                bytes,
+                Some("arweave.tx".into()),
+                Some("permaweb-confirmed".into()),
+            )
+            .unwrap();
+        let policy = DaExternalBlobReplicationPolicy::ipfs_plus_arweave_archive();
+        let report =
+            verify_external_blob_replication_policy(&[ipfs.clone(), arweave.clone()], &policy)
+                .unwrap();
+        assert!(report.compliant);
+        assert_eq!(
+            report.satisfied_backends,
+            vec![DaExternalBlobBackend::Ipfs, DaExternalBlobBackend::Arweave]
+        );
+
+        let missing_archive =
+            verify_external_blob_replication_policy(&[ipfs.clone()], &policy).unwrap();
+        assert!(!missing_archive.compliant);
+        assert_eq!(
+            missing_archive.missing_backends,
+            vec![DaExternalBlobBackend::Arweave]
+        );
+
+        let filecoin = FilecoinAdapter::default()
+            .commit_uploaded_blob(
+                "deal-42/piece-avatar",
+                "image/png",
+                bytes,
+                Some("miner.f01234".into()),
+                Some("deal-proof".into()),
+            )
+            .unwrap();
+        let missing_all = verify_external_blob_replication_policy(&[filecoin], &policy).unwrap();
+        assert!(!missing_all.compliant);
+        assert_eq!(
+            missing_all.missing_backends,
+            vec![DaExternalBlobBackend::Ipfs, DaExternalBlobBackend::Arweave]
+        );
+
+        let other_bytes = b"different bytes";
+        let other = ArweaveAdapter::default()
+            .commit_uploaded_blob("ar-other", "image/png", other_bytes, None, None)
+            .unwrap();
+        assert!(matches!(
+            verify_external_blob_replication_policy(&[ipfs, other], &policy),
+            Err(DaError::InvalidPayload(_))
+        ));
+    }
+
+    #[test]
+    fn external_blob_retrieval_verification_feeds_unavailable_challenge_evidence() {
+        let bytes = b"avatar bytes";
+        let reference = IpfsAdapter::default()
+            .commit_uploaded_blob(
+                "bafyavatar",
+                "image/png",
+                bytes,
+                Some("pin.provider".into()),
+                None,
+            )
+            .unwrap();
+        let success = verify_external_blob_retrieval(
+            &reference,
+            Some(bytes),
+            "validator-1",
+            Some("pin.provider".into()),
+            20,
+        )
+        .unwrap();
+        assert!(success.available);
+        assert!(success.hash_verified);
+
+        let unavailable = verify_external_blob_retrieval(
+            &reference,
+            None,
+            "validator-2",
+            Some("pin.provider".into()),
+            21,
+        )
+        .unwrap();
+        assert!(!unavailable.available);
+        assert_eq!(unavailable.actual_content_hash, None);
+
+        let challenge = DaExternalBlobAvailabilityChallenge::new(
+            reference.clone(),
+            Some("pin.provider".into()),
+            "validator-3",
+            22,
+            26,
+            "provider failed retrieval",
+        )
+        .unwrap();
+        let health = DaExternalBlobProviderHealthRecord::new(
+            DaExternalBlobBackend::Ipfs,
+            "pin.provider",
+            23,
+            DaExternalBlobProviderHealthStatus::Unavailable,
+            false,
+            None,
+            Some("gateway timeout".into()),
+            "validator-2",
+        )
+        .unwrap();
+        let repair = DaExternalBlobRepairJob::new(
+            reference,
+            vec![DaExternalBlobBackend::Ipfs, DaExternalBlobBackend::Arweave],
+            DaExternalBlobRepairJobStatus::Open,
+            "repin and archive unavailable blob",
+            24,
+            24,
+            Some("operator-1".into()),
+            vec![unavailable.report_hash().unwrap()],
+            vec![
+                DaExternalBlobRepairAction::Repin {
+                    backend: DaExternalBlobBackend::Ipfs,
+                    provider: "backup.pin.provider".into(),
+                },
+                DaExternalBlobRepairAction::MirrorToBackend {
+                    backend: DaExternalBlobBackend::Arweave,
+                    provider: Some("arweave.gateway".into()),
+                },
+            ],
+        )
+        .unwrap();
+        let evidence = DaExternalBlobChallengeEvidence::unavailable(
+            challenge.clone(),
+            "validator-4",
+            24,
+            vec![unavailable],
+            vec![health],
+            Some(repair),
+        )
+        .unwrap();
+        assert_eq!(evidence.challenge_hash, challenge.challenge_hash().unwrap());
+        assert_eq!(
+            evidence.evidence_hash().unwrap(),
+            evidence.evidence_hash().unwrap()
+        );
+
+        assert!(matches!(
+            DaExternalBlobChallengeEvidence::unavailable(
+                challenge,
+                "validator-4",
+                24,
+                vec![success],
+                Vec::new(),
+                None,
+            ),
+            Err(DaError::InvalidChallenge(_))
+        ));
     }
 
     #[test]

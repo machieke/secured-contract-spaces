@@ -5,8 +5,10 @@ use detta_da::{
     ApplicationDaAvailabilityCertificate, ApplicationDaManifest, ApplicationDaPayload,
     ApplicationDaShareSet, DaApplicationCoordinate, DaApplicationId, DaApplicationProfile,
     DaApplicationProfileRegistration, DaApplicationProfileRegistry, DaApplicationProfileStatus,
-    DaApplicationRetentionClass, DaAvailabilityCertificate, DaChallengeRecord, DaManifest,
-    DaNamespace, DaPayload, DaPayloadKind, DaShare, DaShareSet, DA_V1_ARCHIVE_MIN_RETENTION_BLOCKS,
+    DaApplicationRetentionClass, DaAvailabilityCertificate, DaChallengeRecord,
+    DaExternalBlobChallengeEvidence, DaExternalBlobLifecycleRecord,
+    DaExternalBlobProviderHealthRecord, DaExternalBlobRepairJob, DaManifest, DaNamespace,
+    DaPayload, DaPayloadKind, DaShare, DaShareSet, DA_V1_ARCHIVE_MIN_RETENTION_BLOCKS,
     DA_V1_VALIDATOR_MIN_RETENTION_BLOCKS,
 };
 use detta_protocol::{SignedValidatorMessage, ValidatorSetMetadata, ValidatorSignatureDomain};
@@ -105,6 +107,10 @@ pub struct DaStorageStats {
     pub application_payload_count: u64,
     pub application_certificate_count: u64,
     pub application_repair_record_count: u64,
+    pub application_external_blob_lifecycle_record_count: u64,
+    pub application_external_blob_provider_health_record_count: u64,
+    pub application_external_blob_repair_job_count: u64,
+    pub application_external_blob_challenge_evidence_count: u64,
     pub application_id_owner_count: u64,
     pub application_profile_lifecycle_record_count: u64,
     pub application_profile_bytes: u64,
@@ -113,6 +119,10 @@ pub struct DaStorageStats {
     pub application_payload_bytes: u64,
     pub application_certificate_bytes: u64,
     pub application_repair_record_bytes: u64,
+    pub application_external_blob_lifecycle_record_bytes: u64,
+    pub application_external_blob_provider_health_record_bytes: u64,
+    pub application_external_blob_repair_job_bytes: u64,
+    pub application_external_blob_challenge_evidence_bytes: u64,
     pub application_id_owner_bytes: u64,
     pub application_profile_lifecycle_record_bytes: u64,
     pub application_index_file_count: u64,
@@ -541,6 +551,30 @@ impl FileStorage {
         fs::create_dir_all(
             root.join("da")
                 .join("applications")
+                .join("external_blob_lifecycle"),
+        )
+        .map_err(io_error)?;
+        fs::create_dir_all(
+            root.join("da")
+                .join("applications")
+                .join("external_blob_provider_health"),
+        )
+        .map_err(io_error)?;
+        fs::create_dir_all(
+            root.join("da")
+                .join("applications")
+                .join("external_blob_repairs"),
+        )
+        .map_err(io_error)?;
+        fs::create_dir_all(
+            root.join("da")
+                .join("applications")
+                .join("external_blob_challenges"),
+        )
+        .map_err(io_error)?;
+        fs::create_dir_all(
+            root.join("da")
+                .join("applications")
                 .join("profile_lifecycle"),
         )
         .map_err(io_error)?;
@@ -656,6 +690,14 @@ impl FileStorage {
         let application_payloads_dir = self.application_da_path().join("payloads");
         let application_certificates_dir = self.application_da_certificates_path();
         let application_repairs_dir = self.application_da_repairs_path();
+        let application_external_blob_lifecycle_dir =
+            self.application_da_external_blob_lifecycle_path();
+        let application_external_blob_provider_health_dir =
+            self.application_da_external_blob_provider_health_path();
+        let application_external_blob_repairs_dir =
+            self.application_da_external_blob_repairs_path();
+        let application_external_blob_challenges_dir =
+            self.application_da_external_blob_challenges_path();
         let application_id_owners_dir = self.application_da_id_owners_path();
         let application_profile_lifecycle_dir = self.application_da_profile_lifecycle_path();
         let application_indexes_dir = self.application_da_indexes_path();
@@ -746,6 +788,30 @@ impl FileStorage {
         let application_repair_file_stats = directory_file_stats(&application_repairs_dir)?;
         stats.application_repair_record_count = application_repair_file_stats.file_count;
         stats.application_repair_record_bytes = application_repair_file_stats.total_bytes;
+        let application_external_blob_lifecycle_file_stats =
+            directory_file_stats(&application_external_blob_lifecycle_dir)?;
+        stats.application_external_blob_lifecycle_record_count =
+            application_external_blob_lifecycle_file_stats.file_count;
+        stats.application_external_blob_lifecycle_record_bytes =
+            application_external_blob_lifecycle_file_stats.total_bytes;
+        let application_external_blob_provider_health_file_stats =
+            directory_file_stats(&application_external_blob_provider_health_dir)?;
+        stats.application_external_blob_provider_health_record_count =
+            application_external_blob_provider_health_file_stats.file_count;
+        stats.application_external_blob_provider_health_record_bytes =
+            application_external_blob_provider_health_file_stats.total_bytes;
+        let application_external_blob_repair_file_stats =
+            directory_file_stats(&application_external_blob_repairs_dir)?;
+        stats.application_external_blob_repair_job_count =
+            application_external_blob_repair_file_stats.file_count;
+        stats.application_external_blob_repair_job_bytes =
+            application_external_blob_repair_file_stats.total_bytes;
+        let application_external_blob_challenge_file_stats =
+            directory_file_stats(&application_external_blob_challenges_dir)?;
+        stats.application_external_blob_challenge_evidence_count =
+            application_external_blob_challenge_file_stats.file_count;
+        stats.application_external_blob_challenge_evidence_bytes =
+            application_external_blob_challenge_file_stats.total_bytes;
         let application_id_owner_file_stats = directory_file_stats(&application_id_owners_dir)?;
         stats.application_id_owner_count = application_id_owner_file_stats.file_count;
         stats.application_id_owner_bytes = application_id_owner_file_stats.total_bytes;
@@ -781,6 +847,10 @@ impl FileStorage {
             .saturating_add(stats.application_payload_bytes)
             .saturating_add(stats.application_certificate_bytes)
             .saturating_add(stats.application_repair_record_bytes)
+            .saturating_add(stats.application_external_blob_lifecycle_record_bytes)
+            .saturating_add(stats.application_external_blob_provider_health_record_bytes)
+            .saturating_add(stats.application_external_blob_repair_job_bytes)
+            .saturating_add(stats.application_external_blob_challenge_evidence_bytes)
             .saturating_add(stats.application_id_owner_bytes)
             .saturating_add(stats.application_profile_lifecycle_record_bytes)
             .saturating_add(stats.application_index_bytes)
@@ -2416,6 +2486,222 @@ impl FileStorage {
         Ok(records)
     }
 
+    pub fn commit_application_da_external_blob_lifecycle_record(
+        &self,
+        record: &DaExternalBlobLifecycleRecord,
+    ) -> Result<String, StorageError> {
+        record.validate().map_err(da_error)?;
+        let record_id = record.record_hash().map_err(da_error)?;
+        write_json_atomic(
+            &self.application_da_external_blob_lifecycle_record_path(&record_id),
+            record,
+        )?;
+        Ok(record_id)
+    }
+
+    pub fn maybe_load_application_da_external_blob_lifecycle_record(
+        &self,
+        record_id: &str,
+    ) -> Result<Option<DaExternalBlobLifecycleRecord>, StorageError> {
+        let path = self.application_da_external_blob_lifecycle_record_path(record_id);
+        if !path.exists() {
+            return Ok(None);
+        }
+        self.load_application_da_external_blob_lifecycle_record(record_id)
+            .map(Some)
+    }
+
+    pub fn load_application_da_external_blob_lifecycle_record(
+        &self,
+        record_id: &str,
+    ) -> Result<DaExternalBlobLifecycleRecord, StorageError> {
+        let record: DaExternalBlobLifecycleRecord =
+            read_json(&self.application_da_external_blob_lifecycle_record_path(record_id))?;
+        record.validate().map_err(da_error)?;
+        let actual_id = record.record_hash().map_err(da_error)?;
+        if actual_id != record_id {
+            return Err(StorageError::CorruptData(format!(
+                "application DA external blob lifecycle record hash mismatch: expected {record_id}, got {actual_id}"
+            )));
+        }
+        Ok(record)
+    }
+
+    pub fn load_application_da_external_blob_lifecycle_records(
+        &self,
+    ) -> Result<Vec<DaExternalBlobLifecycleRecord>, StorageError> {
+        let mut records = Vec::new();
+        for path in sorted_bin_paths(&self.application_da_external_blob_lifecycle_path())? {
+            let record: DaExternalBlobLifecycleRecord = read_json(&path)?;
+            record.validate().map_err(da_error)?;
+            ensure_file_name_matches_id(&path, &record.record_hash().map_err(da_error)?)?;
+            records.push(record);
+        }
+        Ok(records)
+    }
+
+    pub fn commit_application_da_external_blob_provider_health_record(
+        &self,
+        record: &DaExternalBlobProviderHealthRecord,
+    ) -> Result<String, StorageError> {
+        record.validate().map_err(da_error)?;
+        let record_id = record.record_hash().map_err(da_error)?;
+        write_json_atomic(
+            &self.application_da_external_blob_provider_health_record_path(&record_id),
+            record,
+        )?;
+        Ok(record_id)
+    }
+
+    pub fn maybe_load_application_da_external_blob_provider_health_record(
+        &self,
+        record_id: &str,
+    ) -> Result<Option<DaExternalBlobProviderHealthRecord>, StorageError> {
+        let path = self.application_da_external_blob_provider_health_record_path(record_id);
+        if !path.exists() {
+            return Ok(None);
+        }
+        self.load_application_da_external_blob_provider_health_record(record_id)
+            .map(Some)
+    }
+
+    pub fn load_application_da_external_blob_provider_health_record(
+        &self,
+        record_id: &str,
+    ) -> Result<DaExternalBlobProviderHealthRecord, StorageError> {
+        let record: DaExternalBlobProviderHealthRecord =
+            read_json(&self.application_da_external_blob_provider_health_record_path(record_id))?;
+        record.validate().map_err(da_error)?;
+        let actual_id = record.record_hash().map_err(da_error)?;
+        if actual_id != record_id {
+            return Err(StorageError::CorruptData(format!(
+                "application DA external blob provider health record hash mismatch: expected {record_id}, got {actual_id}"
+            )));
+        }
+        Ok(record)
+    }
+
+    pub fn load_application_da_external_blob_provider_health_records(
+        &self,
+    ) -> Result<Vec<DaExternalBlobProviderHealthRecord>, StorageError> {
+        let mut records = Vec::new();
+        for path in sorted_bin_paths(&self.application_da_external_blob_provider_health_path())? {
+            let record: DaExternalBlobProviderHealthRecord = read_json(&path)?;
+            record.validate().map_err(da_error)?;
+            ensure_file_name_matches_id(&path, &record.record_hash().map_err(da_error)?)?;
+            records.push(record);
+        }
+        Ok(records)
+    }
+
+    pub fn commit_application_da_external_blob_repair_job(
+        &self,
+        job: &DaExternalBlobRepairJob,
+    ) -> Result<String, StorageError> {
+        job.validate().map_err(da_error)?;
+        let job_id = job.job_hash().map_err(da_error)?;
+        write_json_atomic(
+            &self.application_da_external_blob_repair_job_path(&job_id),
+            job,
+        )?;
+        Ok(job_id)
+    }
+
+    pub fn maybe_load_application_da_external_blob_repair_job(
+        &self,
+        job_id: &str,
+    ) -> Result<Option<DaExternalBlobRepairJob>, StorageError> {
+        let path = self.application_da_external_blob_repair_job_path(job_id);
+        if !path.exists() {
+            return Ok(None);
+        }
+        self.load_application_da_external_blob_repair_job(job_id)
+            .map(Some)
+    }
+
+    pub fn load_application_da_external_blob_repair_job(
+        &self,
+        job_id: &str,
+    ) -> Result<DaExternalBlobRepairJob, StorageError> {
+        let job: DaExternalBlobRepairJob =
+            read_json(&self.application_da_external_blob_repair_job_path(job_id))?;
+        job.validate().map_err(da_error)?;
+        let actual_id = job.job_hash().map_err(da_error)?;
+        if actual_id != job_id {
+            return Err(StorageError::CorruptData(format!(
+                "application DA external blob repair job hash mismatch: expected {job_id}, got {actual_id}"
+            )));
+        }
+        Ok(job)
+    }
+
+    pub fn load_application_da_external_blob_repair_jobs(
+        &self,
+    ) -> Result<Vec<DaExternalBlobRepairJob>, StorageError> {
+        let mut jobs = Vec::new();
+        for path in sorted_bin_paths(&self.application_da_external_blob_repairs_path())? {
+            let job: DaExternalBlobRepairJob = read_json(&path)?;
+            job.validate().map_err(da_error)?;
+            ensure_file_name_matches_id(&path, &job.job_hash().map_err(da_error)?)?;
+            jobs.push(job);
+        }
+        Ok(jobs)
+    }
+
+    pub fn commit_application_da_external_blob_challenge_evidence(
+        &self,
+        evidence: &DaExternalBlobChallengeEvidence,
+    ) -> Result<String, StorageError> {
+        evidence.validate().map_err(da_error)?;
+        let evidence_id = evidence.evidence_hash().map_err(da_error)?;
+        write_json_atomic(
+            &self.application_da_external_blob_challenge_evidence_path(&evidence_id),
+            evidence,
+        )?;
+        Ok(evidence_id)
+    }
+
+    pub fn maybe_load_application_da_external_blob_challenge_evidence(
+        &self,
+        evidence_id: &str,
+    ) -> Result<Option<DaExternalBlobChallengeEvidence>, StorageError> {
+        let path = self.application_da_external_blob_challenge_evidence_path(evidence_id);
+        if !path.exists() {
+            return Ok(None);
+        }
+        self.load_application_da_external_blob_challenge_evidence(evidence_id)
+            .map(Some)
+    }
+
+    pub fn load_application_da_external_blob_challenge_evidence(
+        &self,
+        evidence_id: &str,
+    ) -> Result<DaExternalBlobChallengeEvidence, StorageError> {
+        let evidence: DaExternalBlobChallengeEvidence =
+            read_json(&self.application_da_external_blob_challenge_evidence_path(evidence_id))?;
+        evidence.validate().map_err(da_error)?;
+        let actual_id = evidence.evidence_hash().map_err(da_error)?;
+        if actual_id != evidence_id {
+            return Err(StorageError::CorruptData(format!(
+                "application DA external blob challenge evidence hash mismatch: expected {evidence_id}, got {actual_id}"
+            )));
+        }
+        Ok(evidence)
+    }
+
+    pub fn load_application_da_external_blob_challenge_evidence_records(
+        &self,
+    ) -> Result<Vec<DaExternalBlobChallengeEvidence>, StorageError> {
+        let mut evidence_records = Vec::new();
+        for path in sorted_bin_paths(&self.application_da_external_blob_challenges_path())? {
+            let evidence: DaExternalBlobChallengeEvidence = read_json(&path)?;
+            evidence.validate().map_err(da_error)?;
+            ensure_file_name_matches_id(&path, &evidence.evidence_hash().map_err(da_error)?)?;
+            evidence_records.push(evidence);
+        }
+        Ok(evidence_records)
+    }
+
     pub fn commit_application_da_certificate(
         &self,
         certificate: &ApplicationDaAvailabilityCertificate,
@@ -3870,6 +4156,23 @@ impl FileStorage {
         self.application_da_path().join("repairs")
     }
 
+    fn application_da_external_blob_lifecycle_path(&self) -> PathBuf {
+        self.application_da_path().join("external_blob_lifecycle")
+    }
+
+    fn application_da_external_blob_provider_health_path(&self) -> PathBuf {
+        self.application_da_path()
+            .join("external_blob_provider_health")
+    }
+
+    fn application_da_external_blob_repairs_path(&self) -> PathBuf {
+        self.application_da_path().join("external_blob_repairs")
+    }
+
+    fn application_da_external_blob_challenges_path(&self) -> PathBuf {
+        self.application_da_path().join("external_blob_challenges")
+    }
+
     fn application_da_id_owners_path(&self) -> PathBuf {
         self.application_da_path().join("id_owners")
     }
@@ -3909,6 +4212,26 @@ impl FileStorage {
     fn application_da_repair_record_path(&self, record_id: &str) -> PathBuf {
         self.application_da_repairs_path()
             .join(format!("{}.bin", file_safe_id(record_id)))
+    }
+
+    fn application_da_external_blob_lifecycle_record_path(&self, record_id: &str) -> PathBuf {
+        self.application_da_external_blob_lifecycle_path()
+            .join(format!("{}.bin", file_safe_id(record_id)))
+    }
+
+    fn application_da_external_blob_provider_health_record_path(&self, record_id: &str) -> PathBuf {
+        self.application_da_external_blob_provider_health_path()
+            .join(format!("{}.bin", file_safe_id(record_id)))
+    }
+
+    fn application_da_external_blob_repair_job_path(&self, job_id: &str) -> PathBuf {
+        self.application_da_external_blob_repairs_path()
+            .join(format!("{}.bin", file_safe_id(job_id)))
+    }
+
+    fn application_da_external_blob_challenge_evidence_path(&self, evidence_id: &str) -> PathBuf {
+        self.application_da_external_blob_challenges_path()
+            .join(format!("{}.bin", file_safe_id(evidence_id)))
     }
 
     fn application_da_id_owner_path(&self, application_id: &DaApplicationId) -> PathBuf {
@@ -4628,6 +4951,16 @@ fn sorted_bin_paths(path: &Path) -> Result<Vec<PathBuf>, StorageError> {
     }
     paths.sort();
     Ok(paths)
+}
+
+fn ensure_file_name_matches_id(path: &Path, id: &str) -> Result<(), StorageError> {
+    let expected_file_name = format!("{}.bin", file_safe_id(id));
+    if path.file_name().and_then(|name| name.to_str()) != Some(expected_file_name.as_str()) {
+        return Err(StorageError::CorruptData(
+            "storage record filename does not match canonical record hash".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -5612,6 +5945,171 @@ mod tests {
         assert_eq!(stats.application_profile_lifecycle_record_bytes, 0);
         assert!(stats.application_index_file_count > 0);
         assert!(stats.application_index_bytes > 0);
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn persists_application_da_external_blob_operational_records() {
+        use detta_da::DaExternalBlobAdapter;
+
+        let dir = temp_dir("application-da-external-blob-operational-records");
+        let storage = FileStorage::open(&dir).unwrap();
+        let bytes = b"avatar bytes";
+        let reference = detta_da::IpfsAdapter::default()
+            .commit_uploaded_blob(
+                "bafyavatar",
+                "image/png",
+                bytes,
+                Some("pin.provider".into()),
+                None,
+            )
+            .unwrap();
+        let retrieval = detta_da::verify_external_blob_retrieval(
+            &reference,
+            None,
+            "validator-2",
+            Some("pin.provider".into()),
+            10,
+        )
+        .unwrap();
+        let lifecycle = DaExternalBlobLifecycleRecord::new(
+            reference.clone(),
+            detta_da::DaExternalBlobLifecycleStage::Pinned,
+            detta_da::DaExternalBlobLifecycleStatus::Active,
+            Some("pin.provider".into()),
+            Some("pin-1".into()),
+            8,
+            "validator-1",
+            None,
+        )
+        .unwrap();
+        let health = DaExternalBlobProviderHealthRecord::new(
+            detta_da::DaExternalBlobBackend::Ipfs,
+            "pin.provider",
+            10,
+            detta_da::DaExternalBlobProviderHealthStatus::Unavailable,
+            false,
+            None,
+            Some("timeout".into()),
+            "validator-2",
+        )
+        .unwrap();
+        let repair = DaExternalBlobRepairJob::new(
+            reference.clone(),
+            vec![
+                detta_da::DaExternalBlobBackend::Ipfs,
+                detta_da::DaExternalBlobBackend::Arweave,
+            ],
+            detta_da::DaExternalBlobRepairJobStatus::Open,
+            "repin unavailable avatar",
+            11,
+            11,
+            Some("operator-1".into()),
+            vec![retrieval.report_hash().unwrap()],
+            vec![detta_da::DaExternalBlobRepairAction::Repin {
+                backend: detta_da::DaExternalBlobBackend::Ipfs,
+                provider: "backup.pin.provider".into(),
+            }],
+        )
+        .unwrap();
+        let challenge = detta_da::DaExternalBlobAvailabilityChallenge::new(
+            reference,
+            Some("pin.provider".into()),
+            "validator-3",
+            10,
+            14,
+            "blob unavailable",
+        )
+        .unwrap();
+        let evidence = DaExternalBlobChallengeEvidence::unavailable(
+            challenge,
+            "validator-4",
+            12,
+            vec![retrieval],
+            vec![health.clone()],
+            Some(repair.clone()),
+        )
+        .unwrap();
+
+        let lifecycle_id = storage
+            .commit_application_da_external_blob_lifecycle_record(&lifecycle)
+            .unwrap();
+        let health_id = storage
+            .commit_application_da_external_blob_provider_health_record(&health)
+            .unwrap();
+        let repair_id = storage
+            .commit_application_da_external_blob_repair_job(&repair)
+            .unwrap();
+        let evidence_id = storage
+            .commit_application_da_external_blob_challenge_evidence(&evidence)
+            .unwrap();
+
+        assert_eq!(
+            storage
+                .load_application_da_external_blob_lifecycle_record(&lifecycle_id)
+                .unwrap(),
+            lifecycle
+        );
+        assert_eq!(
+            storage
+                .load_application_da_external_blob_provider_health_record(&health_id)
+                .unwrap(),
+            health
+        );
+        assert_eq!(
+            storage
+                .load_application_da_external_blob_repair_job(&repair_id)
+                .unwrap(),
+            repair
+        );
+        assert_eq!(
+            storage
+                .load_application_da_external_blob_challenge_evidence(&evidence_id)
+                .unwrap(),
+            evidence
+        );
+        assert_eq!(
+            storage
+                .load_application_da_external_blob_lifecycle_records()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            storage
+                .load_application_da_external_blob_provider_health_records()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            storage
+                .load_application_da_external_blob_repair_jobs()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            storage
+                .load_application_da_external_blob_challenge_evidence_records()
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let stats = storage.da_storage_stats().unwrap();
+        assert_eq!(stats.application_external_blob_lifecycle_record_count, 1);
+        assert_eq!(
+            stats.application_external_blob_provider_health_record_count,
+            1
+        );
+        assert_eq!(stats.application_external_blob_repair_job_count, 1);
+        assert_eq!(stats.application_external_blob_challenge_evidence_count, 1);
+        assert!(stats.application_external_blob_lifecycle_record_bytes > 0);
+        assert!(stats.application_external_blob_provider_health_record_bytes > 0);
+        assert!(stats.application_external_blob_repair_job_bytes > 0);
+        assert!(stats.application_external_blob_challenge_evidence_bytes > 0);
 
         fs::remove_dir_all(dir).unwrap();
     }

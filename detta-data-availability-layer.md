@@ -194,6 +194,36 @@ calls `verify_external_blob_record` or the matching adapter's
 `verify_record_blob`. Verification rejects wrong backends, noncanonical record
 JSON, invalid URI schemes, size mismatches, and hash mismatches.
 
+External blob operations are now modeled as canonical, hash-addressed records:
+
+- `DaExternalBlobLifecycleRecord` tracks upload, pin, archive, Filecoin deal,
+  repair, and deprecation stages for a committed external reference.
+- `DaExternalBlobProviderHealthRecord` records provider reachability checks,
+  latency, degradation, and unavailable-provider failure reasons.
+- `DaExternalBlobRepairJob` records repair intent and planned actions such as
+  repinning, mirroring to another backend, renewing a Filecoin deal, or
+  replacing a provider.
+- `DaExternalBlobRetrievalVerification` is the retrieval verification API: it
+  binds verifier, provider, height, returned byte count, returned content hash,
+  and success/failure reason to the committed `DaExternalBlobReference`.
+- `DaExternalBlobReplicationPolicy` and
+  `verify_external_blob_replication_policy` support multi-backend policies such
+  as `ipfs-plus-arweave-archive`.
+- `DaExternalBlobAvailabilityChallenge` and
+  `DaExternalBlobChallengeEvidence` create DA challenge evidence when a
+  committed external blob becomes unavailable, returns incorrect bytes, or fails
+  a replication policy.
+
+Persistent nodes store blob lifecycle, provider health, repair-job, and
+challenge-evidence records under `da/applications`, so they are included in the
+application DA root, storage stats, backups, and restore flows. RPC clients can
+record and fetch those append-only logs with the
+`record_application_da_external_blob_*` and
+`get_application_da_external_blob_*` methods, and can call
+`verify_application_da_external_blob_retrieval` to verify retrieved bytes
+against a committed external-reference record without making DeTTa DA serve
+large blob data directly.
+
 This keeps DeTTa DA responsible for durable publication, indexing,
 certification, and audit commitments, while blob networks handle large-byte
 storage and serving.

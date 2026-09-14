@@ -4,8 +4,13 @@ use detta_da::{
     ApplicationDaAvailabilityCertificate, ApplicationDaNamespaceSection, ApplicationDaPayload,
     ApplicationDaShareSet, DaApplicationCoordinate, DaApplicationId, DaApplicationProfile,
     DaApplicationRetentionClass, DaApplicationRoot, DaAvailabilityCertificate, DaAvailabilityVote,
-    DaChallengeEvidence, DaNamespace, DaPayloadKind, DaRecordEncoding, DaRecordEnvelope,
-    DaShareChallenge, DaShareChallengeResponse,
+    DaChallengeEvidence, DaExternalBlobAdapter, DaExternalBlobAvailabilityChallenge,
+    DaExternalBlobBackend, DaExternalBlobChallengeEvidence, DaExternalBlobLifecycleRecord,
+    DaExternalBlobLifecycleStage, DaExternalBlobLifecycleStatus,
+    DaExternalBlobProviderHealthRecord, DaExternalBlobProviderHealthStatus,
+    DaExternalBlobRepairAction, DaExternalBlobRepairJob, DaExternalBlobRepairJobStatus,
+    DaNamespace, DaPayloadKind, DaRecordEncoding, DaRecordEnvelope, DaShareChallenge,
+    DaShareChallengeResponse, IpfsAdapter,
 };
 use detta_e2e::client::TcpRpcClient;
 use detta_e2e::fixtures::{
@@ -176,6 +181,87 @@ fn public_rpc_method_coverage_guard_calls_every_openapi_method() {
     app_profile_v2.profile_version = 2;
     app_profile_v2.profile_name = "Social Demo DA v2".into();
     let app_profile_v2_id = app_profile_v2.profile_id().unwrap();
+    let blob_bytes = b"coverage avatar bytes".to_vec();
+    let blob_adapter = IpfsAdapter::default();
+    let blob_reference = blob_adapter
+        .commit_uploaded_blob(
+            "bafycoverageavatar",
+            "image/png",
+            &blob_bytes,
+            Some("pin.provider".into()),
+            None,
+        )
+        .unwrap();
+    let blob_record = blob_adapter
+        .reference_record("social.media.reference", &blob_reference, None, None)
+        .unwrap();
+    let blob_failed_retrieval = detta_da::verify_external_blob_retrieval(
+        &blob_reference,
+        None,
+        "validator-2",
+        Some("pin.provider".into()),
+        6,
+    )
+    .unwrap();
+    let blob_lifecycle = DaExternalBlobLifecycleRecord::new(
+        blob_reference.clone(),
+        DaExternalBlobLifecycleStage::Pinned,
+        DaExternalBlobLifecycleStatus::Active,
+        Some("pin.provider".into()),
+        Some("pin-coverage-1".into()),
+        5,
+        "validator-1",
+        None,
+    )
+    .unwrap();
+    let blob_lifecycle_id = blob_lifecycle.record_hash().unwrap();
+    let blob_health = DaExternalBlobProviderHealthRecord::new(
+        DaExternalBlobBackend::Ipfs,
+        "pin.provider",
+        6,
+        DaExternalBlobProviderHealthStatus::Unavailable,
+        false,
+        None,
+        Some("coverage timeout".into()),
+        "validator-2",
+    )
+    .unwrap();
+    let blob_health_id = blob_health.record_hash().unwrap();
+    let blob_repair = DaExternalBlobRepairJob::new(
+        blob_reference.clone(),
+        vec![DaExternalBlobBackend::Ipfs, DaExternalBlobBackend::Arweave],
+        DaExternalBlobRepairJobStatus::Open,
+        "coverage repin and archive",
+        7,
+        7,
+        Some("operator-1".into()),
+        vec![blob_failed_retrieval.report_hash().unwrap()],
+        vec![DaExternalBlobRepairAction::Repin {
+            backend: DaExternalBlobBackend::Ipfs,
+            provider: "backup.pin.provider".into(),
+        }],
+    )
+    .unwrap();
+    let blob_repair_id = blob_repair.job_hash().unwrap();
+    let blob_challenge = DaExternalBlobAvailabilityChallenge::new(
+        blob_reference,
+        Some("pin.provider".into()),
+        "validator-3",
+        6,
+        10,
+        "coverage blob unavailable",
+    )
+    .unwrap();
+    let blob_evidence = DaExternalBlobChallengeEvidence::unavailable(
+        blob_challenge,
+        "validator-4",
+        8,
+        vec![blob_failed_retrieval],
+        vec![blob_health.clone()],
+        Some(blob_repair.clone()),
+    )
+    .unwrap();
+    let blob_evidence_id = blob_evidence.evidence_hash().unwrap();
 
     let (addr, server) = spawn_tcp_persistent_node(node).unwrap();
     let mut client = TcpRpcClient::connect(addr).unwrap();
@@ -374,6 +460,99 @@ fn public_rpc_method_coverage_guard_calls_every_openapi_method() {
         &mut client,
         &mut covered,
         RpcRequest::GetApplicationDaProfileLifecycleRecords,
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::RecordApplicationDaExternalBlobLifecycle {
+            record: Box::new(blob_lifecycle),
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::RecordApplicationDaExternalBlobProviderHealth {
+            record: Box::new(blob_health),
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::RecordApplicationDaExternalBlobRepairJob {
+            job: Box::new(blob_repair),
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::RecordApplicationDaExternalBlobChallengeEvidence {
+            evidence: Box::new(blob_evidence),
+        },
+    );
+    match call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::VerifyApplicationDaExternalBlobRetrieval {
+            record: Box::new(blob_record),
+            blob_bytes: Some(blob_bytes),
+            verifier: "validator-1".into(),
+            provider: Some("pin.provider".into()),
+            verified_at_height: 9,
+        },
+    ) {
+        RpcResult::ApplicationDaExternalBlobRetrievalVerification(report) => {
+            assert!(report.available);
+            assert!(report.hash_verified);
+        }
+        result => panic!("expected external blob retrieval verification, got {result:?}"),
+    }
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetApplicationDaExternalBlobLifecycleRecord {
+            record_id: blob_lifecycle_id,
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetApplicationDaExternalBlobLifecycleRecords,
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetApplicationDaExternalBlobProviderHealthRecord {
+            record_id: blob_health_id,
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetApplicationDaExternalBlobProviderHealthRecords,
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetApplicationDaExternalBlobRepairJob {
+            job_id: blob_repair_id,
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetApplicationDaExternalBlobRepairJobs,
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetApplicationDaExternalBlobChallengeEvidence {
+            evidence_id: blob_evidence_id,
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetApplicationDaExternalBlobChallengeEvidenceRecords,
     );
 
     call_ok(

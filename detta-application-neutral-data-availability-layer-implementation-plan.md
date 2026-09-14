@@ -1030,6 +1030,42 @@ Acceptance:
 - [x] DeTTa-specific DA tests remain green;
 - [x] release gate includes at least one application-neutral DA flow.
 
+### Phase 14: External Blob Backend Integration
+
+- [x] Add `DaExternalBlobAdapter` plus `IpfsAdapter`, `ArweaveAdapter`, and
+  `FilecoinAdapter`.
+- [x] Add canonical `detta.external-blob-reference.v1` records that bind
+  backend, URI, SHA-256 content hash, content type, byte size, provider
+  reference, and availability proof.
+- [x] Add upload/pin/deal lifecycle tracking with
+  `DaExternalBlobLifecycleRecord`.
+- [x] Add provider health-check records with
+  `DaExternalBlobProviderHealthRecord`.
+- [x] Add repair-job records for repin, mirror, deal renewal, and provider
+  replacement workflows.
+- [x] Add retrieval verification reports that record successful and failed
+  verification of provider-returned bytes.
+- [x] Add multi-backend replication policy verification, including the
+  `ipfs-plus-arweave-archive` policy.
+- [x] Add external-blob challenge and challenge-evidence records for
+  unavailable blobs, wrong returned bytes, and insufficient replication.
+- [x] Persist blob lifecycle, provider health, repair jobs, and challenge
+  evidence under the application DA store root.
+- [x] Expose record/verify/fetch RPCs for external blob operational records.
+- [x] Extend E2E RPC coverage so every external blob method is called through a
+  persistent node.
+
+Acceptance:
+
+- [x] application DA can commit large blob references without storing bulk bytes
+  directly in DA payloads;
+- [x] retrieved blob bytes can be verified against a committed reference record;
+- [x] operators can record provider health, repair intent, and challenge
+  evidence in the canonical application DA store;
+- [x] multi-backend policies can prove whether IPFS plus archive storage is
+  satisfied;
+- [x] unavailable committed blobs produce hash-bound challenge evidence.
+
 ## 17. Migration Strategy
 
 1. Add generic types without changing current DA v1 serialization.

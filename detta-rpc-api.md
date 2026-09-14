@@ -225,6 +225,21 @@ Persistent validator nodes additionally handle:
   against its registered active profile, encode Reed-Solomon shares, persist
   payload/manifest/shares, create an application DA availability certificate,
   and return manifest/certificate hashes plus payload/share commitments.
+- `record_application_da_external_blob_lifecycle`: append a hash-bound
+  external blob lifecycle record for upload, pin, archive, Filecoin deal,
+  repair, or deprecation state.
+- `record_application_da_external_blob_provider_health`: append a provider
+  reachability, latency, degradation, or unavailable-provider health record.
+- `record_application_da_external_blob_repair_job`: append a repair job with
+  planned actions such as repinning, mirroring to another backend, renewing a
+  deal, or replacing a provider.
+- `record_application_da_external_blob_challenge_evidence`: append evidence
+  that a committed external blob became unavailable, returned the wrong bytes,
+  or failed a multi-backend replication policy.
+- `verify_application_da_external_blob_retrieval`: parse a committed external
+  blob reference record and verify supplied bytes against its committed size
+  and SHA-256 content hash. This returns a retrieval verification report rather
+  than storing bulk blob data in DeTTa DA.
 - `get_application_da_profile`: fetch an application DA profile registration by
   profile id.
 - `get_application_da_id_owner`: fetch the owner/delegate record for a claimed
@@ -285,6 +300,22 @@ Persistent validator nodes additionally handle:
   certificates for a profile id.
 - `get_application_da_certificate_index_by_coordinate`: list application
   certificates for an exact application coordinate.
+- `get_application_da_external_blob_lifecycle_record`: fetch an external blob
+  lifecycle record by canonical record hash.
+- `get_application_da_external_blob_lifecycle_records`: list stored external
+  blob lifecycle records.
+- `get_application_da_external_blob_provider_health_record`: fetch an external
+  blob provider health record by canonical record hash.
+- `get_application_da_external_blob_provider_health_records`: list stored
+  external blob provider health records.
+- `get_application_da_external_blob_repair_job`: fetch an external blob repair
+  job by canonical job hash.
+- `get_application_da_external_blob_repair_jobs`: list stored external blob
+  repair jobs.
+- `get_application_da_external_blob_challenge_evidence`: fetch external blob
+  challenge evidence by canonical evidence hash.
+- `get_application_da_external_blob_challenge_evidence_records`: list stored
+  external blob challenge evidence records.
 - `propose_validator_set_metadata_update`: submit a signed validator-set update
   authorization.
 - `get_validator_set_metadata_update_status`: report pending authorization

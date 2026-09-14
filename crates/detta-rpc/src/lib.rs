@@ -10,8 +10,11 @@ use detta_da::{
     ApplicationDaAvailabilityCertificate, ApplicationDaManifest, ApplicationDaNamespaceSection,
     ApplicationDaPayload, ApplicationDaSampleProofBundle, DaApplicationCoordinate, DaApplicationId,
     DaApplicationProfile, DaApplicationProfileRegistration, DaApplicationRetentionClass,
-    DaAvailabilityCertificate, DaChallengeRecord, DaCodingFault, DaCodingFraudProof, DaManifest,
-    DaNamespaceSection, DaPayload, DaProductionProfile, DaSampleProofBundle, DaShare,
+    DaAvailabilityCertificate, DaChallengeRecord, DaCodingFault, DaCodingFraudProof,
+    DaExternalBlobChallengeEvidence, DaExternalBlobLifecycleRecord,
+    DaExternalBlobProviderHealthRecord, DaExternalBlobRepairJob,
+    DaExternalBlobRetrievalVerification, DaManifest, DaNamespaceSection, DaPayload,
+    DaProductionProfile, DaRecordEnvelope, DaSampleProofBundle, DaShare,
 };
 use detta_evaluator::{
     canonical_script_source, parse_restricted_script, restricted_evaluator_fixture_inventory,
@@ -53,6 +56,8 @@ pub const DEFAULT_MAX_APPLICATION_DA_RPC_TOTAL_SHARES: u32 = 4096;
 pub const DEFAULT_MAX_APPLICATION_DA_RPC_CERTIFICATE_SIGNERS: usize = 256;
 pub const DEFAULT_MAX_APPLICATION_DA_RPC_LIFECYCLE_REASON_BYTES: usize = 4096;
 pub const DEFAULT_MAX_APPLICATION_DA_RPC_OWNER_DELEGATES: usize = 64;
+pub const DEFAULT_MAX_APPLICATION_DA_RPC_EXTERNAL_BLOB_RECORD_BYTES: usize = 256 * 1024;
+pub const DEFAULT_MAX_APPLICATION_DA_RPC_EXTERNAL_BLOB_VERIFICATION_BYTES: usize = 512 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RpcError {
@@ -83,6 +88,7 @@ pub enum RpcError {
     ApplicationDaIdAlreadyClaimed,
     ApplicationDaIdOwnerNotFound,
     ApplicationDaIdUnauthorized,
+    ApplicationDaExternalBlobRecordNotFound,
     ProofNotFound,
     SubscriptionNotFound,
     Execution(ExecutionError),
@@ -281,6 +287,25 @@ pub enum RpcRequest {
         parity_share_count: u32,
         certificate_signers: Vec<String>,
     },
+    RecordApplicationDaExternalBlobLifecycle {
+        record: Box<DaExternalBlobLifecycleRecord>,
+    },
+    RecordApplicationDaExternalBlobProviderHealth {
+        record: Box<DaExternalBlobProviderHealthRecord>,
+    },
+    RecordApplicationDaExternalBlobRepairJob {
+        job: Box<DaExternalBlobRepairJob>,
+    },
+    RecordApplicationDaExternalBlobChallengeEvidence {
+        evidence: Box<DaExternalBlobChallengeEvidence>,
+    },
+    VerifyApplicationDaExternalBlobRetrieval {
+        record: Box<DaRecordEnvelope>,
+        blob_bytes: Option<Vec<u8>>,
+        verifier: String,
+        provider: Option<String>,
+        verified_at_height: u64,
+    },
     ImportBlock {
         block: Box<Block>,
     },
@@ -445,6 +470,22 @@ pub enum RpcRequest {
     GetApplicationDaCertificateIndexByCoordinate {
         coordinate: DaApplicationCoordinate,
     },
+    GetApplicationDaExternalBlobLifecycleRecord {
+        record_id: String,
+    },
+    GetApplicationDaExternalBlobLifecycleRecords,
+    GetApplicationDaExternalBlobProviderHealthRecord {
+        record_id: String,
+    },
+    GetApplicationDaExternalBlobProviderHealthRecords,
+    GetApplicationDaExternalBlobRepairJob {
+        job_id: String,
+    },
+    GetApplicationDaExternalBlobRepairJobs,
+    GetApplicationDaExternalBlobChallengeEvidence {
+        evidence_id: String,
+    },
+    GetApplicationDaExternalBlobChallengeEvidenceRecords,
     GetNodeHealth,
     GetOperatorMetrics,
     GetOperatorAlerts,
@@ -655,6 +696,52 @@ impl RpcRequest {
                 }
                 Ok(())
             }
+            RpcRequest::RecordApplicationDaExternalBlobLifecycle { record } => {
+                validate_rpc_serialized_value(
+                    record,
+                    DEFAULT_MAX_APPLICATION_DA_RPC_EXTERNAL_BLOB_RECORD_BYTES,
+                )
+            }
+            RpcRequest::RecordApplicationDaExternalBlobProviderHealth { record } => {
+                validate_rpc_serialized_value(
+                    record,
+                    DEFAULT_MAX_APPLICATION_DA_RPC_EXTERNAL_BLOB_RECORD_BYTES,
+                )
+            }
+            RpcRequest::RecordApplicationDaExternalBlobRepairJob { job } => {
+                validate_rpc_serialized_value(
+                    job,
+                    DEFAULT_MAX_APPLICATION_DA_RPC_EXTERNAL_BLOB_RECORD_BYTES,
+                )
+            }
+            RpcRequest::RecordApplicationDaExternalBlobChallengeEvidence { evidence } => {
+                validate_rpc_serialized_value(
+                    evidence,
+                    DEFAULT_MAX_APPLICATION_DA_RPC_EXTERNAL_BLOB_RECORD_BYTES,
+                )
+            }
+            RpcRequest::VerifyApplicationDaExternalBlobRetrieval {
+                record,
+                blob_bytes,
+                verifier,
+                provider,
+                ..
+            } => {
+                validate_rpc_serialized_value(
+                    record,
+                    DEFAULT_MAX_APPLICATION_DA_RPC_EXTERNAL_BLOB_RECORD_BYTES,
+                )?;
+                if blob_bytes.as_ref().map_or(0, Vec::len)
+                    > DEFAULT_MAX_APPLICATION_DA_RPC_EXTERNAL_BLOB_VERIFICATION_BYTES
+                {
+                    return Err(RpcError::RequestBoundsExceeded);
+                }
+                validate_lifecycle_text(verifier, DEFAULT_MAX_DA_RPC_ID_BYTES)?;
+                if let Some(provider) = provider {
+                    validate_lifecycle_text(provider, DEFAULT_MAX_DA_RPC_ID_BYTES)?;
+                }
+                Ok(())
+            }
             RpcRequest::GetDaManifest { manifest_hash }
             | RpcRequest::GetDaPayload { manifest_hash }
             | RpcRequest::GetDaStatus { manifest_hash }
@@ -705,6 +792,16 @@ impl RpcRequest {
             }
             RpcRequest::GetApplicationDaCertificate { certificate_hash } => {
                 validate_da_rpc_id(certificate_hash)
+            }
+            RpcRequest::GetApplicationDaExternalBlobLifecycleRecord { record_id }
+            | RpcRequest::GetApplicationDaExternalBlobProviderHealthRecord { record_id } => {
+                validate_da_rpc_id(record_id)
+            }
+            RpcRequest::GetApplicationDaExternalBlobRepairJob { job_id } => {
+                validate_da_rpc_id(job_id)
+            }
+            RpcRequest::GetApplicationDaExternalBlobChallengeEvidence { evidence_id } => {
+                validate_da_rpc_id(evidence_id)
             }
             RpcRequest::GetApplicationDaManifestIndexByApplicationRoot { application_root } => {
                 validate_da_rpc_id(application_root)
@@ -771,7 +868,11 @@ impl RpcRequest {
             | RpcRequest::ActivateApplicationDaProfile { .. }
             | RpcRequest::DeprecateApplicationDaProfile { .. }
             | RpcRequest::RecordApplicationDaProfileMigration { .. }
-            | RpcRequest::ProduceApplicationDaBatch { .. } => {
+            | RpcRequest::ProduceApplicationDaBatch { .. }
+            | RpcRequest::RecordApplicationDaExternalBlobLifecycle { .. }
+            | RpcRequest::RecordApplicationDaExternalBlobProviderHealth { .. }
+            | RpcRequest::RecordApplicationDaExternalBlobRepairJob { .. }
+            | RpcRequest::RecordApplicationDaExternalBlobChallengeEvidence { .. } => {
                 Some(RpcRateLimitBucket::ApplicationDaSubmission)
             }
             RpcRequest::GetApplicationDaProfile { .. }
@@ -800,7 +901,16 @@ impl RpcRequest {
             | RpcRequest::GetApplicationDaCertificateIndexByManifest { .. }
             | RpcRequest::GetApplicationDaCertificateIndexByApplicationId { .. }
             | RpcRequest::GetApplicationDaCertificateIndexByProfileId { .. }
-            | RpcRequest::GetApplicationDaCertificateIndexByCoordinate { .. } => {
+            | RpcRequest::GetApplicationDaCertificateIndexByCoordinate { .. }
+            | RpcRequest::VerifyApplicationDaExternalBlobRetrieval { .. }
+            | RpcRequest::GetApplicationDaExternalBlobLifecycleRecord { .. }
+            | RpcRequest::GetApplicationDaExternalBlobLifecycleRecords
+            | RpcRequest::GetApplicationDaExternalBlobProviderHealthRecord { .. }
+            | RpcRequest::GetApplicationDaExternalBlobProviderHealthRecords
+            | RpcRequest::GetApplicationDaExternalBlobRepairJob { .. }
+            | RpcRequest::GetApplicationDaExternalBlobRepairJobs
+            | RpcRequest::GetApplicationDaExternalBlobChallengeEvidence { .. }
+            | RpcRequest::GetApplicationDaExternalBlobChallengeEvidenceRecords => {
                 Some(RpcRateLimitBucket::ApplicationDaRetrieval)
             }
             _ => None,
@@ -1322,6 +1432,15 @@ pub enum RpcResult {
     ApplicationDaRetentionPrunePlan(Box<ApplicationDaRetentionPrunePlanReport>),
     ApplicationDaManifestIndex(Vec<ApplicationDaManifestIndexEntry>),
     ApplicationDaCertificateIndex(Vec<ApplicationDaCertificateIndexEntry>),
+    ApplicationDaExternalBlobLifecycleRecord(Box<DaExternalBlobLifecycleRecord>),
+    ApplicationDaExternalBlobLifecycleRecords(Vec<DaExternalBlobLifecycleRecord>),
+    ApplicationDaExternalBlobProviderHealthRecord(Box<DaExternalBlobProviderHealthRecord>),
+    ApplicationDaExternalBlobProviderHealthRecords(Vec<DaExternalBlobProviderHealthRecord>),
+    ApplicationDaExternalBlobRepairJob(Box<DaExternalBlobRepairJob>),
+    ApplicationDaExternalBlobRepairJobs(Vec<DaExternalBlobRepairJob>),
+    ApplicationDaExternalBlobChallengeEvidence(Box<DaExternalBlobChallengeEvidence>),
+    ApplicationDaExternalBlobChallengeEvidenceRecords(Vec<DaExternalBlobChallengeEvidence>),
+    ApplicationDaExternalBlobRetrievalVerification(Box<DaExternalBlobRetrievalVerification>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -2013,7 +2132,12 @@ impl RpcService {
             | RpcRequest::ActivateApplicationDaProfile { .. }
             | RpcRequest::DeprecateApplicationDaProfile { .. }
             | RpcRequest::RecordApplicationDaProfileMigration { .. }
-            | RpcRequest::ProduceApplicationDaBatch { .. } => {
+            | RpcRequest::ProduceApplicationDaBatch { .. }
+            | RpcRequest::RecordApplicationDaExternalBlobLifecycle { .. }
+            | RpcRequest::RecordApplicationDaExternalBlobProviderHealth { .. }
+            | RpcRequest::RecordApplicationDaExternalBlobRepairJob { .. }
+            | RpcRequest::RecordApplicationDaExternalBlobChallengeEvidence { .. }
+            | RpcRequest::VerifyApplicationDaExternalBlobRetrieval { .. } => {
                 Err(RpcError::UnsupportedNodeMethod).into()
             }
             RpcRequest::ImportBlock { block } => self
@@ -2193,6 +2317,14 @@ impl RpcService {
             | RpcRequest::GetApplicationDaCertificateIndexByApplicationId { .. }
             | RpcRequest::GetApplicationDaCertificateIndexByProfileId { .. }
             | RpcRequest::GetApplicationDaCertificateIndexByCoordinate { .. }
+            | RpcRequest::GetApplicationDaExternalBlobLifecycleRecord { .. }
+            | RpcRequest::GetApplicationDaExternalBlobLifecycleRecords
+            | RpcRequest::GetApplicationDaExternalBlobProviderHealthRecord { .. }
+            | RpcRequest::GetApplicationDaExternalBlobProviderHealthRecords
+            | RpcRequest::GetApplicationDaExternalBlobRepairJob { .. }
+            | RpcRequest::GetApplicationDaExternalBlobRepairJobs
+            | RpcRequest::GetApplicationDaExternalBlobChallengeEvidence { .. }
+            | RpcRequest::GetApplicationDaExternalBlobChallengeEvidenceRecords
             | RpcRequest::GetValidatorSetMetadataUpdateStatus { .. }
             | RpcRequest::GetValidatorSetMetadataAuditRecords { .. }
             | RpcRequest::GetSnapshotImportAuditRecords { .. }
@@ -2554,6 +2686,9 @@ fn rpc_error_code(error: &RpcError) -> &'static str {
         RpcError::ApplicationDaIdAlreadyClaimed => "rpc.application_da_id_already_claimed",
         RpcError::ApplicationDaIdOwnerNotFound => "rpc.application_da_id_owner_not_found",
         RpcError::ApplicationDaIdUnauthorized => "rpc.application_da_id_unauthorized",
+        RpcError::ApplicationDaExternalBlobRecordNotFound => {
+            "rpc.application_da_external_blob_record_not_found"
+        }
         RpcError::ProofNotFound => "rpc.proof_not_found",
         RpcError::SubscriptionNotFound => "rpc.subscription_not_found",
         RpcError::Execution(ExecutionError::UpgradeNotFound) => "execution.upgrade_not_found",
@@ -2659,6 +2794,9 @@ fn rpc_error_message(error: &RpcError) -> &'static str {
         RpcError::ApplicationDaIdAlreadyClaimed => "application DA id is already claimed",
         RpcError::ApplicationDaIdOwnerNotFound => "application DA id owner was not found",
         RpcError::ApplicationDaIdUnauthorized => "caller is not authorized for application DA id",
+        RpcError::ApplicationDaExternalBlobRecordNotFound => {
+            "application DA external blob record was not found"
+        }
         RpcError::ProofNotFound => "proof was not found",
         RpcError::SubscriptionNotFound => "subscription was not found",
         RpcError::Execution(ExecutionError::UpgradeNotFound) => "upgrade was not found",
@@ -2891,6 +3029,11 @@ mod tests {
             "deprecate_application_da_profile",
             "record_application_da_profile_migration",
             "produce_application_da_batch",
+            "record_application_da_external_blob_lifecycle",
+            "record_application_da_external_blob_provider_health",
+            "record_application_da_external_blob_repair_job",
+            "record_application_da_external_blob_challenge_evidence",
+            "verify_application_da_external_blob_retrieval",
             "import_block",
             "get_transaction",
             "get_receipt",
@@ -2946,6 +3089,14 @@ mod tests {
             "get_application_da_certificate_index_by_application_id",
             "get_application_da_certificate_index_by_profile_id",
             "get_application_da_certificate_index_by_coordinate",
+            "get_application_da_external_blob_lifecycle_record",
+            "get_application_da_external_blob_lifecycle_records",
+            "get_application_da_external_blob_provider_health_record",
+            "get_application_da_external_blob_provider_health_records",
+            "get_application_da_external_blob_repair_job",
+            "get_application_da_external_blob_repair_jobs",
+            "get_application_da_external_blob_challenge_evidence",
+            "get_application_da_external_blob_challenge_evidence_records",
             "get_node_health",
             "get_operator_metrics",
             "get_operator_alerts",

@@ -11,17 +11,19 @@ use detta_da::{
     derive_application_sample_schedule, derive_sample_schedule, prove_application_namespace,
     prove_application_share_inclusion, prove_namespace, prove_share_inclusion,
     validate_production_block_payload, verify_application_light_client_samples,
-    verify_application_share_against_manifest, verify_light_client_samples,
-    verify_share_against_manifest, ApplicationDaAvailabilityCertificate, ApplicationDaManifest,
-    ApplicationDaNamespaceSection, ApplicationDaPayload, ApplicationDaSampleProofBundle,
-    ApplicationDaShareSet, CheckpointDemoDaValidator, DaApplicationId, DaApplicationProfile,
+    verify_application_share_against_manifest, verify_external_blob_retrieval,
+    verify_light_client_samples, verify_share_against_manifest,
+    ApplicationDaAvailabilityCertificate, ApplicationDaManifest, ApplicationDaNamespaceSection,
+    ApplicationDaPayload, ApplicationDaSampleProofBundle, ApplicationDaShareSet,
+    CheckpointDemoDaValidator, DaApplicationId, DaApplicationProfile,
     DaApplicationProfileRegistration, DaApplicationProfileStatus, DaApplicationRoot,
     DaApplicationValidationMode, DaApplicationValidator, DaAvailabilityCertificate,
     DaAvailabilityVote, DaChallengeEvidence, DaChallengeRecord, DaCodingFraudProof, DaError,
-    DaManifest, DaNamespace, DaNamespaceSection, DaPayload, DaPayloadKind, DaProductionProfile,
-    DaRecord, DaRecordEncoding, DaRecordEnvelope, DaSampleProof, DaSampleProofBundle, DaShare,
-    DaShareChallenge, DaShareChallengeResponse, DaShareSet, DettaDefiDaValidator,
-    OpaqueApplicationValidator, SchemaApplicationValidator, SocialDemoDaValidator,
+    DaExternalBlobReference, DaManifest, DaNamespace, DaNamespaceSection, DaPayload, DaPayloadKind,
+    DaProductionProfile, DaRecord, DaRecordEncoding, DaRecordEnvelope, DaSampleProof,
+    DaSampleProofBundle, DaShare, DaShareChallenge, DaShareChallengeResponse, DaShareSet,
+    DettaDefiDaValidator, OpaqueApplicationValidator, SchemaApplicationValidator,
+    SocialDemoDaValidator,
 };
 use detta_network::{Envelope, InMemoryTransport, NetworkError, NetworkMessage, TcpProtocolStream};
 use detta_protocol::{
@@ -1354,6 +1356,73 @@ impl PersistentValidatorNode {
                     NodeError::Rpc(error) => Err(error).into(),
                     error => node_rpc_error_response(error),
                 }),
+            RpcRequest::RecordApplicationDaExternalBlobLifecycle { record } => self
+                .storage
+                .commit_application_da_external_blob_lifecycle_record(record.as_ref())
+                .and_then(|record_id| {
+                    self.storage
+                        .load_application_da_external_blob_lifecycle_record(&record_id)
+                })
+                .map(|record| RpcResult::ApplicationDaExternalBlobLifecycleRecord(Box::new(record)))
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
+            RpcRequest::RecordApplicationDaExternalBlobProviderHealth { record } => self
+                .storage
+                .commit_application_da_external_blob_provider_health_record(record.as_ref())
+                .and_then(|record_id| {
+                    self.storage
+                        .load_application_da_external_blob_provider_health_record(&record_id)
+                })
+                .map(|record| {
+                    RpcResult::ApplicationDaExternalBlobProviderHealthRecord(Box::new(record))
+                })
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
+            RpcRequest::RecordApplicationDaExternalBlobRepairJob { job } => self
+                .storage
+                .commit_application_da_external_blob_repair_job(job.as_ref())
+                .and_then(|job_id| {
+                    self.storage
+                        .load_application_da_external_blob_repair_job(&job_id)
+                })
+                .map(|job| RpcResult::ApplicationDaExternalBlobRepairJob(Box::new(job)))
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
+            RpcRequest::RecordApplicationDaExternalBlobChallengeEvidence { evidence } => self
+                .storage
+                .commit_application_da_external_blob_challenge_evidence(evidence.as_ref())
+                .and_then(|evidence_id| {
+                    self.storage
+                        .load_application_da_external_blob_challenge_evidence(&evidence_id)
+                })
+                .map(|evidence| {
+                    RpcResult::ApplicationDaExternalBlobChallengeEvidence(Box::new(evidence))
+                })
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
+            RpcRequest::VerifyApplicationDaExternalBlobRetrieval {
+                record,
+                blob_bytes,
+                verifier,
+                provider,
+                verified_at_height,
+            } => DaExternalBlobReference::from_record_envelope(record.as_ref())
+                .map_err(NodeError::DataAvailability)
+                .and_then(|reference| {
+                    verify_external_blob_retrieval(
+                        &reference,
+                        blob_bytes.as_deref(),
+                        verifier,
+                        provider,
+                        verified_at_height,
+                    )
+                    .map_err(NodeError::DataAvailability)
+                })
+                .map(|report| {
+                    RpcResult::ApplicationDaExternalBlobRetrievalVerification(Box::new(report))
+                })
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(node_rpc_error_response),
             RpcRequest::ImportBlock { block } => self
                 .import_block(&block)
                 .map(|()| RpcResult::Imported)
@@ -1766,6 +1835,70 @@ impl PersistentValidatorNode {
                 .storage
                 .load_application_da_certificate_index_by_coordinate(&coordinate)
                 .map(RpcResult::ApplicationDaCertificateIndex)
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
+            RpcRequest::GetApplicationDaExternalBlobLifecycleRecord { record_id } => self
+                .storage
+                .maybe_load_application_da_external_blob_lifecycle_record(&record_id)
+                .map(|record| match record {
+                    Some(record) => RpcResponse::Ok(
+                        RpcResult::ApplicationDaExternalBlobLifecycleRecord(Box::new(record)),
+                    ),
+                    None => Err(RpcError::ApplicationDaExternalBlobRecordNotFound).into(),
+                })
+                .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
+            RpcRequest::GetApplicationDaExternalBlobLifecycleRecords => self
+                .storage
+                .load_application_da_external_blob_lifecycle_records()
+                .map(RpcResult::ApplicationDaExternalBlobLifecycleRecords)
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
+            RpcRequest::GetApplicationDaExternalBlobProviderHealthRecord { record_id } => self
+                .storage
+                .maybe_load_application_da_external_blob_provider_health_record(&record_id)
+                .map(|record| match record {
+                    Some(record) => RpcResponse::Ok(
+                        RpcResult::ApplicationDaExternalBlobProviderHealthRecord(Box::new(record)),
+                    ),
+                    None => Err(RpcError::ApplicationDaExternalBlobRecordNotFound).into(),
+                })
+                .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
+            RpcRequest::GetApplicationDaExternalBlobProviderHealthRecords => self
+                .storage
+                .load_application_da_external_blob_provider_health_records()
+                .map(RpcResult::ApplicationDaExternalBlobProviderHealthRecords)
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
+            RpcRequest::GetApplicationDaExternalBlobRepairJob { job_id } => self
+                .storage
+                .maybe_load_application_da_external_blob_repair_job(&job_id)
+                .map(|job| match job {
+                    Some(job) => RpcResponse::Ok(RpcResult::ApplicationDaExternalBlobRepairJob(
+                        Box::new(job),
+                    )),
+                    None => Err(RpcError::ApplicationDaExternalBlobRecordNotFound).into(),
+                })
+                .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
+            RpcRequest::GetApplicationDaExternalBlobRepairJobs => self
+                .storage
+                .load_application_da_external_blob_repair_jobs()
+                .map(RpcResult::ApplicationDaExternalBlobRepairJobs)
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
+            RpcRequest::GetApplicationDaExternalBlobChallengeEvidence { evidence_id } => self
+                .storage
+                .maybe_load_application_da_external_blob_challenge_evidence(&evidence_id)
+                .map(|evidence| match evidence {
+                    Some(evidence) => RpcResponse::Ok(
+                        RpcResult::ApplicationDaExternalBlobChallengeEvidence(Box::new(evidence)),
+                    ),
+                    None => Err(RpcError::ApplicationDaExternalBlobRecordNotFound).into(),
+                })
+                .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
+            RpcRequest::GetApplicationDaExternalBlobChallengeEvidenceRecords => self
+                .storage
+                .load_application_da_external_blob_challenge_evidence_records()
+                .map(RpcResult::ApplicationDaExternalBlobChallengeEvidenceRecords)
                 .map(RpcResponse::Ok)
                 .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
             RpcRequest::GetNodeHealth => RpcResponse::Ok(RpcResult::NodeHealth(Box::new(
