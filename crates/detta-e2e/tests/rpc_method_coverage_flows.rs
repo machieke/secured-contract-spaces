@@ -1,8 +1,11 @@
 use detta_consensus::{EquivocationEvidence, FinalityCertificate};
 use detta_core::{AspectModuleRecord, AspectModuleRoots, Block, GrantKey, Method, StateKey};
 use detta_da::{
-    DaAvailabilityCertificate, DaAvailabilityVote, DaChallengeEvidence, DaShareChallenge,
-    DaShareChallengeResponse,
+    ApplicationDaAvailabilityCertificate, ApplicationDaNamespaceSection, ApplicationDaPayload,
+    ApplicationDaShareSet, DaApplicationCoordinate, DaApplicationId, DaApplicationProfile,
+    DaApplicationRetentionClass, DaApplicationRoot, DaAvailabilityCertificate, DaAvailabilityVote,
+    DaChallengeEvidence, DaNamespace, DaPayloadKind, DaRecordEncoding, DaRecordEnvelope,
+    DaShareChallenge, DaShareChallengeResponse,
 };
 use detta_e2e::client::TcpRpcClient;
 use detta_e2e::fixtures::{
@@ -121,6 +124,54 @@ fn public_rpc_method_coverage_guard_calls_every_openapi_method() {
         )
         .unwrap();
     let aspect_module_hash = aspect_module_record().module_hash;
+    let app_profile = DaApplicationProfile::social_demo_v1();
+    let app_profile_id = app_profile.profile_id().unwrap();
+    let app_coordinate = DaApplicationCoordinate {
+        application_id: DaApplicationId::new("social.demo").unwrap(),
+        stream_id: "main".into(),
+        sequence: 1,
+        epoch: Some(1),
+        parent_hash: None,
+        subject_hash: None,
+    };
+    let app_payload = ApplicationDaPayload::new(
+        &app_profile,
+        app_coordinate.clone(),
+        DaPayloadKind::Batch,
+        None,
+        vec![DaApplicationRoot::new("social.event.log.root", "11".repeat(32)).unwrap()],
+        vec![ApplicationDaNamespaceSection::new(
+            DaNamespace::new("social.feed").unwrap(),
+            vec![DaRecordEnvelope::new(
+                "social.post",
+                1,
+                "application/json",
+                DaRecordEncoding::CanonicalJson,
+                br#"{"author":"alice","post_id":"post-1","text":"coverage"}"#.to_vec(),
+                Some("alice".into()),
+                Some("signature-1".into()),
+            )
+            .unwrap()],
+        )
+        .unwrap()],
+    )
+    .unwrap();
+    let app_share_set =
+        ApplicationDaShareSet::from_payload_reed_solomon(&app_payload, &app_profile, 4, 2).unwrap();
+    let app_storage = detta_storage::FileStorage::open(dir.path()).unwrap();
+    let app_manifest_hash = app_storage
+        .commit_application_da_share_set(&app_share_set, &app_profile)
+        .unwrap();
+    let app_application_root = app_share_set.manifest.application_root.clone().unwrap();
+    let app_certificate = ApplicationDaAvailabilityCertificate::from_manifest(
+        &app_share_set.manifest,
+        &app_profile,
+        vec!["validator-1".into(), "validator-2".into()],
+    )
+    .unwrap();
+    let app_certificate_hash = app_storage
+        .commit_application_da_certificate(&app_certificate)
+        .unwrap();
 
     let (addr, server) = spawn_tcp_persistent_node(node).unwrap();
     let mut client = TcpRpcClient::connect(addr).unwrap();
@@ -397,6 +448,127 @@ fn public_rpc_method_coverage_guard_calls_every_openapi_method() {
         &mut covered,
         RpcRequest::GetDaCertificateIndexByBlockHash {
             block_hash: da_share_set.manifest.block_hash.clone(),
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetApplicationDaProfile {
+            profile_id: app_profile_id.clone(),
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetApplicationDaProfileIndexByApplicationId {
+            application_id: "social.demo".into(),
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetApplicationDaProfileIndexByApplicationVersion {
+            application_id: "social.demo".into(),
+            profile_version: 1,
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetApplicationDaManifest {
+            manifest_hash: app_manifest_hash.clone(),
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetApplicationDaShare {
+            manifest_hash: app_manifest_hash.clone(),
+            index: 0,
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetApplicationDaCertificate {
+            certificate_hash: app_certificate_hash.clone(),
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetApplicationDaPayload {
+            manifest_hash: app_manifest_hash.clone(),
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetApplicationDaManifestIndexByApplicationId {
+            application_id: "social.demo".into(),
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetApplicationDaManifestIndexByProfileId {
+            profile_id: app_profile_id.clone(),
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetApplicationDaManifestIndexByCoordinate {
+            coordinate: app_coordinate.clone(),
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetApplicationDaManifestIndexByNamespace {
+            namespace: "social.feed".into(),
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetApplicationDaManifestIndexByRetentionClass {
+            class: DaApplicationRetentionClass::Warm,
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetApplicationDaManifestIndexByApplicationRoot {
+            application_root: app_application_root,
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetApplicationDaCertificateIndexByManifest {
+            manifest_hash: app_manifest_hash,
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetApplicationDaCertificateIndexByApplicationId {
+            application_id: "social.demo".into(),
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetApplicationDaCertificateIndexByProfileId {
+            profile_id: app_profile_id,
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
+        RpcRequest::GetApplicationDaCertificateIndexByCoordinate {
+            coordinate: app_coordinate,
         },
     );
 

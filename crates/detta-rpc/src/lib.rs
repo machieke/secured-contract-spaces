@@ -7,6 +7,8 @@ use detta_core::{
     StorageProof, Transaction, UpgradeRehearsalReport, ValidatorNode,
 };
 use detta_da::{
+    ApplicationDaAvailabilityCertificate, ApplicationDaManifest, ApplicationDaPayload,
+    DaApplicationCoordinate, DaApplicationProfileRegistration, DaApplicationRetentionClass,
     DaAvailabilityCertificate, DaChallengeRecord, DaCodingFault, DaCodingFraudProof, DaManifest,
     DaNamespaceSection, DaPayload, DaProductionProfile, DaSampleProofBundle, DaShare,
 };
@@ -17,9 +19,10 @@ use detta_evaluator::{
 };
 use detta_protocol::SignedValidatorMessage;
 use detta_storage::{
-    DaCertificateIndexEntry, DaManifestIndexEntry, DaRetentionAuditReport, DaRetentionClass,
-    DaRetentionPrunePlanReport, DaStorageStats, SnapshotImportAuditConfig,
-    SnapshotImportAuditRecord, ValidatorSetMetadataAuditRecord,
+    ApplicationDaCertificateIndexEntry, ApplicationDaManifestIndexEntry,
+    DaApplicationProfileIndexEntry, DaCertificateIndexEntry, DaManifestIndexEntry,
+    DaRetentionAuditReport, DaRetentionClass, DaRetentionPrunePlanReport, DaStorageStats,
+    SnapshotImportAuditConfig, SnapshotImportAuditRecord, ValidatorSetMetadataAuditRecord,
 };
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
@@ -40,6 +43,7 @@ pub const DEFAULT_MAX_DA_RPC_SAMPLE_COUNT: u32 = 128;
 pub const DEFAULT_MAX_DA_RPC_NAMESPACES: usize = 32;
 pub const DEFAULT_MAX_DA_RPC_NAMESPACE_BYTES: usize = 128;
 pub const DEFAULT_MAX_DA_PRODUCE_SHARE_SIZE_BYTES: u32 = 1024 * 1024;
+pub const DEFAULT_MAX_APPLICATION_DA_RPC_COORDINATE_BYTES: usize = 4 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RpcError {
@@ -57,6 +61,11 @@ pub enum RpcError {
     DaCertificateNotFound,
     DaChallengeRecordNotFound,
     DaNamespaceNotFound,
+    ApplicationDaProfileNotFound,
+    ApplicationDaManifestNotFound,
+    ApplicationDaShareNotFound,
+    ApplicationDaCertificateNotFound,
+    ApplicationDaPayloadNotFound,
     ProofNotFound,
     SubscriptionNotFound,
     Execution(ExecutionError),
@@ -297,6 +306,59 @@ pub enum RpcRequest {
     GetDaCertificateIndexByBlockHash {
         block_hash: String,
     },
+    GetApplicationDaProfile {
+        profile_id: String,
+    },
+    GetApplicationDaProfileIndexByApplicationId {
+        application_id: String,
+    },
+    GetApplicationDaProfileIndexByApplicationVersion {
+        application_id: String,
+        profile_version: u32,
+    },
+    GetApplicationDaManifest {
+        manifest_hash: String,
+    },
+    GetApplicationDaShare {
+        manifest_hash: String,
+        index: u32,
+    },
+    GetApplicationDaCertificate {
+        certificate_hash: String,
+    },
+    GetApplicationDaPayload {
+        manifest_hash: String,
+    },
+    GetApplicationDaManifestIndexByApplicationId {
+        application_id: String,
+    },
+    GetApplicationDaManifestIndexByProfileId {
+        profile_id: String,
+    },
+    GetApplicationDaManifestIndexByCoordinate {
+        coordinate: DaApplicationCoordinate,
+    },
+    GetApplicationDaManifestIndexByNamespace {
+        namespace: String,
+    },
+    GetApplicationDaManifestIndexByRetentionClass {
+        class: DaApplicationRetentionClass,
+    },
+    GetApplicationDaManifestIndexByApplicationRoot {
+        application_root: String,
+    },
+    GetApplicationDaCertificateIndexByManifest {
+        manifest_hash: String,
+    },
+    GetApplicationDaCertificateIndexByApplicationId {
+        application_id: String,
+    },
+    GetApplicationDaCertificateIndexByProfileId {
+        profile_id: String,
+    },
+    GetApplicationDaCertificateIndexByCoordinate {
+        coordinate: DaApplicationCoordinate,
+    },
     GetNodeHealth,
     GetOperatorMetrics,
     GetOperatorAlerts,
@@ -431,6 +493,43 @@ impl RpcRequest {
             RpcRequest::GetDaCertificateIndexByManifest { manifest_hash } => {
                 validate_da_rpc_id(manifest_hash)
             }
+            RpcRequest::GetApplicationDaProfile { profile_id }
+            | RpcRequest::GetApplicationDaManifestIndexByProfileId { profile_id }
+            | RpcRequest::GetApplicationDaCertificateIndexByProfileId { profile_id } => {
+                validate_da_rpc_id(profile_id)
+            }
+            RpcRequest::GetApplicationDaManifest { manifest_hash }
+            | RpcRequest::GetApplicationDaPayload { manifest_hash }
+            | RpcRequest::GetApplicationDaCertificateIndexByManifest { manifest_hash } => {
+                validate_da_rpc_id(manifest_hash)
+            }
+            RpcRequest::GetApplicationDaShare { manifest_hash, .. } => {
+                validate_da_rpc_id(manifest_hash)
+            }
+            RpcRequest::GetApplicationDaCertificate { certificate_hash } => {
+                validate_da_rpc_id(certificate_hash)
+            }
+            RpcRequest::GetApplicationDaManifestIndexByApplicationRoot { application_root } => {
+                validate_da_rpc_id(application_root)
+            }
+            RpcRequest::GetApplicationDaProfileIndexByApplicationId { application_id }
+            | RpcRequest::GetApplicationDaProfileIndexByApplicationVersion {
+                application_id, ..
+            }
+            | RpcRequest::GetApplicationDaManifestIndexByApplicationId { application_id }
+            | RpcRequest::GetApplicationDaCertificateIndexByApplicationId { application_id } => {
+                validate_da_rpc_namespace(application_id)
+            }
+            RpcRequest::GetApplicationDaManifestIndexByNamespace { namespace } => {
+                validate_da_rpc_namespace(namespace)
+            }
+            RpcRequest::GetApplicationDaManifestIndexByCoordinate { coordinate }
+            | RpcRequest::GetApplicationDaCertificateIndexByCoordinate { coordinate } => {
+                validate_rpc_serialized_value(
+                    coordinate,
+                    DEFAULT_MAX_APPLICATION_DA_RPC_COORDINATE_BYTES,
+                )
+            }
             RpcRequest::GetDaSampleProofs {
                 manifest_hash,
                 client_randomness,
@@ -463,6 +562,17 @@ fn validate_da_rpc_id(value: &str) -> Result<(), RpcError> {
 
 fn validate_da_rpc_namespace(value: &str) -> Result<(), RpcError> {
     if value.is_empty() || value.len() > DEFAULT_MAX_DA_RPC_NAMESPACE_BYTES {
+        return Err(RpcError::RequestBoundsExceeded);
+    }
+    Ok(())
+}
+
+fn validate_rpc_serialized_value<T: Serialize>(
+    value: &T,
+    max_bytes: usize,
+) -> Result<(), RpcError> {
+    let bytes = serde_json::to_vec(value).map_err(|_| RpcError::RequestBoundsExceeded)?;
+    if bytes.len() > max_bytes {
         return Err(RpcError::RequestBoundsExceeded);
     }
     Ok(())
@@ -879,6 +989,14 @@ pub enum RpcResult {
     DaRetentionPrunePlan(Box<DaRetentionPrunePlanReport>),
     DaManifestIndex(Vec<DaManifestIndexEntry>),
     DaCertificateIndex(Vec<DaCertificateIndexEntry>),
+    ApplicationDaProfile(Box<DaApplicationProfileRegistration>),
+    ApplicationDaProfileIndex(Vec<DaApplicationProfileIndexEntry>),
+    ApplicationDaManifest(Box<ApplicationDaManifest>),
+    ApplicationDaShare(Box<DaShare>),
+    ApplicationDaAvailabilityCertificate(Box<ApplicationDaAvailabilityCertificate>),
+    ApplicationDaPayload(Box<ApplicationDaPayload>),
+    ApplicationDaManifestIndex(Vec<ApplicationDaManifestIndexEntry>),
+    ApplicationDaCertificateIndex(Vec<ApplicationDaCertificateIndexEntry>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1660,6 +1778,23 @@ impl RpcService {
             | RpcRequest::GetDaCertificateIndexByManifest { .. }
             | RpcRequest::GetDaCertificateIndexByHeight { .. }
             | RpcRequest::GetDaCertificateIndexByBlockHash { .. }
+            | RpcRequest::GetApplicationDaProfile { .. }
+            | RpcRequest::GetApplicationDaProfileIndexByApplicationId { .. }
+            | RpcRequest::GetApplicationDaProfileIndexByApplicationVersion { .. }
+            | RpcRequest::GetApplicationDaManifest { .. }
+            | RpcRequest::GetApplicationDaShare { .. }
+            | RpcRequest::GetApplicationDaCertificate { .. }
+            | RpcRequest::GetApplicationDaPayload { .. }
+            | RpcRequest::GetApplicationDaManifestIndexByApplicationId { .. }
+            | RpcRequest::GetApplicationDaManifestIndexByProfileId { .. }
+            | RpcRequest::GetApplicationDaManifestIndexByCoordinate { .. }
+            | RpcRequest::GetApplicationDaManifestIndexByNamespace { .. }
+            | RpcRequest::GetApplicationDaManifestIndexByRetentionClass { .. }
+            | RpcRequest::GetApplicationDaManifestIndexByApplicationRoot { .. }
+            | RpcRequest::GetApplicationDaCertificateIndexByManifest { .. }
+            | RpcRequest::GetApplicationDaCertificateIndexByApplicationId { .. }
+            | RpcRequest::GetApplicationDaCertificateIndexByProfileId { .. }
+            | RpcRequest::GetApplicationDaCertificateIndexByCoordinate { .. }
             | RpcRequest::GetValidatorSetMetadataUpdateStatus { .. }
             | RpcRequest::GetValidatorSetMetadataAuditRecords { .. }
             | RpcRequest::GetSnapshotImportAuditRecords { .. }
@@ -2002,6 +2137,11 @@ fn rpc_error_code(error: &RpcError) -> &'static str {
         RpcError::DaCertificateNotFound => "rpc.da_certificate_not_found",
         RpcError::DaChallengeRecordNotFound => "rpc.da_challenge_record_not_found",
         RpcError::DaNamespaceNotFound => "rpc.da_namespace_not_found",
+        RpcError::ApplicationDaProfileNotFound => "rpc.application_da_profile_not_found",
+        RpcError::ApplicationDaManifestNotFound => "rpc.application_da_manifest_not_found",
+        RpcError::ApplicationDaShareNotFound => "rpc.application_da_share_not_found",
+        RpcError::ApplicationDaCertificateNotFound => "rpc.application_da_certificate_not_found",
+        RpcError::ApplicationDaPayloadNotFound => "rpc.application_da_payload_not_found",
         RpcError::ProofNotFound => "rpc.proof_not_found",
         RpcError::SubscriptionNotFound => "rpc.subscription_not_found",
         RpcError::Execution(ExecutionError::UpgradeNotFound) => "execution.upgrade_not_found",
@@ -2088,6 +2228,11 @@ fn rpc_error_message(error: &RpcError) -> &'static str {
         RpcError::DaCertificateNotFound => "DA certificate was not found",
         RpcError::DaChallengeRecordNotFound => "DA challenge record was not found",
         RpcError::DaNamespaceNotFound => "DA namespace was not found",
+        RpcError::ApplicationDaProfileNotFound => "application DA profile was not found",
+        RpcError::ApplicationDaManifestNotFound => "application DA manifest was not found",
+        RpcError::ApplicationDaShareNotFound => "application DA share was not found",
+        RpcError::ApplicationDaCertificateNotFound => "application DA certificate was not found",
+        RpcError::ApplicationDaPayloadNotFound => "application DA payload was not found",
         RpcError::ProofNotFound => "proof was not found",
         RpcError::SubscriptionNotFound => "subscription was not found",
         RpcError::Execution(ExecutionError::UpgradeNotFound) => "upgrade was not found",
@@ -2303,6 +2448,23 @@ mod tests {
             "get_da_certificate_index_by_manifest",
             "get_da_certificate_index_by_height",
             "get_da_certificate_index_by_block_hash",
+            "get_application_da_profile",
+            "get_application_da_profile_index_by_application_id",
+            "get_application_da_profile_index_by_application_version",
+            "get_application_da_manifest",
+            "get_application_da_share",
+            "get_application_da_certificate",
+            "get_application_da_payload",
+            "get_application_da_manifest_index_by_application_id",
+            "get_application_da_manifest_index_by_profile_id",
+            "get_application_da_manifest_index_by_coordinate",
+            "get_application_da_manifest_index_by_namespace",
+            "get_application_da_manifest_index_by_retention_class",
+            "get_application_da_manifest_index_by_application_root",
+            "get_application_da_certificate_index_by_manifest",
+            "get_application_da_certificate_index_by_application_id",
+            "get_application_da_certificate_index_by_profile_id",
+            "get_application_da_certificate_index_by_coordinate",
             "get_node_health",
             "get_operator_metrics",
             "get_operator_alerts",
@@ -3719,6 +3881,22 @@ mod tests {
                 timestamp: u64::MAX,
                 share_size_bytes: DEFAULT_MAX_DA_PRODUCE_SHARE_SIZE_BYTES,
             },
+            RpcRequest::GetApplicationDaProfile {
+                profile_id: "e".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES),
+            },
+            RpcRequest::GetApplicationDaManifestIndexByApplicationId {
+                application_id: "a".repeat(DEFAULT_MAX_DA_RPC_NAMESPACE_BYTES),
+            },
+            RpcRequest::GetApplicationDaManifestIndexByCoordinate {
+                coordinate: DaApplicationCoordinate {
+                    application_id: detta_da::DaApplicationId::new("social.demo").unwrap(),
+                    stream_id: "main".into(),
+                    sequence: u64::MAX,
+                    epoch: Some(u64::MAX),
+                    parent_hash: None,
+                    subject_hash: None,
+                },
+            },
         ];
 
         for request in corpus {
@@ -3769,6 +3947,22 @@ mod tests {
                 height: 1,
                 timestamp: 1_000,
                 share_size_bytes: DEFAULT_MAX_DA_PRODUCE_SHARE_SIZE_BYTES + 1,
+            },
+            RpcRequest::GetApplicationDaProfile {
+                profile_id: "p".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES + 1),
+            },
+            RpcRequest::GetApplicationDaProfileIndexByApplicationId {
+                application_id: "a".repeat(DEFAULT_MAX_DA_RPC_NAMESPACE_BYTES + 1),
+            },
+            RpcRequest::GetApplicationDaManifestIndexByCoordinate {
+                coordinate: DaApplicationCoordinate {
+                    application_id: detta_da::DaApplicationId::new("social.demo").unwrap(),
+                    stream_id: "s".repeat(DEFAULT_MAX_APPLICATION_DA_RPC_COORDINATE_BYTES),
+                    sequence: 1,
+                    epoch: None,
+                    parent_hash: None,
+                    subject_hash: None,
+                },
             },
         ];
 

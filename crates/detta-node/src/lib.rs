@@ -1302,6 +1302,135 @@ impl PersistentValidatorNode {
                 .map(RpcResult::DaCertificateIndex)
                 .map(RpcResponse::Ok)
                 .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
+            RpcRequest::GetApplicationDaProfile { profile_id } => self
+                .storage
+                .maybe_load_application_da_profile_registration(&profile_id)
+                .map(|registration| match registration {
+                    Some(registration) => {
+                        RpcResponse::Ok(RpcResult::ApplicationDaProfile(Box::new(registration)))
+                    }
+                    None => Err(RpcError::ApplicationDaProfileNotFound).into(),
+                })
+                .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
+            RpcRequest::GetApplicationDaProfileIndexByApplicationId { application_id } => self
+                .storage
+                .load_application_da_profile_index_by_application_id(&application_id)
+                .map(RpcResult::ApplicationDaProfileIndex)
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
+            RpcRequest::GetApplicationDaProfileIndexByApplicationVersion {
+                application_id,
+                profile_version,
+            } => self
+                .storage
+                .load_application_da_profile_index_by_application_version(
+                    &application_id,
+                    profile_version,
+                )
+                .map(RpcResult::ApplicationDaProfileIndex)
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
+            RpcRequest::GetApplicationDaManifest { manifest_hash } => self
+                .storage
+                .maybe_load_application_da_manifest(&manifest_hash)
+                .map(|manifest| match manifest {
+                    Some(manifest) => {
+                        RpcResponse::Ok(RpcResult::ApplicationDaManifest(Box::new(manifest)))
+                    }
+                    None => Err(RpcError::ApplicationDaManifestNotFound).into(),
+                })
+                .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
+            RpcRequest::GetApplicationDaShare {
+                manifest_hash,
+                index,
+            } => self
+                .storage
+                .maybe_load_application_da_share(&manifest_hash, index)
+                .map(|share| match share {
+                    Some(share) => RpcResponse::Ok(RpcResult::ApplicationDaShare(Box::new(share))),
+                    None => Err(RpcError::ApplicationDaShareNotFound).into(),
+                })
+                .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
+            RpcRequest::GetApplicationDaCertificate { certificate_hash } => self
+                .storage
+                .maybe_load_application_da_certificate(&certificate_hash)
+                .map(|certificate| match certificate {
+                    Some(certificate) => RpcResponse::Ok(
+                        RpcResult::ApplicationDaAvailabilityCertificate(Box::new(certificate)),
+                    ),
+                    None => Err(RpcError::ApplicationDaCertificateNotFound).into(),
+                })
+                .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
+            RpcRequest::GetApplicationDaPayload { manifest_hash } => self
+                .storage
+                .maybe_load_application_da_payload(&manifest_hash)
+                .map(|payload| match payload {
+                    Some(payload) => {
+                        RpcResponse::Ok(RpcResult::ApplicationDaPayload(Box::new(payload)))
+                    }
+                    None => Err(RpcError::ApplicationDaPayloadNotFound).into(),
+                })
+                .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
+            RpcRequest::GetApplicationDaManifestIndexByApplicationId { application_id } => self
+                .storage
+                .load_application_da_manifest_index_by_application_id(&application_id)
+                .map(RpcResult::ApplicationDaManifestIndex)
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
+            RpcRequest::GetApplicationDaManifestIndexByProfileId { profile_id } => self
+                .storage
+                .load_application_da_manifest_index_by_profile_id(&profile_id)
+                .map(RpcResult::ApplicationDaManifestIndex)
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
+            RpcRequest::GetApplicationDaManifestIndexByCoordinate { coordinate } => self
+                .storage
+                .load_application_da_manifest_index_by_coordinate(&coordinate)
+                .map(RpcResult::ApplicationDaManifestIndex)
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
+            RpcRequest::GetApplicationDaManifestIndexByNamespace { namespace } => self
+                .storage
+                .load_application_da_manifest_index_by_namespace(&namespace)
+                .map(RpcResult::ApplicationDaManifestIndex)
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
+            RpcRequest::GetApplicationDaManifestIndexByRetentionClass { class } => self
+                .storage
+                .load_application_da_manifest_index_by_retention_class(&class)
+                .map(RpcResult::ApplicationDaManifestIndex)
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
+            RpcRequest::GetApplicationDaManifestIndexByApplicationRoot { application_root } => self
+                .storage
+                .load_application_da_manifest_index_by_application_root(&application_root)
+                .map(RpcResult::ApplicationDaManifestIndex)
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
+            RpcRequest::GetApplicationDaCertificateIndexByManifest { manifest_hash } => self
+                .storage
+                .load_application_da_certificate_index_by_manifest_hash(&manifest_hash)
+                .map(RpcResult::ApplicationDaCertificateIndex)
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
+            RpcRequest::GetApplicationDaCertificateIndexByApplicationId { application_id } => self
+                .storage
+                .load_application_da_certificate_index_by_application_id(&application_id)
+                .map(RpcResult::ApplicationDaCertificateIndex)
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
+            RpcRequest::GetApplicationDaCertificateIndexByProfileId { profile_id } => self
+                .storage
+                .load_application_da_certificate_index_by_profile_id(&profile_id)
+                .map(RpcResult::ApplicationDaCertificateIndex)
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
+            RpcRequest::GetApplicationDaCertificateIndexByCoordinate { coordinate } => self
+                .storage
+                .load_application_da_certificate_index_by_coordinate(&coordinate)
+                .map(RpcResult::ApplicationDaCertificateIndex)
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(|error| node_rpc_error_response(NodeError::Storage(error))),
             RpcRequest::GetNodeHealth => RpcResponse::Ok(RpcResult::NodeHealth(Box::new(
                 self.persistent_node_health(),
             ))),
@@ -4828,6 +4957,212 @@ mod tests {
             Some(certificate_hash.clone())
         );
         assert!(restarted_status.certificate_available);
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn persistent_node_json_rpc_serves_application_da_storage() {
+        let dir = temp_dir("application-da-rpc");
+        let mut node =
+            PersistentValidatorNode::bootstrap("validator-1", seeded_state(), &dir).unwrap();
+        let profile = detta_da::DaApplicationProfile::social_demo_v1();
+        let profile_id = profile.profile_id().unwrap();
+        let coordinate = detta_da::DaApplicationCoordinate {
+            application_id: detta_da::DaApplicationId::new("social.demo").unwrap(),
+            stream_id: "main".into(),
+            sequence: 1,
+            epoch: Some(1),
+            parent_hash: None,
+            subject_hash: None,
+        };
+        let post = detta_da::DaRecordEnvelope::new(
+            "social.post",
+            1,
+            "application/json",
+            detta_da::DaRecordEncoding::CanonicalJson,
+            br#"{"author":"alice","post_id":"post-1","text":"rpc"}"#.to_vec(),
+            Some("alice".into()),
+            Some("signature-1".into()),
+        )
+        .unwrap();
+        let payload = detta_da::ApplicationDaPayload::new(
+            &profile,
+            coordinate.clone(),
+            detta_da::DaPayloadKind::Batch,
+            None,
+            vec![
+                detta_da::DaApplicationRoot::new("social.event.log.root", "11".repeat(32)).unwrap(),
+            ],
+            vec![detta_da::ApplicationDaNamespaceSection::new(
+                DaNamespace::new("social.feed").unwrap(),
+                vec![post],
+            )
+            .unwrap()],
+        )
+        .unwrap();
+        let share_set =
+            detta_da::ApplicationDaShareSet::from_payload_reed_solomon(&payload, &profile, 4, 2)
+                .unwrap();
+        let manifest_hash = node
+            .storage
+            .commit_application_da_share_set(&share_set, &profile)
+            .unwrap();
+        let certificate = detta_da::ApplicationDaAvailabilityCertificate::from_manifest(
+            &share_set.manifest,
+            &profile,
+            vec!["validator-1".into(), "validator-2".into()],
+        )
+        .unwrap();
+        let certificate_hash = node
+            .storage
+            .commit_application_da_certificate(&certificate)
+            .unwrap();
+        let registration = node
+            .storage
+            .load_application_da_profile_registration(&profile_id)
+            .unwrap();
+        let application_root = share_set.manifest.application_root.clone().unwrap();
+
+        assert_eq!(
+            node.handle_rpc_request(RpcRequest::GetApplicationDaProfile {
+                profile_id: profile_id.clone(),
+            }),
+            RpcResponse::Ok(RpcResult::ApplicationDaProfile(Box::new(
+                registration.clone()
+            )))
+        );
+        assert_eq!(
+            node.handle_rpc_request(RpcRequest::GetApplicationDaManifest {
+                manifest_hash: manifest_hash.clone(),
+            }),
+            RpcResponse::Ok(RpcResult::ApplicationDaManifest(Box::new(
+                share_set.manifest.clone()
+            )))
+        );
+        assert_eq!(
+            node.handle_rpc_request(RpcRequest::GetApplicationDaPayload {
+                manifest_hash: manifest_hash.clone(),
+            }),
+            RpcResponse::Ok(RpcResult::ApplicationDaPayload(Box::new(
+                payload.canonicalized()
+            )))
+        );
+        assert_eq!(
+            node.handle_rpc_request(RpcRequest::GetApplicationDaShare {
+                manifest_hash: manifest_hash.clone(),
+                index: 0,
+            }),
+            RpcResponse::Ok(RpcResult::ApplicationDaShare(Box::new(
+                share_set.shares[0].clone()
+            )))
+        );
+        assert_eq!(
+            node.handle_rpc_request(RpcRequest::GetApplicationDaCertificate {
+                certificate_hash: certificate_hash.clone(),
+            }),
+            RpcResponse::Ok(RpcResult::ApplicationDaAvailabilityCertificate(Box::new(
+                certificate.clone()
+            )))
+        );
+
+        let profile_index_response =
+            node.handle_rpc_request(RpcRequest::GetApplicationDaProfileIndexByApplicationId {
+                application_id: "social.demo".into(),
+            });
+        let RpcResponse::Ok(RpcResult::ApplicationDaProfileIndex(profile_index)) =
+            profile_index_response
+        else {
+            panic!("expected application DA profile index, got {profile_index_response:?}");
+        };
+        assert_eq!(profile_index.len(), 1);
+        assert_eq!(profile_index[0].profile_id, profile_id);
+
+        let version_index_response = node.handle_rpc_request(
+            RpcRequest::GetApplicationDaProfileIndexByApplicationVersion {
+                application_id: "social.demo".into(),
+                profile_version: 1,
+            },
+        );
+        let RpcResponse::Ok(RpcResult::ApplicationDaProfileIndex(version_index)) =
+            version_index_response
+        else {
+            panic!("expected application DA profile version index, got {version_index_response:?}");
+        };
+        assert_eq!(version_index.len(), 1);
+
+        let manifest_index_response =
+            node.handle_rpc_request(RpcRequest::GetApplicationDaManifestIndexByCoordinate {
+                coordinate: coordinate.clone(),
+            });
+        let RpcResponse::Ok(RpcResult::ApplicationDaManifestIndex(manifest_index)) =
+            manifest_index_response
+        else {
+            panic!("expected application DA manifest coordinate index, got {manifest_index_response:?}");
+        };
+        assert_eq!(manifest_index.len(), 1);
+        assert_eq!(manifest_index[0].manifest_hash, manifest_hash);
+
+        for request in [
+            RpcRequest::GetApplicationDaManifestIndexByApplicationId {
+                application_id: "social.demo".into(),
+            },
+            RpcRequest::GetApplicationDaManifestIndexByNamespace {
+                namespace: "social.feed".into(),
+            },
+            RpcRequest::GetApplicationDaManifestIndexByRetentionClass {
+                class: detta_da::DaApplicationRetentionClass::Warm,
+            },
+            RpcRequest::GetApplicationDaManifestIndexByApplicationRoot {
+                application_root: application_root.clone(),
+            },
+        ] {
+            let response = node.handle_rpc_request(request);
+            let RpcResponse::Ok(RpcResult::ApplicationDaManifestIndex(index)) = response else {
+                panic!("expected application DA manifest index, got {response:?}");
+            };
+            assert_eq!(index.len(), 1);
+            assert_eq!(index[0].manifest_hash, manifest_hash);
+        }
+
+        for request in [
+            RpcRequest::GetApplicationDaCertificateIndexByManifest {
+                manifest_hash: manifest_hash.clone(),
+            },
+            RpcRequest::GetApplicationDaCertificateIndexByApplicationId {
+                application_id: "social.demo".into(),
+            },
+            RpcRequest::GetApplicationDaCertificateIndexByProfileId {
+                profile_id: registration.profile_id.clone(),
+            },
+            RpcRequest::GetApplicationDaCertificateIndexByCoordinate { coordinate },
+        ] {
+            let response = node.handle_rpc_request(request);
+            let RpcResponse::Ok(RpcResult::ApplicationDaCertificateIndex(index)) = response else {
+                panic!("expected application DA certificate index, got {response:?}");
+            };
+            assert_eq!(index.len(), 1);
+            assert_eq!(index[0].certificate_hash, certificate_hash);
+        }
+
+        assert_eq!(
+            node.handle_rpc_request(RpcRequest::GetApplicationDaProfile {
+                profile_id: "22".repeat(32),
+            }),
+            RpcResponse::Error(RpcErrorBody {
+                code: "rpc.application_da_profile_not_found".into(),
+                message: "application DA profile was not found".into(),
+            })
+        );
+
+        let mut restarted = PersistentValidatorNode::restart("validator-1", &dir).unwrap();
+        assert_eq!(
+            restarted
+                .handle_rpc_request(RpcRequest::GetApplicationDaCertificate { certificate_hash }),
+            RpcResponse::Ok(RpcResult::ApplicationDaAvailabilityCertificate(Box::new(
+                certificate
+            )))
+        );
 
         fs::remove_dir_all(dir).unwrap();
     }

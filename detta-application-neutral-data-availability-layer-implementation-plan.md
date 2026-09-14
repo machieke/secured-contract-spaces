@@ -874,11 +874,24 @@ Acceptance:
 ### Phase 8: RPC And CLI
 
 - [ ] Add RPC types for profile registration and lookup.
+  - [x] Add read-only profile lookup and profile-index RPCs.
+  - [ ] Add profile registration RPC.
 - [ ] Add RPC types for application payload submission and DA batch production.
 - [ ] Add RPC retrieval for application manifests, payloads, namespaces,
   shares, certificates, status, samples, and indexes.
+  - [x] Add read-only manifest, payload, share, certificate, and index
+    retrieval RPCs.
+  - [ ] Add application namespace, status, sample-proof, and reconstruction
+    retrieval RPCs.
 - [ ] Add request bounds and rate-limit hooks.
+  - [x] Add request bounds for application profile ids, application ids, roots,
+    and serialized coordinates.
+  - [ ] Add method-specific rate-limit buckets for application DA submission and
+    retrieval.
 - [ ] Extend OpenAPI schema.
+  - [x] Add application DA method tags to the checked OpenAPI enum.
+  - [ ] Add full component schemas and endpoint examples for application DA
+    request/response bodies.
 - [ ] Extend `detta-client`.
 - [ ] Add social-demo client flow.
 
