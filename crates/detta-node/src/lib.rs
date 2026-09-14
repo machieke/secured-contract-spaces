@@ -1581,6 +1581,11 @@ impl PersistentValidatorNode {
                 .map(|status| RpcResult::ApplicationDaStatus(Box::new(status)))
                 .map(RpcResponse::Ok)
                 .unwrap_or_else(node_rpc_error_response),
+            RpcRequest::GetApplicationDaRepairStatus { manifest_hash } => self
+                .application_da_repair_status(&manifest_hash)
+                .map(|status| RpcResult::ApplicationDaRepairStatus(Box::new(status)))
+                .map(RpcResponse::Ok)
+                .unwrap_or_else(node_rpc_error_response),
             RpcRequest::GetApplicationDaManifestIndexByApplicationId { application_id } => self
                 .storage
                 .load_application_da_manifest_index_by_application_id(&application_id)
@@ -1750,6 +1755,10 @@ impl PersistentValidatorNode {
             .storage
             .load_da_repair_records()
             .map_err(NodeError::Storage)?;
+        let application_da_repair_records = self
+            .storage
+            .load_application_da_repair_records()
+            .map_err(NodeError::Storage)?;
         let slashing_records = self
             .storage
             .load_slashing_records()
@@ -1759,6 +1768,15 @@ impl PersistentValidatorNode {
             .filter(|record| !record.completed)
             .count() as u64;
         let da_oldest_pending_repair_age_blocks = da_repair_records
+            .iter()
+            .filter(|record| !record.completed)
+            .map(|record| height.saturating_sub(record.recorded_at_height))
+            .max();
+        let application_da_pending_repair_record_count = application_da_repair_records
+            .iter()
+            .filter(|record| !record.completed)
+            .count() as u64;
+        let application_da_oldest_pending_repair_age_blocks = application_da_repair_records
             .iter()
             .filter(|record| !record.completed)
             .map(|record| height.saturating_sub(record.recorded_at_height))
@@ -1792,6 +1810,13 @@ impl PersistentValidatorNode {
             da_repair_record_count: da_stats.repair_record_count,
             da_pending_repair_record_count,
             da_oldest_pending_repair_age_blocks,
+            application_da_manifest_count: da_stats.application_manifest_count,
+            application_da_missing_share_count: da_stats.application_missing_share_count,
+            application_da_payload_count: da_stats.application_payload_count,
+            application_da_certificate_count: da_stats.application_certificate_count,
+            application_da_repair_record_count: da_stats.application_repair_record_count,
+            application_da_pending_repair_record_count,
+            application_da_oldest_pending_repair_age_blocks,
             da_total_bytes: da_stats.total_bytes,
         })
     }
@@ -3674,6 +3699,22 @@ impl PersistentValidatorNode {
         })
     }
 
+    pub fn application_da_repair_status(
+        &self,
+        manifest_hash: &str,
+    ) -> Result<DaRepairStatusReport, NodeError> {
+        let status = self.application_da_status(manifest_hash)?;
+        Ok(DaRepairStatusReport {
+            manifest_hash: status.manifest_hash,
+            repair_needed: !status.missing_share_indices.is_empty()
+                || !status.payload_reconstructable,
+            pending_repair_count: status.missing_share_indices.len(),
+            missing_share_indices: status.missing_share_indices,
+            payload_reconstructable: status.payload_reconstructable,
+            reconstruction_error: status.reconstruction_error,
+        })
+    }
+
     pub fn da_repair_status(&self, manifest_hash: &str) -> Result<DaRepairStatusReport, NodeError> {
         let status = self.da_status(manifest_hash)?;
         Ok(DaRepairStatusReport {
@@ -4815,6 +4856,20 @@ fn operator_alerts_for_state(
             "data availability repair records are pending",
         ));
     }
+    if metrics.application_da_missing_share_count > 0 {
+        alerts.push(operator_alert(
+            "operator.application_da_missing_shares",
+            OperatorAlertSeverity::Critical,
+            "application data availability store has missing shares",
+        ));
+    }
+    if metrics.application_da_pending_repair_record_count > 0 {
+        alerts.push(operator_alert(
+            "operator.application_da_repair_pending",
+            OperatorAlertSeverity::Warning,
+            "application data availability repair records are pending",
+        ));
+    }
     if metrics.da_custody_failure_count > 0 {
         alerts.push(operator_alert(
             "operator.da_custody_failure",
@@ -4830,6 +4885,16 @@ fn operator_alerts_for_state(
             "operator.da_repair_lag",
             OperatorAlertSeverity::Warning,
             "data availability repair lag exceeds policy threshold",
+        ));
+    }
+    if metrics
+        .application_da_oldest_pending_repair_age_blocks
+        .is_some_and(|age| age > policy.max_da_repair_lag_blocks)
+    {
+        alerts.push(operator_alert(
+            "operator.application_da_repair_lag",
+            OperatorAlertSeverity::Warning,
+            "application data availability repair lag exceeds policy threshold",
         ));
     }
     if metrics.da_challenge_evidence_count > 0 {
@@ -5836,6 +5901,18 @@ mod tests {
             Some(share_set.manifest.namespace_ranges.len())
         );
         assert!(status.reconstruction_error.is_none());
+
+        let repair_response = node.handle_rpc_request(RpcRequest::GetApplicationDaRepairStatus {
+            manifest_hash: manifest_hash.clone(),
+        });
+        let RpcResponse::Ok(RpcResult::ApplicationDaRepairStatus(repair_status)) = repair_response
+        else {
+            panic!("expected application DA repair status, got {repair_response:?}");
+        };
+        assert!(!repair_status.repair_needed);
+        assert_eq!(repair_status.pending_repair_count, 0);
+        assert!(repair_status.missing_share_indices.is_empty());
+        assert!(repair_status.payload_reconstructable);
 
         let profile_index_response =
             node.handle_rpc_request(RpcRequest::GetApplicationDaProfileIndexByApplicationId {
@@ -7880,6 +7957,16 @@ mod tests {
         assert_eq!(metrics.da_repair_record_count, 0);
         assert_eq!(metrics.da_pending_repair_record_count, 0);
         assert_eq!(metrics.da_oldest_pending_repair_age_blocks, None);
+        assert_eq!(metrics.application_da_manifest_count, 0);
+        assert_eq!(metrics.application_da_missing_share_count, 0);
+        assert_eq!(metrics.application_da_payload_count, 0);
+        assert_eq!(metrics.application_da_certificate_count, 0);
+        assert_eq!(metrics.application_da_repair_record_count, 0);
+        assert_eq!(metrics.application_da_pending_repair_record_count, 0);
+        assert_eq!(
+            metrics.application_da_oldest_pending_repair_age_blocks,
+            None
+        );
         assert_eq!(
             metrics.da_total_bytes,
             node.storage.da_storage_stats().unwrap().total_bytes
@@ -7984,6 +8071,31 @@ mod tests {
                 completed: false,
             })
             .unwrap();
+        let application_profile = detta_da::DaApplicationProfile::checkpoint_demo_v1();
+        let application_payload = checkpoint_demo_application_payload(&application_profile, 2);
+        let application_share_set = detta_da::ApplicationDaShareSet::from_payload_reed_solomon(
+            &application_payload,
+            &application_profile,
+            3,
+            2,
+        )
+        .unwrap();
+        let application_manifest_hash = node
+            .storage
+            .commit_application_da_manifest(&application_share_set.manifest, &application_profile)
+            .unwrap();
+        node.storage
+            .commit_application_da_repair_record(&detta_storage::ApplicationDaRepairRecord {
+                manifest_hash: application_manifest_hash.clone(),
+                application_id: application_share_set.manifest.application_id.clone(),
+                profile_id: application_share_set.manifest.profile_id.clone(),
+                coordinate: application_share_set.manifest.coordinate.clone(),
+                missing_share_indices: vec![0],
+                recorded_at_height: 0,
+                reason: "operator application repair alert test".into(),
+                completed: false,
+            })
+            .unwrap();
 
         assert!(matches!(
             node.handle_rpc_request(RpcRequest::GetBlock { height: 99 }),
@@ -8011,8 +8123,11 @@ mod tests {
                 "operator.rpc_overload",
                 "operator.da_missing_shares",
                 "operator.da_repair_pending",
+                "operator.application_da_missing_shares",
+                "operator.application_da_repair_pending",
                 "operator.da_custody_failure",
                 "operator.da_repair_lag",
+                "operator.application_da_repair_lag",
                 "operator.da_challenge_failure",
             ]
         );
@@ -8037,6 +8152,21 @@ mod tests {
         assert_eq!(report.metrics.da_repair_record_count, 1);
         assert_eq!(report.metrics.da_pending_repair_record_count, 1);
         assert_eq!(report.metrics.da_oldest_pending_repair_age_blocks, Some(1));
+        assert_eq!(report.metrics.application_da_manifest_count, 1);
+        assert_eq!(
+            report.metrics.application_da_missing_share_count,
+            application_share_set.manifest.encoded_share_count as u64
+        );
+        assert_eq!(report.metrics.application_da_payload_count, 0);
+        assert_eq!(report.metrics.application_da_certificate_count, 0);
+        assert_eq!(report.metrics.application_da_repair_record_count, 1);
+        assert_eq!(report.metrics.application_da_pending_repair_record_count, 1);
+        assert_eq!(
+            report
+                .metrics
+                .application_da_oldest_pending_repair_age_blocks,
+            Some(1)
+        );
         assert!(report.metrics.da_total_bytes > 0);
 
         fs::remove_dir_all(dir).unwrap();

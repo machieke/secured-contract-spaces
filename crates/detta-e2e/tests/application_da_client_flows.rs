@@ -155,6 +155,21 @@ fn client_registers_social_profile_produces_batch_and_retrieves_da_evidence() {
     }
 
     match client
+        .ok(RpcRequest::GetApplicationDaRepairStatus {
+            manifest_hash: production.manifest_hash.clone(),
+        })
+        .unwrap()
+    {
+        RpcResult::ApplicationDaRepairStatus(status) => {
+            assert!(!status.repair_needed);
+            assert_eq!(status.pending_repair_count, 0);
+            assert_eq!(status.missing_share_indices, Vec::<u32>::new());
+            assert!(status.payload_reconstructable);
+        }
+        result => panic!("expected application DA repair status, got {result:?}"),
+    }
+
+    match client
         .ok(RpcRequest::GetApplicationDaManifestIndexByCoordinate {
             coordinate: payload.coordinate.clone(),
         })

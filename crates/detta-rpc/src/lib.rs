@@ -361,6 +361,9 @@ pub enum RpcRequest {
     GetApplicationDaStatus {
         manifest_hash: String,
     },
+    GetApplicationDaRepairStatus {
+        manifest_hash: String,
+    },
     GetApplicationDaManifestIndexByApplicationId {
         application_id: String,
     },
@@ -562,6 +565,7 @@ impl RpcRequest {
             | RpcRequest::GetApplicationDaPayload { manifest_hash }
             | RpcRequest::GetApplicationDaReconstructedPayload { manifest_hash }
             | RpcRequest::GetApplicationDaStatus { manifest_hash }
+            | RpcRequest::GetApplicationDaRepairStatus { manifest_hash }
             | RpcRequest::GetApplicationDaCertificateIndexByManifest { manifest_hash } => {
                 validate_da_rpc_id(manifest_hash)
             }
@@ -903,6 +907,13 @@ pub struct OperatorMetricsReport {
     pub da_repair_record_count: u64,
     pub da_pending_repair_record_count: u64,
     pub da_oldest_pending_repair_age_blocks: Option<u64>,
+    pub application_da_manifest_count: u64,
+    pub application_da_missing_share_count: u64,
+    pub application_da_payload_count: u64,
+    pub application_da_certificate_count: u64,
+    pub application_da_repair_record_count: u64,
+    pub application_da_pending_repair_record_count: u64,
+    pub application_da_oldest_pending_repair_age_blocks: Option<u64>,
     pub da_total_bytes: u64,
 }
 
@@ -1109,6 +1120,7 @@ pub enum RpcResult {
     ApplicationDaNamespace(Box<ApplicationDaNamespaceSection>),
     ApplicationDaSampleProofs(Box<ApplicationDaSampleProofBundle>),
     ApplicationDaStatus(Box<ApplicationDaStatusReport>),
+    ApplicationDaRepairStatus(Box<DaRepairStatusReport>),
     ApplicationDaManifestIndex(Vec<ApplicationDaManifestIndexEntry>),
     ApplicationDaCertificateIndex(Vec<ApplicationDaCertificateIndexEntry>),
 }
@@ -1907,6 +1919,7 @@ impl RpcService {
             | RpcRequest::GetApplicationDaNamespace { .. }
             | RpcRequest::GetApplicationDaSampleProofs { .. }
             | RpcRequest::GetApplicationDaStatus { .. }
+            | RpcRequest::GetApplicationDaRepairStatus { .. }
             | RpcRequest::GetApplicationDaManifestIndexByApplicationId { .. }
             | RpcRequest::GetApplicationDaManifestIndexByProfileId { .. }
             | RpcRequest::GetApplicationDaManifestIndexByCoordinate { .. }
@@ -2624,6 +2637,7 @@ mod tests {
             "get_application_da_namespace",
             "get_application_da_sample_proofs",
             "get_application_da_status",
+            "get_application_da_repair_status",
             "get_application_da_manifest_index_by_application_id",
             "get_application_da_manifest_index_by_profile_id",
             "get_application_da_manifest_index_by_coordinate",
@@ -2906,6 +2920,13 @@ mod tests {
                 da_repair_record_count: 0,
                 da_pending_repair_record_count: 0,
                 da_oldest_pending_repair_age_blocks: None,
+                application_da_manifest_count: 0,
+                application_da_missing_share_count: 0,
+                application_da_payload_count: 0,
+                application_da_certificate_count: 0,
+                application_da_repair_record_count: 0,
+                application_da_pending_repair_record_count: 0,
+                application_da_oldest_pending_repair_age_blocks: None,
                 da_total_bytes: 512,
             },
         )));
@@ -2923,6 +2944,11 @@ mod tests {
             r#""da_challenge_evidence_count":0,"da_custody_failure_count":0,"#,
             r#""da_repair_record_count":0,"da_pending_repair_record_count":0,"#,
             r#""da_oldest_pending_repair_age_blocks":null,"#,
+            r#""application_da_manifest_count":0,"application_da_missing_share_count":0,"#,
+            r#""application_da_payload_count":0,"application_da_certificate_count":0,"#,
+            r#""application_da_repair_record_count":0,"#,
+            r#""application_da_pending_repair_record_count":0,"#,
+            r#""application_da_oldest_pending_repair_age_blocks":null,"#,
             r#""da_total_bytes":512}}}"#,
         ]
         .concat();
@@ -2967,6 +2993,13 @@ mod tests {
             da_repair_record_count: 1,
             da_pending_repair_record_count: 1,
             da_oldest_pending_repair_age_blocks: Some(9),
+            application_da_manifest_count: 0,
+            application_da_missing_share_count: 0,
+            application_da_payload_count: 0,
+            application_da_certificate_count: 0,
+            application_da_repair_record_count: 0,
+            application_da_pending_repair_record_count: 0,
+            application_da_oldest_pending_repair_age_blocks: None,
             da_total_bytes: 1024,
         };
         let response = RpcResponse::Ok(RpcResult::OperatorAlerts(Box::new(OperatorAlertReport {
@@ -3007,6 +3040,11 @@ mod tests {
             r#""da_challenge_evidence_count":1,"da_custody_failure_count":1,"#,
             r#""da_repair_record_count":1,"da_pending_repair_record_count":1,"#,
             r#""da_oldest_pending_repair_age_blocks":9,"#,
+            r#""application_da_manifest_count":0,"application_da_missing_share_count":0,"#,
+            r#""application_da_payload_count":0,"application_da_certificate_count":0,"#,
+            r#""application_da_repair_record_count":0,"#,
+            r#""application_da_pending_repair_record_count":0,"#,
+            r#""application_da_oldest_pending_repair_age_blocks":null,"#,
             r#""da_total_bytes":1024},"#,
             r#""alerts":[{"code":"operator.peer_isolation","severity":"critical","#,
             r#""message":"observed peer count is below policy minimum"},"#,
@@ -4078,6 +4116,9 @@ mod tests {
             RpcRequest::GetApplicationDaStatus {
                 manifest_hash: "i".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES),
             },
+            RpcRequest::GetApplicationDaRepairStatus {
+                manifest_hash: "j".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES),
+            },
             RpcRequest::GetApplicationDaManifestIndexByApplicationId {
                 application_id: "a".repeat(DEFAULT_MAX_DA_RPC_NAMESPACE_BYTES),
             },
@@ -4222,6 +4263,9 @@ mod tests {
                 namespaces: vec!["social.feed".into(); DEFAULT_MAX_DA_RPC_NAMESPACES + 1],
             },
             RpcRequest::GetApplicationDaStatus {
+                manifest_hash: "m".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES + 1),
+            },
+            RpcRequest::GetApplicationDaRepairStatus {
                 manifest_hash: "m".repeat(DEFAULT_MAX_DA_RPC_ID_BYTES + 1),
             },
             RpcRequest::GetApplicationDaManifestIndexByCoordinate {

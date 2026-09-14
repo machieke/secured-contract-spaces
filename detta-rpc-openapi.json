@@ -136,6 +136,7 @@
           "get_application_da_namespace",
           "get_application_da_sample_proofs",
           "get_application_da_status",
+          "get_application_da_repair_status",
           "get_application_da_manifest_index_by_application_id",
           "get_application_da_manifest_index_by_profile_id",
           "get_application_da_manifest_index_by_coordinate",

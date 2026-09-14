@@ -97,6 +97,22 @@ pub struct DaStorageStats {
     pub retention_policy_root: Option<String>,
     pub retention_policy_bytes: u64,
     pub retention_policy: Option<DaRetentionPolicyConfig>,
+    pub application_profile_count: u64,
+    pub application_manifest_count: u64,
+    pub application_expected_share_count: u64,
+    pub application_stored_share_count: u64,
+    pub application_missing_share_count: u64,
+    pub application_payload_count: u64,
+    pub application_certificate_count: u64,
+    pub application_repair_record_count: u64,
+    pub application_profile_bytes: u64,
+    pub application_manifest_bytes: u64,
+    pub application_share_bytes: u64,
+    pub application_payload_bytes: u64,
+    pub application_certificate_bytes: u64,
+    pub application_repair_record_bytes: u64,
+    pub application_index_file_count: u64,
+    pub application_index_bytes: u64,
     pub total_bytes: u64,
 }
 
@@ -246,6 +262,18 @@ pub struct DaRepairRecord {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ApplicationDaRepairRecord {
+    pub manifest_hash: String,
+    pub application_id: DaApplicationId,
+    pub profile_id: String,
+    pub coordinate: DaApplicationCoordinate,
+    pub missing_share_indices: Vec<u32>,
+    pub recorded_at_height: u64,
+    pub reason: String,
+    pub completed: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DaManifestIndexEntry {
     pub manifest_hash: String,
     pub chain_id: String,
@@ -384,6 +412,8 @@ impl FileStorage {
             .map_err(io_error)?;
         fs::create_dir_all(root.join("da").join("applications").join("certificates"))
             .map_err(io_error)?;
+        fs::create_dir_all(root.join("da").join("applications").join("repairs"))
+            .map_err(io_error)?;
         fs::create_dir_all(
             root.join("da")
                 .join("applications")
@@ -488,6 +518,13 @@ impl FileStorage {
         let challenges_dir = self.root.join("da").join("challenges");
         let repairs_dir = self.root.join("da").join("repairs");
         let indexes_dir = self.root.join("da").join("indexes");
+        let application_profiles_dir = self.application_da_profiles_path();
+        let application_manifests_dir = self.application_da_manifests_path();
+        let application_shares_dir = self.application_da_path().join("shares");
+        let application_payloads_dir = self.application_da_path().join("payloads");
+        let application_certificates_dir = self.application_da_certificates_path();
+        let application_repairs_dir = self.application_da_repairs_path();
+        let application_indexes_dir = self.application_da_indexes_path();
 
         for entry in fs::read_dir(&manifests_dir).map_err(io_error)? {
             let path = entry.map_err(io_error)?.path();
@@ -531,6 +568,53 @@ impl FileStorage {
         let index_file_stats = directory_file_stats(&indexes_dir)?;
         stats.index_file_count = index_file_stats.file_count;
         stats.index_bytes = index_file_stats.total_bytes;
+        let application_profile_file_stats = directory_file_stats(&application_profiles_dir)?;
+        stats.application_profile_count = application_profile_file_stats.file_count;
+        stats.application_profile_bytes = application_profile_file_stats.total_bytes;
+        for entry in fs::read_dir(&application_manifests_dir).map_err(io_error)? {
+            let path = entry.map_err(io_error)?.path();
+            if path.extension().and_then(|extension| extension.to_str()) != Some("bin") {
+                continue;
+            }
+            let metadata = fs::metadata(&path).map_err(io_error)?;
+            if !metadata.is_file() {
+                continue;
+            }
+            let manifest: ApplicationDaManifest = read_json(&path)?;
+            manifest.validate_structure().map_err(da_error)?;
+            let manifest_hash = manifest.manifest_hash().map_err(da_error)?;
+            stats.application_manifest_count += 1;
+            stats.application_expected_share_count = stats
+                .application_expected_share_count
+                .saturating_add(manifest.encoded_share_count as u64);
+            stats.application_manifest_bytes = stats
+                .application_manifest_bytes
+                .saturating_add(metadata.len());
+            for index in 0..manifest.encoded_share_count {
+                if !self
+                    .application_da_share_path(&manifest_hash, index)
+                    .exists()
+                {
+                    stats.application_missing_share_count += 1;
+                }
+            }
+        }
+        let application_share_file_stats = directory_file_stats(&application_shares_dir)?;
+        stats.application_stored_share_count = application_share_file_stats.file_count;
+        stats.application_share_bytes = application_share_file_stats.total_bytes;
+        let application_payload_file_stats = directory_file_stats(&application_payloads_dir)?;
+        stats.application_payload_count = application_payload_file_stats.file_count;
+        stats.application_payload_bytes = application_payload_file_stats.total_bytes;
+        let application_certificate_file_stats =
+            directory_file_stats(&application_certificates_dir)?;
+        stats.application_certificate_count = application_certificate_file_stats.file_count;
+        stats.application_certificate_bytes = application_certificate_file_stats.total_bytes;
+        let application_repair_file_stats = directory_file_stats(&application_repairs_dir)?;
+        stats.application_repair_record_count = application_repair_file_stats.file_count;
+        stats.application_repair_record_bytes = application_repair_file_stats.total_bytes;
+        let application_index_file_stats = directory_file_stats(&application_indexes_dir)?;
+        stats.application_index_file_count = application_index_file_stats.file_count;
+        stats.application_index_bytes = application_index_file_stats.total_bytes;
         if let Some(retention_policy) = self.maybe_load_da_retention_policy()? {
             let retention_policy_path = self.da_retention_policy_path();
             let metadata = fs::metadata(&retention_policy_path).map_err(io_error)?;
@@ -548,6 +632,13 @@ impl FileStorage {
             .saturating_add(stats.challenge_bytes)
             .saturating_add(stats.repair_record_bytes)
             .saturating_add(stats.index_bytes)
+            .saturating_add(stats.application_profile_bytes)
+            .saturating_add(stats.application_manifest_bytes)
+            .saturating_add(stats.application_share_bytes)
+            .saturating_add(stats.application_payload_bytes)
+            .saturating_add(stats.application_certificate_bytes)
+            .saturating_add(stats.application_repair_record_bytes)
+            .saturating_add(stats.application_index_bytes)
             .saturating_add(stats.retention_policy_bytes);
         Ok(stats)
     }
@@ -1698,6 +1789,56 @@ impl FileStorage {
         let share_set = ApplicationDaShareSet { manifest, shares };
         share_set.verify(&registration.profile).map_err(da_error)?;
         Ok(share_set)
+    }
+
+    pub fn commit_application_da_repair_record(
+        &self,
+        record: &ApplicationDaRepairRecord,
+    ) -> Result<String, StorageError> {
+        let manifest = self.load_application_da_manifest(&record.manifest_hash)?;
+        validate_application_da_repair_record_against_manifest(record, &manifest)?;
+        let record_id = hash_canonical_json(record)?;
+        write_json_atomic(&self.application_da_repair_record_path(&record_id), record)?;
+        Ok(record_id)
+    }
+
+    pub fn load_application_da_repair_record(
+        &self,
+        record_id: &str,
+    ) -> Result<ApplicationDaRepairRecord, StorageError> {
+        let record: ApplicationDaRepairRecord =
+            read_json(&self.application_da_repair_record_path(record_id))?;
+        let actual_id = hash_canonical_json(&record)?;
+        if actual_id != record_id {
+            return Err(StorageError::CorruptData(format!(
+                "application DA repair record hash mismatch: expected {record_id}, got {actual_id}"
+            )));
+        }
+        let manifest = self.load_application_da_manifest(&record.manifest_hash)?;
+        validate_application_da_repair_record_against_manifest(&record, &manifest)?;
+        Ok(record)
+    }
+
+    pub fn load_application_da_repair_records(
+        &self,
+    ) -> Result<Vec<ApplicationDaRepairRecord>, StorageError> {
+        let mut records = Vec::new();
+        for path in sorted_bin_paths(&self.application_da_repairs_path())? {
+            let record: ApplicationDaRepairRecord = read_json(&path)?;
+            let record_id = hash_canonical_json(&record)?;
+            let expected_file_name = format!("{}.bin", file_safe_id(&record_id));
+            if path.file_name().and_then(|name| name.to_str()) != Some(expected_file_name.as_str())
+            {
+                return Err(StorageError::CorruptData(
+                    "application DA repair record filename does not match repair record hash"
+                        .into(),
+                ));
+            }
+            let manifest = self.load_application_da_manifest(&record.manifest_hash)?;
+            validate_application_da_repair_record_against_manifest(&record, &manifest)?;
+            records.push(record);
+        }
+        Ok(records)
     }
 
     pub fn commit_application_da_certificate(
@@ -3171,6 +3312,10 @@ impl FileStorage {
         self.application_da_path().join("certificates")
     }
 
+    fn application_da_repairs_path(&self) -> PathBuf {
+        self.application_da_path().join("repairs")
+    }
+
     fn application_da_profile_path(&self, profile_id: &str) -> PathBuf {
         self.application_da_profiles_path()
             .join(format!("{}.bin", file_safe_id(profile_id)))
@@ -3197,6 +3342,11 @@ impl FileStorage {
             .join("shares")
             .join(file_safe_id(manifest_hash))
             .join(format!("{index}.bin"))
+    }
+
+    fn application_da_repair_record_path(&self, record_id: &str) -> PathBuf {
+        self.application_da_repairs_path()
+            .join(format!("{}.bin", file_safe_id(record_id)))
     }
 
     fn application_da_indexes_path(&self) -> PathBuf {
@@ -3583,6 +3733,36 @@ fn validate_application_da_share_against_manifest(
             "application DA share hash does not match manifest at index {}",
             share.index
         )));
+    }
+    Ok(())
+}
+
+fn validate_application_da_repair_record_against_manifest(
+    record: &ApplicationDaRepairRecord,
+    manifest: &ApplicationDaManifest,
+) -> Result<(), StorageError> {
+    if record.application_id != manifest.application_id
+        || record.profile_id != manifest.profile_id
+        || record.coordinate != manifest.coordinate
+    {
+        return Err(StorageError::CorruptData(
+            "application DA repair record does not match manifest metadata".into(),
+        ));
+    }
+    ensure_sorted_unique_u32(&record.missing_share_indices, "missing_share_indices")?;
+    if record
+        .missing_share_indices
+        .iter()
+        .any(|index| *index >= manifest.encoded_share_count)
+    {
+        return Err(StorageError::CorruptData(
+            "application DA repair record references an out-of-range share".into(),
+        ));
+    }
+    if record.reason.is_empty() {
+        return Err(StorageError::CorruptData(
+            "application DA repair record reason must be nonempty".into(),
+        ));
     }
     Ok(())
 }
@@ -4652,6 +4832,65 @@ mod tests {
                 .unwrap(),
             vec![manifest_entry]
         );
+        let repair_record = ApplicationDaRepairRecord {
+            manifest_hash: manifest_hash.clone(),
+            application_id: share_set.manifest.application_id.clone(),
+            profile_id: share_set.manifest.profile_id.clone(),
+            coordinate: share_set.manifest.coordinate.clone(),
+            missing_share_indices: vec![0, 1],
+            recorded_at_height: 8,
+            reason: "checkpoint archive repair".into(),
+            completed: false,
+        };
+        let repair_id = storage
+            .commit_application_da_repair_record(&repair_record)
+            .unwrap();
+        assert_eq!(
+            storage
+                .load_application_da_repair_record(&repair_id)
+                .unwrap(),
+            repair_record.clone()
+        );
+        assert_eq!(
+            storage.load_application_da_repair_records().unwrap(),
+            vec![repair_record.clone()]
+        );
+        let mut duplicate_share_record = repair_record.clone();
+        duplicate_share_record.missing_share_indices = vec![1, 1];
+        assert!(matches!(
+            storage.commit_application_da_repair_record(&duplicate_share_record),
+            Err(StorageError::CorruptData(_))
+        ));
+        let mut wrong_metadata_record = repair_record.clone();
+        wrong_metadata_record.application_id = DaApplicationId::new("checkpoint.other").unwrap();
+        assert!(matches!(
+            storage.commit_application_da_repair_record(&wrong_metadata_record),
+            Err(StorageError::CorruptData(_))
+        ));
+
+        let stats = storage.da_storage_stats().unwrap();
+        assert_eq!(stats.application_profile_count, 1);
+        assert_eq!(stats.application_manifest_count, 1);
+        assert_eq!(
+            stats.application_expected_share_count,
+            share_set.manifest.encoded_share_count as u64
+        );
+        assert_eq!(
+            stats.application_stored_share_count,
+            share_set.shares.len() as u64
+        );
+        assert_eq!(stats.application_missing_share_count, 0);
+        assert_eq!(stats.application_payload_count, 1);
+        assert_eq!(stats.application_certificate_count, 0);
+        assert_eq!(stats.application_repair_record_count, 1);
+        assert!(stats.application_profile_bytes > 0);
+        assert!(stats.application_manifest_bytes > 0);
+        assert!(stats.application_share_bytes > 0);
+        assert!(stats.application_payload_bytes > 0);
+        assert_eq!(stats.application_certificate_bytes, 0);
+        assert!(stats.application_repair_record_bytes > 0);
+        assert!(stats.application_index_file_count > 0);
+        assert!(stats.application_index_bytes > 0);
 
         fs::remove_dir_all(dir).unwrap();
     }
@@ -5170,6 +5409,13 @@ mod tests {
                 + stats.challenge_bytes
                 + stats.repair_record_bytes
                 + stats.index_bytes
+                + stats.application_profile_bytes
+                + stats.application_manifest_bytes
+                + stats.application_share_bytes
+                + stats.application_payload_bytes
+                + stats.application_certificate_bytes
+                + stats.application_repair_record_bytes
+                + stats.application_index_bytes
                 + stats.retention_policy_bytes
         );
 

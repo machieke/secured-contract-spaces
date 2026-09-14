@@ -224,6 +224,8 @@ Persistent validator nodes additionally handle:
 - `get_application_da_status`: report application manifest availability,
   certificate availability, expected and missing shares, payload
   reconstructability, application id, profile id, and coordinate.
+- `get_application_da_repair_status`: report whether an application DA manifest
+  needs repair based on missing shares or failed payload reconstruction.
 - `get_application_da_manifest_index_by_application_id`: list application
   manifest entries by application id.
 - `get_application_da_manifest_index_by_profile_id`: list application manifest

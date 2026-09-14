@@ -553,6 +553,13 @@ fn public_rpc_method_coverage_guard_calls_every_openapi_method() {
     call_ok(
         &mut client,
         &mut covered,
+        RpcRequest::GetApplicationDaRepairStatus {
+            manifest_hash: app_manifest_hash.clone(),
+        },
+    );
+    call_ok(
+        &mut client,
+        &mut covered,
         RpcRequest::GetApplicationDaManifestIndexByApplicationId {
             application_id: "social.demo".into(),
         },

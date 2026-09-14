@@ -571,6 +571,7 @@ detta-client application-da-reconstructed-payload --manifest-hash <hash>
 detta-client application-da-namespace --manifest-hash <hash> --namespace <name>
 detta-client application-da-sample-proofs --manifest-hash <hash> --client-randomness <bytes> --sample-count <n> [--namespaces <csv>]
 detta-client application-da-status --manifest-hash <hash>
+detta-client application-da-repair-status --manifest-hash <hash>
 ```
 
 ## 11. Storage And Indexes
@@ -937,10 +938,10 @@ Acceptance:
 
 ### Phase 10: Retention, Repair, And Operations
 
-- [ ] Add retention classification from application profiles.
+- [x] Add retention classification from application profiles.
 - [x] Add application DA status reports.
-- [ ] Add application repair records.
-- [ ] Add application DA alerts.
+- [x] Add application repair records.
+- [x] Add application DA alerts.
 - [ ] Update operator manual and DA runbook.
 - [ ] Add retention prune-plan support for application payload/share files.
 
