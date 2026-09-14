@@ -1,8 +1,9 @@
 use detta_consensus::{EquivocationEvidence, FinalityCertificate, ValidatorSetUpdate, Vote};
 use detta_core::{Block, DeTTaState, SnapshotError, StateSnapshot, Transaction};
 use detta_da::{
-    DaAvailabilityCertificate, DaAvailabilityVote, DaChallengeEvidence, DaManifest, DaShare,
-    DaShareChallenge, DaShareChallengeResponse,
+    ApplicationDaAvailabilityCertificate, ApplicationDaManifest, DaAvailabilityCertificate,
+    DaAvailabilityVote, DaChallengeEvidence, DaManifest, DaShare, DaShareChallenge,
+    DaShareChallengeResponse,
 };
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
@@ -136,6 +137,10 @@ pub enum ProtocolMessage {
     DaShareRequest(DaShareRequest),
     DaManifest(Box<DaManifest>),
     DaShare(DaShare),
+    ApplicationDaShareRequest(DaShareRequest),
+    ApplicationDaManifest(Box<ApplicationDaManifest>),
+    ApplicationDaShare(DaShare),
+    ApplicationDaAvailabilityCertificate(Box<ApplicationDaAvailabilityCertificate>),
     DaAvailabilityVote(DaAvailabilityVote),
     DaShareChallenge(DaShareChallenge),
     DaShareChallengeResponse(DaShareChallengeResponse),
@@ -161,6 +166,10 @@ pub enum ProtocolMessageKind {
     DaShareRequest,
     DaManifest,
     DaShare,
+    ApplicationDaShareRequest,
+    ApplicationDaManifest,
+    ApplicationDaShare,
+    ApplicationDaAvailabilityCertificate,
     DaAvailabilityVote,
     DaShareChallenge,
     DaShareChallengeResponse,
@@ -252,6 +261,14 @@ impl ProtocolMessage {
             ProtocolMessage::DaShareRequest(_) => ProtocolMessageKind::DaShareRequest,
             ProtocolMessage::DaManifest(_) => ProtocolMessageKind::DaManifest,
             ProtocolMessage::DaShare(_) => ProtocolMessageKind::DaShare,
+            ProtocolMessage::ApplicationDaShareRequest(_) => {
+                ProtocolMessageKind::ApplicationDaShareRequest
+            }
+            ProtocolMessage::ApplicationDaManifest(_) => ProtocolMessageKind::ApplicationDaManifest,
+            ProtocolMessage::ApplicationDaShare(_) => ProtocolMessageKind::ApplicationDaShare,
+            ProtocolMessage::ApplicationDaAvailabilityCertificate(_) => {
+                ProtocolMessageKind::ApplicationDaAvailabilityCertificate
+            }
             ProtocolMessage::DaAvailabilityVote(_) => ProtocolMessageKind::DaAvailabilityVote,
             ProtocolMessage::DaShareChallenge(_) => ProtocolMessageKind::DaShareChallenge,
             ProtocolMessage::DaShareChallengeResponse(_) => {
@@ -476,6 +493,10 @@ fn claimed_message_signer(message: &ProtocolMessage) -> Option<&str> {
         | ProtocolMessage::DaShareRequest(_)
         | ProtocolMessage::DaManifest(_)
         | ProtocolMessage::DaShare(_)
+        | ProtocolMessage::ApplicationDaShareRequest(_)
+        | ProtocolMessage::ApplicationDaManifest(_)
+        | ProtocolMessage::ApplicationDaShare(_)
+        | ProtocolMessage::ApplicationDaAvailabilityCertificate(_)
         | ProtocolMessage::DaAvailabilityCertificate(_) => None,
     }
 }
@@ -891,8 +912,11 @@ mod tests {
     use super::*;
     use detta_core::{Argument, DeTTaState, Method};
     use detta_da::{
-        DaChallengeEvidence, DaNamespace, DaNamespaceSection, DaPayload, DaRecord,
-        DaShareChallenge, DaShareChallengeResponse, DaShareSet,
+        ApplicationDaAvailabilityCertificate, ApplicationDaNamespaceSection,
+        ApplicationDaPayload, ApplicationDaShareSet, DaApplicationCoordinate, DaApplicationId,
+        DaApplicationProfile, DaApplicationRoot, DaChallengeEvidence, DaNamespace,
+        DaNamespaceSection, DaPayload, DaPayloadKind, DaRecord, DaRecordEncoding,
+        DaRecordEnvelope, DaShareChallenge, DaShareChallengeResponse, DaShareSet,
     };
 
     const TX_ENVELOPE_HEX: &str = "445454410001000000f67b225472616e73616374696f6e223a7b22636861696e5f6964223a2264657474612d6c6f63616c222c2274785f68617368223a22747831222c2273656e646572223a22416c696365222c226e6f6e6365223a312c2276616c69645f756e74696c5f686569676874223a6e756c6c2c22746172676574223a22546f6b656e41222c226d6574686f64223a225472616e73666572222c2261726773223a5b7b225072696e636970616c223a22426f62227d2c7b224173736574223a2255534443227d2c7b22416d6f756e74223a31307d5d2c227369676e61747572655f6f6b223a747275652c22627564676574223a313030303030307d7d";
@@ -957,6 +981,45 @@ mod tests {
         .unwrap();
 
         DaShareSet::from_payload(&payload, "block-hash-1", 64).unwrap()
+    }
+
+    fn application_da_share_set() -> (DaApplicationProfile, ApplicationDaShareSet) {
+        let profile = DaApplicationProfile::social_demo_v1();
+        let coordinate = DaApplicationCoordinate {
+            application_id: DaApplicationId::new("social.demo").unwrap(),
+            stream_id: "main".into(),
+            sequence: 1,
+            epoch: Some(1),
+            parent_hash: None,
+            subject_hash: None,
+        };
+        let post = DaRecordEnvelope::new(
+            "social.post",
+            1,
+            "application/json",
+            DaRecordEncoding::CanonicalJson,
+            br#"{"author":"alice","post_id":"post-1","text":"protocol"}"#.to_vec(),
+            Some("alice".into()),
+            Some("signature-1".into()),
+        )
+        .unwrap();
+        let payload = ApplicationDaPayload::new(
+            &profile,
+            coordinate,
+            DaPayloadKind::Batch,
+            None,
+            vec![DaApplicationRoot::new("social.event.log.root", "11".repeat(32)).unwrap()],
+            vec![ApplicationDaNamespaceSection::new(
+                DaNamespace::new("social.feed").unwrap(),
+                vec![post],
+            )
+            .unwrap()],
+        )
+        .unwrap();
+        (
+            profile.clone(),
+            ApplicationDaShareSet::from_payload_reed_solomon(&payload, &profile, 4, 2).unwrap(),
+        )
     }
 
     fn validator_key(validator_id: &str, seed_byte: u8) -> ValidatorSigningKey {
@@ -1026,6 +1089,35 @@ mod tests {
             ProtocolMessage::DaShare(share_set.shares[0].clone()),
             ProtocolMessage::DaAvailabilityVote(vote),
             ProtocolMessage::DaAvailabilityCertificate(Box::new(certificate)),
+        ];
+
+        for message in messages {
+            let expected_kind = message.kind();
+            let encoded = encode_message(&message).unwrap();
+
+            assert_eq!(expected_kind, decode_message(&encoded).unwrap().kind());
+            assert_eq!(decode_message(&encoded), Ok(message));
+        }
+    }
+
+    #[test]
+    fn application_da_manifest_and_share_messages_round_trip() {
+        let (profile, share_set) = application_da_share_set();
+        let certificate = ApplicationDaAvailabilityCertificate::from_manifest(
+            &share_set.manifest,
+            &profile,
+            vec!["validator-1".into(), "validator-2".into()],
+        )
+        .unwrap();
+        let messages = [
+            ProtocolMessage::ApplicationDaShareRequest(DaShareRequest {
+                manifest_hash: share_set.manifest.manifest_hash().unwrap(),
+                start_index: 0,
+                max_shares: 1,
+            }),
+            ProtocolMessage::ApplicationDaManifest(Box::new(share_set.manifest.clone())),
+            ProtocolMessage::ApplicationDaShare(share_set.shares[0].clone()),
+            ProtocolMessage::ApplicationDaAvailabilityCertificate(Box::new(certificate)),
         ];
 
         for message in messages {
