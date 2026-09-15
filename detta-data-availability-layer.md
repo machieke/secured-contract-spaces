@@ -230,11 +230,13 @@ storage and serving.
 
 ## Client SDK
 
-`crates/detta-client-sdk` provides a small Rust SDK over the external blob and
-application DA APIs. For social avatar flows, `publish_social_avatar` uploads
-the avatar through a pluggable `BlobClient`, commits the canonical external
-reference inside a `social.media` application DA payload, produces the DA batch,
-and records a blob lifecycle record. `retrieve_verified_blob` fetches the
+`crates/detta-client-sdk` provides a Rust SDK over the external blob and
+application DA APIs. `sdk/javascript` provides the browser JavaScript SDK for
+web clients using `fetch` and `crypto.subtle`. For social avatar flows,
+`publish_social_avatar`/`publishSocialAvatar` uploads the avatar through a
+pluggable blob client, commits the canonical external reference inside a
+`social.media` application DA payload, produces the DA batch, and records a blob
+lifecycle record. `retrieve_verified_blob`/`retrieveVerifiedBlob` fetches the
 external bytes, verifies them against the committed reference, and records the
 same retrieval-verification evidence exposed by RPC.
 

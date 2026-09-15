@@ -1,8 +1,13 @@
-# DeTTa Client SDK
+# DeTTa Client SDKs
 
 `crates/detta-client-sdk` is a Rust client SDK for application DA workflows that
 store large bytes in external blob networks and commit only hash-bound
 references in DeTTa DA.
+
+`sdk/javascript` is the browser JavaScript SDK for the same workflow. It uses
+ES modules, browser `fetch`, `crypto.subtle`, and a pluggable blob-client
+interface so web applications can publish and retrieve external blob records
+without depending on the Rust crate.
 
 The first high-level workflow is social avatar publication:
 
@@ -32,7 +37,7 @@ machine. Production adapters should therefore use content-addressed or
 idempotent upload APIs, stable operation references, multi-backend replication,
 and repair jobs.
 
-## Publishing An Avatar
+## Publishing An Avatar From Rust
 
 ```rust
 use detta_client_sdk::{
@@ -61,7 +66,7 @@ The returned `SocialAvatarPublishReceipt` contains the external upload receipt,
 the canonical blob reference, the DA reference record, the produced application
 DA payload, the production report, and the persisted lifecycle record.
 
-## Retrieving An Avatar
+## Retrieving An Avatar From Rust
 
 ```rust
 use detta_client_sdk::BlobRetrievalRequest;
@@ -106,3 +111,32 @@ The lower-level `upload_external_blob_reference` method is available for
 application profiles other than `social.demo`; it uploads the bytes and returns
 a hash-bound `DaRecordEnvelope` that application code can place in its own
 namespaced DA payload.
+
+## Publishing An Avatar From A Browser
+
+```js
+import {
+  DettaClientSdk,
+  FetchRpcClient,
+  socialAvatarPublishRequest,
+} from "@detta/client-sdk";
+
+const rpc = new FetchRpcClient("https://validator.example/rpc");
+const sdk = new DettaClientSdk({ rpc, blobClient });
+
+const file = document.querySelector("input[type=file]").files[0];
+const request = await socialAvatarPublishRequest({
+  author: "alice",
+  avatarId: "avatar-1",
+  sequence: 1,
+  avatarBytes: file,
+  contentType: file.type || "image/png",
+  certificateSigners: ["validator-1", "validator-2"],
+});
+
+const receipt = await sdk.publishSocialAvatar(request);
+```
+
+`blobClient` is supplied by the application and implements `uploadBlob` and
+`fetchBlob`, returning provider locators for IPFS, Arweave, or Filecoin. See
+`sdk/javascript/README.md` for a complete browser example.

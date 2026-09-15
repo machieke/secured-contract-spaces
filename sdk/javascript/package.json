@@ -1,0 +1,21 @@
+{
+  "name": "@detta/client-sdk",
+  "version": "0.2.0",
+  "private": false,
+  "type": "module",
+  "description": "Browser JavaScript SDK for DeTTa application DA and external blob workflows.",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "license": "Apache-2.0",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

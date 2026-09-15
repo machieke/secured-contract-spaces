@@ -130,6 +130,9 @@ The current implementation includes slices for:
 - `detta-client-sdk`, a Rust client SDK that wraps the common external blob +
   application DA workflow into one idempotent publish call and one verified
   retrieval call for application clients such as social avatar upload flows.
+- `sdk/javascript`, a browser JavaScript SDK with fetch-based DeTTa RPC,
+  WebCrypto hashing, pluggable blob providers, and one-call avatar
+  publish/retrieve helpers for web clients.
 
 The production roadmap and progress tracker live in
 `detta-production-implementation-plan.md`.
@@ -185,6 +188,8 @@ SCS specification
   aspect-backed token, and transferring it.
 - `detta-client-sdk.md`: Rust SDK guide for publishing and retrieving
   application DA external blobs, including the social avatar workflow.
+- `sdk/javascript/README.md`: browser JavaScript SDK guide for the same
+  external blob and social avatar workflow.
 - `detta-rpc-api.md`: human-readable DeTTa RPC API documentation.
 - `detta-rpc-openapi.json`: machine-readable RPC API schema.
 - `detta-restricted-evaluator-subset.md`: restricted evaluator subset.
