@@ -232,13 +232,18 @@ storage and serving.
 
 `crates/detta-client-sdk` provides a Rust SDK over the external blob and
 application DA APIs. `sdk/javascript` provides the browser JavaScript SDK for
-web clients using `fetch` and `crypto.subtle`. For social avatar flows,
-`publish_social_avatar`/`publishSocialAvatar` uploads the avatar through a
-pluggable blob client, commits the canonical external reference inside a
-`social.media` application DA payload, produces the DA batch, and records a blob
-lifecycle record. `retrieve_verified_blob`/`retrieveVerifiedBlob` fetches the
-external bytes, verifies them against the committed reference, and records the
-same retrieval-verification evidence exposed by RPC.
+web clients using `fetch` and `crypto.subtle`. The browser SDK's main extension
+point is data-driven: `defineApplication` describes namespaces, record
+policies, root bindings, retention classes, and coordinate templates, then
+`sdk.application(definition)` builds Rust-compatible profiles, record
+envelopes, and canonical application DA batches. Social avatar and PurpleFrenZ
+chat helpers are recipes over that generic layer.
+
+For external blob flows, `uploadExternalBlobReference` uploads bytes through a
+pluggable blob client and commits a canonical external-reference record.
+`retrieve_verified_blob`/`retrieveVerifiedBlob` fetches the external bytes,
+verifies them against the committed reference, and records the same
+retrieval-verification evidence exposed by RPC.
 
 The SDK is operationally atomic and retry-friendly for DeTTa writes: profile
 registration can be retried, duplicate registration is treated as success, the

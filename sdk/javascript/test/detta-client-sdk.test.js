@@ -13,8 +13,10 @@ import {
   PROFILE_ALREADY_REGISTERED_CODE,
   canonicalExternalBlobUri,
   daRecordEnvelope,
+  defineApplication,
   externalBlobRetrievalVerification,
   hashCanonical,
+  profileFromApplicationDefinition,
   purpleFrenzChannelCoordinate,
   purpleFrenzChatProfile,
   purpleFrenzChatProfileId,
@@ -60,6 +62,88 @@ test("generic blob reference upload creates an external content address record",
   assert.equal(receipt.reference.backend, "Arweave");
   assert.match(receipt.reference.uri, /^ar:\/\/sdk-arweave-1-avatar-webp$/);
   assert.equal(receipt.record.encoding, "ExternalContentAddress");
+});
+
+test("data-driven application definitions build profiles records and batches", async () => {
+  const definition = defineApplication({
+    applicationId: "forum.chat",
+    profileName: "Forum chat DA v1",
+    privacyMode: "Encrypted",
+    rootBindings: [{ name: "forum.chat.event.log.root", required: true }],
+    coordinateTemplates: {
+      thread: "base:{chainId}:thread:{threadId}",
+    },
+    namespaces: [
+      {
+        namespace: "forum.feed",
+        requirement: "Required",
+        records: ["forum.message"],
+        minRecords: 1,
+        maxRecords: 1000,
+        retentionClass: "Warm",
+      },
+      {
+        namespace: "forum.media",
+        requirement: "Optional",
+        records: ["forum.media.reference"],
+        minRecords: 0,
+        maxRecords: 1000,
+        retentionClass: "Cold",
+      },
+    ],
+    records: [
+      {
+        schema: "forum.media.reference",
+        namespaces: ["forum.media"],
+        encodings: ["ExternalContentAddress"],
+        maxBytes: 16 * 1024,
+        requireContentHash: true,
+        requireSigner: true,
+      },
+      {
+        schema: "forum.message",
+        namespaces: ["forum.feed"],
+        encodings: ["EncryptedBytes"],
+        maxBytes: 128 * 1024,
+        requireContentHash: true,
+        requireSigner: true,
+      },
+    ],
+    retention: {
+      defaultClass: "Warm",
+      namespaceOverrides: { "forum.media": "Cold" },
+      payloadKindOverrides: { Batch: "Warm" },
+    },
+  });
+  const rpc = new MockRpcClient({ profileAlreadyRegistered: true });
+  const sdk = new DettaClientSdk({
+    rpc,
+    blobClient: InMemoryBlobClient.ipfs("ipfs.local"),
+  });
+  const app = sdk.application(definition);
+  const record = await app.record("forum.message", {
+    bytes: new Uint8Array([4, 5, 6]),
+    signer: "0x1111111111111111111111111111111111111111",
+    signature: "0xsigned",
+  });
+
+  const receipt = await app.publishBatch({
+    coordinate: app.coordinate({
+      template: "thread",
+      values: { chainId: "8453", threadId: "42" },
+      sequence: 1,
+      epoch: 1,
+    }),
+    records: [record],
+    certificateSigners: ["validator-1"],
+  });
+
+  assert.deepEqual(profileFromApplicationDefinition(definition), app.profile());
+  assert.equal(receipt.payload.application_id, "forum.chat");
+  assert.equal(receipt.payload.coordinate.stream_id, "base:8453:thread:42");
+  assert.equal(receipt.payload.application_roots[0].name, "forum.chat.event.log.root");
+  assert.equal(receipt.payload.namespaces[0].namespace, "forum.feed");
+  assert.equal(receipt.production.profile_id, await app.profileId());
 });
 
 test("one-call social avatar publish and verified retrieval use RPC and blob providers", async () => {

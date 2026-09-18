@@ -6,8 +6,9 @@ references in DeTTa DA.
 
 `sdk/javascript` is the browser JavaScript SDK for the same workflow. It uses
 ES modules, browser `fetch`, `crypto.subtle`, and a pluggable blob-client
-interface so web applications can publish and retrieve external blob records
-without depending on the Rust crate.
+interface. Its core extension point is data-driven: applications are described
+with `defineApplication`, which generates Rust-compatible DeTTa application
+profiles, record envelopes, coordinate templates, and canonical DA batches.
 
 The first high-level workflow is social avatar publication:
 
@@ -112,6 +113,51 @@ application profiles other than `social.demo`; it uploads the bytes and returns
 a hash-bound `DaRecordEnvelope` that application code can place in its own
 namespaced DA payload.
 
+## Defining A Browser Application
+
+```js
+import { defineApplication } from "@detta/client-sdk";
+
+export const forumDefinition = defineApplication({
+  applicationId: "forum.chat",
+  profileName: "Forum chat DA v1",
+  rootBindings: [{ name: "forum.chat.event.log.root", required: true }],
+  namespaces: [
+    {
+      namespace: "forum.feed",
+      requirement: "Required",
+      records: ["forum.message"],
+      minRecords: 1,
+      maxRecords: 10000,
+      retentionClass: "Warm",
+    },
+  ],
+  records: [
+    {
+      schema: "forum.message",
+      namespaces: ["forum.feed"],
+      encodings: ["EncryptedBytes"],
+      maxBytes: 262144,
+      requireContentHash: true,
+      requireSigner: true,
+    },
+  ],
+});
+```
+
+```js
+const app = sdk.application(forumDefinition);
+const record = await app.record("forum.message", {
+  bytes: encryptedMessageBytes,
+  signer: smartWalletAddress,
+  signature,
+});
+const receipt = await app.publishBatch({
+  coordinate: app.coordinate({ streamId: "thread:42", sequence: 1, epoch: 1 }),
+  records: [record],
+});
+```
+
 ## Publishing An Avatar From A Browser
 
 ```js
@@ -138,5 +184,7 @@ const receipt = await sdk.publishSocialAvatar(request);
 ```
 
 `blobClient` is supplied by the application and implements `uploadBlob` and
-`fetchBlob`, returning provider locators for IPFS, Arweave, or Filecoin. See
+`fetchBlob`, returning provider locators for IPFS, Arweave, or Filecoin. The
+avatar and PurpleFrenZ helpers are recipes over the same generic
+`ApplicationDefinition` API, not separate SDK architecture. See
 `sdk/javascript/README.md` for a complete browser example.

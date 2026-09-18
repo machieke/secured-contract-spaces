@@ -147,6 +147,219 @@ export class InMemoryBlobClient {
   }
 }
 
+export class ApplicationDefinition {
+  constructor(config) {
+    this.config = normalizeApplicationDefinitionConfig(config);
+    this.recordPolicies = new Map();
+    for (const policy of this.config.records) {
+      this.recordPolicies.set(policy.schema, policy);
+    }
+    this.namespacePolicies = new Map();
+    for (const policy of this.config.namespaces) {
+      this.namespacePolicies.set(policy.namespace, policy);
+    }
+  }
+
+  profile() {
+    return profileFromApplicationDefinition(this.config);
+  }
+
+  async profileId() {
+    return hashCanonical(this.profile());
+  }
+
+  rootName(name = null) {
+    if (name !== null) {
+      return requiredString(name, "rootName");
+    }
+    const root = this.config.roots.find((candidate) => candidate.required) ?? this.config.roots[0];
+    if (!root) {
+      throw new DettaSdkError("application definition has no root binding", {
+        phase: "definition",
+      });
+    }
+    return root.name;
+  }
+
+  coordinate({
+    streamId = null,
+    template = null,
+    values = {},
+    sequence,
+    epoch = null,
+    parentHash = null,
+    subjectHash = null,
+  }) {
+    if (!Number.isSafeInteger(sequence) || sequence <= 0) {
+      throw new DettaSdkError("sequence must be a positive integer", { phase: "input" });
+    }
+    let resolvedStreamId = streamId;
+    if (resolvedStreamId === null) {
+      resolvedStreamId = this.streamId(template, values);
+    }
+    return {
+      application_id: this.config.applicationId,
+      stream_id: requiredString(resolvedStreamId, "streamId"),
+      sequence,
+      epoch,
+      parent_hash: parentHash,
+      subject_hash: subjectHash,
+    };
+  }
+
+  streamId(template, values = {}) {
+    const templateName = requiredString(template, "template");
+    const pattern = this.config.coordinateTemplates[templateName];
+    if (typeof pattern !== "string") {
+      throw new DettaSdkError(`unknown coordinate template ${templateName}`, {
+        phase: "definition",
+      });
+    }
+    return pattern.replace(/\{([A-Za-z0-9_]+)\}/g, (_, key) => {
+      if (!(key in values)) {
+        throw new DettaSdkError(`coordinate template ${templateName} is missing ${key}`, {
+          phase: "input",
+        });
+      }
+      return requiredString(String(values[key]), key);
+    });
+  }
+
+  async record(schema, options = {}) {
+    const policy = this.recordPolicy(schema);
+    const encoding = options.encoding ?? policy.defaultEncoding;
+    const contentType =
+      options.contentType ?? policy.contentType ?? defaultContentTypeForEncoding(encoding);
+    const bytes = await recordInputBytes(options);
+    return daRecordEnvelope({
+      schema,
+      schemaVersion: options.schemaVersion ?? policy.schemaVersion,
+      contentType,
+      encoding,
+      bytes,
+      signer: options.signer ?? null,
+      signature: options.signature ?? null,
+    });
+  }
+
+  recordPolicy(schema) {
+    const policy = this.recordPolicies.get(requiredString(schema, "schema"));
+    if (!policy) {
+      throw new DettaSdkError(`application definition has no record schema ${schema}`, {
+        phase: "definition",
+      });
+    }
+    return policy;
+  }
+
+  namespaceForRecord(record, namespace = null) {
+    if (namespace !== null) {
+      return requiredString(namespace, "namespace");
+    }
+    const policy = this.recordPolicy(record.schema);
+    if (policy.allowedNamespaces.length !== 1) {
+      throw new DettaSdkError(
+        `record schema ${record.schema} requires an explicit namespace`,
+        { phase: "definition" },
+      );
+    }
+    return policy.allowedNamespaces[0];
+  }
+
+  sectionsFromRecords(records) {
+    return canonicalizeApplicationNamespaces(
+      records.map((entry) => {
+        const record = entry.record ?? entry;
+        return {
+          namespace: this.namespaceForRecord(record, entry.namespace ?? null),
+          records: [record],
+        };
+      }),
+    );
+  }
+}
+
+export function defineApplication(config) {
+  return new ApplicationDefinition(config);
+}
+
+export class ApplicationClient {
+  constructor(sdk, definition) {
+    this.sdk = sdk;
+    this.definition =
+      definition instanceof ApplicationDefinition
+        ? definition
+        : defineApplication(definition);
+  }
+
+  profile() {
+    return this.definition.profile();
+  }
+
+  async profileId() {
+    return this.definition.profileId();
+  }
+
+  coordinate(options) {
+    return this.definition.coordinate(options);
+  }
+
+  async record(schema, options = {}) {
+    return this.definition.record(schema, options);
+  }
+
+  async uploadExternalBlobRecord({
+    schema,
+    contentType,
+    blobBytes,
+    suggestedName = null,
+    signer = null,
+    signature = null,
+  }) {
+    this.definition.recordPolicy(schema);
+    return this.sdk.uploadExternalBlobReference({
+      recordSchema: schema,
+      contentType,
+      blobBytes,
+      suggestedName,
+      signer,
+      signature,
+    });
+  }
+
+  async publishBatch({
+    coordinate,
+    records = null,
+    namespaces = null,
+    payloadKind = "Batch",
+    previousPayloadHash = null,
+    rootName = null,
+    dataShareCount = 4,
+    parityShareCount = 2,
+    certificateSigners = ["validator-1"],
+    ensureProfileRegistered = true,
+  }) {
+    const sections =
+      namespaces ?? this.definition.sectionsFromRecords(records ?? []);
+    return this.sdk.publishApplicationBatch({
+      profile: this.definition.profile(),
+      coordinate,
+      namespaces: sections,
+      payloadKind,
+      previousPayloadHash,
+      rootName: this.definition.rootName(rootName),
+      dataShareCount,
+      parityShareCount,
+      certificateSigners,
+      ensureProfileRegistered,
+    });
+  }
+
+  async retrieveVerifiedBlob(request) {
+    return this.sdk.retrieveVerifiedBlob(request);
+  }
+}
+
 export class DettaClientSdk {
   constructor({
     rpc,
@@ -171,6 +384,10 @@ export class DettaClientSdk {
     this.rpc = rpc;
     this.blobClient = blobClient;
     this.maxRpcVerifiedBlobBytes = maxRpcVerifiedBlobBytes;
+  }
+
+  application(definition) {
+    return new ApplicationClient(this, definition);
   }
 
   async uploadExternalBlobReference(request) {
@@ -467,100 +684,97 @@ export async function purpleFrenzChatProfileId() {
   return hashCanonical(purpleFrenzChatProfile());
 }
 
-export function purpleFrenzChatProfile() {
-  return {
-    schema: "detta.da-application-profile.v1",
-    schema_version: 1,
-    application_id: "purplefrenz.chat",
-    profile_version: 1,
-    profile_name: "PurpleFrenZ encrypted channel chat v1",
-    da_profile: daProductionProfileV1(),
-    namespace_policies: [
-      namespacePolicy(
-        "purplefrenz.feed",
-        "Required",
-        [
+export function purpleFrenzChatDefinition() {
+  return defineApplication({
+    applicationId: "purplefrenz.chat",
+    profileVersion: 1,
+    profileName: "PurpleFrenZ encrypted channel chat v1",
+    validationMode: "SchemaDecodableRecords",
+    privacyMode: "Encrypted",
+    rootBindings: [{ name: "purplefrenz.chat.event.log.root", required: true }],
+    coordinateTemplates: {
+      channel: "base:{chainId}:channel:{channelId}",
+    },
+    namespaces: [
+      {
+        namespace: "purplefrenz.feed",
+        requirement: "Required",
+        records: [
           "purplefrenz.edit",
           "purplefrenz.message",
           "purplefrenz.reaction",
           "purplefrenz.tombstone",
         ],
-        1,
-        10000,
-        "Warm",
-      ),
-      namespacePolicy(
-        "purplefrenz.media",
-        "Optional",
-        ["purplefrenz.media.reference"],
-        0,
-        10000,
-        "Cold",
-      ),
+        minRecords: 1,
+        maxRecords: 10000,
+        retentionClass: "Warm",
+      },
+      {
+        namespace: "purplefrenz.media",
+        requirement: "Optional",
+        records: ["purplefrenz.media.reference"],
+        minRecords: 0,
+        maxRecords: 10000,
+        retentionClass: "Cold",
+      },
     ],
-    record_policies: [
-      recordPolicy(
-        "purplefrenz.edit",
-        ["purplefrenz.feed"],
-        ["EncryptedBytes"],
-        256 * 1024,
-        true,
-        true,
-      ),
-      recordPolicy(
-        "purplefrenz.media.reference",
-        ["purplefrenz.media"],
-        ["ExternalContentAddress"],
-        16 * 1024,
-        true,
-        true,
-      ),
-      recordPolicy(
-        "purplefrenz.message",
-        ["purplefrenz.feed"],
-        ["EncryptedBytes"],
-        256 * 1024,
-        true,
-        true,
-      ),
-      recordPolicy(
-        "purplefrenz.reaction",
-        ["purplefrenz.feed"],
-        ["EncryptedBytes"],
-        64 * 1024,
-        true,
-        true,
-      ),
-      recordPolicy(
-        "purplefrenz.tombstone",
-        ["purplefrenz.feed"],
-        ["EncryptedBytes"],
-        64 * 1024,
-        true,
-        true,
-      ),
+    records: [
+      {
+        schema: "purplefrenz.edit",
+        namespaces: ["purplefrenz.feed"],
+        encodings: ["EncryptedBytes"],
+        maxBytes: 256 * 1024,
+        requireContentHash: true,
+        requireSigner: true,
+      },
+      {
+        schema: "purplefrenz.media.reference",
+        namespaces: ["purplefrenz.media"],
+        encodings: ["ExternalContentAddress"],
+        maxBytes: 16 * 1024,
+        requireContentHash: true,
+        requireSigner: true,
+        contentType: "application/json",
+      },
+      {
+        schema: "purplefrenz.message",
+        namespaces: ["purplefrenz.feed"],
+        encodings: ["EncryptedBytes"],
+        maxBytes: 256 * 1024,
+        requireContentHash: true,
+        requireSigner: true,
+      },
+      {
+        schema: "purplefrenz.reaction",
+        namespaces: ["purplefrenz.feed"],
+        encodings: ["EncryptedBytes"],
+        maxBytes: 64 * 1024,
+        requireContentHash: true,
+        requireSigner: true,
+      },
+      {
+        schema: "purplefrenz.tombstone",
+        namespaces: ["purplefrenz.feed"],
+        encodings: ["EncryptedBytes"],
+        maxBytes: 64 * 1024,
+        requireContentHash: true,
+        requireSigner: true,
+      },
     ],
-    coordinate_policy: {
-      max_stream_id_bytes: 128,
-      allow_epoch: true,
-      require_parent_hash: false,
-      require_subject_hash: false,
+    retention: {
+      defaultClass: "Warm",
+      namespaceOverrides: {
+        "purplefrenz.media": "Cold",
+      },
+      payloadKindOverrides: {
+        Batch: "Warm",
+      },
     },
-    root_bindings: [{ name: "purplefrenz.chat.event.log.root", required: true }],
-    retention_policy: {
-      default_class: "Warm",
-      namespace_overrides: [
-        { namespace: "purplefrenz.media", retention_class: "Cold" },
-      ],
-      payload_kind_overrides: [
-        { payload_kind: "Batch", retention_class: "Warm" },
-      ],
-    },
-    validation_mode: "SchemaDecodableRecords",
-    privacy_mode: "Encrypted",
-    max_payload_bytes: 16 * 1024 * 1024,
-    max_records_per_payload: 100000,
-  };
+  });
+}
+
+export function purpleFrenzChatProfile() {
+  return purpleFrenzChatDefinition().profile();
 }
 
 export function purpleFrenzChannelCoordinate({
@@ -577,14 +791,14 @@ export function purpleFrenzChannelCoordinate({
   if (!Number.isSafeInteger(epoch) || epoch <= 0) {
     throw new DettaSdkError("epoch must be a positive integer", { phase: "input" });
   }
-  return {
-    application_id: "purplefrenz.chat",
-    stream_id: `base:8453:channel:${normalizedChannelId}`,
+  return purpleFrenzChatDefinition().coordinate({
+    template: "channel",
+    values: { chainId: "8453", channelId: normalizedChannelId },
     sequence,
     epoch,
-    parent_hash: parentHash,
-    subject_hash: subjectHash,
-  };
+    parentHash,
+    subjectHash,
+  });
 }
 
 export async function purpleFrenzEncryptedRecord({
@@ -605,10 +819,8 @@ export async function purpleFrenzEncryptedRecord({
       phase: "input",
     });
   }
-  return daRecordEnvelope({
+  return purpleFrenzChatDefinition().record(schema, {
     schema,
-    contentType: "application/octet-stream",
-    encoding: "EncryptedBytes",
     bytes: encryptedBytes,
     signer: requiredString(signer, "signer"),
     signature: requiredString(signature, "signature"),
@@ -619,100 +831,102 @@ export async function socialDemoProfileId() {
   return hashCanonical(socialDemoProfile());
 }
 
+export function socialDemoDefinition() {
+  return defineApplication({
+    applicationId: "social.demo",
+    profileVersion: 1,
+    profileName: "Social Demo DA v1",
+    validationMode: "SchemaDecodableRecords",
+    privacyMode: "MixedExplicit",
+    rootBindings: [{ name: "social.event.log.root", required: true }],
+    namespaces: [
+      {
+        namespace: "social.feed",
+        requirement: "Required",
+        records: ["social.post"],
+        minRecords: 1,
+        maxRecords: 10000,
+        retentionClass: "Warm",
+      },
+      {
+        namespace: "social.media",
+        requirement: "Optional",
+        records: ["social.media.reference"],
+        minRecords: 0,
+        maxRecords: 10000,
+        retentionClass: "Cold",
+      },
+      {
+        namespace: "social.moderation",
+        requirement: "Optional",
+        records: ["social.moderation.action"],
+        minRecords: 0,
+        maxRecords: 10000,
+        retentionClass: "Archive",
+      },
+      {
+        namespace: "social.private",
+        requirement: "Optional",
+        records: ["social.private.message"],
+        minRecords: 0,
+        maxRecords: 10000,
+        retentionClass: "Cold",
+      },
+    ],
+    records: [
+      {
+        schema: "social.media.reference",
+        namespaces: ["social.media"],
+        encodings: ["ExternalContentAddress"],
+        maxBytes: 16 * 1024,
+        requireContentHash: true,
+        requireSigner: false,
+        contentType: "application/json",
+      },
+      {
+        schema: "social.moderation.action",
+        namespaces: ["social.moderation"],
+        encodings: ["CanonicalJson"],
+        maxBytes: 64 * 1024,
+        requireContentHash: true,
+        requireSigner: true,
+      },
+      {
+        schema: "social.post",
+        namespaces: ["social.feed"],
+        encodings: ["CanonicalJson"],
+        maxBytes: 256 * 1024,
+        requireContentHash: true,
+        requireSigner: true,
+        contentType: "application/json",
+      },
+      {
+        schema: "social.private.message",
+        namespaces: ["social.private"],
+        encodings: ["EncryptedBytes"],
+        maxBytes: 256 * 1024,
+        requireContentHash: true,
+        requireSigner: true,
+      },
+    ],
+    retention: {
+      defaultClass: "Warm",
+      namespaceOverrides: {
+        "social.media": "Cold",
+        "social.moderation": "Archive",
+        "social.private": "Cold",
+      },
+      payloadKindOverrides: {
+        Batch: "Warm",
+        MediaManifest: "Cold",
+        ModerationLog: "Archive",
+      },
+    },
+  });
+}
+
 export function socialDemoProfile() {
-  return {
-    schema: "detta.da-application-profile.v1",
-    schema_version: 1,
-    application_id: "social.demo",
-    profile_version: 1,
-    profile_name: "Social Demo DA v1",
-    da_profile: daProductionProfileV1(),
-    namespace_policies: [
-      namespacePolicy("social.feed", "Required", ["social.post"], 1, 10000, "Warm"),
-      namespacePolicy(
-        "social.media",
-        "Optional",
-        ["social.media.reference"],
-        0,
-        10000,
-        "Cold",
-      ),
-      namespacePolicy(
-        "social.moderation",
-        "Optional",
-        ["social.moderation.action"],
-        0,
-        10000,
-        "Archive",
-      ),
-      namespacePolicy(
-        "social.private",
-        "Optional",
-        ["social.private.message"],
-        0,
-        10000,
-        "Cold",
-      ),
-    ],
-    record_policies: [
-      recordPolicy(
-        "social.media.reference",
-        ["social.media"],
-        ["ExternalContentAddress"],
-        16 * 1024,
-        true,
-        false,
-      ),
-      recordPolicy(
-        "social.moderation.action",
-        ["social.moderation"],
-        ["CanonicalJson"],
-        64 * 1024,
-        true,
-        true,
-      ),
-      recordPolicy(
-        "social.post",
-        ["social.feed"],
-        ["CanonicalJson"],
-        256 * 1024,
-        true,
-        true,
-      ),
-      recordPolicy(
-        "social.private.message",
-        ["social.private"],
-        ["EncryptedBytes"],
-        256 * 1024,
-        true,
-        true,
-      ),
-    ],
-    coordinate_policy: {
-      max_stream_id_bytes: 128,
-      allow_epoch: true,
-      require_parent_hash: false,
-      require_subject_hash: false,
-    },
-    root_bindings: [{ name: "social.event.log.root", required: true }],
-    retention_policy: {
-      default_class: "Warm",
-      namespace_overrides: [
-        { namespace: "social.media", retention_class: "Cold" },
-        { namespace: "social.moderation", retention_class: "Archive" },
-        { namespace: "social.private", retention_class: "Cold" },
-      ],
-      payload_kind_overrides: [
-        { payload_kind: "Batch", retention_class: "Warm" },
-        { payload_kind: "MediaManifest", retention_class: "Cold" },
-        { payload_kind: "ModerationLog", retention_class: "Archive" },
-      ],
-    },
-    validation_mode: "SchemaDecodableRecords",
-    privacy_mode: "MixedExplicit",
-    max_payload_bytes: 16 * 1024 * 1024,
-    max_records_per_payload: 100000,
-  };
+  return socialDemoDefinition().profile();
 }
 
 export function daProductionProfileV1() {
@@ -1057,6 +1271,213 @@ function externalBlobUriPrefix(backend) {
   }
 }
 
+export function profileFromApplicationDefinition(definition) {
+  const config =
+    definition instanceof ApplicationDefinition
+      ? definition.config
+      : normalizeApplicationDefinitionConfig(definition);
+  return {
+    schema: "detta.da-application-profile.v1",
+    schema_version: 1,
+    application_id: config.applicationId,
+    profile_version: config.profileVersion,
+    profile_name: config.profileName,
+    da_profile: config.daProfile,
+    namespace_policies: config.namespaces.map((policy) =>
+      namespacePolicy(
+        policy.namespace,
+        policy.requirement,
+        policy.allowedRecordSchemas,
+        policy.minRecords,
+        policy.maxRecords,
+        policy.retentionClass,
+      ),
+    ),
+    record_policies: config.records.map((policy) =>
+      recordPolicy(
+        policy.schema,
+        policy.allowedNamespaces,
+        policy.allowedEncodings,
+        policy.maxRecordBytes,
+        policy.requireContentHash,
+        policy.requireSigner,
+        policy.schemaVersion,
+      ),
+    ),
+    coordinate_policy: config.coordinatePolicy,
+    root_bindings: config.roots.map((root) => ({
+      name: root.name,
+      required: root.required,
+    })),
+    retention_policy: {
+      default_class: config.retention.defaultClass,
+      namespace_overrides: config.retention.namespaceOverrides.map((override) => ({
+        namespace: override.namespace,
+        retention_class: override.retentionClass,
+      })),
+      payload_kind_overrides: config.retention.payloadKindOverrides.map((override) => ({
+        payload_kind: override.payloadKind,
+        retention_class: override.retentionClass,
+      })),
+    },
+    validation_mode: config.validationMode,
+    privacy_mode: config.privacyMode,
+    max_payload_bytes: config.maxPayloadBytes,
+    max_records_per_payload: config.maxRecordsPerPayload,
+  };
+}
+
+function normalizeApplicationDefinitionConfig(config) {
+  if (!config || typeof config !== "object") {
+    throw new DettaSdkError("application definition must be an object", {
+      phase: "definition",
+    });
+  }
+  const applicationId = requiredString(
+    config.applicationId ?? config.application_id,
+    "applicationId",
+  );
+  const namespaces = normalizeNamespaceDefinitions(config.namespaces ?? []);
+  const records = normalizeRecordDefinitions(config.records ?? []);
+  const roots = normalizeRootBindings(
+    config.rootBindings ?? config.roots ?? [
+      { name: `${applicationId}.event.log.root`, required: true },
+    ],
+  );
+  return {
+    applicationId,
+    profileVersion: config.profileVersion ?? config.profile_version ?? 1,
+    profileName:
+      config.profileName ?? config.profile_name ?? `${applicationId} application DA v1`,
+    daProfile: config.daProfile ?? config.da_profile ?? daProductionProfileV1(),
+    namespaces,
+    records,
+    coordinatePolicy: config.coordinatePolicy ?? config.coordinate_policy ?? {
+      max_stream_id_bytes: 128,
+      allow_epoch: true,
+      require_parent_hash: false,
+      require_subject_hash: false,
+    },
+    roots,
+    retention: normalizeRetentionDefinition(config.retention ?? config.retentionPolicy),
+    validationMode: config.validationMode ?? config.validation_mode ?? "SchemaDecodableRecords",
+    privacyMode: config.privacyMode ?? config.privacy_mode ?? "Public",
+    maxPayloadBytes: config.maxPayloadBytes ?? config.max_payload_bytes ?? 16 * 1024 * 1024,
+    maxRecordsPerPayload:
+      config.maxRecordsPerPayload ?? config.max_records_per_payload ?? 100000,
+    coordinateTemplates: cloneJson(config.coordinateTemplates ?? config.coordinate_templates ?? {}),
+  };
+}
+
+function normalizeNamespaceDefinitions(namespaces) {
+  if (!Array.isArray(namespaces) || namespaces.length === 0) {
+    throw new DettaSdkError("application definition requires namespaces", {
+      phase: "definition",
+    });
+  }
+  return namespaces
+    .map((namespace) => {
+      const namespaceId = requiredString(namespace.namespace ?? namespace.id, "namespace");
+      const allowedRecordSchemas = sortedStrings(
+        namespace.allowedRecordSchemas ??
+          namespace.allowed_record_schemas ??
+          namespace.records ??
+          [],
+      );
+      return {
+        namespace: namespaceId,
+        requirement: namespace.requirement ?? "Optional",
+        allowedRecordSchemas,
+        minRecords: namespace.minRecords ?? namespace.min_records ?? 0,
+        maxRecords: namespace.maxRecords ?? namespace.max_records ?? 10000,
+        retentionClass:
+          namespace.retentionClass ?? namespace.retention_class ?? "Warm",
+      };
+    })
+    .sort((left, right) => left.namespace.localeCompare(right.namespace));
+}
+
+function normalizeRecordDefinitions(records) {
+  if (!Array.isArray(records) || records.length === 0) {
+    throw new DettaSdkError("application definition requires record policies", {
+      phase: "definition",
+    });
+  }
+  return records
+    .map((record) => {
+      const allowedEncodings = sortRecordEncodings(
+        record.allowedEncodings ?? record.allowed_encodings ?? record.encodings ?? [],
+      );
+      if (allowedEncodings.length === 0) {
+        throw new DettaSdkError(`record ${record.schema} requires allowed encodings`, {
+          phase: "definition",
+        });
+      }
+      return {
+        schema: requiredString(record.schema, "record.schema"),
+        schemaVersion: record.schemaVersion ?? record.schema_version ?? 1,
+        allowedNamespaces: sortedStrings(
+          record.allowedNamespaces ?? record.allowed_namespaces ?? record.namespaces ?? [],
+        ),
+        allowedEncodings,
+        defaultEncoding: record.defaultEncoding ?? record.default_encoding ?? allowedEncodings[0],
+        contentType: record.contentType ?? record.content_type ?? null,
+        maxRecordBytes: record.maxRecordBytes ?? record.max_record_bytes ?? record.maxBytes,
+        requireContentHash:
+          record.requireContentHash ?? record.require_content_hash ?? true,
+        requireSigner: record.requireSigner ?? record.require_signer ?? false,
+      };
+    })
+    .sort((left, right) =>
+      left.schema.localeCompare(right.schema) || left.schemaVersion - right.schemaVersion,
+    );
+}
+
+function normalizeRootBindings(roots) {
+  if (!Array.isArray(roots) || roots.length === 0) {
+    throw new DettaSdkError("application definition requires at least one root binding", {
+      phase: "definition",
+    });
+  }
+  return roots
+    .map((root) => ({
+      name: requiredString(root.name, "root.name"),
+      required: root.required ?? true,
+    }))
+    .sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function normalizeRetentionDefinition(retention = {}) {
+  const namespaceOverrides = Array.isArray(retention.namespaceOverrides)
+    ? retention.namespaceOverrides
+    : Object.entries(retention.namespaceOverrides ?? retention.namespace_overrides ?? {}).map(
+        ([namespace, retentionClass]) => ({ namespace, retentionClass }),
+      );
+  const payloadKindOverrides = Array.isArray(retention.payloadKindOverrides)
+    ? retention.payloadKindOverrides
+    : Object.entries(retention.payloadKindOverrides ?? retention.payload_kind_overrides ?? {}).map(
+        ([payloadKind, retentionClass]) => ({ payloadKind, retentionClass }),
+      );
+  return {
+    defaultClass: retention.defaultClass ?? retention.default_class ?? "Warm",
+    namespaceOverrides: namespaceOverrides
+      .map((override) => ({
+        namespace: requiredString(override.namespace, "retention namespace"),
+        retentionClass: override.retentionClass ?? override.retention_class,
+      }))
+      .sort((left, right) => left.namespace.localeCompare(right.namespace)),
+    payloadKindOverrides: payloadKindOverrides
+      .map((override) => ({
+        payloadKind: override.payloadKind ?? override.payload_kind,
+        retentionClass: override.retentionClass ?? override.retention_class,
+      }))
+      .sort((left, right) =>
+        payloadKindRank(left.payloadKind) - payloadKindRank(right.payloadKind) ||
+        String(left.payloadKind).localeCompare(String(right.payloadKind)),
+      ),
+  };
+}
+
 function expectRpcResult(response, expected) {
   if (response.status === "error") {
     throw new RpcError(response.body);
@@ -1203,7 +1624,14 @@ function canonicalizeApplicationNamespaces(namespaces) {
     .map(([namespace, records]) => ({ namespace, records }));
 }
 
-function namespacePolicy(namespace, requirement, allowedRecordSchemas, minRecords, maxRecords, retentionClass) {
+function namespacePolicy(
+  namespace,
+  requirement,
+  allowedRecordSchemas,
+  minRecords,
+  maxRecords,
+  retentionClass,
+) {
   return {
     namespace,
     requirement,
@@ -1214,16 +1642,110 @@ function namespacePolicy(namespace, requirement, allowedRecordSchemas, minRecord
   };
 }
 
-function recordPolicy(schema, allowedNamespaces, allowedEncodings, maxRecordBytes, requireContentHash, requireSigner) {
+function recordPolicy(
+  schema,
+  allowedNamespaces,
+  allowedEncodings,
+  maxRecordBytes,
+  requireContentHash,
+  requireSigner,
+  schemaVersion = 1,
+) {
+  if (!Number.isSafeInteger(maxRecordBytes) || maxRecordBytes <= 0) {
+    throw new DettaSdkError(`record ${schema} requires a positive maxRecordBytes`, {
+      phase: "definition",
+    });
+  }
   return {
     schema,
-    schema_version: 1,
+    schema_version: schemaVersion,
     allowed_namespaces: allowedNamespaces,
     allowed_encodings: allowedEncodings,
     max_record_bytes: maxRecordBytes,
     require_content_hash: requireContentHash,
     require_signer: requireSigner,
   };
+}
+
+async function recordInputBytes(options) {
+  if ("bytes" in options) {
+    return toBytes(options.bytes);
+  }
+  if ("json" in options) {
+    return utf8Bytes(JSON.stringify(options.json));
+  }
+  if ("text" in options) {
+    return utf8Bytes(options.text);
+  }
+  throw new DettaSdkError("record input requires bytes, json, or text", {
+    phase: "input",
+  });
+}
+
+function defaultContentTypeForEncoding(encoding) {
+  switch (encoding) {
+    case "CanonicalJson":
+    case "ExternalContentAddress":
+      return "application/json";
+    case "OpaqueBytes":
+    case "EncryptedBytes":
+      return "application/octet-stream";
+    default:
+      throw new DettaSdkError(`unsupported record encoding ${encoding}`, {
+        phase: "definition",
+      });
+  }
+}
+
+function sortedStrings(values) {
+  if (!Array.isArray(values) || values.length === 0) {
+    return [];
+  }
+  return [...new Set(values.map((value) => requiredString(value, "value")))].sort((left, right) =>
+    left.localeCompare(right),
+  );
+}
+
+function sortRecordEncodings(values) {
+  return sortedStrings(values).sort(
+    (left, right) =>
+      recordEncodingRank(left) - recordEncodingRank(right) || left.localeCompare(right),
+  );
+}
+
+function recordEncodingRank(value) {
+  const order = {
+    CanonicalJson: 0,
+    OpaqueBytes: 1,
+    EncryptedBytes: 2,
+    ExternalContentAddress: 3,
+  };
+  if (!(value in order)) {
+    throw new DettaSdkError(`unsupported record encoding ${value}`, {
+      phase: "definition",
+    });
+  }
+  return order[value];
+}
+
+function payloadKindRank(value) {
+  const order = {
+    Block: 0,
+    Batch: 1,
+    Checkpoint: 2,
+    Snapshot: 3,
+    MediaManifest: 4,
+    ModerationLog: 5,
+    IndexDelta: 6,
+  };
+  if (typeof value === "string" && value in order) {
+    return order[value];
+  }
+  return 1000;
+}
+
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value));
 }
 
 function resolveBlobClientBackend(blobClient) {

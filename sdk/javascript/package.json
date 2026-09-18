@@ -1,6 +1,6 @@
 {
   "name": "@detta/client-sdk",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": false,
   "type": "module",
   "description": "Browser JavaScript SDK for DeTTa application DA and external blob workflows.",

@@ -131,8 +131,9 @@ The current implementation includes slices for:
   application DA workflow into one idempotent publish call and one verified
   retrieval call for application clients such as social avatar upload flows.
 - `sdk/javascript`, a browser JavaScript SDK with fetch-based DeTTa RPC,
-  WebCrypto hashing, pluggable blob providers, and one-call avatar
-  publish/retrieve helpers for web clients.
+  WebCrypto hashing, pluggable blob providers, data-driven application
+  definitions, generic application DA publishing, and optional avatar/chat
+  recipes for web clients.
 
 The production roadmap and progress tracker live in
 `detta-production-implementation-plan.md`.
