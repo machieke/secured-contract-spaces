@@ -1,0 +1,32 @@
+{{- $root := . -}}
+{{- range $i := until (int .Values.validators.count) }}
+{{- $idx := add $i 1 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "detta.validatorName" (dict "root" $root "index" $idx) }}
+  labels:
+    {{- include "detta.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: validator
+    detta.io/validator-id: {{ include "detta.validatorId" $idx | quote }}
+  {{- with $root.Values.validators.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "detta.selectorLabels" $root | nindent 4 }}
+    app.kubernetes.io/component: validator
+    detta.io/validator-id: {{ include "detta.validatorId" $idx | quote }}
+  ports:
+    - name: rpc
+      port: {{ $root.Values.rpc.port }}
+      targetPort: rpc
+      protocol: TCP
+    - name: consensus
+      port: {{ $root.Values.consensus.port }}
+      targetPort: consensus
+      protocol: TCP
+{{- end }}

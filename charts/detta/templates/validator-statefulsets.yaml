@@ -1,0 +1,200 @@
+{{- $root := . -}}
+{{- range $i := until (int .Values.validators.count) }}
+{{- $idx := add $i 1 }}
+{{- $validatorName := include "detta.validatorName" (dict "root" $root "index" $idx) }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $validatorName }}
+  labels:
+    {{- include "detta.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: validator
+    detta.io/validator-id: {{ include "detta.validatorId" $idx | quote }}
+spec:
+  serviceName: {{ $validatorName }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "detta.selectorLabels" $root | nindent 6 }}
+      app.kubernetes.io/component: validator
+      detta.io/validator-id: {{ include "detta.validatorId" $idx | quote }}
+  template:
+    metadata:
+      labels:
+        {{- include "detta.selectorLabels" $root | nindent 8 }}
+        app.kubernetes.io/component: validator
+        detta.io/validator-id: {{ include "detta.validatorId" $idx | quote }}
+      {{- with $root.Values.validators.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      enableServiceLinks: true
+      terminationGracePeriodSeconds: {{ $root.Values.terminationGracePeriodSeconds }}
+      {{- with $root.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml $root.Values.podSecurityContext | nindent 8 }}
+      initContainers:
+        - name: write-genesis
+          image: {{ include "detta.image" $root | quote }}
+          imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+          command:
+            - /usr/local/bin/detta-node
+          args:
+            - write-genesis
+            - --output
+            - /genesis/genesis.json
+            - --chain-id
+            - {{ $root.Values.genesis.chainId | quote }}
+            - --preset
+            - {{ $root.Values.genesis.preset | quote }}
+          securityContext:
+            {{- toYaml $root.Values.containerSecurityContext | nindent 12 }}
+          volumeMounts:
+            - name: genesis
+              mountPath: /genesis
+      containers:
+        - name: detta-node
+          image: {{ include "detta.image" $root | quote }}
+          imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -ec
+          args:
+            - |
+              detta_service_host() {
+                host="$(printenv "$1" || true)"
+                if [ -n "$host" ]; then
+                  printf '%s' "$host"
+                else
+                  printf '%s' "$2"
+                fi
+              }
+              export DETTA_CONSENSUS_PEERS="{{ include "detta.validatorConsensusPeersRuntime" (dict "root" $root "self" $idx) }}"
+              export DETTA_RPC_PEERS="{{ include "detta.validatorRpcPeersRuntime" (dict "root" $root "self" $idx) }}"
+              {{- if and $root.Values.consensus.enabled (eq $idx 1) (gt (int $root.Values.validators.bootstrap.validatorOneStartDelaySeconds) 0) }}
+              sleep {{ int $root.Values.validators.bootstrap.validatorOneStartDelaySeconds }}
+              {{- end }}
+              {{- if and $root.Values.consensus.enabled (eq $idx 1) $root.Values.validators.bootstrap.validatorOneWaitForPeers }}
+              for peer in {{ include "detta.validatorRpcPeerTargetsRuntime" (dict "root" $root "self" $idx) }}; do
+                attempt=0
+                until /usr/bin/timeout {{ int $root.Values.validators.bootstrap.peerWaitAttemptTimeoutSeconds }}s /usr/local/bin/detta-client state-root --rpc "$peer" >/dev/null 2>&1; do
+                  attempt=$((attempt + 1))
+                  if [ "$attempt" -ge {{ int $root.Values.validators.bootstrap.peerWaitAttempts }} ]; then
+                    echo "bootstrap wait: peer $peer unavailable after $attempt attempts; starting anyway" >&2
+                    break
+                  fi
+                  sleep 1
+                done
+              done
+              {{- end }}
+              exec /usr/local/bin/entrypoint.sh
+          ports:
+            - name: rpc
+              containerPort: {{ $root.Values.rpc.port }}
+              protocol: TCP
+            - name: consensus
+              containerPort: {{ $root.Values.consensus.port }}
+              protocol: TCP
+          env:
+            - name: DETTA_GENESIS
+              value: /genesis/genesis.json
+            - name: DETTA_STORAGE
+              value: /data
+            - name: DETTA_VALIDATOR_ID
+              value: {{ include "detta.validatorId" $idx | quote }}
+            - name: DETTA_RPC_ADDR
+              value: "0.0.0.0:{{ $root.Values.rpc.port }}"
+            - name: DETTA_BFT
+              value: {{ ternary "1" "0" $root.Values.consensus.enabled | quote }}
+            - name: DETTA_VALIDATORS
+              value: {{ include "detta.validatorRoster" $root | quote }}
+            - name: DETTA_NETWORK_ID
+              value: {{ $root.Values.networkId | quote }}
+            - name: DETTA_CONSENSUS_LISTEN
+              value: "0.0.0.0:{{ $root.Values.consensus.port }}"
+            - name: DETTA_CONSENSUS_PEERS
+              value: {{ include "detta.validatorConsensusPeers" (dict "root" $root "self" $idx) | quote }}
+            - name: DETTA_RPC_PEERS
+              value: {{ include "detta.validatorRpcPeers" (dict "root" $root "self" $idx) | quote }}
+            {{- if $root.Values.consensus.enabled }}
+            - name: DETTA_PRODUCE_INTERVAL_SECS
+              value: {{ $root.Values.consensus.roundIntervalSeconds | quote }}
+            - name: DETTA_SYNC_INTERVAL_SECS
+              value: {{ $root.Values.consensus.syncIntervalSeconds | quote }}
+            {{- end }}
+            {{- if $root.Values.consensus.quorum }}
+            - name: DETTA_QUORUM
+              value: {{ $root.Values.consensus.quorum | quote }}
+            {{- end }}
+            {{- if $root.Values.consensus.enabled }}
+            - name: DETTA_CONSENSUS_SEED
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "detta.consensusSecretName" $root }}
+                  key: {{ $root.Values.consensus.seed.key }}
+            {{- end }}
+          securityContext:
+            {{- toYaml $root.Values.containerSecurityContext | nindent 12 }}
+          startupProbe:
+            {{- include "detta.probe" $root | nindent 12 }}
+            failureThreshold: {{ $root.Values.probes.startup.failureThreshold }}
+            periodSeconds: {{ $root.Values.probes.startup.periodSeconds }}
+            timeoutSeconds: {{ $root.Values.probes.startup.timeoutSeconds }}
+          readinessProbe:
+            {{- include "detta.probe" $root | nindent 12 }}
+            periodSeconds: {{ $root.Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ $root.Values.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ $root.Values.probes.readiness.failureThreshold }}
+          livenessProbe:
+            {{- include "detta.probe" $root | nindent 12 }}
+            periodSeconds: {{ $root.Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ $root.Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ $root.Values.probes.liveness.failureThreshold }}
+          resources:
+            {{- toYaml $root.Values.validators.resources | nindent 12 }}
+          volumeMounts:
+            - name: genesis
+              mountPath: /genesis
+            - name: data
+              mountPath: /data
+      {{- with $root.Values.validators.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $root.Values.validators.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $root.Values.validators.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: genesis
+          emptyDir: {}
+        {{- if not $root.Values.validators.persistence.enabled }}
+        - name: data
+          emptyDir: {}
+        {{- end }}
+  {{- if $root.Values.validators.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "detta.labels" $root | nindent 10 }}
+          app.kubernetes.io/component: validator
+          detta.io/validator-id: {{ include "detta.validatorId" $idx | quote }}
+      spec:
+        accessModes:
+          {{- toYaml $root.Values.validators.persistence.accessModes | nindent 10 }}
+        {{- include "detta.storageClass" $root.Values.validators.persistence | nindent 8 }}
+        resources:
+          requests:
+            storage: {{ $root.Values.validators.persistence.size | quote }}
+  {{- end }}
+{{- end }}

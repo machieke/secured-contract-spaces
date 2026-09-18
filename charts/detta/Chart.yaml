@@ -1,0 +1,6 @@
+apiVersion: v2
+name: detta
+description: k3s-friendly Helm chart for a DeTTa BFT validator cluster and RPC node.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

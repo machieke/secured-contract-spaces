@@ -1,0 +1,6 @@
+{{- if lt (int .Values.validators.count) 1 -}}
+{{- fail "validators.count must be at least 1" -}}
+{{- end -}}
+{{- if and .Values.consensus.enabled (lt (int .Values.validators.count) 4) -}}
+{{- fail "consensus.enabled requires validators.count >= 4 for f=1 BFT safety" -}}
+{{- end -}}

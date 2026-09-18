@@ -1,0 +1,105 @@
+# Default values for a small DeTTa BFT cluster.
+#
+# These defaults mirror docker/docker-compose.yml: four validators, one RPC
+# full node, deterministic demo genesis, and a shared demo consensus seed. Use a
+# private image registry and replace the seed for any non-throwaway network.
+
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  registry: ""
+  repository: detta-node
+  tag: local
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+networkId: detta-testnet
+
+genesis:
+  chainId: detta-local
+  preset: defi-demo
+
+consensus:
+  enabled: true
+  port: 9080
+  roundIntervalSeconds: 20
+  syncIntervalSeconds: 2
+  quorum: ""
+  seed:
+    existingSecret: ""
+    key: consensus-seed
+    value: detta-demo-consensus-seed-change-me
+
+rpc:
+  port: 8080
+  service:
+    type: ClusterIP
+    nodePort: null
+    annotations: {}
+
+validators:
+  count: 4
+  bootstrap:
+    validatorOneStartDelaySeconds: 4
+    validatorOneWaitForPeers: true
+    peerWaitAttempts: 6
+    peerWaitAttemptTimeoutSeconds: 1
+  service:
+    annotations: {}
+  persistence:
+    enabled: true
+    accessModes:
+      - ReadWriteOnce
+    size: 2Gi
+    storageClass: ""
+  resources: {}
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+rpcNode:
+  enabled: true
+  persistence:
+    enabled: true
+    accessModes:
+      - ReadWriteOnce
+    size: 2Gi
+    storageClass: ""
+  resources: {}
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+podSecurityContext:
+  fsGroup: 10001
+  fsGroupChangePolicy: OnRootMismatch
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  capabilities:
+    drop:
+      - ALL
+
+probes:
+  startup:
+    failureThreshold: 60
+    periodSeconds: 2
+    timeoutSeconds: 2
+  readiness:
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  liveness:
+    periodSeconds: 20
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+terminationGracePeriodSeconds: 30

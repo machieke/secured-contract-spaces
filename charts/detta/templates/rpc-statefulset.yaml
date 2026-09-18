@@ -1,0 +1,168 @@
+{{- if .Values.rpcNode.enabled -}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "detta.rpcName" . }}
+  labels:
+    {{- include "detta.labels" . | nindent 4 }}
+    app.kubernetes.io/component: rpc
+spec:
+  serviceName: {{ include "detta.rpcName" . }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "detta.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: rpc
+  template:
+    metadata:
+      labels:
+        {{- include "detta.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: rpc
+      {{- with .Values.rpcNode.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      enableServiceLinks: true
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      initContainers:
+        - name: write-genesis
+          image: {{ include "detta.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /usr/local/bin/detta-node
+          args:
+            - write-genesis
+            - --output
+            - /genesis/genesis.json
+            - --chain-id
+            - {{ .Values.genesis.chainId | quote }}
+            - --preset
+            - {{ .Values.genesis.preset | quote }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          volumeMounts:
+            - name: genesis
+              mountPath: /genesis
+      containers:
+        - name: detta-node
+          image: {{ include "detta.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -ec
+          args:
+            - |
+              detta_service_host() {
+                host="$(printenv "$1" || true)"
+                if [ -n "$host" ]; then
+                  printf '%s' "$host"
+                else
+                  printf '%s' "$2"
+                fi
+              }
+              export DETTA_RPC_PEERS="{{ include "detta.allValidatorRpcPeersRuntime" . }}"
+              exec /usr/local/bin/entrypoint.sh
+          ports:
+            - name: rpc
+              containerPort: {{ .Values.rpc.port }}
+              protocol: TCP
+          env:
+            - name: DETTA_GENESIS
+              value: /genesis/genesis.json
+            - name: DETTA_STORAGE
+              value: /data
+            - name: DETTA_VALIDATOR_ID
+              value: rpc-1
+            - name: DETTA_RPC_ADDR
+              value: "0.0.0.0:{{ .Values.rpc.port }}"
+            - name: DETTA_BFT
+              value: {{ ternary "1" "0" .Values.consensus.enabled | quote }}
+            - name: DETTA_VALIDATORS
+              value: {{ include "detta.validatorRoster" . | quote }}
+            - name: DETTA_NETWORK_ID
+              value: {{ .Values.networkId | quote }}
+            - name: DETTA_RPC_PEERS
+              value: {{ include "detta.allValidatorRpcPeers" . | quote }}
+            {{- if .Values.consensus.enabled }}
+            - name: DETTA_PRODUCE_INTERVAL_SECS
+              value: {{ .Values.consensus.roundIntervalSeconds | quote }}
+            - name: DETTA_SYNC_INTERVAL_SECS
+              value: {{ .Values.consensus.syncIntervalSeconds | quote }}
+            {{- end }}
+            {{- if .Values.consensus.quorum }}
+            - name: DETTA_QUORUM
+              value: {{ .Values.consensus.quorum | quote }}
+            {{- end }}
+            {{- if .Values.consensus.enabled }}
+            - name: DETTA_CONSENSUS_SEED
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "detta.consensusSecretName" . }}
+                  key: {{ .Values.consensus.seed.key }}
+            {{- end }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          startupProbe:
+            {{- include "detta.probe" . | nindent 12 }}
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.startup.timeoutSeconds }}
+          readinessProbe:
+            {{- include "detta.probe" . | nindent 12 }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          livenessProbe:
+            {{- include "detta.probe" . | nindent 12 }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          resources:
+            {{- toYaml .Values.rpcNode.resources | nindent 12 }}
+          volumeMounts:
+            - name: genesis
+              mountPath: /genesis
+            - name: data
+              mountPath: /data
+      {{- with .Values.rpcNode.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.rpcNode.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.rpcNode.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: genesis
+          emptyDir: {}
+        {{- if not .Values.rpcNode.persistence.enabled }}
+        - name: data
+          emptyDir: {}
+        {{- end }}
+  {{- if .Values.rpcNode.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "detta.labels" . | nindent 10 }}
+          app.kubernetes.io/component: rpc
+      spec:
+        accessModes:
+          {{- toYaml .Values.rpcNode.persistence.accessModes | nindent 10 }}
+        {{- include "detta.storageClass" .Values.rpcNode.persistence | nindent 8 }}
+        resources:
+          requests:
+            storage: {{ .Values.rpcNode.persistence.size | quote }}
+  {{- end }}
+{{- end }}

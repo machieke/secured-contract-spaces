@@ -1,0 +1,13 @@
+# Example k3s overrides. k3s usually marks local-path as the default storage
+# class, so these settings are optional on a stock install.
+validators:
+  persistence:
+    storageClass: local-path
+
+rpcNode:
+  persistence:
+    storageClass: local-path
+
+rpc:
+  service:
+    type: ClusterIP

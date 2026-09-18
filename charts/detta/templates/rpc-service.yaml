@@ -1,0 +1,26 @@
+{{- if .Values.rpcNode.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "detta.rpcName" . }}
+  labels:
+    {{- include "detta.labels" . | nindent 4 }}
+    app.kubernetes.io/component: rpc
+  {{- with .Values.rpc.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.rpc.service.type }}
+  selector:
+    {{- include "detta.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: rpc
+  ports:
+    - name: rpc
+      port: {{ .Values.rpc.port }}
+      targetPort: rpc
+      protocol: TCP
+      {{- if and (eq .Values.rpc.service.type "NodePort") .Values.rpc.service.nodePort }}
+      nodePort: {{ .Values.rpc.service.nodePort }}
+      {{- end }}
+{{- end }}
